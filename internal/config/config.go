@@ -7,7 +7,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strconv"
@@ -145,7 +147,7 @@ func defaults() Config {
 
 // Load returns the effective configuration: defaults, then the YAML file at
 // path when non-empty, then environment overrides. A non-empty path that
-// cannot be read or parsed is an error.
+// cannot be read or parsed is an error; an empty document keeps the defaults.
 func Load(path string) (Config, error) {
 	cfg := defaults()
 	if path != "" {
@@ -155,7 +157,7 @@ func Load(path string) (Config, error) {
 		}
 		dec := yaml.NewDecoder(strings.NewReader(string(data)))
 		dec.KnownFields(true)
-		if err := dec.Decode(&cfg); err != nil {
+		if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 			return Config{}, fmt.Errorf("config: parse %s: %w", path, err)
 		}
 	}
@@ -170,7 +172,8 @@ func Load(path string) (Config, error) {
 }
 
 // applyEnv walks the configuration struct and applies overrides named
-// GKG_<SECTION>_<KEY>, e.g. GKG_SERVER_ADDR, GKG_EXTRACTOR_OPENAI_BASE_URL.
+// GKG_<SECTION>_<KEY>, mirroring the snake_case yaml keys, e.g.
+// GKG_SERVER_ADDR, GKG_EXTRACTOR_OPENAI_BASE_URL.
 func applyEnv(cfg *Config, lookup func(string) (string, bool)) error {
 	return walkEnv(reflect.ValueOf(cfg).Elem(), "GKG", lookup)
 }
@@ -183,7 +186,13 @@ func walkEnv(v reflect.Value, prefix string, lookup func(string) (string, bool))
 			continue
 		}
 		fv := v.Field(i)
-		key := prefix + "_" + upperSnake(f.Name)
+		seg := upperSnake(f.Name)
+		if tag, ok := f.Tag.Lookup("yaml"); ok {
+			if name := strings.Split(tag, ",")[0]; name != "" && name != "-" {
+				seg = strings.ToUpper(name)
+			}
+		}
+		key := prefix + "_" + seg
 		switch fv.Kind() {
 		case reflect.Struct:
 			if err := walkEnv(fv, key, lookup); err != nil {

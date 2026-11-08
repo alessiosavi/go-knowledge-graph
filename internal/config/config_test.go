@@ -3,6 +3,8 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
@@ -68,5 +70,123 @@ func TestAPIKeyEnvException(t *testing.T) {
 	}
 	if cfg.Server.APIKey != "sekret" {
 		t.Errorf("Server.APIKey = %q, want GKG_API_KEY exception to map to Server.APIKey", cfg.Server.APIKey)
+	}
+}
+
+// TestEnvNamesMirrorYAMLKeys pins the environment name of every leaf field:
+// GKG_<SECTION>_<KEY> mirrors the snake_case yaml keys, so the openai
+// section is GKG_EXTRACTOR_OPENAI_* (not ...OPEN_AI_*).
+func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
+	cases := []struct {
+		key  string
+		val  string
+		want any
+		get  func(config.Config) any
+	}{
+		{"GKG_MEMGRAPH_URI", "bolt://example:1111", "bolt://example:1111", func(c config.Config) any { return c.Memgraph.URI }},
+		{"GKG_MEMGRAPH_USER", "memuser", "memuser", func(c config.Config) any { return c.Memgraph.User }},
+		{"GKG_MEMGRAPH_PASSWORD", "mempass", "mempass", func(c config.Config) any { return c.Memgraph.Password }},
+		{"GKG_SERVER_ADDR", ":1234", ":1234", func(c config.Config) any { return c.Server.Addr }},
+		{"GKG_SERVER_API_KEY", "sk", "sk", func(c config.Config) any { return c.Server.APIKey }},
+		{"GKG_EXTRACTOR_MODE", "mock", "mock", func(c config.Config) any { return c.Extractor.Mode }},
+		{"GKG_EXTRACTOR_OPENAI_BASE_URL", "https://example/v1", "https://example/v1", func(c config.Config) any { return c.Extractor.OpenAI.BaseURL }},
+		{"GKG_EXTRACTOR_OPENAI_API_KEY", "ok", "ok", func(c config.Config) any { return c.Extractor.OpenAI.APIKey }},
+		{"GKG_EXTRACTOR_OPENAI_MODEL", "om", "om", func(c config.Config) any { return c.Extractor.OpenAI.Model }},
+		{"GKG_EXTRACTOR_SIDECAR_URL", "http://localhost:9999", "http://localhost:9999", func(c config.Config) any { return c.Extractor.Sidecar.URL }},
+		{"GKG_EMBEDDER_ENABLED", "true", true, func(c config.Config) any { return c.Embedder.Enabled }},
+		{"GKG_EMBEDDER_BASE_URL", "https://example/v1", "https://example/v1", func(c config.Config) any { return c.Embedder.BaseURL }},
+		{"GKG_EMBEDDER_API_KEY", "ek", "ek", func(c config.Config) any { return c.Embedder.APIKey }},
+		{"GKG_EMBEDDER_MODEL", "em", "em", func(c config.Config) any { return c.Embedder.Model }},
+		{"GKG_EMBEDDER_DIM", "1536", 1536, func(c config.Config) any { return c.Embedder.Dim }},
+		{"GKG_JUDGE_MODE", "sample", "sample", func(c config.Config) any { return c.Judge.Mode }},
+		{"GKG_JUDGE_VERIFY_FLOOR", "0.4", 0.4, func(c config.Config) any { return c.Judge.VerifyFloor }},
+		{"GKG_JUDGE_SAMPLE_PCT", "25", 25.0, func(c config.Config) any { return c.Judge.SamplePct }},
+		{"GKG_JUDGE_BASE_URL", "https://example/v1", "https://example/v1", func(c config.Config) any { return c.Judge.BaseURL }},
+		{"GKG_JUDGE_API_KEY", "jk", "jk", func(c config.Config) any { return c.Judge.APIKey }},
+		{"GKG_JUDGE_MODEL", "jm", "jm", func(c config.Config) any { return c.Judge.Model }},
+		{"GKG_INGEST_MAX_UPLOAD_MB", "7", 7, func(c config.Config) any { return c.Ingest.MaxUploadMB }},
+		{"GKG_INGEST_MAX_URL_MB", "8", 8, func(c config.Config) any { return c.Ingest.MaxURLMB }},
+		{"GKG_INGEST_MAX_CHUNKS", "9", 9, func(c config.Config) any { return c.Ingest.MaxChunks }},
+		{"GKG_INGEST_STORE_FLOOR", "0.2", 0.2, func(c config.Config) any { return c.Ingest.StoreFloor }},
+		{"GKG_INGEST_ASSERT_FLOOR", "0.6", 0.6, func(c config.Config) any { return c.Ingest.AssertFloor }},
+		{"GKG_INGEST_CHUNK_WORDS", "123", 123, func(c config.Config) any { return c.Ingest.ChunkWords }},
+		{"GKG_INGEST_OVERLAP_SENTENCES", "2", 2, func(c config.Config) any { return c.Ingest.OverlapSentences }},
+		{"GKG_INGEST_CHUNK_DEDUP", "exact", "exact", func(c config.Config) any { return c.Ingest.ChunkDedup }},
+		{"GKG_INGEST_JACCARD_THRESHOLD", "0.9", 0.9, func(c config.Config) any { return c.Ingest.JaccardThreshold }},
+		{"GKG_INGEST_FETCH_TIMEOUT_S", "11", 11, func(c config.Config) any { return c.Ingest.FetchTimeoutS }},
+		{"GKG_INGEST_MAX_REDIRECTS", "3", 3, func(c config.Config) any { return c.Ingest.MaxRedirects }},
+		{"GKG_LABELS_PRESETS_DIR", "custom", "custom", func(c config.Config) any { return c.Labels.PresetsDir }},
+		{"GKG_LIMITS_CYPHER_ROWS", "50", 50, func(c config.Config) any { return c.Limits.CypherRows }},
+		{"GKG_LIMITS_CYPHER_TIMEOUT_MS", "2500", 2500, func(c config.Config) any { return c.Limits.CypherTimeoutMS }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			t.Setenv(tc.key, tc.val)
+			cfg, err := config.Load("")
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := tc.get(cfg); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("%s: got %v, want %v", tc.key, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEnvInvalidValueReturnsKeyedError(t *testing.T) {
+	t.Setenv("GKG_INGEST_MAX_CHUNKS", "many")
+	_, err := config.Load("")
+	if err == nil || !strings.Contains(err.Error(), "GKG_INGEST_MAX_CHUNKS") {
+		t.Fatalf("want error naming GKG_INGEST_MAX_CHUNKS, got %v", err)
+	}
+}
+
+func TestUnknownYAMLKeyRejected(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("server:\n  adddr: \":1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(p); err == nil {
+		t.Fatal("want error for unknown yaml key")
+	}
+}
+
+func TestMissingConfigFileErrors(t *testing.T) {
+	if _, err := config.Load(filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
+		t.Fatal("want error for a non-empty path that does not exist")
+	}
+}
+
+func TestEmptyYAMLKeepsDefaults(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty":   "",
+		"comment": "# nothing but a comment\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(p)
+			if err != nil {
+				t.Fatalf("Load(empty yaml): %v", err)
+			}
+			if cfg.Ingest.StoreFloor != 0.15 || cfg.Judge.Mode != "off" {
+				t.Errorf("defaults not kept for empty yaml: %+v", cfg.Ingest)
+			}
+		})
+	}
+}
+
+func TestAPIKeyExceptionWinsOverGenericEnv(t *testing.T) {
+	t.Setenv("GKG_SERVER_API_KEY", "generic")
+	t.Setenv("GKG_API_KEY", "exception")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Server.APIKey != "exception" {
+		t.Errorf("Server.APIKey = %q, want GKG_API_KEY exception to win", cfg.Server.APIKey)
 	}
 }
