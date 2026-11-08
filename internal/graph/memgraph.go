@@ -15,10 +15,12 @@ import (
 // Store is the Memgraph-backed graph store.
 type Store struct {
 	driver neo4j.DriverWithContext
-	// mu serializes document upserts: the identity pre-read and the create
-	// cannot share one transaction, so concurrent submits of one source
-	// must not interleave. Multiple processes against one database are out
-	// of scope for v0 (one gkg process owns the store).
+	// mu serializes document upserts and extraction merges: their
+	// pre-read/write pairs cannot share one transaction, and concurrent
+	// transactions that MERGE the same entity key abort at commit with a
+	// unique-constraint violation the driver does not retry. Multiple
+	// processes against one database are out of scope for v0 (one gkg
+	// process owns the store).
 	mu sync.Mutex
 }
 
@@ -56,19 +58,37 @@ func (s *Store) runRead(ctx context.Context, query string, params map[string]any
 
 // runWrite executes a single write query inside one managed transaction.
 func (s *Store) runWrite(ctx context.Context, query string, params map[string]any) error {
+	return s.runWriteTx(ctx, func(tx neo4j.ManagedTransaction) error {
+		return txRun(ctx, tx, query, params)
+	})
+}
+
+// runWriteTx executes work inside one managed write transaction. All
+// statements run by fn are atomic together.
+func (s *Store) runWriteTx(ctx context.Context, fn func(tx neo4j.ManagedTransaction) error) error {
 	sess := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer sess.Close(ctx)
 	_, err := sess.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
-		res, err := tx.Run(ctx, query, params)
-		if err != nil {
-			return nil, err
-		}
-		// Drain the result so the write is executed even when it yields rows.
-		if _, err := res.Consume(ctx); err != nil {
-			return nil, err
-		}
-		return nil, nil
+		return nil, fn(tx)
 	})
+	return err
+}
+
+// runWriteTxLocked serializes the whole transaction behind Store.mu before
+// running it; see Store.mu for why.
+func (s *Store) runWriteTxLocked(ctx context.Context, fn func(tx neo4j.ManagedTransaction) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runWriteTx(ctx, fn)
+}
+
+// txRun runs one query inside a managed transaction, draining its result.
+func txRun(ctx context.Context, tx neo4j.ManagedTransaction, query string, params map[string]any) error {
+	res, err := tx.Run(ctx, query, params)
+	if err != nil {
+		return err
+	}
+	_, err = res.Consume(ctx)
 	return err
 }
 
@@ -133,6 +153,53 @@ func getInt64Slice(r *neo4j.Record, key string) []int64 {
 			out = append(out, n)
 		case float64:
 			out = append(out, int64(n))
+		}
+	}
+	return out
+}
+
+// getFloat returns a float property (Bolt floats and integers both count),
+// 0 when absent or null.
+func getFloat(r *neo4j.Record, key string) float64 {
+	v, ok := r.Get(key)
+	if !ok || v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int64:
+		return float64(n)
+	case int:
+		return float64(n)
+	}
+	return 0
+}
+
+// getBool returns a bool property, false when absent or null.
+func getBool(r *neo4j.Record, key string) bool {
+	v, ok := r.Get(key)
+	if !ok || v == nil {
+		return false
+	}
+	b, _ := v.(bool)
+	return b
+}
+
+// getStringSlice returns a string list property, nil when absent or null.
+func getStringSlice(r *neo4j.Record, key string) []string {
+	v, ok := r.Get(key)
+	if !ok || v == nil {
+		return nil
+	}
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, e := range list {
+		if s, ok := e.(string); ok {
+			out = append(out, s)
 		}
 	}
 	return out

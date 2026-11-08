@@ -81,3 +81,57 @@ type UpsertResult struct {
 	Noop       bool
 	PreviousID string
 }
+
+// Span is a mention's byte range into the chunk text.
+type Span struct {
+	Start int
+	End   int
+	Text  string
+}
+
+// EntityUpsert is one entity to merge into the graph.
+type EntityUpsert struct {
+	Key     string
+	Name    string
+	Type    string
+	Aliases []string
+}
+
+// FactUpsert is one extracted relation with its mention evidence.
+type FactUpsert struct {
+	HeadKey       string
+	TailKey       string
+	Rel           string
+	Confidence    float64
+	HeadMention   Span
+	TailMention   Span
+	LowConfidence bool
+}
+
+// EntityRef identifies an entity node.
+type EntityRef struct {
+	ID   string
+	Key  string
+	Name string
+	Type string
+}
+
+// FactView is one fact edge as seen from a queried entity.
+type FactView struct {
+	Rel           string
+	Other         EntityRef
+	Confidence    float64
+	Judge         string
+	LowConfidence bool
+	DocID         string
+	ChunkID       string
+	Excerpt       string
+}
+
+// EntityView is an entity with its aliases, mention count and fact evidence.
+type EntityView struct {
+	EntityRef
+	Aliases      []string
+	MentionCount int
+	Facts        []FactView
+}
