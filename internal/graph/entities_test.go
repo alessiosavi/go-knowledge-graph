@@ -588,6 +588,35 @@ func TestEntityAliasesUnionAcrossChunks(t *testing.T) {
 	}
 }
 
+// TestEntityAliasesUnionWithinOneCall pins that duplicate entity rows in a
+// single extraction call accumulate aliases instead of the last row's list
+// winning.
+func TestEntityAliasesUnionWithinOneCall(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	docID, chunkID := entitiesTestDoc(t, st, "text")
+	tag := strconv.FormatInt(time.Now().UnixNano(), 36)
+	k := graph.EntityKey("person", "Dup "+tag)
+	ents := []graph.EntityUpsert{
+		{Key: k, Name: "Dup " + tag, Type: "person", Aliases: []string{"A"}},
+		{Key: k, Name: "Dup " + tag, Type: "person", Aliases: []string{"B"}},
+	}
+	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", ents, nil); err != nil {
+		t.Fatalf("UpsertExtraction: %v", err)
+	}
+	view, err := st.EntityView(ctx, k, false)
+	if err != nil {
+		t.Fatalf("EntityView: %v", err)
+	}
+	set := map[string]bool{}
+	for _, a := range view.Aliases {
+		set[a] = true
+	}
+	if !set["A"] || !set["B"] {
+		t.Errorf("aliases = %v, want both A and B from duplicate rows in one call", view.Aliases)
+	}
+}
+
 func testString(r *neo4j.Record, key string) string {
 	v, _ := r.Get(key)
 	s, _ := v.(string)

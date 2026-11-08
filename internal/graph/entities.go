@@ -249,18 +249,27 @@ func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorV
 			for _, r := range aliasRecs {
 				stored[getString(r, "key")] = getStringSlice(r, "aliases")
 			}
+			// Fold every row's aliases per key: duplicate rows within one
+			// call accumulate instead of last-wins, and every row of the key
+			// receives the full merged list.
+			mergedByKey := make(map[string][]string, len(entRows))
 			for _, row := range entRows {
-				fresh := row["aliases"].([]string)
-				if len(fresh) == 0 {
-					continue
+				key := row["key"].(string)
+				merged, ok := mergedByKey[key]
+				if !ok {
+					merged = append([]string{}, stored[key]...)
 				}
-				merged := append([]string{}, stored[row["key"].(string)]...)
-				for _, a := range fresh {
+				for _, a := range row["aliases"].([]string) {
 					if !slices.Contains(merged, a) {
 						merged = append(merged, a)
 					}
 				}
-				row["aliases"] = merged
+				mergedByKey[key] = merged
+			}
+			for _, row := range entRows {
+				if merged := mergedByKey[row["key"].(string)]; len(merged) > 0 {
+					row["aliases"] = merged
+				}
 			}
 
 			if err := txRun(ctx, tx, `
