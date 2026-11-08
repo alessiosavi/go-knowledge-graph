@@ -62,6 +62,9 @@ func TestBootstrapIdempotent(t *testing.T) {
 			t.Errorf("unique constraint on (:%s).%s missing after Bootstrap", c.label, c.prop)
 		}
 	}
+	if !rawIndexExists(t, uri, "Document", "source_kind", "source") {
+		t.Error("composite index on :Document(source_kind, source) missing after Bootstrap")
+	}
 }
 
 // TestBootstrapIgnoresNonUniqueConstraint pins that an EXISTS constraint on
@@ -151,24 +154,7 @@ func rawRun(t *testing.T, uri, query string) {
 // independent match, deliberately not sharing production matching code.
 func rawUniqueConstraintExists(t *testing.T, uri, label, prop string) bool {
 	t.Helper()
-	drv, err := neo4j.NewDriverWithContext(uri, neo4j.NoAuth())
-	if err != nil {
-		t.Fatalf("raw driver: %v", err)
-	}
-	defer func() { _ = drv.Close(context.Background()) }()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	sess := drv.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer func() { _ = sess.Close(ctx) }()
-	res, err := sess.Run(ctx, "SHOW CONSTRAINT INFO", nil)
-	if err != nil {
-		t.Fatalf("raw SHOW CONSTRAINT INFO: %v", err)
-	}
-	recs, err := res.Collect(ctx)
-	if err != nil {
-		t.Fatalf("raw collect SHOW CONSTRAINT INFO: %v", err)
-	}
-	for _, r := range recs {
+	for _, r := range rawRecords(t, uri, "SHOW CONSTRAINT INFO") {
 		tv, _ := r.Get("constraint type")
 		if !strings.Contains(fmt.Sprint(tv), "unique") {
 			continue
@@ -192,4 +178,71 @@ func rawUniqueConstraintExists(t *testing.T, uri, label, prop string) bool {
 		}
 	}
 	return false
+}
+
+// rawIndexExists queries SHOW INDEX INFO directly; props must match as a set.
+func rawIndexExists(t *testing.T, uri, label string, props ...string) bool {
+	t.Helper()
+	for _, r := range rawRecords(t, uri, "SHOW INDEX INFO") {
+		lv, _ := r.Get("label")
+		if fmt.Sprint(lv) != label {
+			continue
+		}
+		pv, ok := r.Get("property")
+		if !ok {
+			pv, _ = r.Get("properties")
+		}
+		var list []string
+		switch p := pv.(type) {
+		case string:
+			list = []string{p}
+		case []any:
+			for _, e := range p {
+				list = append(list, fmt.Sprint(e))
+			}
+		case []string:
+			list = p
+		}
+		if len(list) != len(props) {
+			continue
+		}
+		set := map[string]bool{}
+		for _, e := range list {
+			set[e] = true
+		}
+		all := true
+		for _, want := range props {
+			if !set[want] {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// rawRecords runs a read query over a fresh raw driver connection.
+func rawRecords(t *testing.T, uri, query string) []*neo4j.Record {
+	t.Helper()
+	drv, err := neo4j.NewDriverWithContext(uri, neo4j.NoAuth())
+	if err != nil {
+		t.Fatalf("raw driver: %v", err)
+	}
+	defer func() { _ = drv.Close(context.Background()) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sess := drv.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
+	defer func() { _ = sess.Close(ctx) }()
+	res, err := sess.Run(ctx, query, nil)
+	if err != nil {
+		t.Fatalf("raw query %q: %v", query, err)
+	}
+	recs, err := res.Collect(ctx)
+	if err != nil {
+		t.Fatalf("raw collect %q: %v", query, err)
+	}
+	return recs
 }
