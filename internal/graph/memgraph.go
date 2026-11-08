@@ -5,6 +5,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
@@ -14,6 +15,11 @@ import (
 // Store is the Memgraph-backed graph store.
 type Store struct {
 	driver neo4j.DriverWithContext
+	// mu serializes document upserts: the identity pre-read and the create
+	// cannot share one transaction, so concurrent submits of one source
+	// must not interleave. Multiple processes against one database are out
+	// of scope for v0 (one gkg process owns the store).
+	mu sync.Mutex
 }
 
 // Open connects to Memgraph over Bolt and verifies connectivity and
@@ -78,4 +84,56 @@ func (s *Store) runAuto(ctx context.Context, query string, params map[string]any
 	}
 	_, err = res.Consume(ctx)
 	return err
+}
+
+// getString returns a string property, "" when absent or null.
+func getString(r *neo4j.Record, key string) string {
+	v, ok := r.Get(key)
+	if !ok || v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprint(v)
+}
+
+// getInt returns an int property, 0 when absent or null.
+func getInt(r *neo4j.Record, key string) int {
+	v, ok := r.Get(key)
+	if !ok || v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case int64:
+		return int(n)
+	case int:
+		return n
+	case float64:
+		return int(n)
+	}
+	return 0
+}
+
+// getInt64Slice returns an int64 list property, nil when absent or null.
+// The Bolt driver hydrates integer lists as []any of int64.
+func getInt64Slice(r *neo4j.Record, key string) []int64 {
+	v, ok := r.Get(key)
+	if !ok || v == nil {
+		return nil
+	}
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]int64, 0, len(list))
+	for _, e := range list {
+		switch n := e.(type) {
+		case int64:
+			out = append(out, n)
+		case float64:
+			out = append(out, int64(n))
+		}
+	}
+	return out
 }
