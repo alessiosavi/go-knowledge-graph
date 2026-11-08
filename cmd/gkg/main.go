@@ -4,39 +4,40 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
 const version = "v0.0.0-dev"
 
 func main() {
-	os.Exit(run(os.Args[1:]))
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run(args []string) int {
+func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		usage()
+		usage(stderr)
 		return 2
 	}
 	switch args[0] {
 	case "version":
-		fmt.Printf("gkg %s\n", version)
+		fmt.Fprintf(stdout, "gkg %s\n", version)
 		return 0
 	case "help", "-h", "--help":
-		usage()
+		usage(stdout)
 		return 0
 	case "serve", "ingest", "eval", "migrate", "mcp":
-		fmt.Println("not implemented")
+		fmt.Fprintln(stdout, "not implemented")
 		return 2
 	default:
-		fmt.Fprintf(os.Stderr, "gkg: unknown command %q\n\n", args[0])
-		usage()
+		fmt.Fprintf(stderr, "gkg: unknown command %q\n\n", args[0])
+		usage(stderr)
 		return 2
 	}
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `usage: gkg <command> [flags]
+func usage(w io.Writer) {
+	fmt.Fprint(w, `usage: gkg <command> [flags]
 
 commands:
   serve     run the REST API, MCP server and ingestion workers
