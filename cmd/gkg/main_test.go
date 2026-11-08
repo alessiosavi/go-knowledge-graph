@@ -2,31 +2,54 @@ package main
 
 import (
 	"bytes"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestBinaryDoesNotDependOnTesting pins that production packages never pull
+// the Go test framework into the gkg binary: test support for a package must
+// live in its own package, imported only from _test.go files.
+func TestBinaryDoesNotDependOnTesting(t *testing.T) {
+	cmd := exec.Command("go", "list", "-deps", "./cmd/gkg")
+	cmd.Dir = filepath.Join("..", "..")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -deps ./cmd/gkg: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == "testing" {
+			t.Fatal("the gkg binary transitively imports the testing package; keep test support out of production packages")
+		}
+	}
+}
 
 func TestRunDispatch(t *testing.T) {
 	cases := []struct {
 		name     string
 		args     []string
+		env      map[string]string
 		wantExit int
 		wantOut  string
 		wantErr  string
 	}{
-		{"version", []string{"version"}, 0, "gkg v", ""},
-		{"help", []string{"help"}, 0, "usage: gkg", ""},
-		{"help flag", []string{"-h"}, 0, "usage: gkg", ""},
-		{"no args", nil, 2, "", "usage: gkg"},
-		{"unknown", []string{"bogus"}, 2, "", "unknown command"},
-		{"serve unimplemented", []string{"serve"}, 2, "not implemented", ""},
-		{"ingest unimplemented", []string{"ingest"}, 2, "not implemented", ""},
-		{"eval unimplemented", []string{"eval"}, 2, "not implemented", ""},
-		{"migrate unimplemented", []string{"migrate"}, 2, "not implemented", ""},
-		{"mcp unimplemented", []string{"mcp"}, 2, "not implemented", ""},
+		{"version", []string{"version"}, nil, 0, "gkg v", ""},
+		{"help", []string{"help"}, nil, 0, "usage: gkg", ""},
+		{"help flag", []string{"-h"}, nil, 0, "usage: gkg", ""},
+		{"no args", nil, nil, 2, "", "usage: gkg"},
+		{"unknown", []string{"bogus"}, nil, 2, "", "unknown command"},
+		{"serve unimplemented", []string{"serve"}, nil, 2, "not implemented", ""},
+		{"ingest unimplemented", []string{"ingest"}, nil, 2, "not implemented", ""},
+		{"eval unimplemented", []string{"eval"}, nil, 2, "not implemented", ""},
+		{"mcp unimplemented", []string{"mcp"}, nil, 2, "not implemented", ""},
+		{"migrate bad uri", []string{"migrate"}, map[string]string{"GKG_MEMGRAPH_URI": "://bad"}, 1, "", "gkg migrate:"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
 			var out, errb bytes.Buffer
 			code := run(tc.args, &out, &errb)
 			if code != tc.wantExit {
