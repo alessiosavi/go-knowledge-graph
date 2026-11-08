@@ -1,4 +1,8 @@
-package graph
+// Package graph_test exercises the graph package black-box: constraint
+// assertions and probe DDL use a raw driver connection with independent
+// matching, so a defect in production matching code cannot hide behind the
+// test helpers.
+package graph_test
 
 import (
 	"context"
@@ -10,20 +14,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 )
 
 func TestMethodStoreSkipsWithoutEnv(t *testing.T) {
-	if os.Getenv(testURIEnv) != "" {
+	if os.Getenv(graphtest.URIEnv) != "" {
 		t.Skip("GKG_TEST_MEMGRAPH_URI is set; the skip-path assertion only runs when it is unset")
 	}
-	t.Run("helper", func(t *testing.T) { TestStore(t) })
+	t.Run("helper", func(t *testing.T) { graphtest.Store(t) })
 }
 
 func TestOpenBadURI(t *testing.T) {
 	cfg := config.Config{}
 	cfg.Memgraph.URI = "://not-a-uri"
-	if _, err := Open(context.Background(), cfg); err == nil {
+	if _, err := graph.Open(context.Background(), cfg); err == nil {
 		t.Fatal("Open with malformed URI: want error")
 	}
 }
@@ -33,76 +41,132 @@ func TestOpenUnreachable(t *testing.T) {
 	cfg.Memgraph.URI = "bolt://127.0.0.1:1"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := Open(ctx, cfg); err == nil {
+	if _, err := graph.Open(ctx, cfg); err == nil {
 		t.Fatal("Open against an unreachable server: want error")
 	}
 }
 
 func TestBootstrapIdempotent(t *testing.T) {
-	st := TestStore(t)
+	st := graphtest.Store(t)
+	uri := os.Getenv(graphtest.URIEnv)
 	ctx := context.Background()
 	if err := st.Bootstrap(ctx); err != nil {
 		t.Fatalf("Bootstrap is not idempotent: %v", err)
 	}
-	// Assert against raw SHOW CONSTRAINT INFO output (not the production
-	// helper) so a false positive in the helper cannot make this pass.
 	for _, c := range []struct{ label, prop string }{
 		{"Document", "id"},
 		{"Chunk", "id"},
 		{"Entity", "key"},
 	} {
-		if !rawUniqueConstraintExists(t, st, c.label, c.prop) {
+		if !rawUniqueConstraintExists(t, uri, c.label, c.prop) {
 			t.Errorf("unique constraint on (:%s).%s missing after Bootstrap", c.label, c.prop)
 		}
 	}
 }
 
-// TestConstraintExistsIgnoresNonUniqueTypes pins that a non-unique
-// constraint (EXISTS / data-type) on the same label+property does not fool
-// the existence check into skipping the unique constraint.
-func TestConstraintExistsIgnoresNonUniqueTypes(t *testing.T) {
-	st := TestStore(t)
+// TestBootstrapIgnoresNonUniqueConstraint pins that an EXISTS constraint on
+// the same label+property does not fool Bootstrap into skipping the unique
+// constraint: the observable guarantee (unique constraint present) must
+// survive a pre-existing non-unique constraint.
+func TestBootstrapIgnoresNonUniqueConstraint(t *testing.T) {
+	st := graphtest.Store(t)
+	uri := os.Getenv(graphtest.URIEnv)
 	ctx := context.Background()
-	const label = "ConstraintTypeProbe"
 
-	cleanup := func() {
-		_ = st.runAuto(context.Background(), "DROP CONSTRAINT ON (n:"+label+") ASSERT EXISTS (n.id)", nil)
-		_ = st.runAuto(context.Background(), "DROP CONSTRAINT ON (n:"+label+") ASSERT n.id IS UNIQUE", nil)
+	t.Cleanup(func() {
+		_ = rawExec(uri, "DROP CONSTRAINT ON (n:Document) ASSERT EXISTS (n.id)")
+		if err := st.Bootstrap(context.Background()); err != nil {
+			t.Errorf("restore bootstrap: %v", err)
+		}
+	})
+
+	rawRun(t, uri, "DROP CONSTRAINT ON (n:Document) ASSERT n.id IS UNIQUE")
+	rawRun(t, uri, "CREATE CONSTRAINT ON (n:Document) ASSERT EXISTS (n.id)")
+	if rawUniqueConstraintExists(t, uri, "Document", "id") {
+		t.Fatal("precondition: unique constraint on (Document).id still present")
 	}
-	cleanup()
-	t.Cleanup(cleanup)
 
-	if err := st.runAuto(ctx, "CREATE CONSTRAINT ON (n:"+label+") ASSERT EXISTS (n.id)", nil); err != nil {
-		t.Fatalf("create exists constraint: %v", err)
+	if err := st.Bootstrap(ctx); err != nil {
+		t.Fatalf("Bootstrap with EXISTS constraint present: %v", err)
 	}
+	if !rawUniqueConstraintExists(t, uri, "Document", "id") {
+		t.Error("Bootstrap skipped the unique constraint because an EXISTS constraint matched label+property")
+	}
+}
 
-	ok, err := st.constraintExists(ctx, label, "id")
+func TestMigrateCommand(t *testing.T) {
+	uri := os.Getenv(graphtest.URIEnv)
+	if uri == "" {
+		t.Skipf("set %s to run integration tests", graphtest.URIEnv)
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
-		t.Fatalf("constraintExists: %v", err)
+		t.Fatal(err)
 	}
-	if ok {
-		t.Error("constraintExists reported true for an EXISTS (non-unique) constraint")
+	bin := filepath.Join(t.TempDir(), "gkg")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/gkg")
+	build.Dir = root
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build gkg: %v\n%s", err, out)
 	}
+	for i := 1; i <= 2; i++ {
+		cmd := exec.Command(bin, "migrate")
+		cmd.Dir = t.TempDir()
+		cmd.Env = append(os.Environ(), "GKG_MEMGRAPH_URI="+uri)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("gkg migrate run %d: %v\n%s", i, err, out)
+		}
+	}
+}
 
-	if err := st.runAuto(ctx, "CREATE CONSTRAINT ON (n:"+label+") ASSERT n.id IS UNIQUE", nil); err != nil {
-		t.Fatalf("create unique constraint: %v", err)
-	}
-	ok, err = st.constraintExists(ctx, label, "id")
+// rawExec runs one query over a fresh raw driver connection, treating DDL
+// like any other statement.
+func rawExec(uri, query string) error {
+	drv, err := neo4j.NewDriverWithContext(uri, neo4j.NoAuth())
 	if err != nil {
-		t.Fatalf("constraintExists after unique create: %v", err)
+		return err
 	}
-	if !ok {
-		t.Error("constraintExists reported false for an existing unique constraint")
+	defer func() { _ = drv.Close(context.Background()) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sess := drv.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+	defer func() { _ = sess.Close(ctx) }()
+	res, err := sess.Run(ctx, query, nil)
+	if err != nil {
+		return err
+	}
+	_, err = res.Consume(ctx)
+	return err
+}
+
+func rawRun(t *testing.T, uri, query string) {
+	t.Helper()
+	if err := rawExec(uri, query); err != nil {
+		t.Fatalf("raw exec %q: %v", query, err)
 	}
 }
 
 // rawUniqueConstraintExists queries SHOW CONSTRAINT INFO directly with an
 // independent match, deliberately not sharing production matching code.
-func rawUniqueConstraintExists(t *testing.T, st *Store, label, prop string) bool {
+func rawUniqueConstraintExists(t *testing.T, uri, label, prop string) bool {
 	t.Helper()
-	recs, err := st.runRead(context.Background(), "SHOW CONSTRAINT INFO", nil)
+	drv, err := neo4j.NewDriverWithContext(uri, neo4j.NoAuth())
 	if err != nil {
-		t.Fatalf("SHOW CONSTRAINT INFO: %v", err)
+		t.Fatalf("raw driver: %v", err)
+	}
+	defer func() { _ = drv.Close(context.Background()) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sess := drv.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
+	defer func() { _ = sess.Close(ctx) }()
+	res, err := sess.Run(ctx, "SHOW CONSTRAINT INFO", nil)
+	if err != nil {
+		t.Fatalf("raw SHOW CONSTRAINT INFO: %v", err)
+	}
+	recs, err := res.Collect(ctx)
+	if err != nil {
+		t.Fatalf("raw collect SHOW CONSTRAINT INFO: %v", err)
 	}
 	for _, r := range recs {
 		tv, _ := r.Get("constraint type")
@@ -128,30 +192,4 @@ func rawUniqueConstraintExists(t *testing.T, st *Store, label, prop string) bool
 		}
 	}
 	return false
-}
-
-func TestMigrateCommand(t *testing.T) {
-	uri := os.Getenv(testURIEnv)
-	if uri == "" {
-		t.Skipf("set %s to run integration tests", testURIEnv)
-	}
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(t.TempDir(), "gkg")
-	build := exec.Command("go", "build", "-o", bin, "./cmd/gkg")
-	build.Dir = root
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build gkg: %v\n%s", err, out)
-	}
-	for i := 1; i <= 2; i++ {
-		cmd := exec.Command(bin, "migrate")
-		cmd.Dir = t.TempDir()
-		cmd.Env = append(os.Environ(), "GKG_MEMGRAPH_URI="+uri)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("gkg migrate run %d: %v\n%s", i, err, out)
-		}
-	}
 }

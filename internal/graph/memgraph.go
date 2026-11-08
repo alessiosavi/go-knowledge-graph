@@ -14,7 +14,6 @@ import (
 // Store is the Memgraph-backed graph store.
 type Store struct {
 	driver neo4j.DriverWithContext
-	cfg    config.Config
 }
 
 // Open connects to Memgraph over Bolt and verifies connectivity and
@@ -32,7 +31,7 @@ func Open(ctx context.Context, cfg config.Config) (*Store, error) {
 		_ = drv.Close(ctx)
 		return nil, fmt.Errorf("graph: connect %s: %w", cfg.Memgraph.URI, err)
 	}
-	return &Store{driver: drv, cfg: cfg}, nil
+	return &Store{driver: drv}, nil
 }
 
 // Close releases the driver's resources.

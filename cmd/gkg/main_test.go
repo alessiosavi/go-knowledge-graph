@@ -2,9 +2,28 @@ package main
 
 import (
 	"bytes"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestBinaryDoesNotDependOnTesting pins that production packages never pull
+// the Go test framework into the gkg binary: test support for a package must
+// live in its own package, imported only from _test.go files.
+func TestBinaryDoesNotDependOnTesting(t *testing.T) {
+	cmd := exec.Command("go", "list", "-deps", "./cmd/gkg")
+	cmd.Dir = filepath.Join("..", "..")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -deps ./cmd/gkg: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == "testing" {
+			t.Fatal("the gkg binary transitively imports the testing package; keep test support out of production packages")
+		}
+	}
+}
 
 func TestRunDispatch(t *testing.T) {
 	cases := []struct {
