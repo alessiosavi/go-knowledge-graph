@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -28,13 +29,14 @@ func EntityKey(typ, name string) string {
 }
 
 // normalizeSurface folds a surface form to its canonical shape: NFKC,
-// Unicode case folding, whitespace collapse, edge punctuation stripped.
+// Unicode case folding, whitespace collapse, edge punctuation and spaces
+// stripped. Symbols are part of the surface form (C++ stays c++).
 func normalizeSurface(s string) string {
 	s = norm.NFKC.String(s)
 	s = cases.Fold().String(s)
 	s = strings.Join(strings.Fields(s), " ")
 	return strings.TrimFunc(s, func(r rune) bool {
-		return unicode.IsPunct(r) || unicode.IsSymbol(r) || unicode.IsSpace(r)
+		return unicode.IsPunct(r) || unicode.IsSpace(r)
 	})
 }
 
@@ -127,6 +129,20 @@ func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorV
 			return fmt.Errorf("graph: fact with relation %q references an empty entity key", f.Rel)
 		}
 	}
+	// Fact endpoints must be entities of this extraction call: a key that is
+	// neither upserted here nor known to the call would be dropped by the
+	// MATCH when creating the edge, hiding caller bugs.
+	entKeys := make(map[string]bool, len(ents))
+	for _, e := range ents {
+		if e.Key != "" {
+			entKeys[e.Key] = true
+		}
+	}
+	for _, f := range facts {
+		if !entKeys[f.HeadKey] || !entKeys[f.TailKey] {
+			return fmt.Errorf("graph: fact %q -[%q]-> %q: endpoint not among this chunk's entities", f.HeadKey, f.Rel, f.TailKey)
+		}
+	}
 	facts = dedupeFacts(facts)
 	mentions := mentionEdges(facts)
 
@@ -214,6 +230,39 @@ func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorV
 			return fmt.Errorf("graph: clear facts: %w", err)
 		}
 		if len(entRows) > 0 {
+			// Merge stored aliases with this call's aliases instead of
+			// clobbering them; a call without aliases keeps the stored list.
+			keyList := make([]string, 0, len(entRows))
+			for _, row := range entRows {
+				keyList = append(keyList, row["key"].(string))
+			}
+			res, err := tx.Run(ctx, `UNWIND $keys AS k MATCH (e:Entity {key: k}) RETURN e.key AS key, coalesce(e.aliases, []) AS aliases`,
+				map[string]any{"keys": keyList})
+			if err != nil {
+				return fmt.Errorf("graph: read aliases: %w", err)
+			}
+			aliasRecs, err := res.Collect(ctx)
+			if err != nil {
+				return fmt.Errorf("graph: read aliases: %w", err)
+			}
+			stored := make(map[string][]string, len(aliasRecs))
+			for _, r := range aliasRecs {
+				stored[getString(r, "key")] = getStringSlice(r, "aliases")
+			}
+			for _, row := range entRows {
+				fresh := row["aliases"].([]string)
+				if len(fresh) == 0 {
+					continue
+				}
+				merged := append([]string{}, stored[row["key"].(string)]...)
+				for _, a := range fresh {
+					if !slices.Contains(merged, a) {
+						merged = append(merged, a)
+					}
+				}
+				row["aliases"] = merged
+			}
+
 			if err := txRun(ctx, tx, `
 UNWIND $ents AS ent
 MERGE (e:Entity {key: ent.key})
@@ -232,6 +281,7 @@ WITH a, b, f, {t: f.rel} AS x
 CREATE (a)-[r:x.t]->(b)
 SET r.confidence = f.confidence, r.low_confidence = f.low, r.judge = '',
     r.extractor_version = $ver, r.doc_id = $doc, r.chunk_id = $cid,
+    r.head_key = f.head, r.tail_key = f.tail,
     r.head_start = f.hs, r.head_end = f.he, r.tail_start = f.ts, r.tail_end = f.te`,
 				map[string]any{"facts": factRows, "ver": extractorVersion, "doc": docID, "cid": chunkID}); err != nil {
 				return fmt.Errorf("graph: create facts: %w", err)
@@ -297,7 +347,9 @@ OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
 RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
        coalesce(r.confidence, 0) AS confidence, coalesce(r.judge, '') AS judge,
        coalesce(r.low_confidence, false) AS low, coalesce(r.doc_id, '') AS doc_id,
-       coalesce(r.chunk_id, '') AS chunk_id, coalesce(r.head_start, -1) AS head_start,
+       coalesce(r.chunk_id, '') AS chunk_id,
+       coalesce(r.head_key, '') AS head_key, coalesce(r.tail_key, '') AS tail_key,
+       coalesce(r.head_start, -1) AS head_start, coalesce(r.tail_start, -1) AS tail_start,
        coalesce(c.text, '') AS text`,
 		map[string]any{"key": view.Key, "include": includeLowConfidence})
 	if err != nil {
@@ -306,6 +358,11 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
 	groupCount := make(map[string]int, len(recs))
 	facts := make([]FactView, 0, len(recs))
 	for _, fr := range recs {
+		outgoing := getString(fr, "head_key") == view.Key
+		center := getInt(fr, "tail_start")
+		if outgoing {
+			center = getInt(fr, "head_start")
+		}
 		fv := FactView{
 			Rel: getString(fr, "rel"),
 			Other: EntityRef{
@@ -317,9 +374,10 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
 			Confidence:    getFloat(fr, "confidence"),
 			Judge:         getString(fr, "judge"),
 			LowConfidence: getBool(fr, "low"),
+			Outgoing:      outgoing,
 			DocID:         getString(fr, "doc_id"),
 			ChunkID:       getString(fr, "chunk_id"),
-			Excerpt:       excerptWindow(getString(fr, "text"), getInt(fr, "head_start"), 120),
+			Excerpt:       excerptWindow(getString(fr, "text"), center, 120),
 		}
 		facts = append(facts, fv)
 		groupCount[fv.Rel+"\x00"+fv.Other.Key]++

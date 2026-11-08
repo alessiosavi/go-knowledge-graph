@@ -38,6 +38,13 @@ func TestEntityKeyNormalization(t *testing.T) {
 	if graph.EntityKey("person", "paris") == graph.EntityKey("place", "paris") {
 		t.Error("type must discriminate keys")
 	}
+	// Edge symbols are part of the surface form (C++ is not C).
+	if got := graph.EntityKey("lang", "C++"); got != "lang:c++" {
+		t.Errorf("EntityKey(lang, C++) = %q, want lang:c++", got)
+	}
+	if graph.EntityKey("lang", "C++") == graph.EntityKey("lang", "C") {
+		t.Error("edge symbols must not conflate C++ with C")
+	}
 	id1 := graph.EntityID(graph.EntityKey("person", "Ada"))
 	id2 := graph.EntityID(graph.EntityKey("person", "Ada"))
 	if id1 != id2 || len(id1) != 32 {
@@ -318,6 +325,27 @@ func TestEntityViewGroupsFactsWithExcerpt(t *testing.T) {
 		if f.Excerpt == "" {
 			t.Errorf("fact %+v has no excerpt", f)
 		}
+		if !f.Outgoing {
+			t.Errorf("fact %+v: the queried entity is the head, want Outgoing", f)
+		}
+	}
+
+	// From the tail's view the same facts are incoming and the excerpt
+	// anchors on the tail-side mention.
+	otherView, err := st.EntityView(ctx, other, false)
+	if err != nil {
+		t.Fatalf("EntityView(tail): %v", err)
+	}
+	if len(otherView.Facts) != 2 {
+		t.Fatalf("tail facts = %d, want 2", len(otherView.Facts))
+	}
+	for _, f := range otherView.Facts {
+		if f.Outgoing {
+			t.Errorf("tail-side fact reported Outgoing: %+v", f)
+		}
+		if f.Excerpt == "" {
+			t.Errorf("tail-side fact has no excerpt: %+v", f)
+		}
 	}
 }
 
@@ -493,6 +521,10 @@ func TestUpsertExtractionRejectsInvalidFacts(t *testing.T) {
 		{"relation without alphanumeric content", func(f graph.FactUpsert) graph.FactUpsert { f.Rel = "!!!"; return f }},
 		{"empty head key", func(f graph.FactUpsert) graph.FactUpsert { f.HeadKey = ""; return f }},
 		{"empty tail key", func(f graph.FactUpsert) graph.FactUpsert { f.TailKey = ""; return f }},
+		{"endpoint not among this chunk's entities", func(f graph.FactUpsert) graph.FactUpsert {
+			f.TailKey = graph.EntityKey("work", "never-upserted")
+			return f
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -505,6 +537,54 @@ func TestUpsertExtractionRejectsInvalidFacts(t *testing.T) {
 				t.Errorf("fact edges after rejected call = %d, want 0", edges)
 			}
 		})
+	}
+}
+
+// TestEntityAliasesUnionAcrossChunks pins that aliases contributed by a
+// later extraction are merged with stored ones instead of clobbering them,
+// and that a re-extraction without aliases preserves the stored list.
+func TestEntityAliasesUnionAcrossChunks(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	docID, c0 := entitiesTestDoc(t, st, "chunk one")
+	c1 := docID + "-c1"
+	if err := st.PutChunks(ctx, docID, []graph.Chunk{{Seq: 1, Text: "chunk two", Start: 0, End: 9}}); err != nil {
+		t.Fatalf("PutChunks: %v", err)
+	}
+
+	tag := strconv.FormatInt(time.Now().UnixNano(), 36)
+	e := graph.EntityKey("person", "Alias "+tag)
+	x := graph.EntityKey("work", "Works "+tag)
+	mkEnts := func(aliases ...string) []graph.EntityUpsert {
+		return []graph.EntityUpsert{
+			{Key: e, Name: "Alias " + tag, Type: "person", Aliases: aliases},
+			{Key: x, Name: "Works " + tag, Type: "work"},
+		}
+	}
+	fact := graph.FactUpsert{HeadKey: e, TailKey: x, Rel: "made", Confidence: 0.9,
+		HeadMention: graph.Span{Start: 0, End: 5, Text: "chunk"},
+		TailMention: graph.Span{Start: 6, End: 9, Text: "two"},
+	}
+	if err := st.UpsertExtraction(ctx, docID, c0, "mock:1", mkEnts("Ada A"), []graph.FactUpsert{fact}); err != nil {
+		t.Fatalf("c0: %v", err)
+	}
+	if err := st.UpsertExtraction(ctx, docID, c1, "mock:1", mkEnts("Ada B"), []graph.FactUpsert{fact}); err != nil {
+		t.Fatalf("c1: %v", err)
+	}
+	if err := st.UpsertExtraction(ctx, docID, c0, "mock:2", mkEnts(), []graph.FactUpsert{fact}); err != nil {
+		t.Fatalf("re-extract c0: %v", err)
+	}
+
+	view, err := st.EntityView(ctx, e, false)
+	if err != nil {
+		t.Fatalf("EntityView: %v", err)
+	}
+	set := map[string]bool{}
+	for _, a := range view.Aliases {
+		set[a] = true
+	}
+	if !set["Ada A"] || !set["Ada B"] {
+		t.Errorf("aliases = %v, want the union of Ada A and Ada B", view.Aliases)
 	}
 }
 

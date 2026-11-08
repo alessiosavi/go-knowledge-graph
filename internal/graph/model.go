@@ -116,13 +116,16 @@ type EntityRef struct {
 	Type string
 }
 
-// FactView is one fact edge as seen from a queried entity.
+// FactView is one fact edge as seen from the queried entity: Outgoing
+// reports whether the queried entity is the edge's head, and the excerpt is
+// anchored on the queried entity's own mention.
 type FactView struct {
 	Rel           string
 	Other         EntityRef
 	Confidence    float64
 	Judge         string
 	LowConfidence bool
+	Outgoing      bool
 	DocID         string
 	ChunkID       string
 	Excerpt       string
