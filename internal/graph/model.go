@@ -45,8 +45,9 @@ type Document struct {
 }
 
 // Chunk is a piece of a document's cleaned text with absolute byte offsets.
-// Empty or absent fingerprint lists read back as non-nil empty slices; use
-// len() == 0, not == nil, when testing them.
+// An absent fingerprint property reads back as a nil slice and a stored
+// empty list as a non-nil empty slice; use len() == 0, not == nil, when
+// testing them.
 type Chunk struct {
 	ID               string
 	DocID            string
