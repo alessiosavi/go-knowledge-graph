@@ -1,0 +1,25 @@
+# Local tooling
+.serena/
+.superpowers/
+
+# Secrets
+.env
+*.env.local
+
+# Binaries and build output
+/gkg
+/dist/
+bin/
+
+# Go test artifacts
+*.test
+*.out
+coverage.*
+
+# Python sidecar
+sidecar/.venv/
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
