@@ -19,6 +19,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
+	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 )
 
 // apiToken is a single alphanumeric token unique per run: text-search
@@ -650,6 +651,62 @@ func (s stubEmbedder) Embed(_ context.Context, texts []string) ([][]float64, err
 		out[i] = s.vec
 	}
 	return out, nil
+}
+
+// TestHealthEndpoints pins /healthz and the fail-closed /readyz without a
+// wired readiness probe.
+func TestHealthEndpoints(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Server.APIKey = "sekret"
+	h := apiHandler(t, cfg, nil, nil)
+	// Health probes are auth-exempt.
+	rr := do(t, h, http.MethodGet, "/healthz", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Errorf("healthz = %d, want 200 (and exempt from auth)", rr.Code)
+	}
+	rr = do(t, h, http.MethodGet, "/readyz", nil, nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("readyz without a probe = %d, want 503 (fail-closed)", rr.Code)
+	}
+}
+
+// TestReadyzFailsWhenMemgraphDown opens a live store, closes it (the
+// database is unreachable from this process) and expects 503; while the
+// store answers, readiness is 200.
+func TestReadyzFailsWhenMemgraphDown(t *testing.T) {
+	st := graphtest.Store(t)
+	srv := NewServer(config.Config{}, st, nil)
+	srv.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
+	h := srv.Handler()
+
+	rr := do(t, h, http.MethodGet, "/readyz", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ready = %d, want 200; body %s", rr.Code, rr.Body.String())
+	}
+	if err := st.Close(context.Background()); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	rr = do(t, h, http.MethodGet, "/readyz", nil, nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("memgraph down = %d, want 503", rr.Code)
+	}
+}
+
+// TestMetricsEndpoint pins /metrics serving the wired registry (auth-exempt).
+func TestMetricsEndpoint(t *testing.T) {
+	m := obs.New()
+	m.DocumentStatus("done")
+	cfg := config.Config{}
+	cfg.Server.APIKey = "sekret"
+	srv := NewServer(cfg, nil, nil)
+	srv.SetMetrics(m)
+	rr := do(t, srv.Handler(), http.MethodGet, "/metrics", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("metrics = %d, want 200", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `documents_total{status="done"} 1`) {
+		t.Errorf("scrape missing the counter:\n%s", rr.Body.String())
+	}
 }
 
 // TestSearchEndpointUsesEmbedderWhenEnabled pins the api wiring: with an

@@ -522,6 +522,32 @@ func TestSearchToolUsesEmbedderWhenEnabled(t *testing.T) {
 	t.Errorf("hits = %+v, want the vector-seeded entity %s", out.Hits, graph.EntityID(key))
 }
 
+// TestHTTPDefaultClientThroughAPIServer pins that the api surface's
+// middleware keeps streaming intact: a default go-sdk client (standalone
+// SSE enabled) connects through api.Server.Handler and lists the tools.
+func TestHTTPDefaultClientThroughAPIServer(t *testing.T) {
+	rest := api.NewServer(config.Config{}, nil, nil)
+	rest.Mount("/mcp", NewServer(config.Config{}, nil, nil).HTTPHandler())
+	ts := httptest.NewServer(rest.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client := mcpgo.NewClient(&mcpgo.Implementation{Name: "gkg-sse-test", Version: "v0"}, nil)
+	cs, err := client.Connect(ctx, &mcpgo.StreamableClientTransport{Endpoint: ts.URL + "/mcp", HTTPClient: ts.Client()}, nil)
+	if err != nil {
+		t.Fatalf("connect (default SSE) through the api surface: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+	res, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools through the api surface: %v", err)
+	}
+	if len(res.Tools) != 7 {
+		t.Errorf("tools = %d, want 7", len(res.Tools))
+	}
+}
+
 // TestHTTPHandlerServesTools pins the streamable-HTTP path used by the
 // serve command: a real MCP client over HTTP lists the same seven tools.
 func TestHTTPHandlerServesTools(t *testing.T) {
