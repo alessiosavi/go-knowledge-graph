@@ -16,11 +16,12 @@ import (
 // Result shapes mirror the REST/MCP wire vocabulary so the model, the
 // evidence array and the UI share one language.
 type searchHitOut struct {
-	Kind    string  `json:"kind"`
-	ID      string  `json:"id"`
-	Title   string  `json:"title"`
-	Score   float64 `json:"score"`
-	Snippet string  `json:"snippet"`
+	Kind       string  `json:"kind"`
+	ID         string  `json:"id"`
+	Title      string  `json:"title"`
+	Score      float64 `json:"score"`
+	Snippet    string  `json:"snippet"`
+	DocumentID string  `json:"document_id,omitempty"`
 }
 
 type searchOut struct {
@@ -240,7 +241,7 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 	}
 	out := make([]searchHitOut, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, searchHitOut{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet})
+		out = append(out, searchHitOut{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID})
 	}
 	return searchOut{Hits: out}, nil
 }

@@ -141,11 +141,12 @@ type listDocumentsOut struct {
 }
 
 type searchHit struct {
-	Kind    string  `json:"kind"`
-	ID      string  `json:"id"`
-	Title   string  `json:"title"`
-	Score   float64 `json:"score"`
-	Snippet string  `json:"snippet"`
+	Kind       string  `json:"kind"`
+	ID         string  `json:"id"`
+	Title      string  `json:"title"`
+	Score      float64 `json:"score"`
+	Snippet    string  `json:"snippet"`
+	DocumentID string  `json:"document_id,omitempty"`
 }
 
 type searchOut struct {
@@ -317,7 +318,7 @@ func (s *Server) handleSearch(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	}
 	out := make([]searchHit, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, searchHit{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet})
+		out = append(out, searchHit{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID})
 	}
 	return nil, searchOut{Hits: out}, nil
 }

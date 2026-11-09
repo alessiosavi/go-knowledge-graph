@@ -243,9 +243,15 @@ func TestSearchShapedHits(t *testing.T) {
 	for _, hit := range out.Hits {
 		if hit.Kind == "entity" && hit.ID == graph.EntityID(key) {
 			foundEntity = true
+			if hit.DocumentID != "" {
+				t.Errorf("entity hit carries document_id = %q, want empty", hit.DocumentID)
+			}
 		}
 		if hit.Kind == "chunk" && hit.ID == doc.ID+"-c0" {
 			foundChunk = true
+			if hit.DocumentID != doc.ID {
+				t.Errorf("chunk hit document_id = %q, want %s", hit.DocumentID, doc.ID)
+			}
 			if !strings.Contains(hit.Snippet, tok) {
 				t.Errorf("chunk snippet = %q, want the token inside", hit.Snippet)
 			}

@@ -83,14 +83,23 @@ func TestToolSearch(t *testing.T) {
 		t.Fatalf("search: %v", err)
 	}
 	out := unmarshalResult[searchOut](t, res)
-	found := false
+	found, foundChunk := false, false
 	for _, h := range out.Hits {
 		if h.Kind == "entity" && h.ID == fx.entityID {
 			found = true
+			if h.DocumentID != "" {
+				t.Errorf("entity hit carries document_id = %q, want empty", h.DocumentID)
+			}
+		}
+		if h.Kind == "chunk" && h.ID == fx.docID+"-c0" {
+			foundChunk = true
+			if h.DocumentID != fx.docID {
+				t.Errorf("chunk hit document_id = %q, want %s", h.DocumentID, fx.docID)
+			}
 		}
 	}
-	if !found {
-		t.Errorf("hits = %+v, want the seeded entity %s", out.Hits, fx.entityID)
+	if !found || !foundChunk {
+		t.Errorf("hits = %+v, want the seeded entity %s and chunk %s-c0", out.Hits, fx.entityID, fx.docID)
 	}
 
 	if _, err := s.execTool(context.Background(), "search", json.RawMessage(`{"query":"  "}`)); err == nil {

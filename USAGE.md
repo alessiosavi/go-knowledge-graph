@@ -47,9 +47,12 @@ options:
 - **Built-in Web UI**: open `http://localhost:8080/ui/` (the binary serves
   it — no extra service). Search entities and chunks, open entity cards
   with their evidenced facts, browse documents, submit text or URLs, and
-  see a one-hop neighborhood graph of the selected entity. It is read-only
-  except the explicit ingest box, and asks for the API key once when
-  `GKG_API_KEY` is set.
+  see a one-hop neighborhood graph of the selected entity. Clicking a
+  document row, a chunk hit, or an evidence link opens the **document
+  reader**: the document's stored text rendered as markdown (tables, code,
+  links) by `GET /v1/documents/{id}/content`. It is read-only except the
+  explicit ingest box, and asks for the API key once when `GKG_API_KEY`
+  is set.
 - **gkg REST**: `POST /v1/search` (entity + chunk hits), `GET /v1/entities/{id-or-key}`
   (entity card with evidenced facts), `POST /v1/traverse` (fact-edge walk),
   `POST /v1/cypher` (guarded read-only Cypher).
