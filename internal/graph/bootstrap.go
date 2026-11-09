@@ -27,6 +27,16 @@ var secondaryIndexes = []struct {
 	{"Chunk", []string{"exact_key"}},
 }
 
+// textIndexes are the Tantivy text indexes backing search.Query.
+var textIndexes = []struct {
+	Name  string
+	Label string
+	Props []string
+}{
+	{"entity_text", "Entity", []string{"name", "aliases"}},
+	{"chunk_text", "Chunk", []string{"text"}},
+}
+
 // Bootstrap creates the schema idempotently. Memgraph has no documented
 // IF NOT EXISTS for constraints, so existence is checked first and an
 // already-exists error from a concurrent creator is tolerated.
@@ -47,7 +57,65 @@ func (s *Store) Bootstrap(ctx context.Context) error {
 			return fmt.Errorf("graph: create constraint (%s).%s: %w", c.Label, c.Prop, err)
 		}
 	}
-	return s.ensureIndexes(ctx)
+	if err := s.ensureIndexes(ctx); err != nil {
+		return err
+	}
+	return s.EnsureTextIndexes(ctx)
+}
+
+// EnsureTextIndexes creates the Tantivy text indexes idempotently (also
+// invoked by Bootstrap). Text index DDL is schema manipulation, so it runs
+// in autocommit transactions like the constraints.
+func (s *Store) EnsureTextIndexes(ctx context.Context) error {
+	for _, ix := range textIndexes {
+		ok, err := s.textIndexExists(ctx, ix.Name, ix.Label, ix.Props)
+		if err != nil {
+			return fmt.Errorf("graph: inspect text indexes: %w", err)
+		}
+		if ok {
+			continue
+		}
+		ddl := fmt.Sprintf("CREATE TEXT INDEX %s ON :%s(%s)", ix.Name, ix.Label, strings.Join(ix.Props, ", "))
+		if err := s.runAuto(ctx, ddl, nil); err != nil {
+			if strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			return fmt.Errorf("graph: create text index %s: %w", ix.Name, err)
+		}
+	}
+	return nil
+}
+
+// textIndexExists reports whether a text index *with the expected name*
+// over exactly props exists on the label, per SHOW INDEX INFO (the name
+// rides inside the index-type value: "label_text (name: entity_text)").
+func (s *Store) textIndexExists(ctx context.Context, name, label string, props []string) (bool, error) {
+	recs, err := s.runRead(ctx, "SHOW INDEX INFO", nil)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range recs {
+		typ, _ := r.Get("index type")
+		typStr := fmt.Sprint(typ)
+		if !strings.Contains(strings.ToLower(typStr), "text") {
+			continue
+		}
+		if !strings.Contains(typStr, "name: "+name) {
+			continue
+		}
+		l, _ := r.Get("label")
+		if fmt.Sprint(l) != label {
+			continue
+		}
+		p, ok := r.Get("property")
+		if !ok {
+			p, _ = r.Get("properties")
+		}
+		if propsMatch(p, props) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ensureIndexes creates the secondary indexes idempotently.

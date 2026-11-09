@@ -406,6 +406,19 @@ DELETE r`,
 	})
 }
 
+// SetEntityAliases replaces an entity's alias list (test/support helper
+// alongside the extraction path).
+func (s *Store) SetEntityAliases(ctx context.Context, key string, aliases []string) error {
+	err := s.runWrite(ctx, `
+MATCH (e:Entity {key: $key})
+SET e.aliases = $aliases`,
+		map[string]any{"key": key, "aliases": aliases})
+	if err != nil {
+		return fmt.Errorf("graph: set entity aliases: %w", err)
+	}
+	return nil
+}
+
 // EntityView returns an entity with its aliases, mention count and facts,
 // grouped by (relation, other entity) with larger groups first;
 // low-confidence facts are excluded unless includeLowConfidence is set.
@@ -471,7 +484,7 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
 			Outgoing:      outgoing,
 			DocID:         getString(fr, "doc_id"),
 			ChunkID:       getString(fr, "chunk_id"),
-			Excerpt:       excerptWindow(getString(fr, "text"), center, 120),
+			Excerpt:       ExcerptWindow(getString(fr, "text"), center, 120),
 		}
 		facts = append(facts, fv)
 		groupCount[fv.Rel+"\x00"+fv.Other.Key]++
@@ -497,9 +510,10 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
 	return view, nil
 }
 
-// excerptWindow returns up to width bytes of text centred near byte offset
-// center, adjusted to UTF-8 rune boundaries.
-func excerptWindow(text string, center, width int) string {
+// ExcerptWindow returns up to width bytes of text centred near byte offset
+// center, adjusted to UTF-8 rune boundaries. Exported for the search
+// package's snippets.
+func ExcerptWindow(text string, center, width int) string {
 	if text == "" {
 		return ""
 	}
