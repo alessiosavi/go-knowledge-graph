@@ -12,6 +12,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 )
 
 const version = "v0.0.0-dev"
@@ -34,6 +35,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "migrate":
 		return runMigrate(stdout, stderr)
+	case "pdf-extract":
+		// Hidden subcommand: the isolated PDF parser (parent kills on
+		// timeout; see ingest.PDFToText).
+		return ingest.PDFExtract(os.Stdin, stdout, stderr)
 	case "serve", "ingest", "eval", "mcp":
 		fmt.Fprintln(stdout, "not implemented")
 		return 2
