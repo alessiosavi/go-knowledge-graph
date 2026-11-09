@@ -316,7 +316,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if limit > 100 {
 		limit = 100
 	}
-	hits, err := search.Query(r.Context(), s.store, nil, req.Query, kind, limit)
+	hits, err := search.Query(r.Context(), s.store, s.emb, req.Query, kind, limit)
 	if err != nil {
 		writeStoreError(w, err, "search")
 		return

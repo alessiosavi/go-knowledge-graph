@@ -104,14 +104,24 @@ func entityHits(ctx context.Context, st *graph.Store, emb Embedder, q string, li
 	legs := [][]string{textLeg}
 	if emb != nil {
 		if vecLeg, ok := vectorLeg(ctx, st, emb, q, limit); ok {
-			legs = append(legs, vecLeg)
+			// A vector entry whose entity no longer resolves cannot be
+			// rendered as a hit: drop it rather than emitting an id-only
+			// ghost. Legacy stale entries usually fail the CALL itself
+			// (Memgraph materializes deleted nodes), which degrades the
+			// whole leg to text-only; this filter covers the remaining
+			// delete race and lenient providers.
+			kept := make([]string, 0, len(vecLeg))
 			for _, id := range vecLeg {
 				if _, known := rows[id]; !known {
 					if r, err := st.EntityRef(ctx, id); err == nil {
 						rows[id] = entityRow{id: r.ID, name: r.Name, typ: r.Type}
+					} else {
+						continue
 					}
 				}
+				kept = append(kept, id)
 			}
+			legs = append(legs, kept)
 		}
 	}
 

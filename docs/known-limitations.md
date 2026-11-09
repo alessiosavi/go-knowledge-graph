@@ -61,6 +61,27 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
   LIMIT that is not a plain integer or `$cypher_rows` is rejected because
   an expression (`LIMIT 2 * 1000`) would exceed the cap.
 
+## Entity embeddings (optional)
+
+- With `Embedder.Enabled` the pipeline embeds each ingested document's
+  distinct entity names after merge (batches of ≤64) and ensures the
+  `entity_vec` vector index (cosine, capacity 10k). With `Embedder.Dim > 0`
+  the dimension is requested from the provider (`dimensions` parameter) and
+  validated on every response; `Dim = 0` accepts the provider's native
+  dimension. Embedder failures are logged and never fail a document:
+  entities simply stay unembedded.
+- The index dimension is fixed at creation: pointing embeddings at a
+  different model dimension later fails with a clear dimension-mismatch
+  error instead of silently skipping vectors.
+- Embedding runs after merge like the judge: recovery of a `merged` /
+  `verifying` document skips it, and an unchanged re-submit is a no-op —
+  use `force` to re-embed such documents.
+- Entity deletes clear the `embedding` property first so the index drops
+  the entry. Out-of-band deletes can leave stale index entries that make
+  vector searches error until Memgraph reclaims them (observed within about
+  a minute); searches degrade to text-only meanwhile (never dropping text
+  recall) — rebuild the index after such maintenance.
+
 ## Text search and aliases
 
 - Memgraph text indexes (Tantivy) **do not index list properties**, so the

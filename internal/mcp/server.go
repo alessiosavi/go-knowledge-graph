@@ -27,6 +27,7 @@ type Server struct {
 	cfg   config.Config
 	store *graph.Store
 	in    api.Submitter
+	emb   search.Embedder
 	sdk   *mcpgo.Server
 }
 
@@ -58,6 +59,12 @@ func (s *Server) RunStdio(ctx context.Context) error {
 // mount it behind the REST surface's bearer policy.
 func (s *Server) HTTPHandler() http.Handler {
 	return mcpgo.NewStreamableHTTPHandler(func(*http.Request) *mcpgo.Server { return s.sdk }, nil)
+}
+
+// SetEmbedder attaches the optional embeddings provider used by the search
+// tool's entity vector leg; nil (the default) keeps search text-only.
+func (s *Server) SetEmbedder(emb search.Embedder) {
+	s.emb = emb
 }
 
 // Tool input shapes. Optional fields carry omitempty so the inferred JSON
@@ -219,7 +226,7 @@ func registerTools(s *Server, sdk *mcpgo.Server) {
 	}, s.handleStatus)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "search",
-		Description: "Full-text search over entity names and chunk text, with scores and snippets.",
+		Description: "Full-text search over entity names and chunk text, with scores and snippets; entity hits fuse embeddings when the embedder is enabled.",
 	}, s.handleSearch)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "get_entity",
@@ -304,7 +311,7 @@ func (s *Server) handleSearch(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	if limit > searchMaxLimit {
 		limit = searchMaxLimit
 	}
-	hits, err := search.Query(ctx, s.store, nil, args.Query, kind, limit)
+	hits, err := search.Query(ctx, s.store, s.emb, args.Query, kind, limit)
 	if err != nil {
 		return nil, searchOut{}, err
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
+	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
 // Submitter accepts ingestion submissions; *ingest.Pipeline implements it.
@@ -32,6 +33,7 @@ type Server struct {
 	cfg   config.Config
 	store *graph.Store
 	in    Submitter
+	emb   search.Embedder
 	extra []mount
 }
 
@@ -52,6 +54,12 @@ func NewServer(cfg config.Config, store *graph.Store, in Submitter) *Server {
 // path. Call it before Handler().
 func (s *Server) Mount(pattern string, h http.Handler) {
 	s.extra = append(s.extra, mount{pattern: pattern, handler: h})
+}
+
+// SetEmbedder attaches the optional embeddings provider used by the search
+// endpoint's entity vector leg; nil (the default) keeps search text-only.
+func (s *Server) SetEmbedder(emb search.Embedder) {
+	s.emb = emb
 }
 
 // Handler returns the routed surface with bearer authentication applied.

@@ -219,3 +219,45 @@ func TestRRFHelper(t *testing.T) {
 		t.Errorf("fusion = %v, want b (top of leg 2 + second of leg 1) ahead of a", fused)
 	}
 }
+
+// vecEmbedder returns a fixed vector for every input (vector-leg stub).
+type vecEmbedder struct{ vec []float64 }
+
+func (v vecEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
+	out := make([][]float64, len(texts))
+	for i := range texts {
+		out[i] = v.vec
+	}
+	return out, nil
+}
+
+// TestSearchUsesEmbedderWhenEnabled pins the vector leg: with embeddings
+// enabled and no text match, an entity surfaces purely through the vector
+// index; the query vector equals the stored one, so the distance is zero.
+func TestSearchUsesEmbedderWhenEnabled(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	const dim = 768
+	if err := st.EnsureVectorIndex(ctx, dim); err != nil {
+		t.Fatalf("EnsureVectorIndex: %v", err)
+	}
+	fx := newSearchFixture(t)
+	vec := graphtest.Vector(fx.token, dim)
+	if err := st.SetEntityEmbedding(ctx, fx.entityID, vec); err != nil {
+		t.Fatalf("SetEntityEmbedding: %v", err)
+	}
+
+	hits, err := search.Query(ctx, st, vecEmbedder{vec}, uniqueToken(t), "entity", 10)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	found := false
+	for _, h := range hits {
+		if h.ID == fx.entityID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("hits = %+v, want the vector-seeded entity %s", hits, fx.entityID)
+	}
+}

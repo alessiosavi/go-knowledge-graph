@@ -47,9 +47,14 @@ func (f *fakeSubmitter) Submit(_ context.Context, in ingest.Input) (ingest.Resul
 // transports; tests close both ends via cleanup.
 func connectInMemory(t *testing.T, cfg config.Config, st *graph.Store, sub api.Submitter) *mcpgo.ClientSession {
 	t.Helper()
+	return connectServer(t, NewServer(cfg, st, sub))
+}
+
+// connectServer wires a client session to a prepared server.
+func connectServer(t *testing.T, srv *Server) *mcpgo.ClientSession {
+	t.Helper()
 	ctx := context.Background()
 	serverTransport, clientTransport := mcpgo.NewInMemoryTransports()
-	srv := NewServer(cfg, st, sub)
 	ss, err := srv.MCP().Connect(ctx, serverTransport, nil)
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
@@ -101,6 +106,17 @@ func toolErrorText(res *mcpgo.CallToolResult) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// stubEmbedder returns a fixed vector for every input (vector-leg stub).
+type stubEmbedder struct{ vec []float64 }
+
+func (s stubEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
+	out := make([][]float64, len(texts))
+	for i := range texts {
+		out[i] = s.vec
+	}
+	return out, nil
 }
 
 func TestToolsListExactNames(t *testing.T) {
@@ -462,6 +478,48 @@ func TestCypherToolAllowsRead(t *testing.T) {
 	if !res.IsError || !strings.Contains(toolErrorText(res), "cypher_rows") {
 		t.Errorf("oversized LIMIT = %+v (%q), want the cap rejection", res, toolErrorText(res))
 	}
+}
+
+// TestSearchToolUsesEmbedderWhenEnabled pins the mcp wiring: with an
+// embedder set and a query that matches no name, a vector-seeded entity
+// surfaces through the tool.
+func TestSearchToolUsesEmbedderWhenEnabled(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	const dim = 768
+	if err := st.EnsureVectorIndex(ctx, dim); err != nil {
+		t.Fatalf("EnsureVectorIndex: %v", err)
+	}
+	doc, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: mcpSource(t), Hash: "hash-mcp-embed"})
+	if err != nil {
+		t.Fatalf("UpsertDocument: %v", err)
+	}
+	tok := mcpToken(t)
+	text := "The " + tok + " guidance."
+	if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
+		t.Fatalf("PutChunks: %v", err)
+	}
+	key := graph.EntityKey("technology", tok)
+	if err := st.UpsertExtraction(ctx, doc.ID, doc.ID+"-c0", "mock:1",
+		[]graph.EntityUpsert{{Key: key, Name: tok, Type: "technology"}}, nil); err != nil {
+		t.Fatalf("UpsertExtraction: %v", err)
+	}
+	vec := graphtest.Vector(tok, dim)
+	if err := st.SetEntityEmbedding(ctx, graph.EntityID(key), vec); err != nil {
+		t.Fatalf("SetEntityEmbedding: %v", err)
+	}
+
+	srv := NewServer(config.Config{}, st, nil)
+	srv.SetEmbedder(stubEmbedder{vec})
+	cs := connectServer(t, srv)
+	res := callTool(t, cs, "search", map[string]any{"query": mcpToken(t), "kind": "entity"})
+	out := structured[searchOut](t, res)
+	for _, hit := range out.Hits {
+		if hit.ID == graph.EntityID(key) {
+			return
+		}
+	}
+	t.Errorf("hits = %+v, want the vector-seeded entity %s", out.Hits, graph.EntityID(key))
 }
 
 // TestHTTPHandlerServesTools pins the streamable-HTTP path used by the

@@ -161,7 +161,7 @@ paths:
   /v1/search:
     post:
       summary: Search entities, chunks or both
-      description: Entities and chunks are searched through the Memgraph text indexes; entity-embedding fusion is not wired into the REST surface in v0.
+      description: Entities and chunks are searched through the Memgraph text indexes; when the embedder is enabled, entity hits fuse the text leg with entity-embedding vector hits (text recall is never dropped). Chunks are text-only in v0.
       requestBody:
         required: true
         content:

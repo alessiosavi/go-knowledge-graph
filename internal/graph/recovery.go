@@ -35,7 +35,9 @@ ORDER BY d.updated_at ASC`,
 }
 
 // GC prunes entities with no relationships left (no mentions, no facts).
-// It is serialized with the other mutation paths (Store.mu).
+// It is serialized with the other mutation paths (Store.mu). Embeddings are
+// cleared before the delete so the vector index drops their entries (an
+// entry pointing at a deleted node poisons later vector searches).
 func (s *Store) GC(ctx context.Context) error {
 	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
 		return txRun(ctx, tx, `
@@ -43,6 +45,7 @@ MATCH (e:Entity)
 OPTIONAL MATCH (e)-[r]-()
 WITH e, count(r) AS rels
 WHERE rels = 0
+SET e.embedding = null
 DETACH DELETE e`, nil)
 	})
 }
@@ -58,6 +61,7 @@ MATCH (e:Entity {key: k})
 OPTIONAL MATCH (e)-[r]-()
 WITH e, count(r) AS rels
 WHERE rels = 0
+SET e.embedding = null
 DETACH DELETE e`,
 		map[string]any{"keys": keys}); err != nil {
 		return fmt.Errorf("graph: gc entities: %w", err)

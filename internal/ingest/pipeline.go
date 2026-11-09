@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -97,6 +98,15 @@ type submission struct {
 	labels string
 }
 
+// Embedder embeds batch texts (structurally satisfied by embed.Provider);
+// nil means embeddings are disabled.
+type Embedder interface {
+	Embed(ctx context.Context, texts []string) ([][]float64, error)
+}
+
+// embedBatch caps one embedding call.
+const embedBatch = 64
+
 // Pipeline runs one document submission end to end.
 type Pipeline struct {
 	cfg   config.Config
@@ -113,6 +123,7 @@ type Pipeline struct {
 	procLocks sync.Map // docID → *sync.Mutex, serializes Process per document
 
 	judge FactJudge
+	emb   Embedder
 }
 
 // NewPipeline wires the pipeline. ix may be nil (near-duplicate detection
@@ -304,6 +315,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		}
 		version := p.prov.Version()
 		var judgeCandidates []judgeCandidate
+		embedNames := make(map[string]string)
 		for _, c := range chunks {
 			if c.DuplicateOf != "" {
 				// A duplicate skips extraction and must not keep facts from
@@ -317,6 +329,11 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 			ents, facts, audits := p.buildExtraction(doc, c, r, version)
 			if err := p.store.UpsertExtraction(ctx, docID, c.ID, version, ents, facts); err != nil {
 				return fail("merge", err)
+			}
+			for _, e := range ents {
+				if e.Key != "" && e.Name != "" {
+					embedNames[graph.EntityID(e.Key)] = e.Name
+				}
 			}
 			for _, a := range audits {
 				if err := p.store.WriteFactAudit(ctx, a); err != nil {
@@ -338,6 +355,9 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 				return fail("status", err)
 			}
 			p.verifyFacts(ctx, doc, judgeCandidates, version)
+		}
+		if p.emb != nil && len(embedNames) > 0 {
+			p.embedEntities(ctx, embedNames)
 		}
 		st = graph.StatusMerged
 	}
@@ -373,6 +393,13 @@ func (p *Pipeline) forget(docID string) {
 // Additive to the constructor; attach it before starting workers.
 func (p *Pipeline) SetJudge(j FactJudge) {
 	p.judge = j
+}
+
+// SetEmbedder attaches the optional embeddings provider; without one the
+// pipeline never touches vectors (text-only deployments stay as before).
+// Additive to the constructor; attach it before starting workers.
+func (p *Pipeline) SetEmbedder(e Embedder) {
+	p.emb = e
 }
 
 type judgeCandidate struct {
@@ -441,6 +468,61 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 			}
 		default:
 			slog.Warn("ingest: judge returned an unknown verdict status", "doc", doc.ID, "status", verdict.Status)
+		}
+	}
+}
+
+// embedEntities stores embeddings for the document's distinct entity names,
+// one embedder call per ≤embedBatch names and one batched write per call,
+// and ensures the vector index on the first successful batch. Any failure
+// is logged and processing continues: embeddings are additive and never
+// gate the document.
+func (p *Pipeline) embedEntities(ctx context.Context, candidates map[string]string) {
+	byName := make(map[string][]string, len(candidates))
+	for id, name := range candidates {
+		byName[name] = append(byName[name], id)
+	}
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	indexEnsured := false
+	for start := 0; start < len(names); start += embedBatch {
+		end := min(start+embedBatch, len(names))
+		batch := names[start:end]
+		vecs, err := p.emb.Embed(ctx, batch)
+		if err != nil {
+			slog.Warn("ingest: embedding failed, entities left unembedded", "names", len(batch), "err", err)
+			return
+		}
+		if len(vecs) != len(batch) || len(vecs[0]) == 0 {
+			slog.Warn("ingest: embedder returned an unusable batch", "names", len(batch), "vectors", len(vecs))
+			return
+		}
+		if !indexEnsured {
+			if err := p.store.EnsureVectorIndex(ctx, len(vecs[0])); err != nil {
+				slog.Warn("ingest: vector index unavailable, entities left unembedded", "err", err)
+				return
+			}
+			indexEnsured = true
+		}
+		ids := make([]string, 0, len(batch))
+		rowsVecs := make([][]float64, 0, len(batch))
+		for i, name := range batch {
+			for _, id := range byName[name] {
+				ids = append(ids, id)
+				rowsVecs = append(rowsVecs, vecs[i])
+			}
+		}
+		missing, err := p.store.SetEntityEmbeddings(ctx, ids, rowsVecs)
+		if err != nil {
+			slog.Warn("ingest: could not store embeddings", "entities", len(ids), "err", err)
+			return
+		}
+		if missing > 0 {
+			slog.Warn("ingest: some entities vanished before their embedding write", "missing", missing)
 		}
 	}
 }

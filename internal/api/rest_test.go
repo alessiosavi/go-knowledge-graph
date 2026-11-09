@@ -262,7 +262,7 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 
 	// The status filter must run before the row limit: a newer failed
-	// document must not hide an older received one behind an empty page.
+	// document must not hide older received ones behind an empty page.
 	res2, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: apiSource(t) + "-failed", Hash: "hash-api-status-2"})
 	if err != nil {
 		t.Fatalf("UpsertDocument: %v", err)
@@ -275,14 +275,12 @@ func TestStatusEndpoint(t *testing.T) {
 		t.Fatalf("filtered page: code = %d, body %s", rr.Code, rr.Body.String())
 	}
 	page := decode[documentsResponse](t, rr)
-	foundPage := false
-	for _, d := range page.Documents {
-		if d.ID == res.ID {
-			foundPage = true
-		}
-	}
-	if !foundPage {
-		t.Errorf("filtered page = %+v, want %s despite the newer failed document", page.Documents, res.ID)
+	// The newest received document is ours under the suite's serialized
+	// topology; under a parallel test run another writer's fresher
+	// document is acceptable — the regression this pins is the empty
+	// page the filter-after-limit bug produced.
+	if len(page.Documents) != 1 || page.Documents[0].Status != "received" {
+		t.Errorf("filtered page = %+v, want one received document, not an empty page", page.Documents)
 	}
 
 	// The unfiltered list carries a server-side default cap.
@@ -641,6 +639,61 @@ func TestCypherEndpointTimeoutMapsTo504(t *testing.T) {
 	if body := decode[errorBody](t, rr); body.Error != "query_timeout" {
 		t.Errorf("error = %q, want query_timeout", body.Error)
 	}
+}
+
+// stubEmbedder returns a fixed vector for every input (vector-leg stub).
+type stubEmbedder struct{ vec []float64 }
+
+func (s stubEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
+	out := make([][]float64, len(texts))
+	for i := range texts {
+		out[i] = s.vec
+	}
+	return out, nil
+}
+
+// TestSearchEndpointUsesEmbedderWhenEnabled pins the api wiring: with an
+// embedder set and a query that matches no name, a vector-seeded entity
+// still surfaces through the endpoint.
+func TestSearchEndpointUsesEmbedderWhenEnabled(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	const dim = 768
+	if err := st.EnsureVectorIndex(ctx, dim); err != nil {
+		t.Fatalf("EnsureVectorIndex: %v", err)
+	}
+	res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: apiSource(t), Hash: "hash-api-embed"})
+	if err != nil {
+		t.Fatalf("UpsertDocument: %v", err)
+	}
+	tok := apiToken(t)
+	text := "The " + tok + " guidance."
+	if err := st.PutChunks(ctx, res.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
+		t.Fatalf("PutChunks: %v", err)
+	}
+	key := graph.EntityKey("technology", tok)
+	if err := st.UpsertExtraction(ctx, res.ID, res.ID+"-c0", "mock:1",
+		[]graph.EntityUpsert{{Key: key, Name: tok, Type: "technology"}}, nil); err != nil {
+		t.Fatalf("UpsertExtraction: %v", err)
+	}
+	vec := graphtest.Vector(tok, dim)
+	if err := st.SetEntityEmbedding(ctx, graph.EntityID(key), vec); err != nil {
+		t.Fatalf("SetEntityEmbedding: %v", err)
+	}
+
+	srv := NewServer(config.Config{}, st, nil)
+	srv.SetEmbedder(stubEmbedder{vec})
+	rr := doJSON(t, srv.Handler(), http.MethodPost, "/v1/search", fmt.Sprintf(`{"query":%q,"kind":"entity"}`, apiToken(t)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d, body %s", rr.Code, rr.Body.String())
+	}
+	got := decode[searchResponse](t, rr)
+	for _, h := range got.Hits {
+		if h.ID == graph.EntityID(key) {
+			return
+		}
+	}
+	t.Errorf("hits = %+v, want the vector-seeded entity %s", got.Hits, graph.EntityID(key))
 }
 
 func TestBodyCaps(t *testing.T) {
