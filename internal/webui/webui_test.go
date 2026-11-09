@@ -35,6 +35,9 @@ func TestHandlerServesIndex(t *testing.T) {
 	if body := rr.Body.String(); !strings.Contains(body, `id="reader"`) {
 		t.Errorf("GET /: the body misses the reader panel marker")
 	}
+	if body := rr.Body.String(); !strings.Contains(body, `id="ingest-file"`) {
+		t.Errorf("GET /: the body misses the file-upload input marker")
+	}
 }
 
 // TestHandlerServesAssets pins the content types of the static assets.
