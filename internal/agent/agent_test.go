@@ -142,30 +142,45 @@ func TestAskStopsAtMaxSteps(t *testing.T) {
 	}
 }
 
-func TestAskCountsEachToolCallAgainstTheBudget(t *testing.T) {
+func TestAskCapsToolCallsPerStep(t *testing.T) {
 	fx := newAgentFixture(t)
-	stub := newLLMStub(t, toolCallsReply(
-		scriptedCall{"c1", "search", fmt.Sprintf(`{"query":%q}`, fx.token)},
-		scriptedCall{"c2", "search", fmt.Sprintf(`{"query":%q}`, fx.token)},
-		scriptedCall{"c3", "search", fmt.Sprintf(`{"query":%q}`, fx.token)},
-	))
-	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.MaxSteps = 2 })
+	calls := make([]scriptedCall, 0, 10)
+	for i := 0; i < 10; i++ {
+		calls = append(calls, scriptedCall{
+			id: fmt.Sprintf("c%d", i), name: "search",
+			args: fmt.Sprintf(`{"query":%q}`, fx.token),
+		})
+	}
+	stub := newLLMStub(t, toolCallsReply(calls...))
+	s := askServer(t, fx, stub.srv.URL, nil)
 
-	resp, err := s.ask(context.Background(), "three calls, two allowed")
+	resp, err := s.ask(context.Background(), "ten calls in one turn")
 	if err != nil {
 		t.Fatalf("ask: %v", err)
 	}
-	if resp.Steps != 2 {
-		t.Errorf("Steps = %d, want 2", resp.Steps)
+	if len(resp.Evidence) != 10 {
+		t.Fatalf("evidence = %d, want one entry per requested call (10)", len(resp.Evidence))
 	}
-	if len(resp.Evidence) != 3 {
-		t.Fatalf("evidence = %d, want one entry per requested call (3)", len(resp.Evidence))
+	skipped := 0
+	for _, ev := range resp.Evidence {
+		if strings.Contains(string(ev.Result), "budget") {
+			skipped++
+		}
 	}
-	if !strings.Contains(string(resp.Evidence[2].Result), "budget") {
-		t.Errorf("third evidence = %s, want the budget-exhausted marker", resp.Evidence[2].Result)
+	if skipped != 2 {
+		t.Errorf("skipped = %d, want 2 (calls beyond the per-step cap)", skipped)
 	}
-	if len(stub.requests) != 1 {
-		t.Errorf("chat calls = %d, want 1 (the round consumed the budget)", len(stub.requests))
+	if !strings.Contains(string(resp.Evidence[0].Result), fx.entityID) {
+		t.Errorf("first evidence = %s, want the executed live search", resp.Evidence[0].Result)
+	}
+	if resp.Steps != 1 {
+		t.Errorf("Steps = %d, want 1 (one model turn)", resp.Steps)
+	}
+	if resp.Answer != "ok" {
+		t.Errorf("Answer = %q, want the second turn's answer", resp.Answer)
+	}
+	if len(stub.requests) != 2 {
+		t.Errorf("chat calls = %d, want 2 (the turn, then the answer)", len(stub.requests))
 	}
 }
 

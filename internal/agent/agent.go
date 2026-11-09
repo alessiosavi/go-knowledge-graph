@@ -20,10 +20,16 @@ import (
 )
 
 const (
-	// defaultMaxSteps is the tool-call budget when none is configured;
-	// hardMaxSteps caps whatever configuration asks for.
+	// defaultMaxSteps is the tool-turn budget when none is configured;
+	// hardMaxSteps caps whatever configuration asks for. One step is one
+	// model turn that requests tools — the same question routinely needs
+	// several tool calls per turn.
 	defaultMaxSteps = 6
 	hardMaxSteps    = 12
+	// maxCallsPerStep bounds the tool calls executed for a single model
+	// turn; calls beyond it get a budget-exhausted tool result so the
+	// message pairing stays valid.
+	maxCallsPerStep = 8
 	// defaultTimeout bounds one ask when none is configured.
 	defaultTimeout = 60 * time.Second
 )
@@ -121,9 +127,10 @@ func rawOrNull(raw []byte) json.RawMessage {
 }
 
 // ask drives the bounded tool loop: chat with tools, execute the requested
-// read-only calls (each one consumes the budget), then answer when the model
-// stops asking. A provider that cannot take the tools parameter falls back
-// to the constrained JSON plan within the same request.
+// read-only calls (one step is one model turn that requests tools), then
+// answer when the model stops asking. A provider that cannot take the tools
+// parameter falls back to the constrained JSON plan within the same
+// request.
 func (s *Server) ask(ctx context.Context, question string) (askResponse, error) {
 	msgs := []chatMessage{
 		{Role: "system", Content: systemPrompt},
@@ -149,14 +156,16 @@ func (s *Server) ask(ctx context.Context, question string) (askResponse, error) 
 			return askResponse{Answer: answer, Evidence: ev, Steps: steps}, nil
 		}
 		msgs = append(msgs, chatMessage{Role: "assistant", Content: reply.Content, ToolCalls: reply.ToolCalls})
+		steps++
+		executed := 0
 		for _, tc := range reply.ToolCalls {
 			var result any
 			var err error
-			if steps >= s.maxSteps {
-				err = errors.New("tool-call budget exhausted for this ask")
+			if executed >= maxCallsPerStep {
+				err = errors.New("tool-call budget for this step exceeded")
 			} else {
 				result, err = s.execTool(ctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
-				steps++
+				executed++
 			}
 			raw, encErr := json.Marshal(toolPayload(result, err))
 			if encErr != nil {
@@ -223,15 +232,15 @@ func (s *Server) askWithPlan(ctx context.Context, question string) (askResponse,
 		return askResponse{Answer: answer, Evidence: ev, Steps: 0}, nil
 	}
 	results := make([]map[string]any, 0, len(plan.ToolCalls))
-	steps := 0
+	executed := 0
 	for _, tc := range plan.ToolCalls {
 		var result any
 		var callErr error
-		if steps >= s.maxSteps {
-			callErr = errors.New("tool-call budget exhausted for this ask")
+		if executed >= maxCallsPerStep {
+			callErr = errors.New("tool-call budget for this step exceeded")
 		} else {
 			result, callErr = s.execTool(ctx, tc.Name, tc.Arguments)
-			steps++
+			executed++
 		}
 		payload := toolPayload(result, callErr)
 		raw, encErr := json.Marshal(payload)
@@ -258,5 +267,5 @@ func (s *Server) askWithPlan(ctx context.Context, question string) (askResponse,
 	if answer == "" {
 		answer = noAnswerText
 	}
-	return askResponse{Answer: answer, Evidence: ev, Steps: steps}, nil
+	return askResponse{Answer: answer, Evidence: ev, Steps: 1}, nil
 }
