@@ -55,6 +55,11 @@ type statusResponse struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// deleteResponse reports how many document versions a DELETE removed.
+type deleteResponse struct {
+	Deleted int `json:"deleted"`
+}
+
 type hitDTO struct {
 	Kind       string  `json:"kind"`
 	ID         string  `json:"id"`
@@ -281,6 +286,30 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, statusResponse{
 		ID: doc.ID, Status: string(doc.Status), Error: doc.Error, UpdatedAt: doc.UpdatedAt,
 	})
+}
+
+// handleDocumentDelete removes one document version, or with ?chain=1 the
+// whole version chain of its source identity, in one transaction. The
+// response reports how many versions were deleted.
+func (s *Server) handleDocumentDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.storeOr503(w) {
+		return
+	}
+	id := r.PathValue("id")
+	if formBool(r.URL.Query().Get("chain")) {
+		n, err := s.store.DeleteChain(r.Context(), id)
+		if err != nil {
+			writeStoreError(w, err, "delete chain")
+			return
+		}
+		writeJSON(w, http.StatusOK, deleteResponse{Deleted: n})
+		return
+	}
+	if err := s.store.DeleteDocument(r.Context(), id); err != nil {
+		writeStoreError(w, err, "delete document")
+		return
+	}
+	writeJSON(w, http.StatusOK, deleteResponse{Deleted: 1})
 }
 
 // handleSearch runs a text search over entities, chunks or both.
