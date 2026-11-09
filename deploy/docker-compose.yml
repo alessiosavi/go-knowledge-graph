@@ -57,6 +57,10 @@ services:
       # 400 every furls call).
       GKG_EMBEDDER_MODEL: ${GKG_EMBEDDER_MODEL:-}
       GKG_EMBEDDER_DIM: ${GKG_EMBEDDER_DIM:-768}
+      GKG_CONVERTER_MODE: ${GKG_CONVERTER_MODE:-off}
+      GKG_CONVERTER_URL: ${GKG_CONVERTER_URL:-http://docling:5001}
+      GKG_CONVERTER_API_KEY: ${DOCLING_API_KEY:-}
+      GKG_CONVERTER_TIMEOUT_S: ${GKG_CONVERTER_TIMEOUT_S:-300}
       GKG_JUDGE_MODE: ${GKG_JUDGE_MODE:-off}
       GKG_JUDGE_BASE_URL: ${GKG_JUDGE_BASE_URL:-https://api.openai.com/v1}
       GKG_JUDGE_API_KEY: ${GKG_JUDGE_API_KEY:-}
@@ -91,6 +95,33 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+      start_period: 60s
+
+  # Optional high-quality document conversion (PDF/Office/images → markdown)
+  # via docling-serve; active with `--profile docling`. The image carries
+  # the model weights (~4.4 GB); set DOCLING_API_KEY to require X-Api-Key.
+  docling:
+    profiles: ["docling"]
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.1.0
+    ports:
+      - "127.0.0.1:5001:5001"
+    environment:
+      DOCLING_SERVE_API_KEY: ${DOCLING_API_KEY:-}
+      # Just below gkg's 300s client budget: a slow conversion fails server-side
+      # within the client budget (the task keeps running; v1.1.0 surfaces a
+      # generic 500 instead of the documented 504).
+      DOCLING_SERVE_MAX_SYNC_WAIT: "280"
+      DOCLING_NUM_THREADS: ${DOCLING_NUM_THREADS:-4}
+      # DOCLING_DEVICE: cpu
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:5001/health').read(); sys.exit(0)"
+      interval: 30s
+      timeout: 5s
+      retries: 10
       start_period: 60s
 
 volumes:

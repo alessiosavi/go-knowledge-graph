@@ -103,6 +103,11 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_EMBEDDER_QUERY_FURL", "https://query.example/v1", "https://query.example/v1", func(c config.Config) any { return c.Embedder.QueryFURL }},
 		{"GKG_EMBEDDER_PRODUCT_FURL", "https://product.example/v1", "https://product.example/v1", func(c config.Config) any { return c.Embedder.ProductFURL }},
 		{"GKG_EMBEDDER_BATCH_SIZE", "16", 16, func(c config.Config) any { return c.Embedder.BatchSize }},
+		{"GKG_CONVERTER_MODE", "docling", "docling", func(c config.Config) any { return c.Converter.Mode }},
+		{"GKG_CONVERTER_URL", "http://docling:5001", "http://docling:5001", func(c config.Config) any { return c.Converter.URL }},
+		{"GKG_CONVERTER_API_KEY", "ck", "ck", func(c config.Config) any { return c.Converter.APIKey }},
+		{"GKG_CONVERTER_TIMEOUT_S", "42", 42, func(c config.Config) any { return c.Converter.TimeoutS }},
+		{"GKG_CONVERTER_MAX_RESPONSE_MB", "64", 64, func(c config.Config) any { return c.Converter.MaxResponseMB }},
 		{"GKG_JUDGE_MODE", "sample", "sample", func(c config.Config) any { return c.Judge.Mode }},
 		{"GKG_JUDGE_VERIFY_FLOOR", "0.4", 0.4, func(c config.Config) any { return c.Judge.VerifyFloor }},
 		{"GKG_JUDGE_SAMPLE_PCT", "25", 25.0, func(c config.Config) any { return c.Judge.SamplePct }},
@@ -299,5 +304,37 @@ func TestEmbedderBatchSizeEnvException(t *testing.T) {
 	t.Setenv("EMBED_BATCH_SIZE", "many")
 	if _, err := config.Load(""); err == nil || !strings.Contains(err.Error(), "EMBED_BATCH_SIZE") {
 		t.Fatalf("err = %v, want a parse error naming EMBED_BATCH_SIZE", err)
+	}
+}
+
+func TestConverterDefaults(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Converter.Mode != "off" {
+		t.Errorf("Converter.Mode = %q, want off", cfg.Converter.Mode)
+	}
+	if cfg.Converter.TimeoutS != 300 {
+		t.Errorf("Converter.TimeoutS = %d, want 300", cfg.Converter.TimeoutS)
+	}
+	if cfg.Converter.MaxResponseMB != 32 {
+		t.Errorf("Converter.MaxResponseMB = %d, want 32", cfg.Converter.MaxResponseMB)
+	}
+}
+
+func TestConverterEnvOverrides(t *testing.T) {
+	t.Setenv("GKG_CONVERTER_MODE", "docling")
+	t.Setenv("GKG_CONVERTER_URL", "http://docling:5001")
+	t.Setenv("GKG_CONVERTER_API_KEY", "ck")
+	t.Setenv("GKG_CONVERTER_TIMEOUT_S", "42")
+	t.Setenv("GKG_CONVERTER_MAX_RESPONSE_MB", "64")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Converter.Mode != "docling" || cfg.Converter.URL != "http://docling:5001" ||
+		cfg.Converter.APIKey != "ck" || cfg.Converter.TimeoutS != 42 || cfg.Converter.MaxResponseMB != 64 {
+		t.Errorf("Converter = %+v, want the env overrides applied", cfg.Converter)
 	}
 }

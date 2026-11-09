@@ -186,3 +186,36 @@ func TestEmbedderFromConfigFurlsOK(t *testing.T) {
 		t.Errorf("Space = %q, want furls|gemini-embedding-2|768", got)
 	}
 }
+
+func TestConverterFromConfigOff(t *testing.T) {
+	cfg := config.Config{}
+	if c, err := converterFromConfig(cfg); err != nil || c != nil {
+		t.Fatalf("converterFromConfig(zero) = %v, %v; want nil, nil", c, err)
+	}
+	cfg.Converter.Mode = "off"
+	if c, err := converterFromConfig(cfg); err != nil || c != nil {
+		t.Fatalf("converterFromConfig(off) = %v, %v; want nil, nil", c, err)
+	}
+}
+
+func TestConverterFromConfigValidation(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Converter.Mode = "docling"
+	if _, err := converterFromConfig(cfg); err == nil || !strings.Contains(err.Error(), "GKG_CONVERTER_URL") {
+		t.Fatalf("empty URL err = %v, want it to name GKG_CONVERTER_URL", err)
+	}
+	cfg.Converter.URL = "not-a-url"
+	if _, err := converterFromConfig(cfg); err == nil || !strings.Contains(err.Error(), "GKG_CONVERTER_URL") {
+		t.Fatalf("invalid URL err = %v, want it to name GKG_CONVERTER_URL", err)
+	}
+	cfg.Converter.URL = "http://localhost:5001"
+	c, err := converterFromConfig(cfg)
+	if err != nil || c == nil {
+		t.Fatalf("converterFromConfig(docling) = %v, %v; want a converter", c, err)
+	}
+
+	cfg.Converter.Mode = "pandoc"
+	if _, err := converterFromConfig(cfg); err == nil || !strings.Contains(err.Error(), "pandoc") {
+		t.Fatalf("unknown mode err = %v, want it to name the mode", err)
+	}
+}
