@@ -54,8 +54,7 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
 
 ## Other v0.1 notes
 
-- No natural-language `ask` endpoint, no crawling/scheduling, no
-  multi-tenancy (see the design's non-goals).
+- No crawling/scheduling, no multi-tenancy (see the design's non-goals).
 - The gliner2.5 (Apache-2.0) local extraction swap is a v0.1 item: the
   pinned `glinerel-fast` 0.1.1 runtime only loads GLiNEREL checkpoints (its
   config contract rejects the gliner2.5 architecture). For a fully free
@@ -75,6 +74,25 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
   single statement. Queries without a LIMIT gain `LIMIT $cypher_rows`; a
   LIMIT that is not a plain integer or `$cypher_rows` is rejected because
   an expression (`LIMIT 2 * 1000`) would exceed the cap.
+
+## Ask the graph agent (optional)
+
+- Off by default (`GKG_AGENT_ENABLED=false`); while off, `POST /v1/agent/ask`
+  answers 501 and the web UI keeps its panel hidden.
+- Answers are LLM-generated and can be wrong: the response's `evidence`
+  array carries the raw tool results, which are the source of truth.
+- Needs an OpenAI-compatible chat endpoint; function calling is preferred,
+  and endpoints that reject the `tools` parameter fall back to a
+  constrained JSON plan (one round of tool calls, then a final answer).
+- Provider cost and latency apply to every ask. Each ask is bounded by
+  `GKG_AGENT_MAX_STEPS` (default 6, hard cap 12 tool calls) and
+  `GKG_AGENT_TIMEOUT_S` (default 60), but several model turns happen within
+  that budget.
+- Read-only by design: the tool set mirrors the MCP read set — no ingest in
+  v1. Tool outputs are treated as untrusted data in the prompt, but
+  ingested documents can still attempt prompt injection; the read-only
+  boundary and the step/timeout caps are the hard limits.
+- No chat memory: each ask is independent.
 
 ## Entity embeddings (optional)
 
