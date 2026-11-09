@@ -75,6 +75,7 @@ type EmbedderConfig struct {
 	Dim         int    `yaml:"dim"`
 	QueryFURL   string `yaml:"query_furl"`   // furls: the embed_query Function URL
 	ProductFURL string `yaml:"product_furl"` // furls: the embed_product Function URL
+	BatchSize   int    `yaml:"batch_size"`   // furls: entries per request (0 = one request)
 }
 
 // JudgeConfig configures the optional online verification judge.
@@ -187,6 +188,13 @@ func Load(path string) (Config, error) {
 		}
 		if v, ok := os.LookupEnv("EMBED_API_KEY"); ok && v != "" {
 			cfg.Embedder.APIKey = v
+		}
+		if v, ok := os.LookupEnv("EMBED_BATCH_SIZE"); ok && v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return Config{}, fmt.Errorf("config: env EMBED_BATCH_SIZE=%q: %w", v, err)
+			}
+			cfg.Embedder.BatchSize = n
 		}
 	}
 	return cfg, nil

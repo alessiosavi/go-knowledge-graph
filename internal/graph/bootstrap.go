@@ -15,6 +15,7 @@ var uniqueConstraints = []struct {
 	{"Document", "id"},
 	{"Chunk", "id"},
 	{"Entity", "key"},
+	{"GkgMeta", "id"},
 }
 
 // secondaryIndexes are non-unique label indexes bootstrapped for query
@@ -43,6 +44,12 @@ var textIndexes = []struct {
 // IF NOT EXISTS for constraints, so existence is checked first and an
 // already-exists error from a concurrent creator is tolerated.
 func (s *Store) Bootstrap(ctx context.Context) error {
+	// Pre-constraint cleanup: concurrent writers could have created
+	// duplicate :GkgMeta marker nodes before the unique constraint existed;
+	// the constraint DDL would then fail on the dirty data.
+	if err := s.dedupeGkgMeta(ctx); err != nil {
+		return err
+	}
 	for _, c := range uniqueConstraints {
 		ok, err := s.constraintExists(ctx, c.Label, c.Prop)
 		if err != nil {
@@ -63,6 +70,23 @@ func (s *Store) Bootstrap(ctx context.Context) error {
 		return err
 	}
 	return s.EnsureTextIndexes(ctx)
+}
+
+// dedupeGkgMeta removes duplicate :GkgMeta nodes (same id) so the unique
+// constraint can be created on databases written before it existed. The
+// surviving node is arbitrary; the marker is a single-key value.
+func (s *Store) dedupeGkgMeta(ctx context.Context) error {
+	err := s.runAuto(ctx, `
+MATCH (m:GkgMeta)
+WHERE m.id IS NOT NULL
+WITH m.id AS id, collect(m) AS nodes
+WHERE size(nodes) > 1
+UNWIND tail(nodes) AS dup
+DELETE dup`, nil)
+	if err != nil {
+		return fmt.Errorf("graph: dedupe gkg meta: %w", err)
+	}
+	return nil
 }
 
 // EnsureTextIndexes creates the Tantivy text indexes idempotently (also

@@ -124,6 +124,25 @@ const embeddingSpaceMetaID = "embedding_space"
 // providers can share a dimension, so the vector index itself cannot
 // detect a source switch and stored vectors would silently mix spaces.
 func (s *Store) SetEmbeddingSpace(ctx context.Context, space string) (string, error) {
+	// The marker carries a unique constraint, so in a concurrent MERGE race
+	// the loser fails with a constraint violation; one retry re-runs the
+	// MERGE, which then matches the winner's node.
+	var previous string
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		previous, err = s.setEmbeddingSpaceOnce(ctx, space)
+		if err == nil {
+			return previous, nil
+		}
+		if !isConstraintViolation(err) {
+			return "", err
+		}
+	}
+	return "", err
+}
+
+// setEmbeddingSpaceOnce is one MERGE attempt of SetEmbeddingSpace.
+func (s *Store) setEmbeddingSpaceOnce(ctx context.Context, space string) (string, error) {
 	previous := ""
 	err := s.runWriteTx(ctx, func(tx neo4j.ManagedTransaction) error {
 		res, err := tx.Run(ctx, `
@@ -147,4 +166,11 @@ RETURN previous`, map[string]any{"id": embeddingSpaceMetaID, "space": space})
 		return "", err
 	}
 	return previous, nil
+}
+
+// isConstraintViolation reports whether err is a unique-constraint race
+// failure (both vendors spell it out in the message or error code).
+func isConstraintViolation(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "constraint") || strings.Contains(msg, "unique")
 }

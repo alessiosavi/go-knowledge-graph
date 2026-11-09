@@ -132,6 +132,8 @@ GKG_EMBEDDER_PROVIDER=furls
 #   EMBED_QUERY_FURL=<embed_query Function URL>
 #   EMBED_PRODUCT_FURL=<embed_product Function URL>
 #   EMBED_API_KEY=<shared secret>
+#   EMBED_BATCH_SIZE=16   (optional: entries per request; chunks run in
+#                          parallel and merge in order; service max 128)
 ```
 
 The `furls` provider embeds documents at ingest (`embed_product`) and queries

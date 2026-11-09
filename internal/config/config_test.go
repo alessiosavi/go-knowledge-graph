@@ -102,6 +102,7 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_EMBEDDER_PROVIDER", "furls", "furls", func(c config.Config) any { return c.Embedder.Provider }},
 		{"GKG_EMBEDDER_QUERY_FURL", "https://query.example/v1", "https://query.example/v1", func(c config.Config) any { return c.Embedder.QueryFURL }},
 		{"GKG_EMBEDDER_PRODUCT_FURL", "https://product.example/v1", "https://product.example/v1", func(c config.Config) any { return c.Embedder.ProductFURL }},
+		{"GKG_EMBEDDER_BATCH_SIZE", "16", 16, func(c config.Config) any { return c.Embedder.BatchSize }},
 		{"GKG_JUDGE_MODE", "sample", "sample", func(c config.Config) any { return c.Judge.Mode }},
 		{"GKG_JUDGE_VERIFY_FLOOR", "0.4", 0.4, func(c config.Config) any { return c.Judge.VerifyFloor }},
 		{"GKG_JUDGE_SAMPLE_PCT", "25", 25.0, func(c config.Config) any { return c.Judge.SamplePct }},
@@ -260,5 +261,43 @@ func TestEmbedderEnvExceptionPrecedence(t *testing.T) {
 	}
 	if cfg.Embedder.APIKey != "exception" {
 		t.Errorf("Embedder.APIKey = %q, want the non-empty EMBED_API_KEY to win", cfg.Embedder.APIKey)
+	}
+}
+
+func TestEmbedderBatchSizeEnvException(t *testing.T) {
+	t.Setenv("EMBED_BATCH_SIZE", "16")
+	t.Setenv("GKG_EMBEDDER_PROVIDER", "openai")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.BatchSize != 0 {
+		t.Errorf("openai run picked up EMBED_BATCH_SIZE: %d", cfg.Embedder.BatchSize)
+	}
+
+	t.Setenv("GKG_EMBEDDER_PROVIDER", "furls")
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.BatchSize != 16 {
+		t.Errorf("Embedder.BatchSize = %d, want the EMBED_BATCH_SIZE exception (16)", cfg.Embedder.BatchSize)
+	}
+
+	// An empty placeholder must not clobber the GKG_ value.
+	t.Setenv("GKG_EMBEDDER_BATCH_SIZE", "8")
+	t.Setenv("EMBED_BATCH_SIZE", "")
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.BatchSize != 8 {
+		t.Errorf("Embedder.BatchSize = %d, want the GKG_ value to survive an empty placeholder", cfg.Embedder.BatchSize)
+	}
+
+	// A malformed value is an actionable error naming the variable.
+	t.Setenv("EMBED_BATCH_SIZE", "many")
+	if _, err := config.Load(""); err == nil || !strings.Contains(err.Error(), "EMBED_BATCH_SIZE") {
+		t.Fatalf("err = %v, want a parse error naming EMBED_BATCH_SIZE", err)
 	}
 }

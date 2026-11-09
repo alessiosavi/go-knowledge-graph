@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +43,16 @@ func decodeFurlsRequest(t *testing.T, r *http.Request) furlsRequestBody {
 		t.Errorf("decode furls request: %v", err)
 	}
 	return req
+}
+
+// furlsResultsJSON marshals a results array for a stub FURL response.
+func furlsResultsJSON(t *testing.T, results []map[string]any) string {
+	t.Helper()
+	b, err := json.Marshal(map[string]any{"results": results})
+	if err != nil {
+		t.Fatalf("marshal furls results: %v", err)
+	}
+	return string(b)
 }
 
 // furlsConfig builds a config pointing both sides at url (tests override as
@@ -135,9 +147,9 @@ func TestFurlsDocumentsShape(t *testing.T) {
 		}
 	})
 
-	t.Run("position fallback when ids do not match", func(t *testing.T) {
+	t.Run("position fallback when ids are absent", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprint(w, `{"results":[{"id":"other-1","embedding":[1,2]},{"id":"other-2","embedding":[3,4]}]}`)
+			fmt.Fprint(w, `{"results":[{"embedding":[1,2]},{"embedding":[3,4]}]}`)
 		}))
 		defer ts.Close()
 		p := NewFurls(furlsConfig(ts.URL))
@@ -146,7 +158,22 @@ func TestFurlsDocumentsShape(t *testing.T) {
 			t.Fatalf("EmbedDocuments: %v", err)
 		}
 		if len(vecs) != 2 || vecs[0][0] != 1 || vecs[1][0] != 3 {
-			t.Errorf("vectors = %v, want the position-aligned results", vecs)
+			t.Errorf("vectors = %v, want the position-aligned results (no ids echoed)", vecs)
+		}
+	})
+
+	t.Run("mismatched id never steals another entry's vector", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// The id is present but does not match beta: that slot must NOT
+			// be positionally shifted onto beta.
+			fmt.Fprintf(w, `{"results":[{"id":%q,"embedding":[1,2]},{"id":"other","embedding":[9,9]}]}`,
+				furlsTestEntryID("alpha"))
+		}))
+		defer ts.Close()
+		p := NewFurls(furlsConfig(ts.URL))
+		_, err := p.EmbedDocuments(context.Background(), []string{"alpha", "beta"})
+		if err == nil || !strings.Contains(err.Error(), furlsTestEntryID("beta")) {
+			t.Fatalf("err = %v, want beta to fail when its result is missing (no cross-entry fallback)", err)
 		}
 	})
 }
@@ -348,4 +375,128 @@ func TestFurlsQueryShape(t *testing.T) {
 	if len(vec) != 2 || vec[0] != 5 || vec[1] != 6 {
 		t.Errorf("vector = %v, want the returned vector", vec)
 	}
+}
+
+// TestFurlsRetryAttributionPerEntry pins that a still-failing entry is
+// reported with ITS OWN retry reason: retry failures are compacted, so
+// ordinal indexing would attach a later entry's error to an earlier one.
+func TestFurlsRetryAttributionPerEntry(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := decodeFurlsRequest(t, r)
+		n := atomic.AddInt32(&calls, 1)
+		results := make([]map[string]any, 0, len(req.Entries))
+		for i, e := range req.Entries {
+			if n == 1 {
+				results = append(results, map[string]any{"id": e.ID, "error": "limited", "error_code": "RATE_LIMITED"})
+				continue
+			}
+			switch i {
+			case 0:
+				results = append(results, map[string]any{"id": e.ID, "embedding": []float64{1, 2}})
+			case 1:
+				results = append(results, map[string]any{"id": e.ID, "error": "beta-rate", "error_code": "RATE_LIMITED"})
+			default:
+				results = append(results, map[string]any{"id": e.ID, "error": "gamma-up", "error_code": "UPSTREAM_ERROR"})
+			}
+		}
+		fmt.Fprint(w, furlsResultsJSON(t, results))
+	}))
+	defer ts.Close()
+	p := NewFurls(furlsConfig(ts.URL))
+	_, err := p.EmbedDocuments(context.Background(), []string{"alpha", "beta", "gamma"})
+	if err == nil {
+		t.Fatal("want error: beta and gamma still failed after the retry")
+	}
+	if !strings.Contains(err.Error(), furlsTestEntryID("beta")) || !strings.Contains(err.Error(), "RATE_LIMITED") {
+		t.Errorf("err = %v, want beta reported with its own RATE_LIMITED reason", err)
+	}
+	if strings.Contains(err.Error(), "UPSTREAM_ERROR") {
+		t.Errorf("err = %v, want no other entry's reason attached", err)
+	}
+}
+
+// TestFurlsTransportErrorOmitsEndpoint pins capability hygiene: a transport
+// failure must not echo the endpoint into the error (these errors reach logs
+// and pasted evidence).
+func TestFurlsTransportErrorOmitsEndpoint(t *testing.T) {
+	p := NewFurls(furlsConfig("http://127.0.0.1:1/gkg-secret-endpoint"))
+	_, err := p.EmbedDocuments(context.Background(), []string{"a"})
+	if err == nil {
+		t.Fatal("want a transport error")
+	}
+	if strings.Contains(err.Error(), "gkg-secret-endpoint") || strings.Contains(err.Error(), "127.0.0.1") {
+		t.Errorf("err = %v, want no endpoint value echoed", err)
+	}
+}
+
+// TestFurlsBatchesRequests pins the optional batching: Embedder.BatchSize
+// caps the entries per request, chunks are dispatched concurrently and
+// merged back in input order.
+func TestFurlsBatchesRequests(t *testing.T) {
+	t.Run("chunks larger inputs and preserves order", func(t *testing.T) {
+		var mu sync.Mutex
+		var sizes []int
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			req := decodeFurlsRequest(t, r)
+			mu.Lock()
+			sizes = append(sizes, len(req.Entries))
+			mu.Unlock()
+			results := make([]map[string]any, 0, len(req.Entries))
+			for _, e := range req.Entries {
+				results = append(results, map[string]any{"id": e.ID, "embedding": []float64{float64(len(e.Text)), 1}})
+			}
+			fmt.Fprint(w, furlsResultsJSON(t, results))
+		}))
+		defer ts.Close()
+		cfg := furlsConfig(ts.URL)
+		cfg.Embedder.BatchSize = 2
+		p := NewFurls(cfg)
+		texts := []string{"a", "bb", "ccc", "dddd", "eeeee"}
+		vecs, err := p.EmbedDocuments(context.Background(), texts)
+		if err != nil {
+			t.Fatalf("EmbedDocuments: %v", err)
+		}
+		if len(vecs) != len(texts) {
+			t.Fatalf("vectors = %d, want %d", len(vecs), len(texts))
+		}
+		for i, txt := range texts {
+			if len(vecs[i]) != 2 || vecs[i][0] != float64(len(txt)) {
+				t.Errorf("vecs[%d] = %v, want the per-text vector (chunk merge must preserve input order)", i, vecs[i])
+			}
+		}
+		mu.Lock()
+		got := append([]int(nil), sizes...)
+		mu.Unlock()
+		sort.Ints(got)
+		if len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 2 {
+			t.Errorf("request sizes = %v, want [1 2 2] for 5 texts at batch size 2", got)
+		}
+	})
+
+	t.Run("unset batch size sends one request", func(t *testing.T) {
+		var calls, lastSize int32
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			req := decodeFurlsRequest(t, r)
+			atomic.AddInt32(&calls, 1)
+			atomic.StoreInt32(&lastSize, int32(len(req.Entries)))
+			results := make([]map[string]any, 0, len(req.Entries))
+			for _, e := range req.Entries {
+				results = append(results, map[string]any{"id": e.ID, "embedding": []float64{1, 2}})
+			}
+			fmt.Fprint(w, furlsResultsJSON(t, results))
+		}))
+		defer ts.Close()
+		cfg := furlsConfig(ts.URL) // BatchSize stays 0
+		p := NewFurls(cfg)
+		if _, err := p.EmbedDocuments(context.Background(), []string{"a", "b", "c", "d", "e"}); err != nil {
+			t.Fatalf("EmbedDocuments: %v", err)
+		}
+		if got := atomic.LoadInt32(&calls); got != 1 {
+			t.Errorf("requests = %d, want 1 when BatchSize is unset", got)
+		}
+		if got := atomic.LoadInt32(&lastSize); got != 5 {
+			t.Errorf("request entries = %d, want all 5", got)
+		}
+	})
 }
