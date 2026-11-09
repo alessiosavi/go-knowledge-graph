@@ -41,8 +41,8 @@ func TestRunDispatch(t *testing.T) {
 		{"unknown", []string{"bogus"}, nil, 2, "", "unknown command"},
 		{"serve unimplemented", []string{"serve"}, nil, 2, "not implemented", ""},
 		{"ingest unimplemented", []string{"ingest"}, nil, 2, "not implemented", ""},
-		{"eval unimplemented", []string{"eval"}, nil, 2, "not implemented", ""},
 		{"mcp unimplemented", []string{"mcp"}, nil, 2, "not implemented", ""},
+		{"eval missing golden", []string{"eval", "--golden", "/nonexistent-golden.jsonl"}, map[string]string{"GKG_EXTRACTOR_MODE": "mock"}, 1, "", "gkg eval:"},
 		{"migrate bad uri", []string{"migrate"}, map[string]string{"GKG_MEMGRAPH_URI": "://bad"}, 1, "", "gkg migrate:"},
 	}
 	for _, tc := range cases {

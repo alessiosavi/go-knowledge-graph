@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 )
 
 // FactInput is one fact submitted to the judge for verification.
@@ -119,4 +121,12 @@ func judgeModeActive(mode string) bool {
 		return true
 	}
 	return false
+}
+
+// DefaultLabels returns copies of the built-in label sets (the same ones
+// the pipeline uses when no preset is requested).
+func DefaultLabels() ([]extract.Label, []extract.Label) {
+	entities := append([]extract.Label(nil), defaultEntityLabels...)
+	relations := append([]extract.Label(nil), defaultRelationLabels...)
+	return entities, relations
 }
