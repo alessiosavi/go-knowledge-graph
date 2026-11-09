@@ -73,6 +73,23 @@ func exactKey(tokens []string) string {
 	return hex.EncodeToString(sum[:])[:32]
 }
 
+// Tokens normalizes text with the same pipeline Fingerprint uses, so exact
+// Jaccard verification compares like with like.
+func Tokens(text string) ([]string, error) {
+	return textnorm.MeaningPreset().SplitTokens().Run(text)
+}
+
+// Shingles hashes consecutive token windows with Fingerprint's parameters.
+func Shingles(tokens []string) ([]uint64, error) {
+	return minhash.Shingles(tokens, shingleK)
+}
+
+// SimilarShingles returns the exact Jaccard similarity of two shingle sets
+// (as returned by Shingles).
+func SimilarShingles(a, b []uint64) float64 {
+	return minhash.Jaccard(a, b)
+}
+
 // toInt64 reinterprets unsigned signature values as signed int64 without
 // changing bits; toUint64 restores them.
 func toInt64(in []uint64) []int64 {

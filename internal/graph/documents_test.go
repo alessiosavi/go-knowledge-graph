@@ -102,6 +102,30 @@ func TestUpsertChangedHashReturnsPreviousID(t *testing.T) {
 	}
 }
 
+func TestDeleteChunksFromPrunesStaleTail(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	res := testUpsert(t, st, "file", uniqueSource(t), "hash-a")
+	three := []graph.Chunk{
+		{Seq: 0, Text: "one", Start: 0, End: 3},
+		{Seq: 1, Text: "two", Start: 4, End: 7},
+		{Seq: 2, Text: "three", Start: 8, End: 13},
+	}
+	if err := st.PutChunks(ctx, res.ID, three); err != nil {
+		t.Fatalf("PutChunks 3: %v", err)
+	}
+	if err := st.DeleteChunksFrom(ctx, res.ID, 1); err != nil {
+		t.Fatalf("DeleteChunksFrom: %v", err)
+	}
+	chunks, err := st.Chunks(ctx, res.ID)
+	if err != nil {
+		t.Fatalf("Chunks: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0].Seq != 0 {
+		t.Errorf("chunks after prune = %+v, want only seq 0", chunks)
+	}
+}
+
 func TestPutChunksRoundtrip(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()

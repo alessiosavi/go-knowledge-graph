@@ -63,12 +63,13 @@ func (s *Store) UpsertDocument(ctx context.Context, in DocumentInput) (UpsertRes
 MERGE (d:Document {id: $id})
 ON CREATE SET d.created_at = $now
 SET d.source_kind = $kind, d.source = $source, d.final_url = $final, d.title = $title,
-    d.hash = $hash, d.status = $status, d.error = '', d.updated_at = $now,
+    d.hash = $hash, d.labels = $labels, d.status = $status, d.error = '', d.updated_at = $now, d.version_at = $now,
     d.supersedes = coalesce(d.supersedes, '')`,
 		map[string]any{
 			"id": id, "kind": in.Kind, "source": in.Source, "final": in.FinalURL,
-			"title": in.Title, "hash": in.Hash, "status": string(StatusReceived),
-			"now": time.Now().UTC().Format(timeLayout),
+			"title": in.Title, "hash": in.Hash, "labels": in.Labels,
+			"status": string(StatusReceived),
+			"now":    time.Now().UTC().Format(timeLayout),
 		})
 	if err != nil {
 		return UpsertResult{}, fmt.Errorf("graph: upsert document: %w", err)
@@ -164,6 +165,22 @@ MERGE (d)-[h:HAS_CHUNK]->(ch)
 SET h.seq = c.seq`,
 			map[string]any{"docID": docID, "chunks": rows}); err != nil {
 			return fmt.Errorf("graph: put chunks: %w", err)
+		}
+		return nil
+	})
+}
+
+// DeleteChunksFrom prunes the document's chunks with seq >= fromSeq; the
+// pipeline calls it before a full re-chunk so a shrink cannot leave the
+// earlier attempt's higher-seq chunks attached.
+func (s *Store) DeleteChunksFrom(ctx context.Context, docID string, fromSeq int) error {
+	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		if err := txRun(ctx, tx, `
+MATCH (:Document {id: $docID})-[:HAS_CHUNK]->(stale:Chunk)
+WHERE stale.seq >= $from
+DETACH DELETE stale`,
+			map[string]any{"docID": docID, "from": fromSeq}); err != nil {
+			return fmt.Errorf("graph: prune stale chunks: %w", err)
 		}
 		return nil
 	})
@@ -330,6 +347,7 @@ func (s *Store) Document(ctx context.Context, id string) (*Document, error) {
 MATCH (d:Document {id: $id})
 RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
        d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
+       coalesce(d.labels, '') AS labels,
        d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes`,
 		map[string]any{"id": id})
 	if err != nil {
@@ -348,6 +366,7 @@ func (s *Store) Documents(ctx context.Context, limit int) ([]Document, error) {
 MATCH (d:Document)
 RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
        d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
+       coalesce(d.labels, '') AS labels,
        d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
 ORDER BY d.updated_at DESC`
 	params := map[string]any{}
@@ -373,11 +392,7 @@ func (s *Store) Chunks(ctx context.Context, docID string) ([]Chunk, error) {
 	if err := s.requireDocument(ctx, docID); err != nil {
 		return nil, err
 	}
-	recs, err := s.runRead(ctx, `
-MATCH (d:Document {id: $docID})-[:HAS_CHUNK]->(ch:Chunk)
-RETURN ch.id AS id, ch.doc_id AS doc_id, ch.seq AS seq, ch.text AS text, ch.start AS start,
-       ch.end AS end, ch.hash AS hash, ch.exact_key AS exact_key, ch.minhash_sig AS sig,
-       ch.band_keys AS bands, ch.signature_version AS version, ch.duplicate_of AS duplicate_of
+	recs, err := s.runRead(ctx, chunkSelect+`
 ORDER BY ch.seq`,
 		map[string]any{"docID": docID})
 	if err != nil {
@@ -385,22 +400,119 @@ ORDER BY ch.seq`,
 	}
 	chunks := make([]Chunk, 0, len(recs))
 	for _, r := range recs {
-		chunks = append(chunks, Chunk{
-			ID:               getString(r, "id"),
-			DocID:            getString(r, "doc_id"),
-			Seq:              getInt(r, "seq"),
-			Text:             getString(r, "text"),
-			Start:            getInt(r, "start"),
-			End:              getInt(r, "end"),
-			Hash:             getString(r, "hash"),
-			ExactKey:         getString(r, "exact_key"),
-			MinhashSig:       getInt64Slice(r, "sig"),
-			BandKeys:         getInt64Slice(r, "bands"),
-			SignatureVersion: getInt(r, "version"),
-			DuplicateOf:      getString(r, "duplicate_of"),
-		})
+		chunks = append(chunks, chunkFromRecord(r))
 	}
 	return chunks, nil
+}
+
+const chunkSelect = `
+MATCH (d:Document {id: $docID})-[:HAS_CHUNK]->(ch:Chunk)
+RETURN ch.id AS id, ch.doc_id AS doc_id, ch.seq AS seq, ch.text AS text, ch.start AS start,
+       ch.end AS end, ch.hash AS hash, ch.exact_key AS exact_key, ch.minhash_sig AS sig,
+       ch.band_keys AS bands, ch.signature_version AS version, ch.duplicate_of AS duplicate_of`
+
+func chunkFromRecord(r *neo4j.Record) Chunk {
+	return Chunk{
+		ID:               getString(r, "id"),
+		DocID:            getString(r, "doc_id"),
+		Seq:              getInt(r, "seq"),
+		Text:             getString(r, "text"),
+		Start:            getInt(r, "start"),
+		End:              getInt(r, "end"),
+		Hash:             getString(r, "hash"),
+		ExactKey:         getString(r, "exact_key"),
+		MinhashSig:       getInt64Slice(r, "sig"),
+		BandKeys:         getInt64Slice(r, "bands"),
+		SignatureVersion: getInt(r, "version"),
+		DuplicateOf:      getString(r, "duplicate_of"),
+	}
+}
+
+// ChunkByID returns one chunk by id, ErrNotFound when it does not exist.
+func (s *Store) ChunkByID(ctx context.Context, chunkID string) (Chunk, error) {
+	recs, err := s.runRead(ctx, `
+MATCH (ch:Chunk {id: $id})
+RETURN ch.id AS id, ch.doc_id AS doc_id, ch.seq AS seq, ch.text AS text, ch.start AS start,
+       ch.end AS end, ch.hash AS hash, ch.exact_key AS exact_key, ch.minhash_sig AS sig,
+       ch.band_keys AS bands, ch.signature_version AS version, ch.duplicate_of AS duplicate_of`,
+		map[string]any{"id": chunkID})
+	if err != nil {
+		return Chunk{}, fmt.Errorf("graph: chunk %s: %w", chunkID, err)
+	}
+	if len(recs) == 0 {
+		return Chunk{}, fmt.Errorf("graph: chunk %s: %w", chunkID, ErrNotFound)
+	}
+	return chunkFromRecord(recs[0]), nil
+}
+
+// ChunkRef pairs a chunk id with its owning document.
+type ChunkRef struct {
+	ID    string
+	DocID string
+}
+
+// ChunkRefsByExactKey returns chunks carrying the exact key, excluding the
+// given document ids and chunk id; ordered deterministically so a large
+// ineligible crowd cannot mask a valid cross-document duplicate.
+func (s *Store) ChunkRefsByExactKey(ctx context.Context, exactKey string, excludeDocIDs []string, selfChunkID string) ([]ChunkRef, error) {
+	recs, err := s.runRead(ctx, `
+MATCH (ch:Chunk {exact_key: $key})
+WHERE ch.id <> $self AND NOT ch.doc_id IN $exclude
+RETURN ch.id AS id, ch.doc_id AS doc_id
+ORDER BY ch.id ASC
+LIMIT 25`,
+		map[string]any{"key": exactKey, "self": selfChunkID, "exclude": excludeDocIDs})
+	if err != nil {
+		return nil, fmt.Errorf("graph: exact key lookup: %w", err)
+	}
+	refs := make([]ChunkRef, 0, len(recs))
+	for _, r := range recs {
+		refs = append(refs, ChunkRef{ID: getString(r, "id"), DocID: getString(r, "doc_id")})
+	}
+	return refs, nil
+}
+
+// SameIdentityDocumentIDs returns the ids of every document sharing the
+// identity (source_kind, source). Chunks of those documents are not dedup
+// targets for a new version of the same source: the old version's chunks
+// are deleted by supersede, so skipping extraction against them would lose
+// facts.
+func (s *Store) SameIdentityDocumentIDs(ctx context.Context, kind, source string) (map[string]bool, error) {
+	recs, err := s.runRead(ctx, `
+MATCH (d:Document {source_kind: $kind, source: $source})
+RETURN d.id AS id`,
+		map[string]any{"kind": kind, "source": source})
+	if err != nil {
+		return nil, fmt.Errorf("graph: same identity documents: %w", err)
+	}
+	ids := make(map[string]bool, len(recs))
+	for _, r := range recs {
+		ids[getString(r, "id")] = true
+	}
+	return ids, nil
+}
+
+// OlderLiveVersions returns the live versions of the document's identity
+// that were submitted before it (ordered by version_at ascending): exactly
+// the versions this one supersedes once merged. Versions submitted after it
+// — even if processed earlier — are never superseded.
+func (s *Store) OlderLiveVersions(ctx context.Context, docID string) ([]string, error) {
+	recs, err := s.runRead(ctx, `
+MATCH (d:Document {id: $id})
+MATCH (o:Document {source_kind: d.source_kind, source: d.source})
+WHERE o.id <> d.id AND o.status <> $superseded
+  AND coalesce(o.version_at, o.created_at) < coalesce(d.version_at, d.created_at)
+RETURN o.id AS id
+ORDER BY coalesce(o.version_at, o.created_at) ASC, o.id ASC`,
+		map[string]any{"id": docID, "superseded": string(StatusSuperseded)})
+	if err != nil {
+		return nil, fmt.Errorf("graph: older live versions: %w", err)
+	}
+	ids := make([]string, 0, len(recs))
+	for _, r := range recs {
+		ids = append(ids, getString(r, "id"))
+	}
+	return ids, nil
 }
 
 func recordToDocument(r *neo4j.Record) *Document {
@@ -413,6 +525,7 @@ func recordToDocument(r *neo4j.Record) *Document {
 		Hash:       getString(r, "hash"),
 		Status:     Status(getString(r, "status")),
 		Error:      getString(r, "error"),
+		Labels:     getString(r, "labels"),
 		CreatedAt:  parseTime(getString(r, "created_at")),
 		UpdatedAt:  parseTime(getString(r, "updated_at")),
 		Supersedes: getString(r, "supersedes"),

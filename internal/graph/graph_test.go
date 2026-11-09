@@ -65,6 +65,9 @@ func TestBootstrapIdempotent(t *testing.T) {
 	if !rawIndexExists(t, uri, "Document", "source_kind", "source") {
 		t.Error("composite index on :Document(source_kind, source) missing after Bootstrap")
 	}
+	if !rawIndexExists(t, uri, "Chunk", "exact_key") {
+		t.Error("index on :Chunk(exact_key) missing after Bootstrap")
+	}
 }
 
 // TestBootstrapIgnoresNonUniqueConstraint pins that an EXISTS constraint on
