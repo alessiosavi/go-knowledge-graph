@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gkg — knowledge graph</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <header>
+      <h1>gkg</h1>
+      <form id="search-form" autocomplete="off">
+        <input
+          id="search-input"
+          type="search"
+          placeholder="Search entities and chunks"
+          aria-label="Search"
+          required
+        />
+        <button type="submit">Search</button>
+      </form>
+      <span id="status" class="muted" aria-live="polite"></span>
+    </header>
+
+    <main>
+      <div class="col">
+        <section class="panel">
+          <h2>Results</h2>
+          <ul id="results" class="list">
+            <li class="muted">Search to find entities and chunks.</li>
+          </ul>
+        </section>
+
+        <section class="panel">
+          <h2>
+            Documents
+            <button id="docs-refresh" type="button" class="mini">
+              Refresh
+            </button>
+          </h2>
+          <ul id="documents" class="list">
+            <li class="muted">Loading…</li>
+          </ul>
+        </section>
+
+        <section class="panel">
+          <h2>Ingest</h2>
+          <form id="ingest-form" autocomplete="off">
+            <div class="row">
+              <label for="ingest-kind">Kind</label>
+              <select id="ingest-kind">
+                <option value="text">Text</option>
+                <option value="url">URL</option>
+              </select>
+              <label for="ingest-source">Source</label>
+              <input
+                id="ingest-source"
+                type="text"
+                placeholder="optional label"
+              />
+            </div>
+            <textarea
+              id="ingest-body"
+              rows="4"
+              placeholder="Paste text, or one URL when Kind is URL"
+              required
+            ></textarea>
+            <div class="row">
+              <button type="submit" id="ingest-submit">Submit</button>
+              <span id="ingest-status" class="muted" aria-live="polite"></span>
+            </div>
+          </form>
+        </section>
+      </div>
+
+      <div class="col">
+        <section class="panel">
+          <h2>Entity</h2>
+          <div id="entity">
+            <p class="muted">Select an entity from the results.</p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Neighborhood</h2>
+          <svg
+            id="graph"
+            viewBox="0 0 640 420"
+            role="img"
+            aria-label="one-hop neighborhood of the selected entity"
+          >
+            <text x="320" y="210" text-anchor="middle">No entity selected</text>
+          </svg>
+        </section>
+
+        <section class="panel">
+          <h2>Facts</h2>
+          <table id="facts">
+            <thead>
+              <tr>
+                <th>fact</th>
+                <th>conf.</th>
+                <th>judge</th>
+                <th>evidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td colspan="4" class="muted">
+                  Select an entity to see its evidenced facts.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </div>
+    </main>
+
+    <div id="auth-bar" hidden>
+      <span>This gkg asks for its API key once:</span>
+      <input
+        id="auth-key"
+        type="password"
+        placeholder="bearer token"
+        aria-label="API key"
+      />
+      <button id="auth-save" type="button">Use key</button>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
