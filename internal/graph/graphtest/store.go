@@ -6,6 +6,7 @@ package graphtest
 
 import (
 	"context"
+	"crypto/sha256"
 	"os"
 	"testing"
 	"time"
@@ -17,6 +18,20 @@ import (
 // URIEnv names the environment variable that enables integration tests
 // against a live Memgraph instance.
 const URIEnv = "GKG_TEST_MEMGRAPH_URI"
+
+// Vector returns a deterministic synthetic embedding for seed: three sparse
+// spikes derived from a hash of the seed. Tests use it so every entity has
+// a strictly unique nearest neighbor — smooth ramp vectors are nearly
+// colinear and tie-degenerate in f32, which makes top-K assertions flaky
+// against accumulated state.
+func Vector(seed string, dim int) []float64 {
+	h := sha256.Sum256([]byte(seed))
+	vec := make([]float64, dim)
+	vec[int(h[0])*3%dim] = 1
+	vec[int(h[1])*5%dim] = 0.5
+	vec[int(h[2])*7%dim] = 0.25
+	return vec
+}
 
 // Store opens a graph.Store against URIEnv and bootstraps the schema.
 // Without the variable the test is skipped, so `go test ./...` stays green

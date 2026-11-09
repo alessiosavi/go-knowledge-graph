@@ -18,13 +18,15 @@ var uniqueConstraints = []struct {
 }
 
 // secondaryIndexes are non-unique label indexes bootstrapped for query
-// performance (document identity and chunk exact-key lookups).
+// performance (document identity, chunk exact-key lookups, entity id
+// lookups from the embedding write path).
 var secondaryIndexes = []struct {
 	Label string
 	Props []string
 }{
 	{"Document", []string{"source_kind", "source"}},
 	{"Chunk", []string{"exact_key"}},
+	{"Entity", []string{"id"}},
 }
 
 // textIndexes are the Tantivy text indexes backing search.Query.

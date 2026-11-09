@@ -21,12 +21,14 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/dedup"
+	"github.com/alessiosavi/go-knowledge-graph/internal/embed"
 	"github.com/alessiosavi/go-knowledge-graph/internal/eval"
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
 	mcpserver "github.com/alessiosavi/go-knowledge-graph/internal/mcp"
+	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
 const version = "v0.0.0-dev"
@@ -185,25 +187,32 @@ func seedDedupIndex(ix *dedup.Index, fps []graph.ChunkFP) {
 }
 
 // buildPipeline wires the extractor, the re-seeded dedup index, the
-// optional judge and the text loader on an open store; the returned
-// pipeline is ready for submissions. serve, mcp and ingest share it so a
-// document is treated identically whichever entry point submits it.
-func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*ingest.Pipeline, error) {
+// optional judge and embedder and the text loader on an open store; the
+// returned pipeline is ready for submissions. serve, mcp and ingest share
+// it so a document is treated identically whichever entry point submits
+// it. The returned embedder (nil when disabled) is also for the search
+// endpoints' vector leg.
+func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*ingest.Pipeline, search.Embedder, error) {
 	prov, err := providerFromConfig(cfg, "")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ix := dedup.New()
 	fps, err := st.AllFingerprints(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	seedDedupIndex(ix, fps)
 	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg)))
 	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
 		pipe.SetJudge(judge.NewClient(cfg))
 	}
-	return pipe, nil
+	var emb search.Embedder
+	if cfg.Embedder.Enabled {
+		emb = embed.NewOpenAI(cfg)
+		pipe.SetEmbedder(emb)
+	}
+	return pipe, emb, nil
 }
 
 // runServe runs the REST API and the ingestion worker pool until the
@@ -236,7 +245,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
 		return 1
 	}
-	pipe, err := buildPipeline(ctx, cfg, st)
+	pipe, emb, err := buildPipeline(ctx, cfg, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
 		return 1
@@ -249,7 +258,10 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	}
 
 	rest := api.NewServer(cfg, st, pipe)
-	rest.Mount("/mcp", mcpserver.NewServer(cfg, st, pipe).HTTPHandler())
+	mcpSrv := mcpserver.NewServer(cfg, st, pipe)
+	rest.SetEmbedder(emb)
+	mcpSrv.SetEmbedder(emb)
+	rest.Mount("/mcp", mcpSrv.HTTPHandler())
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
 		Handler:           rest.Handler(),
@@ -303,7 +315,7 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
 		return 1
 	}
-	pipe, err := buildPipeline(ctx, cfg, st)
+	pipe, _, err := buildPipeline(ctx, cfg, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
 		return 1
@@ -367,7 +379,7 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1
 	}
-	pipe, err := buildPipeline(ctx, cfg, st)
+	pipe, emb, err := buildPipeline(ctx, cfg, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1
@@ -378,7 +390,9 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1
 	}
-	if err := mcpserver.NewServer(cfg, st, pipe).RunStdio(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	srv := mcpserver.NewServer(cfg, st, pipe)
+	srv.SetEmbedder(emb)
+	if err := srv.RunStdio(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1
 	}
