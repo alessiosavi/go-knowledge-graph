@@ -36,8 +36,8 @@ Submissions are queued: poll the returned id until it reaches `done`:
 curl -s localhost:8080/v1/documents/<id>/status
 ```
 
-**From an agent**: the MCP `ingest` tool takes `url`, `text` or `source`,
-plus `force` to re-run an unchanged document.
+**From an agent**: the MCP `ingest` tool takes `url` or `text`, plus an
+optional `source` label and `force` to re-run an unchanged document.
 
 ## 2. Explore the graph
 
