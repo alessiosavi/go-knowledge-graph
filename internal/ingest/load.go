@@ -272,6 +272,9 @@ func converterExtension(contentType string, body []byte) string {
 	case "image/gif":
 		return ".gif"
 	}
+	// The magic checks tolerate a leading UTF-8 BOM, like Decode and
+	// converterRoute; the trimmed slice also restores the image/zip hints.
+	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
 	if bytes.HasPrefix(body, []byte("%PDF")) {
 		return ".pdf"
 	}

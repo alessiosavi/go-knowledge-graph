@@ -739,4 +739,21 @@ func TestLoaderFilenameDerivation(t *testing.T) {
 			t.Errorf("filename = %q, want the basename plus the PDF magic extension", conv.lastName)
 		}
 	})
+
+	t.Run("url with a BOM-prefixed PDF and a generic content type derives .pdf", func(t *testing.T) {
+		body := append([]byte{0xEF, 0xBB, 0xBF}, []byte("%PDF-1.4 bom blob")...)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(body)
+		}))
+		t.Cleanup(srv.Close)
+		conv := &stubConverter{md: "x"}
+		loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, conv)
+		if _, err := loader(context.Background(), Input{Kind: "url", URL: srv.URL + "/blob/bom9f8a2"}); err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if conv.lastName != "bom9f8a2.pdf" {
+			t.Errorf("filename = %q, want the basename plus the PDF magic extension (BOM tolerated)", conv.lastName)
+		}
+	})
 }
