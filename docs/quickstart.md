@@ -191,8 +191,11 @@ sidecar publishes loopback `127.0.0.1:5001`, so host-run builds use
 `X-Api-Key` header on the sidecar. A conversion failure fails the document
 with the converter's reason — there is no silent fallback.
 `GKG_CONVERTER_TIMEOUT_S` (default 300) bounds a conversion; the server's
-sync wait is pinned just below it, so a slow document surfaces an
-explanatory HTTP 504 (the task keeps running server-side).
+sync wait is pinned just below it, so a slow document fails within the
+client budget (the conversion task keeps running server-side). With the
+pinned `v1.1.0`, exceeding the sync wait surfaces a generic HTTP 500 rather
+than the documented explanatory 504; gkg reports either as a load-stage
+failure.
 
 ## 8. Evaluation
 

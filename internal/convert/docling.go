@@ -111,7 +111,7 @@ func (d *Docling) Convert(ctx context.Context, body []byte, filename, contentTyp
 		return "", fmt.Errorf("convert: docling: decode response: %w", err)
 	}
 	md := parsed.Document.MDContent
-	if strings.TrimSpace(md) == "" {
+	if parsed.Status == "failure" || strings.TrimSpace(md) == "" {
 		reason := parsed.Status
 		if len(parsed.Errors) > 0 {
 			reason = parsed.Errors[0]
@@ -121,8 +121,10 @@ func (d *Docling) Convert(ctx context.Context, body []byte, filename, contentTyp
 		}
 		return "", fmt.Errorf("convert: docling: conversion failed: %s", reason)
 	}
-	if parsed.Status == "partial_success" {
-		slog.Warn("convert: docling returned a partial conversion", "errors", parsed.Errors)
+	if parsed.Status != "success" {
+		// partial_success (and skipped) with content is accepted, loudly:
+		// the document carries whatever was converted.
+		slog.Warn("convert: docling returned a non-success conversion status", "status", parsed.Status, "errors", parsed.Errors)
 	}
 	return md, nil
 }

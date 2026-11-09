@@ -596,6 +596,33 @@ func TestLoaderConverterPassesTextThrough(t *testing.T) {
 	}
 }
 
+// TestLoaderConverterDoesNotConvertTextWithImagePrefixes pins the weak-magic
+// guard: prose starting with "BM25…" (BMP's 2-byte magic) or "GIF89a…"
+// (GIF's 6-byte magic) is valid UTF-8 text and must pass through — only
+// binary bodies route to the converter.
+func TestLoaderConverterDoesNotConvertTextWithImagePrefixes(t *testing.T) {
+	cases := map[string][]byte{
+		"bm-text":  []byte("BM25 is a ranking function for search engines."),
+		"gif-text": []byte("GIF89a is the acronym used by the GIF format."),
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			conv := &stubConverter{md: "SHOULD NOT BE USED"}
+			loader := DefaultLoader(nil, conv)
+			l, err := loader(context.Background(), Input{Kind: "file", Source: name + ".md", Bytes: body})
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if conv.calls != 0 {
+				t.Errorf("converter calls = %d, want 0 (UTF-8 text must pass through)", conv.calls)
+			}
+			if l.Text != string(body) {
+				t.Errorf("text = %q, want the passthrough", l.Text)
+			}
+		})
+	}
+}
+
 func TestLoaderConverterFailureFailsLoad(t *testing.T) {
 	conv := &stubConverter{err: errors.New("docling boom")}
 	loader := DefaultLoader(nil, conv)

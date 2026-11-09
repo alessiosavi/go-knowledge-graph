@@ -132,6 +132,24 @@ func TestDoclingFailureStatus(t *testing.T) {
 	}
 }
 
+// TestDoclingFailureStatusWithMarkdown pins that a failure status is a
+// failure even when the response still carries content: a partially
+// converted document must never be ingested as if it succeeded.
+func TestDoclingFailureStatusWithMarkdown(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"document":{"md_content":"# partial content"},"status":"failure","errors":["conversion failed at page 3"]}`)
+	}))
+	defer ts.Close()
+	c := New(doclingConfig(ts.URL))
+	_, err := c.Convert(context.Background(), []byte("%PDF-1.4"), "a.pdf", "application/pdf")
+	if err == nil {
+		t.Fatal("failure status with content: want error")
+	}
+	if !strings.Contains(err.Error(), "conversion failed at page 3") {
+		t.Errorf("err = %v, want it to quote the server's errors[0]", err)
+	}
+}
+
 func TestDoclingPartialSuccessAccepted(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"document":{"md_content":"partial md"},"status":"partial_success","errors":["page 3 skipped"]}`)

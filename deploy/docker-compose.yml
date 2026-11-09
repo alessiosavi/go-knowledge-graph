@@ -107,8 +107,9 @@ services:
       - "127.0.0.1:5001:5001"
     environment:
       DOCLING_SERVE_API_KEY: ${DOCLING_API_KEY:-}
-      # Just below gkg's 300s client budget: a slow conversion surfaces the
-      # server's explanatory 504 (the task keeps running server-side).
+      # Just below gkg's 300s client budget: a slow conversion fails server-side
+      # within the client budget (the task keeps running; v1.1.0 surfaces a
+      # generic 500 instead of the documented 504).
       DOCLING_SERVE_MAX_SYNC_WAIT: "280"
       DOCLING_NUM_THREADS: ${DOCLING_NUM_THREADS:-4}
       # DOCLING_DEVICE: cpu

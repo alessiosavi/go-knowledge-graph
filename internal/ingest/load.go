@@ -181,16 +181,21 @@ func converterRoute(body []byte, contentType string) bool {
 	if len(b) == 0 {
 		return false
 	}
-	if bytes.HasPrefix(b, []byte("%PDF")) || bytes.HasPrefix(b, zipMagic) || imageExtension(b) != "" {
+	// Strong signatures cannot be legitimate text.
+	if bytes.HasPrefix(b, []byte("%PDF")) || bytes.HasPrefix(b, zipMagic) || strongImageExtension(b) != "" {
 		return true
 	}
 	ct := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 	if ct == "text/html" || ct == "application/xhtml+xml" || looksLikeHTML(b) {
 		return false
 	}
+	// Text classification wins over the weak image magics: prose starting
+	// with "BM25 …" (BMP's 2-byte magic) or "GIF89a …" is not an image.
 	if strings.HasPrefix(ct, "text/") || ct == "application/markdown" || utf8.Valid(b) {
 		return false
 	}
+	// Everything left is binary (the weak image magics included): Decode
+	// would reject it, so the converter is the only chance.
 	return true
 }
 
@@ -267,13 +272,17 @@ func converterExtension(contentType string, body []byte) string {
 	case "image/gif":
 		return ".gif"
 	}
-	return imageExtension(body)
+	if ext := strongImageExtension(body); ext != "" {
+		return ext
+	}
+	return weakImageExtension(body)
 }
 
-// imageExtension sniffs the image magic; zip bodies map to the canonical
-// OOXML extension (.docx — the container subtype is not recoverable from
-// the magic alone, and a served content type wins upstream).
-func imageExtension(body []byte) string {
+// strongImageExtension sniffs magics that cannot be confused with text.
+// Zip bodies map to the canonical OOXML extension (.docx — the container
+// subtype is not recoverable from the magic alone, and a served content
+// type wins upstream).
+func strongImageExtension(body []byte) string {
 	switch {
 	case bytes.HasPrefix(body, []byte{0x89, 'P', 'N', 'G'}):
 		return ".png"
@@ -283,12 +292,21 @@ func imageExtension(body []byte) string {
 		return ".tiff"
 	case len(body) >= 12 && bytes.HasPrefix(body, []byte("RIFF")) && bytes.Equal(body[8:12], []byte("WEBP")):
 		return ".webp"
+	case bytes.HasPrefix(body, zipMagic):
+		return ".docx"
+	}
+	return ""
+}
+
+// weakImageExtension sniffs magics that short ASCII prose can also start
+// with ("BM", "GIF8?a"); callers must have classified the body as binary
+// first.
+func weakImageExtension(body []byte) string {
+	switch {
 	case bytes.HasPrefix(body, []byte{'B', 'M'}):
 		return ".bmp"
 	case bytes.HasPrefix(body, []byte("GIF87a")) || bytes.HasPrefix(body, []byte("GIF89a")):
 		return ".gif"
-	case bytes.HasPrefix(body, zipMagic):
-		return ".docx"
 	}
 	return ""
 }
