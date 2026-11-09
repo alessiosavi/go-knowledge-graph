@@ -158,6 +158,25 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/Unavailable"
+  /v1/documents/{id}/content:
+    get:
+      summary: Get one document's stored text rendered to HTML
+      description: Reconstructs the document's stored chunks server-side (overlapping sentences skipped by offset, inter-chunk gaps normalized to paragraph breaks) and renders the markdown with raw HTML omitted and unsafe link/image destinations neutralized. Superseded versions typically have no stored text left.
+      parameters:
+        - $ref: "#/components/parameters/DocumentID"
+      responses:
+        "200":
+          description: document metadata, the rendered HTML and the ordered chunk index
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentContent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
   /v1/search:
     post:
       summary: Search entities, chunks or both
@@ -476,6 +495,30 @@ components:
         title: { type: string }
         score: { type: number, format: double }
         snippet: { type: string }
+        document_id:
+          type: string
+          description: chunk hits only — the owning document id
+    DocumentContent:
+      type: object
+      required: [document, html, chunks]
+      properties:
+        document:
+          $ref: "#/components/schemas/Document"
+        html:
+          type: string
+          description: server-rendered markdown; raw HTML never passes through
+        chunks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChunkRef"
+    ChunkRef:
+      type: object
+      required: [id, seq, start, end]
+      properties:
+        id: { type: string }
+        seq: { type: integer }
+        start: { type: integer }
+        end: { type: integer }
     EntityRef:
       type: object
       required: [id, key, name, type]

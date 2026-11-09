@@ -16,7 +16,8 @@ and measuring extraction quality with the built-in eval harness.
   timeout enforced).
 - **Built-in web UI**: `GET /ui/` serves a self-contained, read-only
   viewer straight from the binary — search, entity cards with evidence,
-  documents, ingest and a one-hop neighborhood; no extra tools needed.
+  documents (with a markdown document reader), ingest and a one-hop
+  neighborhood; no extra tools needed.
 - **Ask the graph**: an optional server-side agent (`POST /v1/agent/ask`,
   disabled by default) answers natural-language questions by running the
   read-only graph tools and returning the raw evidence it used.
@@ -97,6 +98,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) (DCO sign-off, checks, PR flow).
 | GoGPUtils                                       | MIT            | chunk dedup (MinHash/LSH) and token normalization                                                                                                           |
 | neo4j Go driver                                 | Apache-2.0     | Bolt connectivity                                                                                                                                           |
 | go-shiori/go-readability                        | MIT            | HTML → text                                                                                                                                                 |
+| yuin/goldmark                                   | MIT            | server-side markdown rendering for the document reader                                                                                                      |
 | dslipak/pdf                                     | BSD-3-Clause   | best-effort pure-Go PDF text (Go Authors license)                                                                                                           |
 | GLiNEREL (`glinerel-fast`, default local model) | LFM            | **free for commercial use while annual revenue is under $10M USD**; above that a commercial license from the vendor is required                             |
 | gliner2.5 (alternative model family)            | Apache-2.0     | fully free alternative; **not loadable by the pinned glinerel-fast v0.1 runtime — the local swap is a v0.1 item** (use an OpenAI-compatible endpoint today) |
