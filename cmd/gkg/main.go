@@ -505,10 +505,9 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 
 // ingestArg maps the command-line argument to an ingest input: "-" reads
 // stdin as text, an http(s) URL is fetched by the pipeline, anything else
-// is a file path.
-// ingestArg turns the CLI argument into an ingest.Input. An explicit
-// source overrides the derived identity for every kind — the knob for
-// "a renamed file must supersede its old version".
+// is a file path. An explicit source overrides the derived identity for
+// every kind — the knob for "a renamed file must supersede its old
+// version".
 func ingestArg(arg, source string) (ingest.Input, error) {
 	switch {
 	case arg == "-":
