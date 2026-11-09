@@ -113,3 +113,38 @@ func (s *Store) SetEntityEmbedding(ctx context.Context, id string, vec []float64
 		return nil
 	})
 }
+
+// embeddingSpaceMetaID identifies the single :GkgMeta marker node recording
+// the active embedding space.
+const embeddingSpaceMetaID = "embedding_space"
+
+// SetEmbeddingSpace records the active embedding space
+// ("provider|model|dim") in the :GkgMeta marker node and returns the
+// previously recorded value ("" when none). Warn-only tripwire: two
+// providers can share a dimension, so the vector index itself cannot
+// detect a source switch and stored vectors would silently mix spaces.
+func (s *Store) SetEmbeddingSpace(ctx context.Context, space string) (string, error) {
+	previous := ""
+	err := s.runWriteTx(ctx, func(tx neo4j.ManagedTransaction) error {
+		res, err := tx.Run(ctx, `
+MERGE (m:GkgMeta {id: $id})
+WITH m, coalesce(m.space, "") AS previous
+SET m.space = $space
+RETURN previous`, map[string]any{"id": embeddingSpaceMetaID, "space": space})
+		if err != nil {
+			return fmt.Errorf("graph: set embedding space: %w", err)
+		}
+		recs, err := res.Collect(ctx)
+		if err != nil {
+			return fmt.Errorf("graph: set embedding space: %w", err)
+		}
+		if len(recs) > 0 {
+			previous = getString(recs[0], "previous")
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return previous, nil
+}

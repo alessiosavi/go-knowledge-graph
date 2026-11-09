@@ -182,7 +182,7 @@ func TestSearchAliasesAreNotIndexed(t *testing.T) {
 // recall.
 type emptyEmbedder struct{}
 
-func (emptyEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
+func (emptyEmbedder) EmbedQuery(context.Context, string) ([]float64, error) {
 	return nil, nil
 }
 
@@ -220,21 +220,18 @@ func TestRRFHelper(t *testing.T) {
 	}
 }
 
-// vecEmbedder returns a fixed vector for every input (vector-leg stub).
+// vecEmbedder returns a fixed vector for every query (query-leg stub).
 type vecEmbedder struct{ vec []float64 }
 
-func (v vecEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
-	out := make([][]float64, len(texts))
-	for i := range texts {
-		out[i] = v.vec
-	}
-	return out, nil
+func (v vecEmbedder) EmbedQuery(context.Context, string) ([]float64, error) {
+	return v.vec, nil
 }
 
-// TestSearchUsesEmbedderWhenEnabled pins the vector leg: with embeddings
-// enabled and no text match, an entity surfaces purely through the vector
-// index; the query vector equals the stored one, so the distance is zero.
-func TestSearchUsesEmbedderWhenEnabled(t *testing.T) {
+// TestSearchUsesQueryEmbedderWhenEnabled pins the vector leg: with
+// embeddings enabled and no text match, an entity surfaces purely through
+// the vector index; the query vector equals the stored one, so the distance
+// is zero.
+func TestSearchUsesQueryEmbedderWhenEnabled(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()
 	const dim = 768

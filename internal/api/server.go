@@ -36,7 +36,7 @@ type Server struct {
 	cfg     config.Config
 	store   *graph.Store
 	in      Submitter
-	emb     search.Embedder
+	emb     search.QueryEmbedder
 	extra   []mount
 	metrics *obs.Metrics
 	ready   func(context.Context) error
@@ -61,9 +61,9 @@ func (s *Server) Mount(pattern string, h http.Handler) {
 	s.extra = append(s.extra, mount{pattern: pattern, handler: h})
 }
 
-// SetEmbedder attaches the optional embeddings provider used by the search
+// SetEmbedder attaches the optional query embedder used by the search
 // endpoint's entity vector leg; nil (the default) keeps search text-only.
-func (s *Server) SetEmbedder(emb search.Embedder) {
+func (s *Server) SetEmbedder(emb search.QueryEmbedder) {
 	s.emb = emb
 }
 

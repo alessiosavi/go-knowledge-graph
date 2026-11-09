@@ -47,7 +47,7 @@ func TestEmbedOpenAIParsesVectors(t *testing.T) {
 	if p.Name() != "openai" {
 		t.Errorf("Name = %q, want openai", p.Name())
 	}
-	vecs, err := p.Embed(context.Background(), []string{"alpha", "beta"})
+	vecs, err := p.EmbedDocuments(context.Background(), []string{"alpha", "beta"})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestEmbedOpenAIDefaultModel(t *testing.T) {
 	cfg := config.Config{}
 	cfg.Embedder.BaseURL = ts.URL
 	p := NewOpenAI(cfg)
-	if _, err := p.Embed(context.Background(), []string{"x"}); err != nil {
+	if _, err := p.EmbedDocuments(context.Background(), []string{"x"}); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
 	if gotModel != defaultModel {
@@ -127,14 +127,69 @@ func TestEmbedOpenAIErrors(t *testing.T) {
 			cfg.Embedder.BaseURL = ts.URL
 			cfg.Embedder.Dim = tc.dim
 			p := NewOpenAI(cfg)
-			if _, err := p.Embed(context.Background(), []string{"a", "b"}); err == nil {
+			if _, err := p.EmbedDocuments(context.Background(), []string{"a", "b"}); err == nil {
 				t.Fatal("want error")
 			}
 		})
 	}
 
 	p := NewOpenAI(config.Config{})
-	if _, err := p.Embed(context.Background(), nil); err == nil {
+	if _, err := p.EmbedDocuments(context.Background(), nil); err == nil {
 		t.Error("empty input: want error")
+	}
+}
+
+func TestOpenAIEmbedQuerySingleText(t *testing.T) {
+	var gotInput []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotInput = req.Input
+		fmt.Fprint(w, `{"data":[{"index":0,"embedding":[0.25,0.75]}]}`)
+	}))
+	defer ts.Close()
+
+	cfg := config.Config{}
+	cfg.Embedder.BaseURL = ts.URL
+	p := NewOpenAI(cfg)
+	vec, err := p.EmbedQuery(context.Background(), "solo")
+	if err != nil {
+		t.Fatalf("EmbedQuery: %v", err)
+	}
+	if len(gotInput) != 1 || gotInput[0] != "solo" {
+		t.Errorf("input = %v, want the single query text", gotInput)
+	}
+	if len(vec) != 2 || vec[0] != 0.25 || vec[1] != 0.75 {
+		t.Errorf("vector = %v, want the single returned vector", vec)
+	}
+}
+
+func TestOpenAIEmbedQueryErrorsOnBadResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"data":[]}`) // zero vectors for one text
+	}))
+	defer ts.Close()
+	cfg := config.Config{}
+	cfg.Embedder.BaseURL = ts.URL
+	p := NewOpenAI(cfg)
+	if _, err := p.EmbedQuery(context.Background(), "solo"); err == nil {
+		t.Fatal("want error when the response carries no vector")
+	}
+}
+
+func TestOpenAISpace(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Embedder.Dim = 768
+	p := NewOpenAI(cfg)
+	if got := p.Space(); got != "openai|text-embedding-3-small|768" {
+		t.Errorf("Space = %q, want openai|text-embedding-3-small|768", got)
+	}
+	cfg.Embedder.Model = "custom-model"
+	cfg.Embedder.Dim = 1536
+	p = NewOpenAI(cfg)
+	if got := p.Space(); got != "openai|custom-model|1536" {
+		t.Errorf("Space = %q, want openai|custom-model|1536", got)
 	}
 }

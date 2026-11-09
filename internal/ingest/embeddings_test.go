@@ -18,14 +18,14 @@ import (
 // failingEmbedder always fails: embeddings are additive, never gating.
 type failingEmbedder struct{}
 
-func (failingEmbedder) Embed(context.Context, []string) ([][]float64, error) {
+func (failingEmbedder) EmbedDocuments(context.Context, []string) ([][]float64, error) {
 	return nil, errors.New("embedder down")
 }
 
 // fixedEmbedder returns the same vector for every text.
 type fixedEmbedder struct{ vec []float64 }
 
-func (f fixedEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
+func (f fixedEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float64, error) {
 	out := make([][]float64, len(texts))
 	for i := range texts {
 		out[i] = f.vec
@@ -40,7 +40,7 @@ type recordingEmbedder struct {
 	batches [][]string
 }
 
-func (r *recordingEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
+func (r *recordingEmbedder) EmbedDocuments(_ context.Context, texts []string) ([][]float64, error) {
 	r.mu.Lock()
 	r.batches = append(r.batches, append([]string(nil), texts...))
 	r.mu.Unlock()

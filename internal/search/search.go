@@ -14,10 +14,10 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
-// Embedder is the optional embedding provider (structurally satisfied by
-// the embed provider); nil means text-only search.
-type Embedder interface {
-	Embed(ctx context.Context, texts []string) ([][]float64, error)
+// QueryEmbedder embeds a query text (structurally satisfied by the embed
+// providers); nil means text-only search.
+type QueryEmbedder interface {
+	EmbedQuery(ctx context.Context, text string) ([]float64, error)
 }
 
 // Hit is one search result.
@@ -58,7 +58,7 @@ func FuseRanks(legs [][]string) map[string]float64 {
 // Query searches entities, chunks or both. Entity search fuses text hits
 // with vector hits when an embedder is configured — a vector miss never
 // drops text recall. Chunks are text-only in v0.
-func Query(ctx context.Context, st *graph.Store, emb Embedder, q, kind string, limit int) ([]Hit, error) {
+func Query(ctx context.Context, st *graph.Store, emb QueryEmbedder, q, kind string, limit int) ([]Hit, error) {
 	if strings.TrimSpace(q) == "" {
 		return nil, fmt.Errorf("search: empty query")
 	}
@@ -89,7 +89,7 @@ type entityRow struct {
 	id, name, typ string
 }
 
-func entityHits(ctx context.Context, st *graph.Store, emb Embedder, q string, limit int) ([]Hit, error) {
+func entityHits(ctx context.Context, st *graph.Store, emb QueryEmbedder, q string, limit int) ([]Hit, error) {
 	recs, err := st.EntityTextSearch(ctx, q, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search: entity text leg: %w", err)
@@ -141,16 +141,16 @@ func entityHits(ctx context.Context, st *graph.Store, emb Embedder, q string, li
 // vectorLeg embeds the query and returns entity ids ordered by vector
 // distance. Any failure (no embedder output, missing vector index) skips
 // the leg — text recall is never dropped by a vector problem.
-func vectorLeg(ctx context.Context, st *graph.Store, emb Embedder, q string, limit int) ([]string, bool) {
-	vecs, err := emb.Embed(ctx, []string{q})
+func vectorLeg(ctx context.Context, st *graph.Store, emb QueryEmbedder, q string, limit int) ([]string, bool) {
+	vec, err := emb.EmbedQuery(ctx, q)
 	if err != nil {
 		slog.Warn("search: embedding failed, text-only results", "err", err)
 		return nil, false
 	}
-	if len(vecs) != 1 || len(vecs[0]) == 0 {
+	if len(vec) == 0 {
 		return nil, false
 	}
-	ids, err := st.EntityVectorSearch(ctx, vecs[0], limit)
+	ids, err := st.EntityVectorSearch(ctx, vec, limit)
 	if err != nil {
 		slog.Warn("search: vector index unavailable, text-only results", "err", err)
 		return nil, false

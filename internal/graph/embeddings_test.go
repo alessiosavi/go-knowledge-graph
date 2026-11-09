@@ -205,3 +205,59 @@ func TestSetEntityEmbeddingsBatch(t *testing.T) {
 		t.Error("empty vector: want error")
 	}
 }
+
+// readEmbeddingSpace reads the marker node directly (not through the
+// setter), so the roundtrip test can discover the pre-existing value on
+// the shared persistent dev database.
+func readEmbeddingSpace(t *testing.T, st *graph.Store) string {
+	t.Helper()
+	res, err := st.RunReadQuery(context.Background(),
+		"MATCH (m:GkgMeta {id: 'embedding_space'}) RETURN coalesce(m.space, '') AS space", nil, 0)
+	if err != nil {
+		t.Fatalf("read embedding space: %v", err)
+	}
+	if len(res.Rows) == 0 {
+		return ""
+	}
+	s, _ := res.Rows[0]["space"].(string)
+	return s
+}
+
+// TestSetEmbeddingSpaceRoundtripAndPrevious is state-agnostic (the dev DB
+// carries the marker across runs): it compares against the pre-read value
+// instead of assuming a fresh database.
+func TestSetEmbeddingSpaceRoundtripAndPrevious(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	tag := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	pre := readEmbeddingSpace(t, st)
+	spaceA := "test-space-a-" + tag
+	prev, err := st.SetEmbeddingSpace(ctx, spaceA)
+	if err != nil {
+		t.Fatalf("SetEmbeddingSpace(A): %v", err)
+	}
+	if prev != pre {
+		t.Errorf("previous = %q, want the pre-existing value %q", prev, pre)
+	}
+	if got := readEmbeddingSpace(t, st); got != spaceA {
+		t.Errorf("stored space = %q, want %q", got, spaceA)
+	}
+
+	prev, err = st.SetEmbeddingSpace(ctx, spaceA)
+	if err != nil {
+		t.Fatalf("SetEmbeddingSpace(A again): %v", err)
+	}
+	if prev != spaceA {
+		t.Errorf("repeat previous = %q, want %q", prev, spaceA)
+	}
+
+	spaceB := "test-space-b-" + tag
+	prev, err = st.SetEmbeddingSpace(ctx, spaceB)
+	if err != nil {
+		t.Fatalf("SetEmbeddingSpace(B): %v", err)
+	}
+	if prev != spaceA {
+		t.Errorf("switch previous = %q, want %q", prev, spaceA)
+	}
+}
