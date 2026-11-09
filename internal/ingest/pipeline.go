@@ -388,8 +388,9 @@ func (p *Pipeline) loadInput(ctx context.Context, in Input) (Loaded, error) {
 }
 
 // loadFor returns the cached submission content or re-decodes from the
-// document's stored identity (URL refetch / file re-read; text documents
-// without cache cannot be reloaded after a restart).
+// document's stored identity: URL documents re-fetch their FinalURL (the
+// submitted string may be a caller-supplied identity override), file and
+// text documents cannot be reloaded and fail with a resubmit hint.
 func (p *Pipeline) loadFor(ctx context.Context, doc *graph.Document) (Loaded, error) {
 	p.mu.Lock()
 	sub, ok := p.pending[doc.ID]
@@ -397,7 +398,11 @@ func (p *Pipeline) loadFor(ctx context.Context, doc *graph.Document) (Loaded, er
 	if ok {
 		return sub.loaded, nil
 	}
-	return p.loadInput(ctx, Input{Kind: doc.SourceKind, Source: doc.Source, URL: doc.Source, Title: doc.Title})
+	target := doc.Source
+	if doc.SourceKind == "url" && doc.FinalURL != "" {
+		target = doc.FinalURL
+	}
+	return p.loadInput(ctx, Input{Kind: doc.SourceKind, Source: doc.Source, URL: target, Title: doc.Title})
 }
 
 func (p *Pipeline) labelName(doc *graph.Document) string {

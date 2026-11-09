@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/alessiosavi/GoGPUtils v1.5.0
+	github.com/dslipak/pdf v0.0.2
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/neo4j/neo4j-go-driver/v5 v5.28.6
 	golang.org/x/net v0.62.0
