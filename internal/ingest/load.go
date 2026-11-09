@@ -272,6 +272,9 @@ func converterExtension(contentType string, body []byte) string {
 	case "image/gif":
 		return ".gif"
 	}
+	if bytes.HasPrefix(body, []byte("%PDF")) {
+		return ".pdf"
+	}
 	if ext := strongImageExtension(body); ext != "" {
 		return ext
 	}
