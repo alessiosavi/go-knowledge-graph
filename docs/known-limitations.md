@@ -70,7 +70,10 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
 
 - With `Embedder.Enabled` the pipeline embeds each ingested document's
   distinct entity names after merge (batches of ≤64) and ensures the
-  `entity_vec` vector index (cosine, capacity 10k). With `Embedder.Dim > 0`
+  `entity_vec` vector index (cosine, capacity 10k); the provider is the
+  OpenAI-compatible default or the asymmetric `furls` service (see
+  [quickstart](quickstart.md#6-optional-embeddings-and-the-judge)). With
+  `Embedder.Dim > 0`
   the dimension is requested from the provider (`dimensions` parameter) and
   validated on every response; `Dim = 0` accepts the provider's native
   dimension. Embedder failures are logged and never fail a document:
@@ -86,6 +89,17 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
   vector searches error until Memgraph reclaims them (observed within about
   a minute); searches degrade to text-only meanwhile (never dropping text
   recall) — rebuild the index after such maintenance.
+- **Embedding-space switches are warn-only**: vectors from different
+  providers/models live in different spaces, and two 768d spaces are
+  indistinguishable to the store. At startup gkg records the active space
+  (`provider|model|dim`) in a `:GkgMeta` marker node and logs a prominent
+  warning when it differs from the stored one; the migration is to clear
+  `Entity.embedding`, `DROP VECTOR INDEX entity_vec` and re-ingest (see
+  [quickstart](quickstart.md#6-optional-embeddings-and-the-judge)).
+- With the `furls` provider, every distinct entity name embedded at ingest
+  becomes a persisted document-side row in the embeddings service (its
+  content-hash cache, no TTL) — that is the service's contract and what
+  makes unchanged re-ingests cheap.
 
 ## Text search and aliases
 

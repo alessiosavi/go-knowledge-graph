@@ -20,8 +20,9 @@ and measuring extraction quality with the built-in eval harness.
   `--out` report carries the full strict/lenient P/R/F1 table on a golden
   set.
 - **Optional embeddings**: entity vectors fuse into search when an
-  OpenAI-compatible `/embeddings` endpoint is configured; without one,
-  search is text-only.
+  OpenAI-compatible `/embeddings` endpoint or the asymmetric `furls`
+  service (separate document and query Function URLs, 768d) is configured;
+  without one, search is text-only.
 
 Everything runs from one static Go binary (`gkg`) plus a Memgraph instance;
 the sidecar profile adds a local, fully-offline extraction option.
@@ -65,8 +66,8 @@ product's limits in [docs/known-limitations.md](docs/known-limitations.md).
 (secrets), all documented with defaults in [.env.example](.env.example).
 Highlights: `GKG_EXTRACTOR_MODE=openai|sidecar|mock`,
 `GKG_JUDGE_MODE=off|low-confidence|sample|all`,
-`GKG_EMBEDDER_ENABLED`, `GKG_API_KEY` (optional bearer auth for HTTP),
-`GKG_LIMITS_CYPHER_ROWS`.
+`GKG_EMBEDDER_ENABLED`, `GKG_EMBEDDER_PROVIDER=openai|furls`,
+`GKG_API_KEY` (optional bearer auth for HTTP), `GKG_LIMITS_CYPHER_ROWS`.
 
 ## Development
 

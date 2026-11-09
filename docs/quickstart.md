@@ -118,11 +118,45 @@ acceptance check (`scripts/acceptance.sh` prints it as a SKIP).
 
 ## 6. Optional: embeddings and the judge
 
+Two embedding providers feed the entity-vector search leg:
+
 ```sh
-# entity-embedding vector search leg (OpenAI-compatible /embeddings)
+# OpenAI-compatible /embeddings (default provider)
 GKG_EMBEDDER_ENABLED=true
 GKG_EMBEDDER_API_KEY=<key>
 
+# asymmetric embeddings service (document and query Function URLs, 768d)
+GKG_EMBEDDER_ENABLED=true
+GKG_EMBEDDER_PROVIDER=furls
+# the endpoints and the shared secret live in .env (never committed):
+#   EMBED_QUERY_FURL=<embed_query Function URL>
+#   EMBED_PRODUCT_FURL=<embed_product Function URL>
+#   EMBED_API_KEY=<shared secret>
+```
+
+The `furls` provider embeds documents at ingest (`embed_product`) and queries
+at search (`embed_query`) — the service applies its own asymmetric prompt
+packing, and the shared secret travels in the `x-api-key` header. Startup
+fails fast when an endpoint or the secret is missing, or when
+`GKG_EMBEDDER_MODEL` is set to anything but the service's allowlisted model
+(`gemini-embedding-2`; leave it empty to default).
+
+**Switching embedding spaces** (e.g. OpenAI → furls) needs a manual reset:
+the store can only hold one space per index, and both spaces here are 768d,
+so the switch is invisible to Memgraph. Clear the old vectors and rebuild:
+
+```cypher
+MATCH (e:Entity) WHERE e.embedding IS NOT NULL REMOVE e.embedding;
+DROP VECTOR INDEX entity_vec;
+```
+
+then re-ingest; unchanged documents need an explicit forced re-submission
+(`"force":true` on the REST submission or the MCP `ingest` tool). At startup
+gkg records the active space and logs a prominent warning when it differs
+from the stored one — if you see that warning, run the migration above
+first.
+
+```sh
 # online fact verification (real key; off by default)
 GKG_JUDGE_MODE=low-confidence      # off | low-confidence | sample | all
 GKG_JUDGE_API_KEY=<key>
