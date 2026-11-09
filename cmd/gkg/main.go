@@ -22,6 +22,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/convert"
 	"github.com/alessiosavi/go-knowledge-graph/internal/dedup"
 	"github.com/alessiosavi/go-knowledge-graph/internal/embed"
 	"github.com/alessiosavi/go-knowledge-graph/internal/eval"
@@ -245,6 +246,24 @@ func embedderFromConfig(cfg config.Config) (embed.Provider, error) {
 	}
 }
 
+// converterFromConfig builds the optional high-quality document converter:
+// nil when off, a validated docling client when configured. Every validation
+// error names the environment variable to fix.
+func converterFromConfig(cfg config.Config) (convert.Converter, error) {
+	switch cfg.Converter.Mode {
+	case "", "off":
+		return nil, nil
+	case "docling":
+		u, err := url.Parse(cfg.Converter.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return nil, errors.New("converter docling: GKG_CONVERTER_URL must be a valid http(s) URL")
+		}
+		return convert.New(cfg), nil
+	default:
+		return nil, fmt.Errorf("converter: unknown mode %q (want off or docling)", cfg.Converter.Mode)
+	}
+}
+
 // buildPipeline wires the extractor, the re-seeded dedup index, the
 // optional judge and embedder and the text loader on an open store; the
 // returned pipeline is ready for submissions. serve, mcp and ingest share
@@ -263,7 +282,11 @@ func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*in
 		return nil, nil, err
 	}
 	seedDedupIndex(ix, fps)
-	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg)))
+	conv, err := converterFromConfig(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg), conv))
 	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
 		pipe.SetJudge(judge.NewClient(cfg))
 	}

@@ -25,7 +25,9 @@ and measuring extraction quality with the built-in eval harness.
   without one, search is text-only.
 
 Everything runs from one static Go binary (`gkg`) plus a Memgraph instance;
-the sidecar profile adds a local, fully-offline extraction option.
+the sidecar profile adds a local, fully-offline extraction option, and the
+`docling` profile optional high-quality conversion of PDFs/Office/images to
+markdown via docling-serve.
 
 ## Quickstart
 
@@ -36,7 +38,7 @@ curl -s -F 'file=@notes.md' localhost:8080/v1/ingest
 ```
 
 Then connect an agent ([docs/agent-setup.md](docs/agent-setup.md)),
-evaluate ([docs/quickstart.md#7-evaluation](docs/quickstart.md)), or run
+evaluate ([docs/quickstart.md#8-evaluation](docs/quickstart.md)), or run
 the acceptance script (`scripts/acceptance.sh`). The full five-minute tour,
 configuration reference and troubleshooting live in
 [docs/quickstart.md](docs/quickstart.md).
@@ -49,6 +51,7 @@ configuration reference and troubleshooting live in
 | `internal/api`     | REST `/v1/*`, health/metrics, bearer auth, body caps, read-only Cypher guard       |
 | `internal/mcp`     | the seven agent tools over stdio and streamable HTTP                               |
 | `internal/ingest`  | pipeline, worker pool, recovery, dedup, URL/PDF/HTML inputs                        |
+| `internal/convert` | optional docling-serve converter (PDF/Office/images → markdown)                    |
 | `internal/graph`   | Memgraph store: documents/chunks/entities/facts, supersede, GC, text/vector search |
 | `internal/search`  | entity/chunk search with rank fusion of text and optional embedding legs           |
 | `internal/extract` | extractor contract + OpenAI-compatible and GLiNEREL-sidecar providers              |

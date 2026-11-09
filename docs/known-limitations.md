@@ -24,6 +24,12 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
   tests.
 - The optional sidecar's higher-quality PDF text path is an explicit v0.1
   deferral; the sidecar in v0.1 extracts entities only.
+- With `GKG_CONVERTER_MODE=docling` (see
+  [quickstart](quickstart.md#7-optional-high-quality-document-ingestion-docling))
+  the `docling` profile converts PDFs (scans included), Office formats and
+  images to markdown before the pipeline; a conversion failure fails the
+  document with the converter's reason instead of falling back to the
+  best-effort path.
 
 ### Fixture extraction results (recorded)
 
@@ -41,6 +47,10 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
 - **File and text** submissions **cannot** be reloaded after a restart
   (bytes and raw text are not stored); they fail cleanly with a
   "resubmit the content" error and are retried by resubmitting.
+- **docling mode**: URL documents re-fetch and re-convert on restart and
+  are hash-checked like any source — a conversion that is not byte-stable
+  across runs fails with the existing resubmit hint. File/text reload rules
+  are unchanged (bytes are not stored).
 
 ## Other v0.1 notes
 

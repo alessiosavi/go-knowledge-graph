@@ -169,7 +169,32 @@ without them search is text-only. The judge verifies facts after extraction
 against their evidence sentence and removes refuted ones with an audit
 trail.
 
-## 7. Evaluation
+## 7. Optional: high-quality document ingestion (docling)
+
+The `docling` compose profile runs
+[docling-serve](https://github.com/docling-project/docling-serve) (CPU
+image, ~4.4 GB, model weights included) and converts rich formats — scanned
+PDFs, DOCX/PPTX/XLSX, images — to clean markdown that enters the same
+pipeline as any other document:
+
+```sh
+# in .env:
+#   GKG_CONVERTER_MODE=docling
+docker compose --env-file .env --profile docling -f deploy/docker-compose.yml up -d docling
+```
+
+With `GKG_CONVERTER_MODE=docling`, PDF, Office and image inputs are
+converted by the sidecar instead of the best-effort pure-Go PDF path. The
+sidecar publishes loopback `127.0.0.1:5001`, so host-run builds use
+`GKG_CONVERTER_URL=http://localhost:5001` (compose defaults to
+`http://docling:5001`). Set `DOCLING_API_KEY` in `.env` to require the
+`X-Api-Key` header on the sidecar. A conversion failure fails the document
+with the converter's reason — there is no silent fallback.
+`GKG_CONVERTER_TIMEOUT_S` (default 300) bounds a conversion; the server's
+sync wait is pinned just below it, so a slow document surfaces an
+explanatory HTTP 504 (the task keeps running server-side).
+
+## 8. Evaluation
 
 ```sh
 docker compose --env-file .env -f deploy/docker-compose.yml run --rm \
@@ -186,7 +211,7 @@ searches confidence floors, and `--out report` writes `report.md` +
 `report.json` — mount a writable directory for that, e.g.
 `-v "$PWD:/work" -w /work`.
 
-## 8. Health, metrics, acceptance
+## 9. Health, metrics, acceptance
 
 - `GET /healthz` (liveness), `GET /readyz` (Memgraph connectivity),
   `GET /metrics` (Prometheus) — all exempt from the optional API key

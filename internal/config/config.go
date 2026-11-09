@@ -26,6 +26,7 @@ type Config struct {
 	Server    ServerConfig    `yaml:"server"`
 	Extractor ExtractorConfig `yaml:"extractor"`
 	Embedder  EmbedderConfig  `yaml:"embedder"`
+	Converter ConverterConfig `yaml:"converter"`
 	Judge     JudgeConfig     `yaml:"judge"`
 	Ingest    IngestConfig    `yaml:"ingest"`
 	Labels    LabelsConfig    `yaml:"labels"`
@@ -78,6 +79,16 @@ type EmbedderConfig struct {
 	BatchSize   int    `yaml:"batch_size"`   // furls: entries per request (0 = one request)
 }
 
+// ConverterConfig configures the optional high-quality document converter
+// (a docling-serve sidecar).
+type ConverterConfig struct {
+	Mode          string `yaml:"mode"` // off | docling
+	URL           string `yaml:"url"`
+	APIKey        string `yaml:"api_key"`
+	TimeoutS      int    `yaml:"timeout_s"`
+	MaxResponseMB int    `yaml:"max_response_mb"`
+}
+
 // JudgeConfig configures the optional online verification judge.
 type JudgeConfig struct {
 	Mode        string  `yaml:"mode"` // off | low-confidence | sample | all
@@ -127,6 +138,11 @@ func defaults() Config {
 			Enabled: false,
 			BaseURL: "https://api.openai.com/v1",
 			Dim:     768,
+		},
+		Converter: ConverterConfig{
+			Mode:          "off",
+			TimeoutS:      300,
+			MaxResponseMB: 32,
 		},
 		Judge: JudgeConfig{
 			Mode:        "off",

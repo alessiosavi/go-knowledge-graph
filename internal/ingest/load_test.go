@@ -96,7 +96,7 @@ func TestDefaultLoaderMirrorsIdentityPrecedence(t *testing.T) {
 		w.Write([]byte("URL wins."))
 	}))
 	t.Cleanup(srv.Close)
-	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}})
+	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, nil)
 
 	// URL is the identity-inferred kind first; the loader must match.
 	l, err := loader(context.Background(), Input{Text: "INLINE", URL: srv.URL})
@@ -109,7 +109,7 @@ func TestDefaultLoaderMirrorsIdentityPrecedence(t *testing.T) {
 }
 
 func TestDefaultLoaderReloadErrorsAreClear(t *testing.T) {
-	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}})
+	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, nil)
 	for _, in := range []Input{
 		{Kind: "file", Source: "notes.md", URL: "notes.md"},
 		{Kind: "text", Source: "abc12345", URL: "abc12345"},
@@ -213,7 +213,7 @@ func TestDefaultLoaderReloadKindGating(t *testing.T) {
 		w.Write([]byte("real content"))
 	}))
 	t.Cleanup(srv.Close)
-	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}})
+	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, nil)
 
 	// kind=file with a URL-shaped source must fail with a resubmit hint,
 	// never fetch.
@@ -248,7 +248,7 @@ func TestRecoveryReloadURLDocument(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}})
+	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, nil)
 	p1 := NewPipeline(cfg, st, &extract.Mock{}, dedup.New(), loader)
 	res, err := p1.Submit(ctx, Input{Kind: "url", URL: srv.URL + "/doc", Source: "custom-id"})
 	if err != nil {
@@ -283,7 +283,7 @@ func TestRecoveryReloadFileDocumentFailsCleanly(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}})
+	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, nil)
 	p1 := NewPipeline(cfg, st, &extract.Mock{}, dedup.New(), loader)
 	res, err := p1.Submit(ctx, Input{Kind: "file", Source: "notes.md", Bytes: []byte("File body that will not be reloadable.")})
 	if err != nil {
@@ -462,7 +462,7 @@ func TestDefaultLoader(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}})
+	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, nil)
 
 	t.Run("inline text", func(t *testing.T) {
 		l, err := loader(context.Background(), Input{Text: "inline text"})
@@ -495,8 +495,204 @@ func TestDefaultLoader(t *testing.T) {
 }
 
 func TestDefaultLoaderNilFetcher(t *testing.T) {
-	loader := DefaultLoader(nil)
+	loader := DefaultLoader(nil, nil)
 	if _, err := loader(context.Background(), Input{URL: "https://x.example/"}); err == nil {
 		t.Fatal("url input with a nil fetcher: want error")
 	}
+}
+
+// stubConverter records the last Convert call and answers with md (or err).
+type stubConverter struct {
+	calls    int
+	lastBody []byte
+	lastName string
+	lastCT   string
+	md       string
+	err      error
+}
+
+func (s *stubConverter) Convert(_ context.Context, body []byte, filename, contentType string) (string, error) {
+	s.calls++
+	s.lastBody = append([]byte(nil), body...)
+	s.lastName, s.lastCT = filename, contentType
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.md, nil
+}
+
+// TestLoaderConverterDispatchesPdfZipImage pins the sniff dispatch: with a
+// converter attached, PDF, zip (OOXML) and image bodies go through it and
+// the returned markdown becomes the loaded text (hash included).
+func TestLoaderConverterDispatchesPdfZipImage(t *testing.T) {
+	png := append([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, []byte("pngdata")...)
+	cases := []struct {
+		name string
+		body []byte
+		want string // detected part content type
+	}{
+		{"pdf", []byte("%PDF-1.4 converts"), "application/pdf"},
+		{"zip", []byte("PK\x03\x04zipbytes"), "application/zip"},
+		{"image", png, "image/png"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conv := &stubConverter{md: "# md from " + tc.name}
+			loader := DefaultLoader(nil, conv)
+			l, err := loader(context.Background(), Input{Kind: "file", Source: "doc." + tc.name, Bytes: tc.body})
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if l.Text != conv.md {
+				t.Errorf("text = %q, want the converter markdown", l.Text)
+			}
+			if l.Hash != sha256Hex(l.Text) || l.Hash == "" {
+				t.Errorf("hash = %q, want sha256 of the converted markdown", l.Hash)
+			}
+			if conv.calls != 1 {
+				t.Fatalf("converter calls = %d, want 1", conv.calls)
+			}
+			if conv.lastName != "doc."+tc.name {
+				t.Errorf("filename = %q, want the source name", conv.lastName)
+			}
+			if conv.lastCT != tc.want {
+				t.Errorf("content-type = %q, want %q (file inputs detect from bytes)", conv.lastCT, tc.want)
+			}
+			if string(conv.lastBody) != string(tc.body) {
+				t.Errorf("body = %q, want the raw document bytes", conv.lastBody)
+			}
+		})
+	}
+}
+
+func TestLoaderConverterKeepsHtmlReadability(t *testing.T) {
+	conv := &stubConverter{md: "SHOULD NOT BE USED"}
+	loader := DefaultLoader(nil, conv)
+	body := []byte(`<html><body><article><p>Città perché is readable. Città perché is readable. Città perché is readable.</p></article></body></html>`)
+	l, err := loader(context.Background(), Input{Kind: "file", Source: "page.html", Bytes: body})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if conv.calls != 0 {
+		t.Errorf("converter calls = %d, want 0 (HTML keeps the readability path)", conv.calls)
+	}
+	if !strings.Contains(l.Text, "Città perché is readable.") {
+		t.Errorf("text = %q, want the readability output", l.Text)
+	}
+}
+
+func TestLoaderConverterPassesTextThrough(t *testing.T) {
+	conv := &stubConverter{md: "SHOULD NOT BE USED"}
+	loader := DefaultLoader(nil, conv)
+	l, err := loader(context.Background(), Input{Kind: "file", Source: "notes.md", Bytes: []byte("# Heading\n\nBody text.")})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if conv.calls != 0 {
+		t.Errorf("converter calls = %d, want 0 (text passes through)", conv.calls)
+	}
+	if l.Text != "# Heading\n\nBody text." {
+		t.Errorf("text = %q, want the markdown passthrough", l.Text)
+	}
+}
+
+func TestLoaderConverterFailureFailsLoad(t *testing.T) {
+	conv := &stubConverter{err: errors.New("docling boom")}
+	loader := DefaultLoader(nil, conv)
+	_, err := loader(context.Background(), Input{Kind: "file", Source: "scanned.pdf", Bytes: []byte("%PDF-1.4 scanned")})
+	if err == nil || !strings.Contains(err.Error(), "docling boom") {
+		t.Fatalf("load err = %v, want the converter failure surfaced", err)
+	}
+}
+
+func TestLoaderConverterOffUnchanged(t *testing.T) {
+	loader := DefaultLoader(nil, nil)
+	// A binary body with no converter keeps the existing decode rejection.
+	png := append([]byte{0x89, 0x50, 0x4E, 0x47, 0xFF, 0xFE}, byte(0x00))
+	if _, err := loader(context.Background(), Input{Kind: "file", Source: "x.bin", Bytes: png}); err == nil {
+		t.Fatal("binary with no converter: want the existing decode error")
+	}
+	// Text passthrough is identical.
+	l, err := loader(context.Background(), Input{Kind: "file", Source: "x.txt", Bytes: []byte("text body")})
+	if err != nil || l.Text != "text body" {
+		t.Fatalf("load = %+v, %v; want the unchanged passthrough", l, err)
+	}
+}
+
+// TestLoaderFilenameDerivation pins the multipart naming contract: file
+// inputs keep their source name (content type detected from bytes); URL
+// inputs use the path basename when it carries an extension, else the
+// sniffed canonical extension; the fetched content type is passed through.
+func TestLoaderFilenameDerivation(t *testing.T) {
+	t.Run("file keeps its source name and detects the content type", func(t *testing.T) {
+		conv := &stubConverter{md: "x"}
+		loader := DefaultLoader(nil, conv)
+		body := []byte("%PDF-1.4 minimal")
+		if _, err := loader(context.Background(), Input{Kind: "file", Source: "notes.docx", Bytes: body}); err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if conv.lastName != "notes.docx" {
+			t.Errorf("filename = %q, want the source name", conv.lastName)
+		}
+		if conv.lastCT != http.DetectContentType(body) {
+			t.Errorf("content-type = %q, want DetectContentType(bytes)", conv.lastCT)
+		}
+	})
+
+	t.Run("url uses the path basename when it has an extension", func(t *testing.T) {
+		body := []byte("%PDF-1.4 served")
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/pdf")
+			_, _ = w.Write(body)
+		}))
+		t.Cleanup(srv.Close)
+		conv := &stubConverter{md: "x"}
+		loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, conv)
+		if _, err := loader(context.Background(), Input{Kind: "url", URL: srv.URL + "/files/report.pdf"}); err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if conv.lastName != "report.pdf" {
+			t.Errorf("filename = %q, want the URL path basename", conv.lastName)
+		}
+		if conv.lastCT != "application/pdf" {
+			t.Errorf("content-type = %q, want the fetched content type", conv.lastCT)
+		}
+	})
+
+	t.Run("url without an extension gets the sniffed canonical extension", func(t *testing.T) {
+		png := append([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, []byte("imagedata")...)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(png)
+		}))
+		t.Cleanup(srv.Close)
+		conv := &stubConverter{md: "x"}
+		loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, conv)
+		if _, err := loader(context.Background(), Input{Kind: "url", URL: srv.URL + "/download"}); err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if conv.lastName != "download.png" {
+			t.Errorf("filename = %q, want the basename plus the sniffed extension", conv.lastName)
+		}
+		if conv.lastCT != "image/png" {
+			t.Errorf("content-type = %q, want the fetched content type", conv.lastCT)
+		}
+	})
+
+	t.Run("url with an opaque path uses a document name", func(t *testing.T) {
+		body := []byte("%PDF-1.4 opaque")
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/pdf")
+			_, _ = w.Write(body)
+		}))
+		t.Cleanup(srv.Close)
+		conv := &stubConverter{md: "x"}
+		loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, conv)
+		if _, err := loader(context.Background(), Input{Kind: "url", URL: srv.URL + "/"}); err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if conv.lastName != "document.pdf" {
+			t.Errorf("filename = %q, want document.pdf for an opaque path", conv.lastName)
+		}
+	})
 }
