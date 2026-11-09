@@ -78,6 +78,41 @@ func decode[T any](t *testing.T, rr *httptest.ResponseRecorder) T {
 	return v
 }
 
+// TestAuthAppliesToMountedHandlers pins that extra handlers mounted through
+// Mount (e.g. the MCP streamable endpoint) sit behind the same bearer
+// policy as the built-in routes.
+func TestAuthAppliesToMountedHandlers(t *testing.T) {
+	noContent := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	cfg := config.Config{}
+	cfg.Server.APIKey = "sekret"
+	secured := NewServer(cfg, nil, nil)
+	secured.Mount("/mcp", noContent)
+	h := secured.Handler()
+
+	rr := do(t, h, http.MethodPost, "/mcp", strings.NewReader("{}"), map[string]string{"Content-Type": "application/json"})
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("mounted handler without token: code = %d, want 401", rr.Code)
+	}
+	rr = do(t, h, http.MethodPost, "/mcp", strings.NewReader("{}"), map[string]string{
+		"Content-Type":  "application/json",
+		"Authorization": "Bearer sekret",
+	})
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("mounted handler with token: code = %d, want the handler's 204", rr.Code)
+	}
+
+	// Without a key the mounted handler is reachable directly.
+	open := NewServer(config.Config{}, nil, nil)
+	open.Mount("/mcp", noContent)
+	rr = do(t, open.Handler(), http.MethodPost, "/mcp", strings.NewReader("{}"), map[string]string{"Content-Type": "application/json"})
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("mounted handler without a configured key: code = %d, want 204", rr.Code)
+	}
+}
+
 func TestAuthRequiredOnlyWhenKeySet(t *testing.T) {
 	// A write query keeps the request store-free: the guard answers 400
 	// before any database access, so a wrong 401 is distinguishable.

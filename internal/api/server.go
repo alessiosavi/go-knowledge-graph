@@ -32,12 +32,26 @@ type Server struct {
 	cfg   config.Config
 	store *graph.Store
 	in    Submitter
+	extra []mount
+}
+
+// mount is an extra handler registered under a pattern.
+type mount struct {
+	pattern string
+	handler http.Handler
 }
 
 // NewServer wires the REST surface. store is the open graph store; in
 // accepts ingestion submissions (nil answers 501 on POST /v1/ingest).
 func NewServer(cfg config.Config, store *graph.Store, in Submitter) *Server {
 	return &Server{cfg: cfg, store: store, in: in}
+}
+
+// Mount registers an extra handler under pattern (e.g. the MCP streamable
+// endpoint); the bearer policy applies to it like any other non-exempt
+// path. Call it before Handler().
+func (s *Server) Mount(pattern string, h http.Handler) {
+	s.extra = append(s.extra, mount{pattern: pattern, handler: h})
 }
 
 // Handler returns the routed surface with bearer authentication applied.
@@ -51,6 +65,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/entities/{id}", s.handleEntity)
 	mux.HandleFunc("POST /v1/traverse", s.handleTraverse)
 	mux.HandleFunc("POST /v1/cypher", s.handleCypher)
+	for _, m := range s.extra {
+		mux.Handle(m.pattern, m.handler)
+	}
 	return s.withAuth(mux)
 }
 

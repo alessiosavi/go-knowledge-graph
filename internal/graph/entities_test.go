@@ -639,3 +639,37 @@ func testFloat(r *neo4j.Record, key string) float64 {
 	}
 	return 0
 }
+
+// TestEntityByNameIsExactNotRanked pins that name resolution is an exact
+// case-folded property match, immune to the text index's fuzzy top-N:
+// decoys whose names merely contain the token must not hide the exact
+// entity, and a miss reports ErrNotFound.
+func TestEntityByNameIsExactNotRanked(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	tag := strconv.FormatInt(time.Now().UnixNano(), 36)
+	name := "nebulon" + tag
+	docID, chunkID := entitiesTestDoc(t, st, "placeholder "+name)
+
+	// The exact target plus more than ten fuzzy decoys containing it.
+	ents := []graph.EntityUpsert{{Key: graph.EntityKey("thing", name), Name: name, Type: "thing"}}
+	for i := 0; i < 12; i++ {
+		n := fmt.Sprintf("%s decoy %02d", name, i)
+		ents = append(ents, graph.EntityUpsert{Key: graph.EntityKey("thing", n), Name: n, Type: "thing"})
+	}
+	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", ents, nil); err != nil {
+		t.Fatalf("UpsertExtraction: %v", err)
+	}
+
+	got, err := st.EntityByName(ctx, strings.ToUpper(name))
+	if err != nil {
+		t.Fatalf("EntityByName(%q): %v", name, err)
+	}
+	if got.Key != ents[0].Key {
+		t.Errorf("EntityByName resolved %q, want the exact %q", got.Key, ents[0].Key)
+	}
+
+	if _, err := st.EntityByName(ctx, "missing-"+name); !errors.Is(err, graph.ErrNotFound) {
+		t.Errorf("unknown name error = %v, want ErrNotFound", err)
+	}
+}

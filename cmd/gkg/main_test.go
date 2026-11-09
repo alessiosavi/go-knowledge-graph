@@ -42,7 +42,7 @@ func TestRunDispatch(t *testing.T) {
 		{"serve bad uri", []string{"serve"}, map[string]string{"GKG_MEMGRAPH_URI": "://bad"}, 1, "", "gkg serve:"},
 		{"ingest no args", []string{"ingest"}, nil, 2, "", "gkg ingest:"},
 		{"ingest bad uri", []string{"ingest", "sample.md"}, map[string]string{"GKG_MEMGRAPH_URI": "://bad"}, 1, "", "gkg ingest:"},
-		{"mcp unimplemented", []string{"mcp"}, nil, 2, "not implemented", ""},
+		{"mcp bad uri", []string{"mcp"}, map[string]string{"GKG_MEMGRAPH_URI": "://bad"}, 1, "", "gkg mcp:"},
 		{"eval missing golden", []string{"eval", "--golden", "/nonexistent-golden.jsonl"}, map[string]string{"GKG_EXTRACTOR_MODE": "mock"}, 1, "", "gkg eval:"},
 		{"migrate bad uri", []string{"migrate"}, map[string]string{"GKG_MEMGRAPH_URI": "://bad"}, 1, "", "gkg migrate:"},
 	}

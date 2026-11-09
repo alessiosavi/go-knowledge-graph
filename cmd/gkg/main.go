@@ -26,6 +26,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
+	mcpserver "github.com/alessiosavi/go-knowledge-graph/internal/mcp"
 )
 
 const version = "v0.0.0-dev"
@@ -59,8 +60,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// timeout; see ingest.PDFToText).
 		return ingest.PDFExtract(os.Stdin, stdout, stderr)
 	case "mcp":
-		fmt.Fprintln(stdout, "not implemented")
-		return 2
+		return runMCP(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "gkg: unknown command %q\n\n", args[0])
 		usage(stderr)
@@ -184,6 +184,28 @@ func seedDedupIndex(ix *dedup.Index, fps []graph.ChunkFP) {
 	}
 }
 
+// buildPipeline wires the extractor, the re-seeded dedup index, the
+// optional judge and the text loader on an open store; the returned
+// pipeline is ready for submissions. serve, mcp and ingest share it so a
+// document is treated identically whichever entry point submits it.
+func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*ingest.Pipeline, error) {
+	prov, err := providerFromConfig(cfg, "")
+	if err != nil {
+		return nil, err
+	}
+	ix := dedup.New()
+	fps, err := st.AllFingerprints(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seedDedupIndex(ix, fps)
+	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg)))
+	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
+		pipe.SetJudge(judge.NewClient(cfg))
+	}
+	return pipe, nil
+}
+
 // runServe runs the REST API and the ingestion worker pool until the
 // process is signalled.
 func runServe(args []string, stdout, stderr io.Writer) int {
@@ -214,22 +236,10 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
 		return 1
 	}
-	prov, err := providerFromConfig(cfg, "")
+	pipe, err := buildPipeline(ctx, cfg, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
 		return 1
-	}
-	ix := dedup.New()
-	fps, err := st.AllFingerprints(ctx)
-	if err != nil {
-		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
-		return 1
-	}
-	seedDedupIndex(ix, fps)
-
-	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg)))
-	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
-		pipe.SetJudge(judge.NewClient(cfg))
 	}
 	workers := &ingest.Worker{Workers: serveWorkers, Pipeline: pipe}
 	workers.Start(ctx)
@@ -238,9 +248,11 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	rest := api.NewServer(cfg, st, pipe)
+	rest.Mount("/mcp", mcpserver.NewServer(cfg, st, pipe).HTTPHandler())
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
-		Handler:           api.NewServer(cfg, st, pipe).Handler(),
+		Handler:           rest.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errCh := make(chan error, 1)
@@ -291,27 +303,16 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
 		return 1
 	}
-	prov, err := providerFromConfig(cfg, "")
+	pipe, err := buildPipeline(ctx, cfg, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
 		return 1
 	}
-	// Seed the dedup index exactly like serve does: a nil index would
-	// silently degrade ChunkDedup=near to exact-key matching for CLI
-	// submissions.
-	ix := dedup.New()
-	fps, err := st.AllFingerprints(ctx)
-	if err != nil {
-		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
-		return 1
-	}
-	seedDedupIndex(ix, fps)
 	in, err := ingestArg(fs.Arg(0))
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
 		return 1
 	}
-	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg)))
 	res, err := pipe.Submit(ctx, in)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
@@ -331,6 +332,54 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "document_id=%s status=%s noop=%v\n", doc.ID, doc.Status, res.Noop)
 	if doc.Status == graph.StatusFailed {
 		fmt.Fprintf(stderr, "gkg ingest: %s\n", doc.Error)
+		return 1
+	}
+	return 0
+}
+
+// runMCP runs the MCP server over stdio with the ingestion pipeline
+// attached, until the client disconnects or the process is signalled.
+func runMCP(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "gkg mcp: unexpected argument %q\n", fs.Arg(0))
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cfg, err := config.Load("")
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
+		return 1
+	}
+	st, err := graph.Open(ctx, cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
+		return 1
+	}
+	defer func() { _ = st.Close(context.Background()) }()
+	if err := st.Bootstrap(ctx); err != nil {
+		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
+		return 1
+	}
+	pipe, err := buildPipeline(ctx, cfg, st)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
+		return 1
+	}
+	workers := &ingest.Worker{Workers: serveWorkers, Pipeline: pipe}
+	workers.Start(ctx)
+	if err := pipe.Recover(ctx); err != nil {
+		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
+		return 1
+	}
+	if err := mcpserver.NewServer(cfg, st, pipe).RunStdio(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1
 	}
 	return 0
@@ -362,7 +411,7 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: gkg <command> [flags]
 
 commands:
-  serve     run the REST API and ingestion workers
+  serve     run the REST API, MCP endpoint and ingestion workers
   ingest    ingest a file, URL or stdin into the knowledge graph
   eval      run the golden-set evaluation harness
   migrate   bootstrap the Memgraph schema
