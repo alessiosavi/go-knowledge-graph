@@ -1,3 +1,5 @@
+github.com/alessiosavi/GoGPUtils v1.5.0 h1:TGJ+d1xThPeyr3kBZwktBdEAcnysMXCSvTcVZ1CUpC8=
+github.com/alessiosavi/GoGPUtils v1.5.0/go.mod h1:03D/EOvvZzyLgmfkmK0Z9VlUUMP8o1wHm4hk28ovVso=
 github.com/neo4j/neo4j-go-driver/v5 v5.28.6 h1:U6lQTe6EBzyMy7tAjpMZj/5vNK9+MPhCtBlfmGGffXo=
 github.com/neo4j/neo4j-go-driver/v5 v5.28.6/go.mod h1:Vff8OwT7QpLm7L2yYr85XNWe9Rbqlbeb9asNXJTHO4k=
 golang.org/x/text v0.43.0 h1:1QivrlhwAsnMOcqgOdl9my7s9OyZl8O5/UGUTJVXoWc=
