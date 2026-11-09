@@ -57,6 +57,12 @@ type Result struct {
 	Noop       bool
 }
 
+// ErrStore marks a submission failure caused by the graph store (an
+// infrastructure problem) rather than the submitted input, so callers can
+// map it to a 5xx. Wrapped store errors keep their own chain: errors.Is
+// finds both this sentinel and the underlying error.
+var ErrStore = errors.New("ingest: store failure")
+
 // Default label sets (sidecar starting points per the design: entity 0.4,
 // relation 0.25). Named presets from Labels.PresetsDir override them.
 var (
@@ -153,7 +159,7 @@ func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 		Kind: kind, Source: source, FinalURL: finalURL, Title: title, Hash: hash, Labels: in.Labels,
 	})
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
 	if res.Noop && !in.Force {
 		return Result{DocumentID: res.ID, Noop: true}, nil
@@ -165,7 +171,7 @@ func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 	if res.Noop && in.Force {
 		// Explicit re-run of an already-known document.
 		if err := p.store.SetStatus(ctx, res.ID, graph.StatusReceived, ""); err != nil {
-			return Result{}, err
+			return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
 		}
 	}
 	p.enqueue(ctx, res.ID)
