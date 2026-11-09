@@ -24,6 +24,7 @@ type QueryEmbedder interface {
 type Hit struct {
 	Kind    string // entity | chunk
 	ID      string
+	DocID   string // chunk hits only: the owning document id
 	Title   string
 	Score   float64
 	Snippet string
@@ -170,6 +171,7 @@ func chunkHits(ctx context.Context, st *graph.Store, q string, limit int) ([]Hit
 		byID[r.ID] = Hit{
 			Kind:    "chunk",
 			ID:      r.ID,
+			DocID:   r.DocID,
 			Title:   r.Title,
 			Snippet: Snippet(r.Text, q),
 		}
