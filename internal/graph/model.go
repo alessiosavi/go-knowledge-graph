@@ -42,6 +42,7 @@ type Document struct {
 	Hash       string
 	Status     Status
 	Error      string
+	Labels     string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	Supersedes string
@@ -73,6 +74,7 @@ type DocumentInput struct {
 	FinalURL string
 	Title    string
 	Hash     string
+	Labels   string
 }
 
 // UpsertResult tells the pipeline what the upsert did. Noop means the same

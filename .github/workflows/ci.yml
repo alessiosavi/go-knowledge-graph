@@ -37,4 +37,4 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Integration tests
-        run: go test ./... -count=1
+        run: go test -p 1 ./... -count=1

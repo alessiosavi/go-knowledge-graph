@@ -18,12 +18,13 @@ var uniqueConstraints = []struct {
 }
 
 // secondaryIndexes are non-unique label indexes bootstrapped for query
-// performance (the upsert identity lookup filters on both properties).
+// performance (document identity and chunk exact-key lookups).
 var secondaryIndexes = []struct {
 	Label string
 	Props []string
 }{
 	{"Document", []string{"source_kind", "source"}},
+	{"Chunk", []string{"exact_key"}},
 }
 
 // Bootstrap creates the schema idempotently. Memgraph has no documented

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -313,6 +314,52 @@ SET men.start = m.start, men.end = m.end`,
 		}
 		return nil
 	})
+}
+
+// FactAudit is one audited fact refusal: a candidate dropped below the
+// store floor or a fact refuted by the judge; both land as :RejectedFact.
+type FactAudit struct {
+	HeadKey          string
+	Rel              string
+	TailKey          string
+	DocID            string
+	ChunkID          string
+	Score            float64
+	JudgeVerdict     string
+	Reason           string
+	ExtractorVersion string
+}
+
+// FactAuditID identifies an audit row: hex(sha256(head|rel|tail|chunk))[:32].
+func FactAuditID(headKey, rel, tailKey, chunkID string) string {
+	sum := sha256.Sum256([]byte(headKey + "|" + rel + "|" + tailKey + "|" + chunkID))
+	return hex.EncodeToString(sum[:])[:32]
+}
+
+// WriteFactAudit records one audit row (:RejectedFact).
+func (s *Store) WriteFactAudit(ctx context.Context, a FactAudit) error {
+	err := s.runWrite(ctx, `
+MERGE (rf:RejectedFact {id: $id})
+SET rf.head_key = $head, rf.rel = $rel, rf.tail_key = $tail, rf.doc_id = $doc,
+    rf.chunk_id = $chunk, rf.score = $score, rf.judge_verdict = $verdict,
+    rf.reason = $reason, rf.at = $at, rf.extractor_version = $ever`,
+		map[string]any{
+			"id":      FactAuditID(a.HeadKey, a.Rel, a.TailKey, a.ChunkID),
+			"head":    a.HeadKey,
+			"rel":     a.Rel,
+			"tail":    a.TailKey,
+			"doc":     a.DocID,
+			"chunk":   a.ChunkID,
+			"score":   a.Score,
+			"verdict": a.JudgeVerdict,
+			"reason":  a.Reason,
+			"at":      time.Now().UTC().Format(timeLayout),
+			"ever":    a.ExtractorVersion,
+		})
+	if err != nil {
+		return fmt.Errorf("graph: write fact audit: %w", err)
+	}
+	return nil
 }
 
 // EntityView returns an entity with its aliases, mention count and facts,

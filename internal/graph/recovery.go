@@ -20,6 +20,7 @@ MATCH (d:Document)
 WHERE NOT d.status IN $terminal
 RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
        d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
+       coalesce(d.labels, '') AS labels,
        d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
 ORDER BY d.updated_at ASC`,
 		map[string]any{"terminal": terminalStatuses})
