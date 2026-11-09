@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -203,5 +205,130 @@ func TestSetEntityEmbeddingsBatch(t *testing.T) {
 	}
 	if _, err := st.SetEntityEmbeddings(ctx, []string{ids[0]}, [][]float64{{}}); err == nil {
 		t.Error("empty vector: want error")
+	}
+}
+
+// readEmbeddingSpace reads the marker node directly (not through the
+// setter), so the roundtrip test can discover the pre-existing value on
+// the shared persistent dev database.
+func readEmbeddingSpace(t *testing.T, st *graph.Store) string {
+	t.Helper()
+	res, err := st.RunReadQuery(context.Background(),
+		"MATCH (m:GkgMeta {id: 'embedding_space'}) RETURN coalesce(m.space, '') AS space", nil, 0)
+	if err != nil {
+		t.Fatalf("read embedding space: %v", err)
+	}
+	if len(res.Rows) == 0 {
+		return ""
+	}
+	s, _ := res.Rows[0]["space"].(string)
+	return s
+}
+
+// TestSetEmbeddingSpaceRoundtripAndPrevious is state-agnostic (the dev DB
+// carries the marker across runs): it compares against the pre-read value
+// instead of assuming a fresh database.
+func TestSetEmbeddingSpaceRoundtripAndPrevious(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	tag := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	pre := readEmbeddingSpace(t, st)
+	spaceA := "test-space-a-" + tag
+	prev, err := st.SetEmbeddingSpace(ctx, spaceA)
+	if err != nil {
+		t.Fatalf("SetEmbeddingSpace(A): %v", err)
+	}
+	if prev != pre {
+		t.Errorf("previous = %q, want the pre-existing value %q", prev, pre)
+	}
+	if got := readEmbeddingSpace(t, st); got != spaceA {
+		t.Errorf("stored space = %q, want %q", got, spaceA)
+	}
+
+	prev, err = st.SetEmbeddingSpace(ctx, spaceA)
+	if err != nil {
+		t.Fatalf("SetEmbeddingSpace(A again): %v", err)
+	}
+	if prev != spaceA {
+		t.Errorf("repeat previous = %q, want %q", prev, spaceA)
+	}
+
+	spaceB := "test-space-b-" + tag
+	prev, err = st.SetEmbeddingSpace(ctx, spaceB)
+	if err != nil {
+		t.Fatalf("SetEmbeddingSpace(B): %v", err)
+	}
+	if prev != spaceA {
+		t.Errorf("switch previous = %q, want %q", prev, spaceA)
+	}
+}
+
+// TestSetEmbeddingSpaceConcurrent pins the single-marker contract under
+// concurrency: the unique constraint plus a retry keep every concurrent
+// call succeeding, with exactly one :GkgMeta node left behind.
+func TestSetEmbeddingSpaceConcurrent(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	tag := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	var wg sync.WaitGroup
+	errs := make([]error, 8)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = st.SetEmbeddingSpace(ctx, fmt.Sprintf("race-%d-%s", i, tag))
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("SetEmbeddingSpace[%d]: %v", i, err)
+		}
+	}
+	res, err := st.RunReadQuery(ctx, "MATCH (m:GkgMeta {id: 'embedding_space'}) RETURN count(m) AS n", nil, 0)
+	if err != nil {
+		t.Fatalf("marker count: %v", err)
+	}
+	if len(res.Rows) != 1 || res.Rows[0]["n"] != int64(1) {
+		t.Errorf("marker nodes = %v, want exactly 1", res.Rows)
+	}
+}
+
+// TestBootstrapDeduplicatesGkgMeta pins the pre-constraint cleanup: a
+// database that accumulated duplicate marker nodes (a pre-constraint race)
+// is repaired by Bootstrap before the unique constraint is created.
+func TestBootstrapDeduplicatesGkgMeta(t *testing.T) {
+	st := graphtest.Store(t)
+	uri := os.Getenv(graphtest.URIEnv)
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		if err := st.Bootstrap(context.Background()); err != nil {
+			t.Errorf("restore bootstrap: %v", err)
+		}
+	})
+
+	// Precondition: drop the constraint and plant duplicates.
+	if rawUniqueConstraintExists(t, uri, "GkgMeta", "id") {
+		rawRun(t, uri, "DROP CONSTRAINT ON (n:GkgMeta) ASSERT n.id IS UNIQUE")
+	}
+	rawRun(t, uri, "MATCH (m:GkgMeta {id: 'embedding_space'}) DELETE m")
+	rawRun(t, uri, "CREATE (:GkgMeta {id: 'embedding_space', space: 'dup-a'})")
+	rawRun(t, uri, "CREATE (:GkgMeta {id: 'embedding_space', space: 'dup-b'})")
+
+	if err := st.Bootstrap(ctx); err != nil {
+		t.Fatalf("Bootstrap with duplicates present: %v", err)
+	}
+	res, err := st.RunReadQuery(ctx, "MATCH (m:GkgMeta {id: 'embedding_space'}) RETURN count(m) AS n", nil, 0)
+	if err != nil {
+		t.Fatalf("marker count: %v", err)
+	}
+	if len(res.Rows) != 1 || res.Rows[0]["n"] != int64(1) {
+		t.Errorf("marker nodes = %v, want the duplicates pruned to 1", res.Rows)
+	}
+	if !rawUniqueConstraintExists(t, uri, "GkgMeta", "id") {
+		t.Error("Bootstrap did not create the unique constraint on (GkgMeta).id")
 	}
 }

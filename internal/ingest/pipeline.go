@@ -114,10 +114,10 @@ type Metrics interface {
 	JudgeSeconds(seconds float64)
 }
 
-// Embedder embeds batch texts (structurally satisfied by embed.Provider);
-// nil means embeddings are disabled.
+// Embedder embeds batch texts as documents (structurally satisfied by
+// embed.Provider); nil means embeddings are disabled.
 type Embedder interface {
-	Embed(ctx context.Context, texts []string) ([][]float64, error)
+	EmbedDocuments(ctx context.Context, texts []string) ([][]float64, error)
 }
 
 // embedBatch caps one embedding call.
@@ -561,7 +561,7 @@ func (p *Pipeline) embedEntities(ctx context.Context, candidates map[string]stri
 	for start := 0; start < len(names); start += embedBatch {
 		end := min(start+embedBatch, len(names))
 		batch := names[start:end]
-		vecs, err := p.emb.Embed(ctx, batch)
+		vecs, err := p.emb.EmbedDocuments(ctx, batch)
 		if err != nil {
 			slog.Warn("ingest: embedding failed, entities left unembedded", "names", len(batch), "err", err)
 			return

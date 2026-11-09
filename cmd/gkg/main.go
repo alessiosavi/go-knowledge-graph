@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -30,7 +31,6 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
 	mcpserver "github.com/alessiosavi/go-knowledge-graph/internal/mcp"
 	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
-	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
 const version = "v0.0.0-dev"
@@ -203,13 +203,56 @@ func seedDedupIndex(ix *dedup.Index, fps []graph.ChunkFP) {
 	}
 }
 
+// allowedFurlsModels is the embeddings service's model allowlist: anything
+// else 400s every call, so a non-allowlisted model fails at startup.
+var allowedFurlsModels = map[string]bool{"gemini-embedding-2": true}
+
+// validateFurl rejects a missing or non-http(s) Function URL, naming the
+// environment variable to fix (the raw value is never echoed: the URL is a
+// capability).
+func validateFurl(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("embedder furls: %s must be a valid http(s) URL", name)
+	}
+	return nil
+}
+
+// embedderFromConfig builds the embedding provider the configuration
+// selects: the OpenAI-compatible default, or the asymmetric furls client
+// after validating its env-provided URLs, shared secret and model. Every
+// validation error names the environment variable to fix.
+func embedderFromConfig(cfg config.Config) (embed.Provider, error) {
+	switch cfg.Embedder.Provider {
+	case "", "openai":
+		return embed.NewOpenAI(cfg), nil
+	case "furls":
+		if err := validateFurl("EMBED_PRODUCT_FURL", cfg.Embedder.ProductFURL); err != nil {
+			return nil, err
+		}
+		if err := validateFurl("EMBED_QUERY_FURL", cfg.Embedder.QueryFURL); err != nil {
+			return nil, err
+		}
+		if cfg.Embedder.APIKey == "" {
+			return nil, errors.New("embedder furls: EMBED_API_KEY must be set (keep it in .env; never commit it)")
+		}
+		if m := cfg.Embedder.Model; m != "" && !allowedFurlsModels[m] {
+			return nil, fmt.Errorf("embedder furls: GKG_EMBEDDER_MODEL %q is not allowed by the embeddings service (allowed: gemini-embedding-2)", m)
+		}
+		return embed.NewFurls(cfg), nil
+	default:
+		return nil, fmt.Errorf("embedder: unknown provider %q (want openai or furls)", cfg.Embedder.Provider)
+	}
+}
+
 // buildPipeline wires the extractor, the re-seeded dedup index, the
 // optional judge and embedder and the text loader on an open store; the
 // returned pipeline is ready for submissions. serve, mcp and ingest share
 // it so a document is treated identically whichever entry point submits
-// it. The returned embedder (nil when disabled) is also for the search
-// endpoints' vector leg.
-func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*ingest.Pipeline, search.Embedder, error) {
+// it. The returned embedder (nil interface when disabled) is also for the
+// search endpoints' vector query leg, and records the embedding-space
+// marker (warn-only) when it is enabled.
+func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*ingest.Pipeline, embed.Provider, error) {
 	prov, err := providerFromConfig(cfg, "")
 	if err != nil {
 		return nil, nil, err
@@ -224,9 +267,21 @@ func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*in
 	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
 		pipe.SetJudge(judge.NewClient(cfg))
 	}
-	var emb search.Embedder
+	var emb embed.Provider
 	if cfg.Embedder.Enabled {
-		emb = embed.NewOpenAI(cfg)
+		emb, err = embedderFromConfig(cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		// Warn-only space tripwire: two providers can share a dimension,
+		// so the store cannot detect a source switch — a mismatch means
+		// the stored vectors must be cleared and re-ingested first.
+		if prev, serr := st.SetEmbeddingSpace(ctx, emb.Space()); serr != nil {
+			slog.Warn("embedder: could not record the embedding-space marker", "err", serr)
+		} else if prev != "" && prev != emb.Space() {
+			slog.Warn("embedder: embedding space changed; stored vectors belong to a different space — clear Entity.embedding and re-ingest (see docs/known-limitations.md)",
+				"previous", prev, "current", emb.Space())
+		}
 		pipe.SetEmbedder(emb)
 	}
 	return pipe, emb, nil

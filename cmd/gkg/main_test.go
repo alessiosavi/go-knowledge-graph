@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 )
 
 // TestBinaryDoesNotDependOnTesting pins that production packages never pull
@@ -104,5 +106,83 @@ func TestRunDispatch(t *testing.T) {
 				t.Errorf("stderr = %q, want it to contain %q", errb.String(), tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestEmbedderFromConfigOpenAIDefault(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Embedder.Dim = 768
+	emb, err := embedderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("embedderFromConfig: %v", err)
+	}
+	if emb.Name() != "openai" {
+		t.Errorf("Name = %q, want openai for the empty/default provider", emb.Name())
+	}
+	if got := emb.Space(); got != "openai|text-embedding-3-small|768" {
+		t.Errorf("Space = %q, want openai|text-embedding-3-small|768", got)
+	}
+}
+
+func TestEmbedderFromConfigFurlsValidation(t *testing.T) {
+	base := config.EmbedderConfig{
+		Provider:    "furls",
+		ProductFURL: "https://product.example/v1",
+		QueryFURL:   "https://query.example/v1",
+		APIKey:      "k",
+		Dim:         768,
+	}
+	cases := []struct {
+		name   string
+		mutate func(*config.EmbedderConfig)
+		want   string
+	}{
+		{"missing product url", func(e *config.EmbedderConfig) { e.ProductFURL = "" }, "EMBED_PRODUCT_FURL"},
+		{"invalid product url", func(e *config.EmbedderConfig) { e.ProductFURL = "not-a-url" }, "EMBED_PRODUCT_FURL"},
+		{"missing query url", func(e *config.EmbedderConfig) { e.QueryFURL = "" }, "EMBED_QUERY_FURL"},
+		{"invalid query url", func(e *config.EmbedderConfig) { e.QueryFURL = "ftp://host/x" }, "EMBED_QUERY_FURL"},
+		{"empty key", func(e *config.EmbedderConfig) { e.APIKey = "" }, "EMBED_API_KEY"},
+		{"non-allowlisted model", func(e *config.EmbedderConfig) { e.Model = "text-embedding-3-small" }, "GKG_EMBEDDER_MODEL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{}
+			cfg.Embedder = base
+			tc.mutate(&cfg.Embedder)
+			_, err := embedderFromConfig(cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to name %s", err, tc.want)
+			}
+		})
+	}
+
+	t.Run("unknown provider", func(t *testing.T) {
+		cfg := config.Config{}
+		cfg.Embedder = base
+		cfg.Embedder.Provider = "gemini"
+		if _, err := embedderFromConfig(cfg); err == nil {
+			t.Fatal("unknown provider: want error")
+		}
+	})
+}
+
+func TestEmbedderFromConfigFurlsOK(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Embedder = config.EmbedderConfig{
+		Provider:    "furls",
+		ProductFURL: "https://product.example/v1",
+		QueryFURL:   "https://query.example/v1",
+		APIKey:      "k",
+		Dim:         768,
+	}
+	emb, err := embedderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("embedderFromConfig: %v", err)
+	}
+	if emb.Name() != "furls" {
+		t.Errorf("Name = %q, want furls", emb.Name())
+	}
+	if got := emb.Space(); got != "furls|gemini-embedding-2|768" {
+		t.Errorf("Space = %q, want furls|gemini-embedding-2|768", got)
 	}
 }

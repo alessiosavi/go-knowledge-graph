@@ -3,7 +3,9 @@
 //
 // Precedence: environment (GKG_<SECTION>_<KEY>) > YAML > defaults.
 // The HTTP API key is the documented exception: GKG_API_KEY maps to
-// Server.APIKey.
+// Server.APIKey. For the furls embedder (Embedder.Provider == "furls"),
+// EMBED_QUERY_FURL, EMBED_PRODUCT_FURL and EMBED_API_KEY map to the
+// Embedder section — non-empty values only.
 package config
 
 import (
@@ -65,11 +67,15 @@ type SidecarConfig struct {
 
 // EmbedderConfig configures the optional embedding provider.
 type EmbedderConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	BaseURL string `yaml:"base_url"`
-	APIKey  string `yaml:"api_key"`
-	Model   string `yaml:"model"`
-	Dim     int    `yaml:"dim"`
+	Enabled     bool   `yaml:"enabled"`
+	Provider    string `yaml:"provider"` // "" (openai default) | openai | furls
+	BaseURL     string `yaml:"base_url"`
+	APIKey      string `yaml:"api_key"`
+	Model       string `yaml:"model"`
+	Dim         int    `yaml:"dim"`
+	QueryFURL   string `yaml:"query_furl"`   // furls: the embed_query Function URL
+	ProductFURL string `yaml:"product_furl"` // furls: the embed_product Function URL
+	BatchSize   int    `yaml:"batch_size"`   // furls: entries per request (0 = one request)
 }
 
 // JudgeConfig configures the optional online verification judge.
@@ -168,6 +174,28 @@ func Load(path string) (Config, error) {
 	// Documented exception: the HTTP API key is set with GKG_API_KEY.
 	if v, ok := os.LookupEnv("GKG_API_KEY"); ok {
 		cfg.Server.APIKey = v
+	}
+	// Documented exceptions: the embeddings service exports its Function
+	// URLs and shared secret as EMBED_*; they map to the Embedder section
+	// only for the furls provider and only when non-empty (an empty
+	// placeholder must not clobber a GKG_EMBEDDER_* value).
+	if cfg.Embedder.Provider == "furls" {
+		if v, ok := os.LookupEnv("EMBED_QUERY_FURL"); ok && v != "" {
+			cfg.Embedder.QueryFURL = v
+		}
+		if v, ok := os.LookupEnv("EMBED_PRODUCT_FURL"); ok && v != "" {
+			cfg.Embedder.ProductFURL = v
+		}
+		if v, ok := os.LookupEnv("EMBED_API_KEY"); ok && v != "" {
+			cfg.Embedder.APIKey = v
+		}
+		if v, ok := os.LookupEnv("EMBED_BATCH_SIZE"); ok && v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return Config{}, fmt.Errorf("config: env EMBED_BATCH_SIZE=%q: %w", v, err)
+			}
+			cfg.Embedder.BatchSize = n
+		}
 	}
 	return cfg, nil
 }

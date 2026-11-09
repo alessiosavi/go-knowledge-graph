@@ -113,3 +113,64 @@ func (s *Store) SetEntityEmbedding(ctx context.Context, id string, vec []float64
 		return nil
 	})
 }
+
+// embeddingSpaceMetaID identifies the single :GkgMeta marker node recording
+// the active embedding space.
+const embeddingSpaceMetaID = "embedding_space"
+
+// SetEmbeddingSpace records the active embedding space
+// ("provider|model|dim") in the :GkgMeta marker node and returns the
+// previously recorded value ("" when none). Warn-only tripwire: two
+// providers can share a dimension, so the vector index itself cannot
+// detect a source switch and stored vectors would silently mix spaces.
+func (s *Store) SetEmbeddingSpace(ctx context.Context, space string) (string, error) {
+	// The marker carries a unique constraint, so in a concurrent MERGE race
+	// the loser fails with a constraint violation; one retry re-runs the
+	// MERGE, which then matches the winner's node.
+	var previous string
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		previous, err = s.setEmbeddingSpaceOnce(ctx, space)
+		if err == nil {
+			return previous, nil
+		}
+		if !isConstraintViolation(err) {
+			return "", err
+		}
+	}
+	return "", err
+}
+
+// setEmbeddingSpaceOnce is one MERGE attempt of SetEmbeddingSpace.
+func (s *Store) setEmbeddingSpaceOnce(ctx context.Context, space string) (string, error) {
+	previous := ""
+	err := s.runWriteTx(ctx, func(tx neo4j.ManagedTransaction) error {
+		res, err := tx.Run(ctx, `
+MERGE (m:GkgMeta {id: $id})
+WITH m, coalesce(m.space, "") AS previous
+SET m.space = $space
+RETURN previous`, map[string]any{"id": embeddingSpaceMetaID, "space": space})
+		if err != nil {
+			return fmt.Errorf("graph: set embedding space: %w", err)
+		}
+		recs, err := res.Collect(ctx)
+		if err != nil {
+			return fmt.Errorf("graph: set embedding space: %w", err)
+		}
+		if len(recs) > 0 {
+			previous = getString(recs[0], "previous")
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return previous, nil
+}
+
+// isConstraintViolation reports whether err is a unique-constraint race
+// failure (both vendors spell it out in the message or error code).
+func isConstraintViolation(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "constraint") || strings.Contains(msg, "unique")
+}

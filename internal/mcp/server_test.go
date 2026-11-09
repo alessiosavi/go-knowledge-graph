@@ -108,15 +108,11 @@ func toolErrorText(res *mcpgo.CallToolResult) string {
 	return strings.TrimSpace(b.String())
 }
 
-// stubEmbedder returns a fixed vector for every input (vector-leg stub).
+// stubEmbedder returns a fixed vector for every query (query-leg stub).
 type stubEmbedder struct{ vec []float64 }
 
-func (s stubEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
-	out := make([][]float64, len(texts))
-	for i := range texts {
-		out[i] = s.vec
-	}
-	return out, nil
+func (s stubEmbedder) EmbedQuery(context.Context, string) ([]float64, error) {
+	return s.vec, nil
 }
 
 func TestToolsListExactNames(t *testing.T) {

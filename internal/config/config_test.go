@@ -99,6 +99,10 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_EMBEDDER_API_KEY", "ek", "ek", func(c config.Config) any { return c.Embedder.APIKey }},
 		{"GKG_EMBEDDER_MODEL", "em", "em", func(c config.Config) any { return c.Embedder.Model }},
 		{"GKG_EMBEDDER_DIM", "1536", 1536, func(c config.Config) any { return c.Embedder.Dim }},
+		{"GKG_EMBEDDER_PROVIDER", "furls", "furls", func(c config.Config) any { return c.Embedder.Provider }},
+		{"GKG_EMBEDDER_QUERY_FURL", "https://query.example/v1", "https://query.example/v1", func(c config.Config) any { return c.Embedder.QueryFURL }},
+		{"GKG_EMBEDDER_PRODUCT_FURL", "https://product.example/v1", "https://product.example/v1", func(c config.Config) any { return c.Embedder.ProductFURL }},
+		{"GKG_EMBEDDER_BATCH_SIZE", "16", 16, func(c config.Config) any { return c.Embedder.BatchSize }},
 		{"GKG_JUDGE_MODE", "sample", "sample", func(c config.Config) any { return c.Judge.Mode }},
 		{"GKG_JUDGE_VERIFY_FLOOR", "0.4", 0.4, func(c config.Config) any { return c.Judge.VerifyFloor }},
 		{"GKG_JUDGE_SAMPLE_PCT", "25", 25.0, func(c config.Config) any { return c.Judge.SamplePct }},
@@ -189,5 +193,111 @@ func TestAPIKeyExceptionWinsOverGenericEnv(t *testing.T) {
 	}
 	if cfg.Server.APIKey != "exception" {
 		t.Errorf("Server.APIKey = %q, want GKG_API_KEY exception to win", cfg.Server.APIKey)
+	}
+}
+
+func TestEmbedderProviderDefaultsAndOverride(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.Provider != "" {
+		t.Errorf("Embedder.Provider = %q, want the openai default (empty)", cfg.Embedder.Provider)
+	}
+	t.Setenv("GKG_EMBEDDER_PROVIDER", "furls")
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.Provider != "furls" {
+		t.Errorf("Embedder.Provider = %q, want the env override furls", cfg.Embedder.Provider)
+	}
+}
+
+func TestEmbedderEnvExceptionsFurlsOnly(t *testing.T) {
+	t.Setenv("EMBED_API_KEY", "embed-secret")
+	t.Setenv("EMBED_QUERY_FURL", "https://query.example/v1")
+	t.Setenv("EMBED_PRODUCT_FURL", "https://product.example/v1")
+
+	t.Setenv("GKG_EMBEDDER_PROVIDER", "openai")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.APIKey != "" || cfg.Embedder.QueryFURL != "" || cfg.Embedder.ProductFURL != "" {
+		t.Errorf("openai run picked up EMBED_* values: %+v", cfg.Embedder)
+	}
+
+	t.Setenv("GKG_EMBEDDER_PROVIDER", "furls")
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.APIKey != "embed-secret" || cfg.Embedder.QueryFURL != "https://query.example/v1" || cfg.Embedder.ProductFURL != "https://product.example/v1" {
+		t.Errorf("furls run did not apply EMBED_* exceptions: %+v", cfg.Embedder)
+	}
+}
+
+func TestEmbedderEnvExceptionEmptyPlaceholder(t *testing.T) {
+	t.Setenv("GKG_EMBEDDER_PROVIDER", "furls")
+	t.Setenv("GKG_EMBEDDER_API_KEY", "generic")
+	t.Setenv("EMBED_API_KEY", "")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.APIKey != "generic" {
+		t.Errorf("Embedder.APIKey = %q, want the GKG_ value to survive an empty EMBED_API_KEY placeholder", cfg.Embedder.APIKey)
+	}
+}
+
+func TestEmbedderEnvExceptionPrecedence(t *testing.T) {
+	t.Setenv("GKG_EMBEDDER_PROVIDER", "furls")
+	t.Setenv("GKG_EMBEDDER_API_KEY", "generic")
+	t.Setenv("EMBED_API_KEY", "exception")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.APIKey != "exception" {
+		t.Errorf("Embedder.APIKey = %q, want the non-empty EMBED_API_KEY to win", cfg.Embedder.APIKey)
+	}
+}
+
+func TestEmbedderBatchSizeEnvException(t *testing.T) {
+	t.Setenv("EMBED_BATCH_SIZE", "16")
+	t.Setenv("GKG_EMBEDDER_PROVIDER", "openai")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.BatchSize != 0 {
+		t.Errorf("openai run picked up EMBED_BATCH_SIZE: %d", cfg.Embedder.BatchSize)
+	}
+
+	t.Setenv("GKG_EMBEDDER_PROVIDER", "furls")
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.BatchSize != 16 {
+		t.Errorf("Embedder.BatchSize = %d, want the EMBED_BATCH_SIZE exception (16)", cfg.Embedder.BatchSize)
+	}
+
+	// An empty placeholder must not clobber the GKG_ value.
+	t.Setenv("GKG_EMBEDDER_BATCH_SIZE", "8")
+	t.Setenv("EMBED_BATCH_SIZE", "")
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedder.BatchSize != 8 {
+		t.Errorf("Embedder.BatchSize = %d, want the GKG_ value to survive an empty placeholder", cfg.Embedder.BatchSize)
+	}
+
+	// A malformed value is an actionable error naming the variable.
+	t.Setenv("EMBED_BATCH_SIZE", "many")
+	if _, err := config.Load(""); err == nil || !strings.Contains(err.Error(), "EMBED_BATCH_SIZE") {
+		t.Fatalf("err = %v, want a parse error naming EMBED_BATCH_SIZE", err)
 	}
 }

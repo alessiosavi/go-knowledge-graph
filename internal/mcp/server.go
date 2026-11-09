@@ -27,7 +27,7 @@ type Server struct {
 	cfg   config.Config
 	store *graph.Store
 	in    api.Submitter
-	emb   search.Embedder
+	emb   search.QueryEmbedder
 	sdk   *mcpgo.Server
 }
 
@@ -61,9 +61,9 @@ func (s *Server) HTTPHandler() http.Handler {
 	return mcpgo.NewStreamableHTTPHandler(func(*http.Request) *mcpgo.Server { return s.sdk }, nil)
 }
 
-// SetEmbedder attaches the optional embeddings provider used by the search
+// SetEmbedder attaches the optional query embedder used by the search
 // tool's entity vector leg; nil (the default) keeps search text-only.
-func (s *Server) SetEmbedder(emb search.Embedder) {
+func (s *Server) SetEmbedder(emb search.QueryEmbedder) {
 	s.emb = emb
 }
 

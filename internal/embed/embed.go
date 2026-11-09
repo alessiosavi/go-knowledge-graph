@@ -1,6 +1,8 @@
-// Package embed provides the optional text-embedding provider: an
-// OpenAI-compatible /embeddings client. When unconfigured the service runs
-// text-only — no vector index is created and search never depends on it.
+// Package embed provides the optional text-embedding providers: an
+// OpenAI-compatible /embeddings client and the asymmetric furls client for
+// an embeddings service with per-side Function URLs. When unconfigured the
+// service runs text-only — no vector index is created and search never
+// depends on it.
 package embed
 
 import (
@@ -10,19 +12,25 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 )
 
-// defaultModel is used when Embedder.Model is empty.
+// defaultModel is used when Embedder.Model is empty for the OpenAI provider.
 const defaultModel = "text-embedding-3-small"
 
 // Provider embeds texts; implementations are safe for concurrent use.
+// Documents (ingest) and queries (search) go through separate methods: the
+// furls service packs a different prompt prefix per side, so the two must
+// never be conflated.
 type Provider interface {
 	Name() string
-	Embed(ctx context.Context, texts []string) ([][]float64, error)
+	Space() string // "provider|model|dim" — the embedding-space marker value
+	EmbedDocuments(ctx context.Context, texts []string) ([][]float64, error)
+	EmbedQuery(ctx context.Context, text string) ([]float64, error)
 }
 
 // OpenAI is the OpenAI-compatible embeddings client.
@@ -53,12 +61,19 @@ func NewOpenAI(cfg config.Config) *OpenAI {
 // Name implements Provider.
 func (o *OpenAI) Name() string { return "openai" }
 
-// Embed POSTs the texts to /embeddings and returns the vectors in input
-// order. A configured Dim > 0 is requested from the provider via the
+// Space implements Provider: the marker that must match the stored
+// vectors' space, so a provider/model/dim switch never mixes spaces
+// silently (both common spaces can share a dimension).
+func (o *OpenAI) Space() string {
+	return "openai|" + o.model + "|" + strconv.Itoa(o.dim)
+}
+
+// EmbedDocuments POSTs the texts to /embeddings and returns the vectors in
+// input order. A configured Dim > 0 is requested from the provider via the
 // `dimensions` parameter (OpenAI v3 models honor it) and validated against
 // every response: a mismatch is an error, not a silently broken vector
 // index. Dim = 0 accepts the provider's native dimension.
-func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float64, error) {
+func (o *OpenAI) EmbedDocuments(ctx context.Context, texts []string) ([][]float64, error) {
 	if len(texts) == 0 {
 		return nil, fmt.Errorf("embed: no texts to embed")
 	}
@@ -118,4 +133,17 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float64, error)
 		}
 	}
 	return vecs, nil
+}
+
+// EmbedQuery embeds exactly one query text through the same single-call
+// path; a response that does not carry exactly one vector is an error.
+func (o *OpenAI) EmbedQuery(ctx context.Context, text string) ([]float64, error) {
+	vecs, err := o.EmbedDocuments(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) != 1 {
+		return nil, fmt.Errorf("embed: query response has %d vectors, want 1", len(vecs))
+	}
+	return vecs[0], nil
 }
