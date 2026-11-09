@@ -45,6 +45,14 @@ func Open(ctx context.Context, cfg config.Config) (*Store, error) {
 // Close releases the driver's resources.
 func (s *Store) Close(ctx context.Context) error { return s.driver.Close(ctx) }
 
+// Ping verifies the database connection; the readiness probe uses it.
+func (s *Store) Ping(ctx context.Context) error {
+	if err := s.driver.VerifyConnectivity(ctx); err != nil {
+		return fmt.Errorf("graph: ping: %w", err)
+	}
+	return nil
+}
+
 // runRead executes a single read query and returns all records.
 func (s *Store) runRead(ctx context.Context, query string, params map[string]any) ([]*neo4j.Record, error) {
 	sess := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})

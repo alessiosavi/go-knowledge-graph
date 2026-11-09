@@ -1,6 +1,6 @@
 // Package api implements the gkg HTTP surface: ingestion, documents,
-// search, entities, traversal and the guarded read-only cypher endpoint.
-// Health probes and metrics arrive with the observability task.
+// search, entities, traversal, the guarded read-only cypher endpoint, the
+// health probes (/healthz, /readyz) and the Prometheus scrape (/metrics).
 package api
 
 import (
@@ -9,12 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
+	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
@@ -30,11 +33,13 @@ const jsonBodyCap = 1 << 20
 // Server serves the /v1 REST surface over a graph store and an ingestion
 // submission sink.
 type Server struct {
-	cfg   config.Config
-	store *graph.Store
-	in    Submitter
-	emb   search.Embedder
-	extra []mount
+	cfg     config.Config
+	store   *graph.Store
+	in      Submitter
+	emb     search.Embedder
+	extra   []mount
+	metrics *obs.Metrics
+	ready   func(context.Context) error
 }
 
 // mount is an extra handler registered under a pattern.
@@ -62,9 +67,26 @@ func (s *Server) SetEmbedder(emb search.Embedder) {
 	s.emb = emb
 }
 
-// Handler returns the routed surface with bearer authentication applied.
+// SetMetrics attaches the Prometheus registry served at /metrics.
+func (s *Server) SetMetrics(m *obs.Metrics) {
+	s.metrics = m
+}
+
+// SetReady attaches the readiness probe behind /readyz (typically the graph
+// store's Ping); without one, /readyz answers 503 (fail-closed).
+func (s *Server) SetReady(fn func(context.Context) error) {
+	s.ready = fn
+}
+
+// Handler returns the routed surface with bearer authentication applied
+// and one request log record per call.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
+	if s.metrics != nil {
+		mux.Handle("GET /metrics", s.metrics.Handler())
+	}
 	mux.HandleFunc("POST /v1/ingest", s.handleIngest)
 	mux.HandleFunc("GET /v1/documents", s.handleDocuments)
 	mux.HandleFunc("GET /v1/documents/{id}", s.handleDocument)
@@ -76,7 +98,30 @@ func (s *Server) Handler() http.Handler {
 	for _, m := range s.extra {
 		mux.Handle(m.pattern, m.handler)
 	}
-	return s.withAuth(mux)
+	return obs.RequestLogger(nil)(s.withAuth(mux))
+}
+
+// handleHealthz is the process liveness probe.
+func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReadyz probes the wired dependency (Memgraph connectivity);
+// fail-closed without one.
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if s.ready == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "no readiness probe wired")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	if err := s.ready(ctx); err != nil {
+		// The probe is auth-exempt: log the full error, answer generically.
+		slog.Warn("readyz probe failed", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "dependency unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 // authExempt lists the paths that never require the bearer token (the

@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/alessiosavi/GoGPUtils/minhash"
 	"gopkg.in/yaml.v3"
@@ -98,6 +99,21 @@ type submission struct {
 	labels string
 }
 
+// Metrics receives the pipeline counters and latencies; nil means
+// disabled. It is structurally implemented by obs.Metrics.
+type Metrics interface {
+	DocumentStatus(status string)
+	Chunks(n int)
+	Entities(n int)
+	Facts(n int)
+	FactsDropped(n int)
+	ExtractorError()
+	ExtractSeconds(seconds float64)
+	JudgeVerdict(status string)
+	JudgeFailure()
+	JudgeSeconds(seconds float64)
+}
+
 // Embedder embeds batch texts (structurally satisfied by embed.Provider);
 // nil means embeddings are disabled.
 type Embedder interface {
@@ -122,8 +138,9 @@ type Pipeline struct {
 
 	procLocks sync.Map // docID → *sync.Mutex, serializes Process per document
 
-	judge FactJudge
-	emb   Embedder
+	judge   FactJudge
+	emb     Embedder
+	metrics Metrics
 }
 
 // NewPipeline wires the pipeline. ix may be nil (near-duplicate detection
@@ -181,9 +198,11 @@ func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 	p.mu.Unlock()
 	if res.Noop && in.Force {
 		// Explicit re-run of an already-known document.
-		if err := p.store.SetStatus(ctx, res.ID, graph.StatusReceived, ""); err != nil {
+		if err := p.setStatus(ctx, res.ID, graph.StatusReceived, ""); err != nil {
 			return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
 		}
+	} else if p.metrics != nil {
+		p.metrics.DocumentStatus(string(graph.StatusReceived))
 	}
 	p.enqueue(ctx, res.ID)
 	return Result{DocumentID: res.ID}, nil
@@ -217,7 +236,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 			return nil
 		}
 		msg := stage + ": " + err.Error()
-		if serr := p.store.SetStatus(ctx, docID, graph.StatusFailed, msg); serr != nil {
+		if serr := p.setStatus(ctx, docID, graph.StatusFailed, msg); serr != nil {
 			slog.Warn("ingest: could not record failure", "doc", docID, "err", serr)
 		}
 		p.forget(docID)
@@ -226,7 +245,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 
 	st := doc.Status
 	if st == graph.StatusReceived || st == graph.StatusFetched || st == graph.StatusFailed {
-		if err := p.store.SetStatus(ctx, docID, graph.StatusFetched, ""); err != nil {
+		if err := p.setStatus(ctx, docID, graph.StatusFetched, ""); err != nil {
 			return fail("status", err)
 		}
 		loaded, err := p.loadFor(ctx, doc)
@@ -254,10 +273,13 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		if err := p.store.PutChunks(ctx, docID, chunks); err != nil {
 			return fail("chunk", err)
 		}
+		if p.metrics != nil {
+			p.metrics.Chunks(len(chunks))
+		}
 		for _, c := range chunks {
 			p.index(c.ID, chunkFP(c))
 		}
-		if err := p.store.SetStatus(ctx, docID, graph.StatusChunked, ""); err != nil {
+		if err := p.setStatus(ctx, docID, graph.StatusChunked, ""); err != nil {
 			return fail("status", err)
 		}
 		st = graph.StatusChunked
@@ -300,12 +322,19 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		}
 		var results []extract.ChunkResult
 		if len(req.Chunks) > 0 {
+			start := time.Now()
 			results, err = p.prov.Extract(ctx, req)
+			if p.metrics != nil {
+				p.metrics.ExtractSeconds(time.Since(start).Seconds())
+				if err != nil {
+					p.metrics.ExtractorError()
+				}
+			}
 			if err != nil {
 				return fail("extract", err)
 			}
 		}
-		if err := p.store.SetStatus(ctx, docID, graph.StatusExtracted, ""); err != nil {
+		if err := p.setStatus(ctx, docID, graph.StatusExtracted, ""); err != nil {
 			return fail("status", err)
 		}
 
@@ -330,6 +359,11 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 			if err := p.store.UpsertExtraction(ctx, docID, c.ID, version, ents, facts); err != nil {
 				return fail("merge", err)
 			}
+			if p.metrics != nil {
+				p.metrics.Entities(len(ents))
+				p.metrics.Facts(len(facts))
+				p.metrics.FactsDropped(len(audits))
+			}
 			for _, e := range ents {
 				if e.Key != "" && e.Name != "" {
 					embedNames[graph.EntityID(e.Key)] = e.Name
@@ -347,11 +381,11 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 				judgeCandidates = append(judgeCandidates, judgeCandidate{fact: f, chunkText: c.Text, chunkID: c.ID})
 			}
 		}
-		if err := p.store.SetStatus(ctx, docID, graph.StatusMerged, ""); err != nil {
+		if err := p.setStatus(ctx, docID, graph.StatusMerged, ""); err != nil {
 			return fail("status", err)
 		}
 		if p.judge != nil && judgeModeActive(p.cfg.Judge.Mode) && len(judgeCandidates) > 0 {
-			if err := p.store.SetStatus(ctx, docID, graph.StatusVerifying, ""); err != nil {
+			if err := p.setStatus(ctx, docID, graph.StatusVerifying, ""); err != nil {
 				return fail("status", err)
 			}
 			p.verifyFacts(ctx, doc, judgeCandidates, version)
@@ -371,11 +405,15 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		return fail("supersede", err)
 	}
 	for _, oldID := range olds {
-		if err := p.store.Supersede(ctx, oldID, docID); err != nil && !errors.Is(err, graph.ErrSuperseded) {
+		err := p.store.Supersede(ctx, oldID, docID)
+		if err != nil && !errors.Is(err, graph.ErrSuperseded) {
 			return fail("supersede", err)
 		}
+		if err == nil && p.metrics != nil {
+			p.metrics.DocumentStatus(string(graph.StatusSuperseded))
+		}
 	}
-	if err := p.store.SetStatus(ctx, docID, graph.StatusDone, ""); err != nil {
+	if err := p.setStatus(ctx, docID, graph.StatusDone, ""); err != nil {
 		return fail("status", err)
 	}
 	p.forget(docID)
@@ -400,6 +438,27 @@ func (p *Pipeline) SetJudge(j FactJudge) {
 // Additive to the constructor; attach it before starting workers.
 func (p *Pipeline) SetEmbedder(e Embedder) {
 	p.emb = e
+}
+
+// SetMetrics attaches the observability counters; nil (the default) leaves
+// them disabled. Additive to the constructor.
+func (p *Pipeline) SetMetrics(m Metrics) {
+	p.metrics = m
+}
+
+// setStatus updates a document's status and counts the transition when the
+// write succeeds. Note: a terminal superseded document silently drops late
+// writes (store contract) and such a refused transition is still counted —
+// the counters are advisory and the window is a concurrent same-source
+// version race.
+func (p *Pipeline) setStatus(ctx context.Context, docID string, st graph.Status, errMsg string) error {
+	if err := p.store.SetStatus(ctx, docID, st, errMsg); err != nil {
+		return err
+	}
+	if p.metrics != nil {
+		p.metrics.DocumentStatus(string(st))
+	}
+	return nil
 }
 
 type judgeCandidate struct {
@@ -442,14 +501,24 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 			continue
 		}
 		evidence := EvidenceSentence(cand.chunkText, f.HeadMention.Start, f.HeadMention.End)
+		start := time.Now()
 		verdict, err := p.judge.VerifyFact(ctx, FactInput{
 			Head: f.HeadKey, Rel: f.Rel, Tail: f.TailKey,
 			Evidence: evidence, DocContext: doc.Title, Confidence: f.Confidence,
 		})
+		if p.metrics != nil {
+			p.metrics.JudgeSeconds(time.Since(start).Seconds())
+		}
 		if err != nil {
 			slog.Warn("ingest: judge unavailable, fact left unverified",
 				"doc", doc.ID, "head", f.HeadKey, "rel", f.Rel, "err", err)
+			if p.metrics != nil {
+				p.metrics.JudgeFailure()
+			}
 			continue
+		}
+		if p.metrics != nil {
+			p.metrics.JudgeVerdict(verdict.Status)
 		}
 		switch verdict.Status {
 		case "confirmed", "unclear":

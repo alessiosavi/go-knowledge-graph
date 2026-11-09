@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,6 +29,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
 	mcpserver "github.com/alessiosavi/go-knowledge-graph/internal/mcp"
+	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
@@ -38,6 +40,8 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	// Structured JSON logs for the whole process (stderr).
+	slog.SetDefault(obs.Log())
 	if len(args) == 0 {
 		usage(stderr)
 		return 2
@@ -250,6 +254,8 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
 		return 1
 	}
+	metrics := obs.New()
+	pipe.SetMetrics(metrics)
 	workers := &ingest.Worker{Workers: serveWorkers, Pipeline: pipe}
 	workers.Start(ctx)
 	if err := pipe.Recover(ctx); err != nil {
@@ -261,6 +267,8 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	mcpSrv := mcpserver.NewServer(cfg, st, pipe)
 	rest.SetEmbedder(emb)
 	mcpSrv.SetEmbedder(emb)
+	rest.SetMetrics(metrics)
+	rest.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
 	rest.Mount("/mcp", mcpSrv.HTTPHandler())
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,

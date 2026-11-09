@@ -274,6 +274,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /healthz:
+    get:
+      summary: Process liveness probe
+      security: []
+      responses:
+        "200":
+          description: process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+  /readyz:
+    get:
+      summary: Readiness probe (Memgraph connectivity)
+      security: []
+      responses:
+        "200":
+          description: dependencies reachable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+        "503":
+          description: dependency unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200":
+          description: scrape
+          content:
+            text/plain:
+              schema: { type: string }
 components:
   securitySchemes:
     bearerAuth:
