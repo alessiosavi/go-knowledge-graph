@@ -245,11 +245,17 @@
     const cx = 320,
       cy = 210,
       radius = 155;
+    // Edges carry entity keys while nodes carry ids: place each node under
+    // both so the edge lookup resolves under either convention.
     const pos = new Map();
-    pos.set(entity.id, { x: cx, y: cy });
+    const place = (node, point) => {
+      pos.set(node.key || node.id, point);
+      pos.set(node.id, point);
+    };
+    place(entity, { x: cx, y: cy });
     neighbors.forEach((n, i) => {
       const angle = (2 * Math.PI * i) / neighbors.length - Math.PI / 2;
-      pos.set(n.id, {
+      place(n, {
         x: cx + radius * Math.cos(angle),
         y: cy + radius * Math.sin(angle),
       });

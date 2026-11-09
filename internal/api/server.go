@@ -128,11 +128,18 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
-// authExempt lists the paths that never require the bearer token (the
-// health probes and metrics endpoint are added by the observability task).
+// authExempt lists the paths that never require the bearer token: the
+// health probes, the metrics scrape, and the embedded UI shell. The shell
+// must load in a browser without the key — a top-level navigation cannot
+// attach an Authorization header — so the page can ask for the key it then
+// sends on its fetches. Everything with data behind it (/v1/*, /mcp) stays
+// guarded. Keep the shell list in sync with internal/webui/assets (pinned
+// by TestAssetsFileSet and TestUIBearerPolicy).
 func authExempt(path string) bool {
 	switch path {
 	case "/healthz", "/readyz", "/metrics":
+		return true
+	case "/ui", "/ui/", "/ui/index.html", "/ui/app.css", "/ui/app.js":
 		return true
 	}
 	return false

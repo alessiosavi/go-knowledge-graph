@@ -1,9 +1,11 @@
 package webui
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -69,5 +71,23 @@ func TestIndexReferencesOnlyLocalAssets(t *testing.T) {
 	external := regexp.MustCompile(`(?i)(?:src|href)\s*=\s*["'](?:(?:https?:)?//)`)
 	if m := external.FindString(rr.Body.String()); m != "" {
 		t.Errorf("the served index references an external URL: %q", m)
+	}
+}
+
+// TestAssetsFileSet pins the shipped file set: every embedded file is
+// served without the bearer key (internal/api authExempt lists these same
+// paths), so adding an asset means updating that list too.
+func TestAssetsFileSet(t *testing.T) {
+	entries, err := fs.ReadDir(assets, "assets")
+	if err != nil {
+		t.Fatalf("read embedded assets: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	want := []string{"app.css", "app.js", "index.html"}
+	if !slices.Equal(names, want) {
+		t.Errorf("embedded file set = %v, want %v (update internal/api authExempt when adding files)", names, want)
 	}
 }

@@ -47,21 +47,49 @@ func TestUIRedirectsBarePath(t *testing.T) {
 	}
 }
 
-// TestUISitsBehindBearerAuth pins that the UI obeys the same bearer policy
-// as the API (mirrors TestAuthAppliesToMountedHandlers).
-func TestUISitsBehindBearerAuth(t *testing.T) {
+// TestUIBearerPolicy pins the split the UI needs: the static shell is
+// reachable without the key — a browser navigation cannot attach an
+// Authorization header, and the page must load to ask for the key it then
+// sends on its fetches — while every data path stays guarded.
+func TestUIBearerPolicy(t *testing.T) {
 	cfg := config.Config{}
 	cfg.Server.APIKey = "sekret"
 	h := NewServer(cfg, nil, nil).Handler()
 
-	for _, path := range []string{"/ui/", "/ui/app.js"} {
-		rr := do(t, h, http.MethodGet, path, nil, nil)
-		if rr.Code != http.StatusUnauthorized {
-			t.Errorf("GET %s without token: code = %d, want 401", path, rr.Code)
+	shell := []struct {
+		path string
+		want int
+	}{
+		{"/ui", http.StatusMovedPermanently},
+		{"/ui/", http.StatusOK},
+		{"/ui/index.html", http.StatusMovedPermanently},
+		{"/ui/app.css", http.StatusOK},
+		{"/ui/app.js", http.StatusOK},
+	}
+	for _, tc := range shell {
+		rr := do(t, h, http.MethodGet, tc.path, nil, nil)
+		if rr.Code != tc.want {
+			t.Errorf("GET %s without a key: code = %d, want %d (the shell must load so the page can ask for the key)", tc.path, rr.Code, tc.want)
 		}
-		rr = do(t, h, http.MethodGet, path, nil, map[string]string{"Authorization": "Bearer sekret"})
-		if rr.Code != http.StatusOK {
-			t.Errorf("GET %s with token: code = %d, want 200", path, rr.Code)
-		}
+	}
+
+	// Anything else under /ui is not exempt.
+	rr := do(t, h, http.MethodGet, "/ui/nope.js", nil, nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("GET /ui/nope.js without a key: code = %d, want 401", rr.Code)
+	}
+	rr = do(t, h, http.MethodGet, "/ui/nope.js", nil, map[string]string{"Authorization": "Bearer sekret"})
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("GET /ui/nope.js with a key: code = %d, want 404", rr.Code)
+	}
+
+	// Data paths stay behind the key.
+	rr = do(t, h, http.MethodGet, "/v1/documents", nil, nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("GET /v1/documents without a key: code = %d, want 401", rr.Code)
+	}
+	rr = do(t, h, http.MethodGet, "/v1/documents", nil, map[string]string{"Authorization": "Bearer sekret"})
+	if rr.Code == http.StatusUnauthorized {
+		t.Errorf("GET /v1/documents with a key: got 401, want the request served")
 	}
 }
