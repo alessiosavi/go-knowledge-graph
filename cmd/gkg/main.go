@@ -94,7 +94,7 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.Load("")
+	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg eval: %v\n", err)
 		return 1
@@ -130,7 +130,7 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 func runMigrate(stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	cfg, err := config.Load("")
+	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg migrate: %v\n", err)
 		return 1
@@ -147,6 +147,19 @@ func runMigrate(stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, "schema ok")
 	return 0
+}
+
+// loadConfig resolves the configuration: GKG_CONFIG names a YAML file, a
+// config.yaml in the working directory is picked up when present, and
+// environment overrides always win (secrets stay environment-only).
+func loadConfig() (config.Config, error) {
+	path := os.Getenv("GKG_CONFIG")
+	if path == "" {
+		if _, err := os.Stat("config.yaml"); err == nil {
+			path = "config.yaml"
+		}
+	}
+	return config.Load(path)
 }
 
 // serveWorkers is the ingestion worker pool size.
@@ -234,7 +247,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.Load("")
+	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
 		return 1
@@ -308,7 +321,7 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.Load("")
+	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
 		return 1
@@ -372,7 +385,7 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.Load("")
+	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1

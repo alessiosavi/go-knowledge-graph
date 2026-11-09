@@ -46,6 +46,11 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
 
 - No natural-language `ask` endpoint, no crawling/scheduling, no
   multi-tenancy (see the design's non-goals).
+- The gliner2.5 (Apache-2.0) local extraction swap is a v0.1 item: the
+  pinned `glinerel-fast` 0.1.1 runtime only loads GLiNEREL checkpoints (its
+  config contract rejects the gliner2.5 architecture). For a fully free
+  extraction path in v0, point the `openai` provider at any
+  OpenAI-compatible endpoint.
 - URL fetches are capped at `Ingest.MaxURLMB` (default 10 MiB), uploads at
   `Ingest.MaxUploadMB` (default 20 MiB), and JSON bodies on the read
   endpoints at 1 MiB.

@@ -33,6 +33,7 @@ BATCH_SIZE = int(os.environ.get("GLINEREL_BATCH", "8"))
 # full Hugging Face repository id and passed through.
 MODEL_ALIASES = {
     "314m": "VAGOsolutions/SauerkrautLM-GLiNEREL-314m",
+    "72m": "VAGOsolutions/SauerkrautLM-GLiNEREL-72m",
 }
 MODEL_NAME = os.environ.get("GLINEREL_MODEL", "314m")
 

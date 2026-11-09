@@ -1,10 +1,77 @@
-# Minimal compose for the local extraction profile (profile: local).
-# The full stack (memgraph + gkg) is assembled in the packaging task.
+# gkg full stack: Memgraph (auth, volume, healthcheck) + the gkg service.
+#
+#   cp .env.example .env        # fill MEMGRAPH_PASSWORD and your API key
+#   docker compose --env-file .env -f deploy/docker-compose.yml up -d --wait
+#   docker compose --env-file .env --profile local -f deploy/docker-compose.yml up -d
+#     (local profile = GLiNEREL sidecar; run gkg with
+#      GKG_EXTRACTOR_MODE=sidecar and GKG_EXTRACTOR_SIDECAR_URL=http://sidecar:8090)
+name: gkg
 services:
+  memgraph:
+    image: memgraph/memgraph:3.14.0
+    environment:
+      MEMGRAPH_USER: ${MEMGRAPH_USER:-gkg}
+      MEMGRAPH_PASSWORD: ${MEMGRAPH_PASSWORD:?set MEMGRAPH_PASSWORD in .env}
+    ports:
+      - "${MEMGRAPH_PORT:-7687}:7687"
+    volumes:
+      - memgraph-data:/var/lib/memgraph
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/7687"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  gkg:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gkg
+    depends_on:
+      memgraph:
+        condition: service_healthy
+    # Every GKG_* knob from .env reaches the container; the explicit
+    # environment entries below win over env_file for the compose wiring
+    # (Memgraph host/credentials, server address, labels path).
+    env_file:
+      - ../.env
+    environment:
+      GKG_MEMGRAPH_URI: bolt://memgraph:7687
+      GKG_MEMGRAPH_USER: ${MEMGRAPH_USER:-gkg}
+      GKG_MEMGRAPH_PASSWORD: ${MEMGRAPH_PASSWORD:?set MEMGRAPH_PASSWORD in .env}
+      GKG_SERVER_ADDR: ":8080"
+      GKG_API_KEY: ${GKG_API_KEY:-}
+      GKG_EXTRACTOR_MODE: ${GKG_EXTRACTOR_MODE:-openai}
+      GKG_EXTRACTOR_OPENAI_BASE_URL: ${GKG_EXTRACTOR_OPENAI_BASE_URL:-https://api.openai.com/v1}
+      GKG_EXTRACTOR_OPENAI_API_KEY: ${GKG_EXTRACTOR_OPENAI_API_KEY:-}
+      GKG_EXTRACTOR_OPENAI_MODEL: ${GKG_EXTRACTOR_OPENAI_MODEL:-deepseek-v4.1-flash}
+      GKG_EXTRACTOR_SIDECAR_URL: ${GKG_EXTRACTOR_SIDECAR_URL:-http://sidecar:8090}
+      GKG_EXTRACTOR_SIDECAR_MODEL: ${GKG_EXTRACTOR_SIDECAR_MODEL:-glinerel-314m}
+      GKG_EMBEDDER_ENABLED: ${GKG_EMBEDDER_ENABLED:-false}
+      GKG_EMBEDDER_BASE_URL: ${GKG_EMBEDDER_BASE_URL:-https://api.openai.com/v1}
+      GKG_EMBEDDER_API_KEY: ${GKG_EMBEDDER_API_KEY:-}
+      GKG_EMBEDDER_MODEL: ${GKG_EMBEDDER_MODEL:-text-embedding-3-small}
+      GKG_EMBEDDER_DIM: ${GKG_EMBEDDER_DIM:-768}
+      GKG_JUDGE_MODE: ${GKG_JUDGE_MODE:-off}
+      GKG_JUDGE_BASE_URL: ${GKG_JUDGE_BASE_URL:-https://api.openai.com/v1}
+      GKG_JUDGE_API_KEY: ${GKG_JUDGE_API_KEY:-}
+      GKG_JUDGE_MODEL: ${GKG_JUDGE_MODEL:-deepseek-v4.1-flash}
+      GKG_LABELS_PRESETS_DIR: ${GKG_LABELS_PRESETS_DIR:-/labels}
+    ports:
+      - "${GKG_PORT:-8080}:8080"
+    volumes:
+      - ../labels:/labels:ro
+
+  # Local, fully-offline extraction profile: GLiNEREL sidecar with the
+  # weights baked into the image (runtime HF_HUB_OFFLINE=1).
   sidecar:
     profiles: ["local"]
     build:
       context: ../sidecar
+      args:
+        # Select the baked checkpoint (314m default, 72m, or any full
+        # repository id); rebuild after changing it with `up --build`.
+        GLINEREL_MODEL: ${GLINEREL_MODEL:-314m}
     ports:
       - "127.0.0.1:8090:8090"
     environment:
@@ -20,3 +87,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s
+
+volumes:
+  memgraph-data:

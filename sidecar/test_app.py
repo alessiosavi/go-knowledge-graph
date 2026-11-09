@@ -205,3 +205,12 @@ def test_extract_empty_chunks():
     assert resp.status_code == 200
     assert resp.json() == {"results": []}
     assert fake.calls == []
+
+
+def test_model_aliases_resolve():
+    # The quickstart documents both shipped checkpoints by their short
+    # names; both must resolve to real repositories.
+    assert sidecar.resolve_model("314m") == "VAGOsolutions/SauerkrautLM-GLiNEREL-314m"
+    assert sidecar.resolve_model("72m") == "VAGOsolutions/SauerkrautLM-GLiNEREL-72m"
+    # Anything else is a full repository id, passed through unchanged.
+    assert sidecar.resolve_model("org/model") == "org/model"

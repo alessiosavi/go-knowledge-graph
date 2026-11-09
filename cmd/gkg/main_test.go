@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,38 @@ func TestBinaryDoesNotDependOnTesting(t *testing.T) {
 		if strings.TrimSpace(line) == "testing" {
 			t.Fatal("the gkg binary transitively imports the testing package; keep test support out of production packages")
 		}
+	}
+}
+
+func TestLoadConfigFromGKGConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "custom.yaml")
+	if err := os.WriteFile(path, []byte("server:\n  addr: \":19999\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GKG_CONFIG", path)
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Server.Addr != ":19999" {
+		t.Errorf("Server.Addr = %q, want the file value", cfg.Server.Addr)
+	}
+}
+
+func TestLoadConfigAutoDiscoversConfigYaml(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("server:\n  addr: \":17777\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	t.Setenv("GKG_CONFIG", "")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Server.Addr != ":17777" {
+		t.Errorf("Server.Addr = %q, want the discovered config.yaml value", cfg.Server.Addr)
 	}
 }
 
