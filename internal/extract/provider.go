@@ -12,10 +12,11 @@ type Label struct {
 	Threshold float64 `yaml:"threshold"`
 }
 
-// RequestChunk is one chunk submitted for extraction.
+// RequestChunk is one chunk submitted for extraction. The JSON tags are
+// part of the frozen sidecar wire contract ({"id", "text"}).
 type RequestChunk struct {
-	ID   string
-	Text string
+	ID   string `json:"id"`
+	Text string `json:"text"`
 }
 
 // Request is one extraction call: the chunks plus the labels to look for.

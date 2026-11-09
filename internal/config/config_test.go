@@ -93,6 +93,7 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_EXTRACTOR_OPENAI_API_KEY", "ok", "ok", func(c config.Config) any { return c.Extractor.OpenAI.APIKey }},
 		{"GKG_EXTRACTOR_OPENAI_MODEL", "om", "om", func(c config.Config) any { return c.Extractor.OpenAI.Model }},
 		{"GKG_EXTRACTOR_SIDECAR_URL", "http://localhost:9999", "http://localhost:9999", func(c config.Config) any { return c.Extractor.Sidecar.URL }},
+		{"GKG_EXTRACTOR_SIDECAR_MODEL", "glinerel-314m", "glinerel-314m", func(c config.Config) any { return c.Extractor.Sidecar.Model }},
 		{"GKG_EMBEDDER_ENABLED", "true", true, func(c config.Config) any { return c.Embedder.Enabled }},
 		{"GKG_EMBEDDER_BASE_URL", "https://example/v1", "https://example/v1", func(c config.Config) any { return c.Embedder.BaseURL }},
 		{"GKG_EMBEDDER_API_KEY", "ek", "ek", func(c config.Config) any { return c.Embedder.APIKey }},
