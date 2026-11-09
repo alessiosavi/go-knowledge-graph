@@ -102,8 +102,9 @@ curl -s localhost:8080/v1/agent/ask -H 'Content-Type: application/json' \
 ```
 
 Each ask is independent (no chat memory) and bounded:
-`GKG_AGENT_MAX_STEPS` tool calls (default 6, hard cap 12) and
-`GKG_AGENT_TIMEOUT_S` (default 60). While the agent is disabled the endpoint
+`GKG_AGENT_MAX_STEPS` model turns that request tools (default 6, hard cap
+12; each turn may run up to 8 tool calls) and `GKG_AGENT_TIMEOUT_S`
+(default 60). While the agent is disabled the endpoint
 answers `501` and the panel stays hidden. Answers are LLM-generated — the
 `evidence` array is the source of truth
 ([known limits](docs/known-limitations.md)).

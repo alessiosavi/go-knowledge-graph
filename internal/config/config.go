@@ -108,7 +108,7 @@ type AgentConfig struct {
 	BaseURL  string `yaml:"base_url"`
 	APIKey   string `yaml:"api_key"`
 	Model    string `yaml:"model"`
-	MaxSteps int    `yaml:"max_steps"` // tool-execution budget per ask (clamped 1..12)
+	MaxSteps int    `yaml:"max_steps"` // tool-turn budget per ask (clamped 1..12; each turn executes up to 8 calls)
 	TimeoutS int    `yaml:"timeout_s"` // whole-ask budget in seconds
 }
 

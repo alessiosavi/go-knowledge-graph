@@ -78,7 +78,7 @@ func NewServer(cfg config.Config, store *graph.Store, emb search.QueryEmbedder) 
 	}
 }
 
-// clampSteps bounds the tool-call budget: the default when unset, the hard
+// clampSteps bounds the tool-turn budget: the default when unset, the hard
 // cap when configured beyond it.
 func clampSteps(n int) int {
 	if n <= 0 {

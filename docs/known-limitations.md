@@ -85,9 +85,9 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
   and endpoints that reject the `tools` parameter fall back to a
   constrained JSON plan (one round of tool calls, then a final answer).
 - Provider cost and latency apply to every ask. Each ask is bounded by
-  `GKG_AGENT_MAX_STEPS` (default 6, hard cap 12 tool calls) and
-  `GKG_AGENT_TIMEOUT_S` (default 60), but several model turns happen within
-  that budget.
+  `GKG_AGENT_MAX_STEPS` (default 6, hard cap 12 model turns that request
+  tools; each turn executes up to 8 tool calls) and `GKG_AGENT_TIMEOUT_S`
+  (default 60), but several model turns happen within that budget.
 - Read-only by design: the tool set mirrors the MCP read set — no ingest in
   v1. Tool outputs are treated as untrusted data in the prompt, but
   ingested documents can still attempt prompt injection; the read-only
