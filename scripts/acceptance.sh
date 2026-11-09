@@ -140,6 +140,16 @@ wait_http "$BASE_URL/readyz" || fail "service did not become ready"
 ok "healthz + readyz"
 
 # ---------------------------------------------------------------------------
+step "embedded web UI (optional)"
+if [[ "${ACCEPTANCE_UI:-0}" == "1" ]]; then
+	UI_BODY="$(req -fsS "$BASE_URL/ui/")"
+	[[ "$UI_BODY" == *'id="graph"'* ]] || fail "GET /ui/ did not serve the embedded UI"
+	ok "embedded UI served at /ui/"
+else
+	skip "embedded UI at /ui/ (set ACCEPTANCE_UI=1 to check)"
+fi
+
+# ---------------------------------------------------------------------------
 step "1. ingest a Markdown file and a PDF, both queryable"
 cat >"$TMP/acceptance.md" <<EOF
 # Acceptance note

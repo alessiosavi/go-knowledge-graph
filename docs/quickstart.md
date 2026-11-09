@@ -55,6 +55,10 @@ curl -s -H 'Content-Type: application/json' \
      -d '{"query":"MATCH (d:Document) RETURN d.id, d.status"}' localhost:8080/v1/cypher
 ```
 
+The same data is browsable in the built-in viewer: open
+`http://localhost:8080/ui/` for search, entity cards with evidence,
+documents, ingest and a one-hop neighborhood graph — no extra service.
+
 The same submissions work from the CLI without HTTP:
 
 ```sh

@@ -14,6 +14,9 @@ and measuring extraction quality with the built-in eval harness.
   ingest, status, search, entity views with evidence, traversal, document
   listing, and guarded read-only Cypher (write clauses rejected, row cap +
   timeout enforced).
+- **Built-in web UI**: `GET /ui/` serves a self-contained, read-only
+  viewer straight from the binary — search, entity cards with evidence,
+  documents, ingest and a one-hop neighborhood; no extra tools needed.
 - **Quality**: optional online judge (`off | low-confidence | sample | all`)
   removes refuted facts with a `:RejectedFact` audit; `gkg eval` prints
   lenient F1, judge-scored precision and reference coverage, while the
@@ -39,9 +42,9 @@ curl -s -F 'file=@notes.md' localhost:8080/v1/ingest
 
 Then connect an agent ([docs/agent-setup.md](docs/agent-setup.md)),
 evaluate ([docs/quickstart.md#8-evaluation](docs/quickstart.md)), or run
-the acceptance script (`scripts/acceptance.sh`). The full five-minute tour,
-configuration reference and troubleshooting live in
-[docs/quickstart.md](docs/quickstart.md).
+the acceptance script (`scripts/acceptance.sh`); day-to-day usage lives in
+[USAGE.md](USAGE.md). The full five-minute tour, configuration reference
+and troubleshooting live in [docs/quickstart.md](docs/quickstart.md).
 
 ## Architecture
 
