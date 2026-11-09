@@ -49,3 +49,16 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
 - URL fetches are capped at 10 MiB by default (`Ingest.MaxURLMB`); the
   upload path lands in a later task and will enforce `Ingest.MaxUploadMB`
   (default 20 MiB).
+
+## Text search and aliases
+
+- Memgraph text indexes (Tantivy) **do not index list properties**, so the
+  `aliases` half of `entity_text` is inert upstream: entity search is
+  authoritative on `name` only and alias-only lookups silently miss
+  (pinned by `TestSearchAliasesAreNotIndexed`). A flattened scalar alias
+  property is the planned follow-up.
+- `kind: auto` merges entity and chunk hits by fused score; with a small
+  `limit`, entities (up to two fusion legs) can crowd chunks out — ask for
+  the kind explicitly when that matters.
+- Traversal surfaces one edge per (head, rel, tail, chunk); the same triple
+  appearing in several chunks is intentionally several evidence rows.
