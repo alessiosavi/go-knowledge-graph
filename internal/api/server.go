@@ -1,6 +1,7 @@
 // Package api implements the gkg HTTP surface: ingestion, documents,
 // search, entities, traversal, the guarded read-only cypher endpoint, the
-// health probes (/healthz, /readyz) and the Prometheus scrape (/metrics).
+// embedded web UI (/ui/), the health probes (/healthz, /readyz) and the
+// Prometheus scrape (/metrics).
 package api
 
 import (
@@ -19,6 +20,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
+	"github.com/alessiosavi/go-knowledge-graph/internal/webui"
 )
 
 // Submitter accepts ingestion submissions; *ingest.Pipeline implements it.
@@ -95,6 +97,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/entities/{id}", s.handleEntity)
 	mux.HandleFunc("POST /v1/traverse", s.handleTraverse)
 	mux.HandleFunc("POST /v1/cypher", s.handleCypher)
+	mux.Handle("GET /ui", http.RedirectHandler("/ui/", http.StatusMovedPermanently))
+	mux.Handle("GET /ui/", http.StripPrefix("/ui/", webui.Handler()))
 	for _, m := range s.extra {
 		mux.Handle(m.pattern, m.handler)
 	}
