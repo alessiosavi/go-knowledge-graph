@@ -8,6 +8,9 @@ import (
 // ErrNotFound reports a missing node or document.
 var ErrNotFound = errors.New("graph: not found")
 
+// ErrSuperseded reports a write against a document that has been superseded.
+var ErrSuperseded = errors.New("graph: document is superseded")
+
 // Status is a document's pipeline state.
 type Status string
 
