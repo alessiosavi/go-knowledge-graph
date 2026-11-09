@@ -57,6 +57,9 @@ func NewClient(cfg config.Config) *Client {
 // SetBackoff overrides the retry delays (used by tests).
 func (c *Client) SetBackoff(backoff []time.Duration) { c.backoff = backoff }
 
+// Model returns the judge model name (evaluation reports record it).
+func (c *Client) Model() string { return c.model }
+
 type judgeWireRequest struct {
 	Model          string            `json:"model"`
 	Messages       []judgeMessage    `json:"messages"`

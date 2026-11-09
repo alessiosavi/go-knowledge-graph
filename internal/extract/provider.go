@@ -8,8 +8,8 @@ import "context"
 
 // Label is an extraction label with its per-call threshold.
 type Label struct {
-	Name      string  `yaml:"name"`
-	Threshold float64 `yaml:"threshold"`
+	Name      string  `yaml:"name" json:"name"`
+	Threshold float64 `yaml:"threshold" json:"threshold"`
 }
 
 // RequestChunk is one chunk submitted for extraction. The JSON tags are
