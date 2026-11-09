@@ -125,6 +125,12 @@
         item.addEventListener("click", () => {
           loadEntity(hit.id).catch(() => {});
         });
+      } else if (hit.kind === "chunk" && hit.document_id) {
+        item.classList.add("hit");
+        item.addEventListener("click", () => {
+          openDocument(hit.document_id).catch(() => {});
+        });
+        item.append(el("div", "snippet", "doc " + hit.document_id));
       } else {
         item.append(el("div", "snippet", "doc " + (hit.id || "")));
       }
@@ -183,14 +189,20 @@
       row.append(el("td", "muted", f.judge || "—"));
       const evi = el("td", "muted");
       evi.append(el("div", null, f.excerpt || ""));
-      if (f.doc_id)
-        evi.append(
-          el(
-            "div",
-            null,
-            "doc " + f.doc_id + (f.chunk_id ? " · " + f.chunk_id : ""),
-          ),
-        );
+      if (f.doc_id) {
+        const source = el("div");
+        const link = el("a", "node-link", "doc " + f.doc_id);
+        link.href = "#";
+        link.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          openDocument(f.doc_id).catch(() => {});
+        });
+        source.append(link);
+        if (f.chunk_id) {
+          source.append(document.createTextNode(" · " + f.chunk_id));
+        }
+        evi.append(source);
+      }
       row.append(evi);
       body.append(row);
     }
@@ -352,6 +364,14 @@
         line.append(el("span", "badge", h.kind || "hit"));
         if (h.kind === "entity" && h.id) {
           line.append(entityLink(h.id, h.title || h.id));
+        } else if (h.kind === "chunk" && h.document_id) {
+          const link = el("a", "node-link", h.title || h.id || "chunk");
+          link.href = "#";
+          link.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            openDocument(h.document_id).catch(() => {});
+          });
+          line.append(link);
         } else {
           line.append(document.createTextNode(h.title || h.id || ""));
         }
@@ -389,9 +409,18 @@
       for (const d of result.documents.slice(0, 8)) {
         const line = el("div", "snippet");
         line.append(el("span", "badge", d.status || "unknown"));
-        line.append(
-          document.createTextNode((d.title || d.source || d.id) + " · " + d.id),
-        );
+        if (d.id) {
+          const link = el("a", "node-link", d.title || d.source || d.id);
+          link.href = "#";
+          link.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            openDocument(d.id).catch(() => {});
+          });
+          line.append(link);
+          line.append(document.createTextNode(" · " + d.id));
+        } else {
+          line.append(document.createTextNode(d.title || d.source || ""));
+        }
         nodes.push(line);
       }
       return nodes;
@@ -487,23 +516,9 @@
       item.append(head);
       const meta = el("div", "snippet", (d.source_kind || "?") + " · " + d.id);
       item.append(meta);
+      item.classList.add("hit");
       item.addEventListener("click", () => {
-        api("/v1/documents/" + encodeURIComponent(d.id) + "/status")
-          .then((s) => {
-            meta.textContent =
-              (d.source_kind || "?") +
-              " · " +
-              s.status +
-              (s.error ? " · " + s.error : "") +
-              " · " +
-              d.id;
-            meta.className =
-              s.status === "failed" ? "snippet error" : "snippet";
-          })
-          .catch((err) => {
-            meta.textContent = String(err.message || err);
-            meta.className = "snippet error";
-          });
+        openDocument(d.id).catch(() => {});
       });
       list.append(item);
     }
@@ -562,6 +577,77 @@
     }
   }
 
+  // ---- document reader ----------------------------------------------------
+
+  // openDocument shows the reader panel with the server-rendered markdown
+  // (GET /v1/documents/{id}/content): the fold + render happens server-side,
+  // the page injects the returned HTML and hardens external links.
+  async function openDocument(id) {
+    const panel = $("reader");
+    panel.hidden = false;
+    const title = $("reader-title");
+    const meta = $("reader-meta");
+    const banner = $("reader-banner");
+    const body = $("reader-body");
+    title.textContent = "Loading…";
+    meta.replaceChildren();
+    banner.hidden = true;
+    banner.className = "";
+    banner.textContent = "";
+    body.replaceChildren();
+
+    let data;
+    try {
+      data = await api("/v1/documents/" + encodeURIComponent(id) + "/content");
+    } catch (err) {
+      title.textContent = "Document " + id;
+      banner.textContent = String(err.message || err);
+      banner.className = "error";
+      banner.hidden = false;
+      return;
+    }
+    const doc = (data && data.document) || {};
+    title.textContent = doc.title || doc.source || doc.id || id;
+    meta.append(
+      document.createTextNode(
+        (doc.source_kind || "?") + " · " + (doc.id || id) + " · ",
+      ),
+    );
+    meta.append(statusBadge(doc.status));
+    const chunks = (data && data.chunks) || [];
+    meta.append(
+      document.createTextNode(
+        " · " + chunks.length + (chunks.length === 1 ? " chunk" : " chunks"),
+      ),
+    );
+    if (doc.status === "superseded") {
+      banner.textContent =
+        "Superseded version: the newer version is a separate entry.";
+      banner.hidden = false;
+    }
+    if (doc.status === "failed" && doc.error) {
+      banner.textContent = doc.error;
+      banner.className = "error";
+      banner.hidden = false;
+    }
+    const html = (data && data.html) || "";
+    if (html) {
+      body.innerHTML = html;
+      for (const link of body.querySelectorAll("a[href]")) {
+        if (/^https?:/i.test(link.getAttribute("href") || "")) {
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+        }
+      }
+    } else {
+      body.append(el("p", "muted", "No stored text."));
+    }
+  }
+
+  function closeReader() {
+    $("reader").hidden = true;
+  }
+
   // ---- wiring -------------------------------------------------------------
 
   function wire() {
@@ -572,6 +658,9 @@
     });
     $("docs-refresh").addEventListener("click", () => {
       loadDocuments().catch(() => {});
+    });
+    $("reader-close").addEventListener("click", () => {
+      closeReader();
     });
     $("ingest-form").addEventListener("submit", (ev) => {
       ev.preventDefault();

@@ -253,3 +253,35 @@ svg#graph .edge text {
 #auth-bar[hidden] {
   display: none;
 }
+#reader {
+  grid-column: 1 / -1;
+}
+#reader-title {
+  margin: 0 0 0.2rem;
+}
+#reader-meta {
+  margin: 0 0 0.4rem;
+}
+#reader-banner {
+  margin: 0 0 0.4rem;
+  color: var(--muted);
+}
+#reader-banner.error {
+  color: var(--bad);
+}
+#reader-body {
+  border-top: 1px solid var(--line);
+  padding-top: 0.6rem;
+  overflow-wrap: anywhere;
+}
+#reader-body pre {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.5rem;
+  overflow-x: auto;
+  font-size: 0.85rem;
+}
+#reader-body img {
+  max-width: 100%;
+}
