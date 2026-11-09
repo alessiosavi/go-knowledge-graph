@@ -128,6 +128,12 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_LABELS_PRESETS_DIR", "custom", "custom", func(c config.Config) any { return c.Labels.PresetsDir }},
 		{"GKG_LIMITS_CYPHER_ROWS", "50", 50, func(c config.Config) any { return c.Limits.CypherRows }},
 		{"GKG_LIMITS_CYPHER_TIMEOUT_MS", "2500", 2500, func(c config.Config) any { return c.Limits.CypherTimeoutMS }},
+		{"GKG_AGENT_ENABLED", "true", true, func(c config.Config) any { return c.Agent.Enabled }},
+		{"GKG_AGENT_BASE_URL", "https://example/v1", "https://example/v1", func(c config.Config) any { return c.Agent.BaseURL }},
+		{"GKG_AGENT_API_KEY", "ak", "ak", func(c config.Config) any { return c.Agent.APIKey }},
+		{"GKG_AGENT_MODEL", "am", "am", func(c config.Config) any { return c.Agent.Model }},
+		{"GKG_AGENT_MAX_STEPS", "3", 3, func(c config.Config) any { return c.Agent.MaxSteps }},
+		{"GKG_AGENT_TIMEOUT_S", "30", 30, func(c config.Config) any { return c.Agent.TimeoutS }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
@@ -336,5 +342,27 @@ func TestConverterEnvOverrides(t *testing.T) {
 	if cfg.Converter.Mode != "docling" || cfg.Converter.URL != "http://docling:5001" ||
 		cfg.Converter.APIKey != "ck" || cfg.Converter.TimeoutS != 42 || cfg.Converter.MaxResponseMB != 64 {
 		t.Errorf("Converter = %+v, want the env overrides applied", cfg.Converter)
+	}
+}
+
+func TestAgentDefaults(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.Enabled {
+		t.Errorf("Agent.Enabled = true, want the disabled default")
+	}
+	if cfg.Agent.BaseURL != "https://api.openai.com/v1" {
+		t.Errorf("Agent.BaseURL = %q, want the OpenAI-compatible default", cfg.Agent.BaseURL)
+	}
+	if cfg.Agent.Model != "deepseek-v4.1-flash" {
+		t.Errorf("Agent.Model = %q, want the default model", cfg.Agent.Model)
+	}
+	if cfg.Agent.MaxSteps != 6 {
+		t.Errorf("Agent.MaxSteps = %d, want 6", cfg.Agent.MaxSteps)
+	}
+	if cfg.Agent.TimeoutS != 60 {
+		t.Errorf("Agent.TimeoutS = %d, want 60", cfg.Agent.TimeoutS)
 	}
 }
