@@ -20,6 +20,7 @@ import (
 
 	"github.com/alessiosavi/GoGPUtils/minhash"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/agent"
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/convert"
@@ -356,11 +357,14 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 
 	rest := api.NewServer(cfg, st, pipe)
 	mcpSrv := mcpserver.NewServer(cfg, st, pipe)
+	agentSrv := agent.NewServer(cfg, st, emb)
 	rest.SetEmbedder(emb)
 	mcpSrv.SetEmbedder(emb)
 	rest.SetMetrics(metrics)
 	rest.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
 	rest.Mount("/mcp", mcpSrv.HTTPHandler())
+	rest.Mount("POST /v1/agent/ask", agentSrv.AskHandler())
+	rest.Mount("GET /v1/agent/status", agentSrv.StatusHandler())
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
 		Handler:           rest.Handler(),

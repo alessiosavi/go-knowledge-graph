@@ -85,7 +85,31 @@ Example prompts:
 - "Show everything the graph knows about Ada Lovelace, with citations."
 - "Traverse from `person:ada lovelace` two hops and list the evidence."
 
-## 4. Evaluate extraction quality
+## 4. Ask the graph (in-UI agent)
+
+With `GKG_AGENT_ENABLED=true` the web UI grows an **Ask the graph** panel
+and `POST /v1/agent/ask` answers natural-language questions server-side: an
+OpenAI-compatible model plans and runs the same read-only tools as MCP —
+search, entity cards, traversal, documents, guarded Cypher — and the
+response carries the raw tool results as `evidence`, so every answer is
+checkable. The browser never sees the provider key.
+
+```sh
+# in .env: GKG_AGENT_ENABLED=true plus GKG_AGENT_BASE_URL/API_KEY/MODEL
+curl -s localhost:8080/v1/agent/ask -H 'Content-Type: application/json' \
+     -d '{"question":"What does the graph know about Ada Lovelace?"}'
+# → {"answer":"...","evidence":[{"tool":"search","arguments":{...},"result":{...}}],"steps":2}
+```
+
+Each ask is independent (no chat memory) and bounded:
+`GKG_AGENT_MAX_STEPS` model turns that request tools (default 6, hard cap
+12; each turn may run up to 8 tool calls) and `GKG_AGENT_TIMEOUT_S`
+(default 60). While the agent is disabled the endpoint
+answers `501` and the panel stays hidden. Answers are LLM-generated — the
+`evidence` array is the source of truth
+([known limits](docs/known-limitations.md)).
+
+## 5. Evaluate extraction quality
 
 ```sh
 gkg eval --golden eval/golden/sample.jsonl --provider mock      # offline smoke
@@ -97,14 +121,14 @@ gkg eval --golden eval/golden/sample.jsonl --provider openai \
 The harness prints lenient entity/relation F1, judge-scored precision and
 reference-fact coverage; `--out` writes a Markdown + JSON report.
 
-## 5. Operations
+## 6. Operations
 
 - Health: `GET /healthz`, `GET /readyz`; metrics: `GET /metrics`
   (auth-exempt).
 - Optional knobs (defaults documented in `.env.example`): bearer auth,
   embeddings (OpenAI-compatible or the asymmetric `furls` service), the
-  `docling` converter profile, the local offline extraction sidecar, and
-  the online fact judge.
+  `docling` converter profile, the local offline extraction sidecar, the
+  online fact judge, and the read-only ask agent (`GKG_AGENT_*`).
 - Troubleshooting and known limits:
   [docs/known-limitations.md](docs/known-limitations.md) and the
   quickstart's troubleshooting section.

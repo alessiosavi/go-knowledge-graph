@@ -28,6 +28,7 @@ type Config struct {
 	Embedder  EmbedderConfig  `yaml:"embedder"`
 	Converter ConverterConfig `yaml:"converter"`
 	Judge     JudgeConfig     `yaml:"judge"`
+	Agent     AgentConfig     `yaml:"agent"`
 	Ingest    IngestConfig    `yaml:"ingest"`
 	Labels    LabelsConfig    `yaml:"labels"`
 	Limits    LimitsConfig    `yaml:"limits"`
@@ -99,6 +100,18 @@ type JudgeConfig struct {
 	Model       string  `yaml:"model"`
 }
 
+// AgentConfig configures the optional "Ask the graph" LLM agent served at
+// POST /v1/agent/ask. Disabled by default; the endpoint answers 501 while
+// disabled and the web UI hides its ask panel.
+type AgentConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	BaseURL  string `yaml:"base_url"`
+	APIKey   string `yaml:"api_key"`
+	Model    string `yaml:"model"`
+	MaxSteps int    `yaml:"max_steps"` // tool-turn budget per ask (clamped 1..12; each turn executes up to 8 calls)
+	TimeoutS int    `yaml:"timeout_s"` // whole-ask budget in seconds
+}
+
 // IngestConfig tunes the ingestion pipeline.
 type IngestConfig struct {
 	MaxUploadMB      int     `yaml:"max_upload_mb"`
@@ -149,6 +162,13 @@ func defaults() Config {
 			VerifyFloor: 0.35,
 			SamplePct:   10,
 			BaseURL:     "https://api.openai.com/v1",
+		},
+		Agent: AgentConfig{
+			Enabled:  false,
+			BaseURL:  "https://api.openai.com/v1",
+			Model:    "deepseek-v4.1-flash",
+			MaxSteps: 6,
+			TimeoutS: 60,
 		},
 		Ingest: IngestConfig{
 			MaxUploadMB:      20,

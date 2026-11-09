@@ -302,6 +302,159 @@
     svg.append(center);
   }
 
+  // ---- ask the graph -------------------------------------------------------
+
+  async function probeAgent() {
+    try {
+      const st = await api("/v1/agent/status");
+      $("ask-panel").hidden = !(st && st.enabled);
+    } catch (_) {
+      $("ask-panel").hidden = true;
+    }
+  }
+
+  function entityLink(id, label) {
+    const link = el("a", "node-link", label);
+    link.href = "#";
+    link.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      loadEntity(id).catch(() => {});
+    });
+    return link;
+  }
+
+  // jsonPreview caps an evidence payload the UI cannot summarize nicely.
+  function jsonPreview(value) {
+    let text;
+    try {
+      text = JSON.stringify(value);
+    } catch (_) {
+      text = String(value);
+    }
+    if (!text) text = "";
+    if (text.length > 1200) text = text.slice(0, 1200) + "…";
+    return el("pre", null, text);
+  }
+
+  // evidenceDetails renders one evidence entry: click-through for entities
+  // and documents, capped summaries otherwise.
+  function evidenceDetails(item) {
+    const result =
+      item.result && typeof item.result === "object" ? item.result : {};
+    const nodes = [];
+    if (typeof result.error === "string") {
+      nodes.push(el("div", "snippet error", result.error));
+      return nodes;
+    }
+    if (Array.isArray(result.hits)) {
+      for (const h of result.hits.slice(0, 8)) {
+        const line = el("div", "snippet");
+        line.append(el("span", "badge", h.kind || "hit"));
+        if (h.kind === "entity" && h.id) {
+          line.append(entityLink(h.id, h.title || h.id));
+        } else {
+          line.append(document.createTextNode(h.title || h.id || ""));
+        }
+        if (h.snippet) line.append(el("div", null, h.snippet));
+        nodes.push(line);
+      }
+      return nodes;
+    }
+    if (result.name && result.id) {
+      const line = el("div", "snippet");
+      line.append(el("span", "badge", result.type || "entity"));
+      line.append(entityLink(result.id, result.name));
+      line.append(
+        document.createTextNode(
+          " · " + (result.mention_count || 0) + " mentions",
+        ),
+      );
+      nodes.push(line);
+      return nodes;
+    }
+    if (Array.isArray(result.edges) && Array.isArray(result.nodes)) {
+      for (const e of result.edges.slice(0, 8)) {
+        const line = el("div", "snippet");
+        line.append(entityLink(e.from, e.from));
+        line.append(document.createTextNode(" —" + e.rel + "→ "));
+        line.append(entityLink(e.to, e.to));
+        nodes.push(line);
+      }
+      if (!result.edges.length) {
+        nodes.push(el("div", "snippet", "no fact edges"));
+      }
+      return nodes;
+    }
+    if (Array.isArray(result.documents)) {
+      for (const d of result.documents.slice(0, 8)) {
+        const line = el("div", "snippet");
+        line.append(el("span", "badge", d.status || "unknown"));
+        line.append(
+          document.createTextNode((d.title || d.source || d.id) + " · " + d.id),
+        );
+        nodes.push(line);
+      }
+      return nodes;
+    }
+    if (Array.isArray(result.rows)) {
+      nodes.push(el("div", "snippet", result.rows.length + " row(s)"));
+      nodes.push(jsonPreview(result.rows.slice(0, 5)));
+      return nodes;
+    }
+    nodes.push(jsonPreview(result));
+    return nodes;
+  }
+
+  function renderAnswer(res) {
+    const answer = $("ask-answer");
+    answer.replaceChildren();
+    if (res.answer) answer.append(el("p", "answer", res.answer));
+    const list = $("ask-evidence");
+    list.replaceChildren();
+    const evidence = res.evidence || [];
+    for (const item of evidence) {
+      const li = el("li");
+      const head = el("div");
+      head.append(el("span", "badge", item.tool || "tool"));
+      li.append(head);
+      for (const node of evidenceDetails(item)) li.append(node);
+      list.append(li);
+    }
+    if (evidence.length) {
+      $("ask-status").textContent =
+        evidence.length +
+        (evidence.length === 1 ? " tool call" : " tool calls") +
+        " · " +
+        (res.steps || 0) +
+        " step(s)";
+    }
+  }
+
+  async function ask() {
+    const question = $("ask-input").value.trim();
+    const statusNode = $("ask-status");
+    const submit = $("ask-submit");
+    if (!question) return;
+    setBusy(submit, true, "Asking…");
+    statusNode.className = "muted";
+    statusNode.textContent = "thinking…";
+    $("ask-answer").replaceChildren();
+    $("ask-evidence").replaceChildren();
+    try {
+      const res = await api("/v1/agent/ask", {
+        method: "POST",
+        json: { question: question },
+      });
+      statusNode.textContent = "";
+      renderAnswer(res);
+    } catch (err) {
+      statusNode.textContent = String(err.message || err);
+      statusNode.className = "muted error";
+    } finally {
+      setBusy(submit, false);
+    }
+  }
+
   // ---- documents + ingest -------------------------------------------------
 
   function statusBadge(status) {
@@ -424,6 +577,10 @@
       ev.preventDefault();
       ingest();
     });
+    $("ask-form").addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      ask();
+    });
     $("auth-save").addEventListener("click", () => {
       apiKey = $("auth-key").value.trim();
       try {
@@ -433,9 +590,11 @@
       $("auth-bar").hidden = true;
       $("status").textContent = "";
       loadDocuments().catch(() => {});
+      probeAgent();
     });
     $("status").textContent = apiKey ? "using a saved API key" : "";
     loadDocuments().catch(() => {});
+    probeAgent();
   }
 
   if (document.readyState === "loading") {

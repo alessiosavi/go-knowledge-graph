@@ -222,6 +222,23 @@ svg#graph .edge line {
 svg#graph .edge text {
   font-size: 10px;
 }
+#ask-input {
+  flex: 1 1 auto;
+}
+#ask-answer .answer {
+  white-space: pre-wrap;
+  margin: 0.2rem 0 0.6rem;
+}
+#ask-evidence pre {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+.node-link {
+  cursor: pointer;
+}
 #auth-bar {
   position: fixed;
   inset: auto 0 0 0;
