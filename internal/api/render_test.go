@@ -166,3 +166,39 @@ func TestMarkdownHTMLImageHardening(t *testing.T) {
 		t.Errorf("relative image was not kept\n%s", out)
 	}
 }
+
+// TestMarkdownHTMLLinkHardeningEdgeSchemes pins the sanitizer against
+// destinations that only look relative before resolution: protocol-relative
+// forms (plain and backslash-escaped) and entity-encoded schemes the
+// renderer resolves after the transformer runs.
+func TestMarkdownHTMLLinkHardeningEdgeSchemes(t *testing.T) {
+	md := "[a](//evil.example/x) [b](\\/\\/evil.example/y) [c](tel&#58;+39000000) [d](blob&#58;https://evil.example/z) [e](jav&#x61;script&#58;alert(1))\n"
+	out, err := markdownHTML(md)
+	if err != nil {
+		t.Fatalf("markdownHTML: %v", err)
+	}
+	for _, bad := range []string{"evil.example", "tel:", "blob:", "alert(1)"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("unsafe destination leaked: output contains %q\n%s", bad, out)
+		}
+	}
+	if n := strings.Count(out, `href="#"`); n != 5 {
+		t.Errorf("href=\"#\" count = %d, want 5 (every hostile form becomes #)\n%s", n, out)
+	}
+}
+
+// TestMarkdownHTMLImageHardeningEdgeSchemes pins the same guard on images:
+// a protocol-relative or entity-encoded destination must be stripped, not
+// fetched from a reader's browser.
+func TestMarkdownHTMLImageHardeningEdgeSchemes(t *testing.T) {
+	md := "![a](//evil.example/x.png) ![b](\\/\\/evil.example/y.png) ![c](data&#58;image/png;base64,AAAA)\n"
+	out, err := markdownHTML(md)
+	if err != nil {
+		t.Fatalf("markdownHTML: %v", err)
+	}
+	for _, bad := range []string{"evil.example", "base64", "data:"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("unsafe image destination leaked: output contains %q\n%s", bad, out)
+		}
+	}
+}

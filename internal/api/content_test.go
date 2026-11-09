@@ -20,7 +20,7 @@ func TestDocumentContentEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertDocument: %v", err)
 	}
-	chunk0 := "# Reader heading\n\nFirst part of the body."
+	chunk0 := "# Reader heading\n\n## Section\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```go\nfmt.Println(\"hi\")\n```\n\nFirst part of the body."
 	chunk1 := "Second part of the body."
 	chunks := []graph.Chunk{
 		{Seq: 0, Text: chunk0, Start: 0, End: len(chunk0)},
@@ -49,8 +49,10 @@ func TestDocumentContentEndpoint(t *testing.T) {
 	if got.Chunks[1].Start != len(chunk0)+2 || got.Chunks[1].End != len(chunk0)+2+len(chunk1) {
 		t.Errorf("chunk 1 offsets = %+v", got.Chunks[1])
 	}
-	if !strings.Contains(got.HTML, "<h1>Reader heading</h1>") {
-		t.Errorf("html misses the rendered heading\n%s", got.HTML)
+	for _, want := range []string{"<h1>Reader heading</h1>", "<h2>Section</h2>", "<table>", "<pre>"} {
+		if !strings.Contains(got.HTML, want) {
+			t.Errorf("html misses %q\n%s", want, got.HTML)
+		}
 	}
 	if !strings.Contains(got.HTML, "First part of the body.") || !strings.Contains(got.HTML, "Second part of the body.") {
 		t.Errorf("html misses folded body text\n%s", got.HTML)

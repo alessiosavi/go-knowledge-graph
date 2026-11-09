@@ -59,7 +59,9 @@ func markdownHTML(md string) (string, error) {
 }
 
 // destinationSanitizer rewrites unsafe link destinations to "#" and strips
-// image destinations that are not relative.
+// image destinations that are not relative. The policy checks run on the
+// resolved destination (backslash escapes and HTML entities applied), which
+// is the form the renderer emits.
 type destinationSanitizer struct{}
 
 // Transform implements parser.ASTTransformer.
@@ -82,14 +84,37 @@ func (destinationSanitizer) Transform(doc *ast.Document, _ text.Reader, _ parser
 	})
 }
 
+// resolveDestination returns the destination as the renderer will emit it:
+// backslash escapes and HTML entity references resolved. goldmark's
+// URLEscape applies exactly these three steps before writing the href/src,
+// so the policy checks must run on the resolved form — checking raw bytes
+// lets "tel&#58;…" or escaped slash forms slip through.
+func resolveDestination(dest []byte) []byte {
+	b := util.UnescapePunctuations(dest)
+	b = util.ResolveNumericReferences(b)
+	b = util.ResolveEntityNames(b)
+	return b
+}
+
 // destScheme returns the lowercased URL scheme of dest, or "" when dest is
-// a relative path or a fragment.
+// a relative path or a fragment. A protocol-relative destination ("//host",
+// in any escaped spelling) reports "//" so the allowlists reject it — it
+// points at a remote host despite looking slash-prefixed.
 func destScheme(dest []byte) string {
-	for i, b := range dest {
+	s := strings.TrimFunc(string(resolveDestination(dest)), func(r rune) bool {
+		return r <= ' ' || r == 0x7f
+	})
+	// Browsers treat backslashes in URLs like slashes; normalize them so a
+	// backslash form cannot masquerade as a plain relative path.
+	s = strings.ReplaceAll(s, "\\", "/")
+	if strings.HasPrefix(s, "//") {
+		return "//"
+	}
+	for i, r := range s {
 		switch {
-		case b == ':':
-			return strings.ToLower(string(dest[:i]))
-		case b == '/' || b == '#' || b == '?':
+		case r == ':':
+			return strings.ToLower(s[:i])
+		case r == '/' || r == '#' || r == '?':
 			return ""
 		}
 	}
