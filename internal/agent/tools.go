@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -196,6 +197,9 @@ func (s *Server) execTool(ctx context.Context, name string, args json.RawMessage
 }
 
 func decodeArgs(raw json.RawMessage, dst any) error {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
 	if err := json.Unmarshal(raw, dst); err != nil {
 		return fmt.Errorf("bad arguments: %w", err)
 	}

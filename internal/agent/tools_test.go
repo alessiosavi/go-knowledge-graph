@@ -203,6 +203,26 @@ func TestToolCypherReadsAndRejectsWrites(t *testing.T) {
 	}
 }
 
+func TestToolEmptyArgumentsUseDefaults(t *testing.T) {
+	fx := newAgentFixture(t)
+	s := NewServer(config.Config{}, fx.st, nil)
+
+	// Absent/empty/whitespace arguments mean the documented defaults: a
+	// no-argument call must not fail with a JSON decode error.
+	for _, raw := range []json.RawMessage{nil, json.RawMessage(""), json.RawMessage("  \n")} {
+		res, err := s.execTool(context.Background(), "list_documents", raw)
+		if err != nil {
+			t.Fatalf("list_documents with %q args: %v", raw, err)
+		}
+		if docs := unmarshalResult[documentsOut](t, res); len(docs.Documents) == 0 {
+			t.Errorf("list_documents with %q args returned no documents", raw)
+		}
+	}
+	if _, err := s.execTool(context.Background(), "status", nil); err != nil {
+		t.Errorf("status with nil args: %v", err)
+	}
+}
+
 func TestToolUnknownName(t *testing.T) {
 	fx := newAgentFixture(t)
 	s := NewServer(config.Config{}, fx.st, nil)

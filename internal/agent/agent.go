@@ -192,11 +192,15 @@ func toolPayload(result any, err error) any {
 	return result
 }
 
-// toolsUnsupported reports whether err is a non-retryable 4xx rejection of
-// the tools request (the signal to use the JSON plan instead).
+// toolsUnsupported reports whether err is a 400/422 rejection of the tools
+// payload — the signal that omitting the tools parameter can help. Auth,
+// routing and other failures surface directly instead of re-planning.
 func toolsUnsupported(err error) bool {
 	var pe *providerError
-	return errors.As(err, &pe) && pe.status >= 400 && pe.status < 500 && pe.status != http.StatusTooManyRequests
+	if !errors.As(err, &pe) {
+		return false
+	}
+	return pe.status == http.StatusBadRequest || pe.status == http.StatusUnprocessableEntity
 }
 
 // askWithPlan is the fallback for endpoints without tool-calling support:

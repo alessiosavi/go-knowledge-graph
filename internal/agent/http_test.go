@@ -146,6 +146,22 @@ func TestAskTimesOut(t *testing.T) {
 	}
 }
 
+func TestAskDoesNotFallBackOnAuthOrRoutingFailures(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		stub := newLLMStub(t, stubResponse{status: status, body: `{"error":{"message":"nope"}}`})
+		s := NewServer(enabledCfg(stub.srv.URL), nil, nil)
+		s.llm.backoff = nil
+
+		rr := postAsk(t, s.AskHandler(), `{"question":"hi"}`)
+		if rr.Code != http.StatusBadGateway {
+			t.Errorf("status %d: code = %d, want 502", status, rr.Code)
+		}
+		if len(stub.requests) != 1 {
+			t.Errorf("status %d: chat calls = %d, want 1 (auth/routing failures must not re-plan)", status, len(stub.requests))
+		}
+	}
+}
+
 // TestAskBearerPolicy pins that the mounted handlers inherit the REST
 // bearer policy (the 501 with a valid token proves the route is reached).
 func TestAskBearerPolicy(t *testing.T) {
