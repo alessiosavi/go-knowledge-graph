@@ -510,6 +510,33 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
 	return view, nil
 }
 
+// EntityByName returns the entity whose stored name matches the argument
+// exactly after trimming and case folding. Several entities may fold to the
+// same name (distinct types): the most mentioned one wins, with the id as
+// the deterministic tie-breaker. ErrNotFound when nothing matches — this is
+// an exact lookup, not a fuzzy text search.
+func (s *Store) EntityByName(ctx context.Context, name string) (EntityRef, error) {
+	recs, err := s.runRead(ctx, `
+MATCH (e:Entity)
+WHERE toLower(trim(e.name)) = toLower(trim($name))
+RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type
+ORDER BY coalesce(e.mention_count, 0) DESC, e.id ASC
+LIMIT 1`,
+		map[string]any{"name": name})
+	if err != nil {
+		return EntityRef{}, fmt.Errorf("graph: entity by name: %w", err)
+	}
+	if len(recs) == 0 {
+		return EntityRef{}, fmt.Errorf("graph: entity %q: %w", name, ErrNotFound)
+	}
+	return EntityRef{
+		ID:   getString(recs[0], "id"),
+		Key:  getString(recs[0], "key"),
+		Name: getString(recs[0], "name"),
+		Type: getString(recs[0], "type"),
+	}, nil
+}
+
 // ExcerptWindow returns up to width bytes of text centred near byte offset
 // center, adjusted to UTF-8 rune boundaries. Exported for the search
 // package's snippets.
