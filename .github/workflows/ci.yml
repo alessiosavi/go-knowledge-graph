@@ -50,3 +50,23 @@ jobs:
         run: pip install "fastapi>=0.115,<1" "pydantic>=2.7,<3" "pytest>=8" "httpx>=0.27" "uvicorn[standard]>=0.30,<1"
       - name: Sidecar contract tests
         run: pytest sidecar/
+
+  acceptance:
+    runs-on: ubuntu-latest
+    services:
+      memgraph:
+        image: memgraph/memgraph:3.14.0
+        ports:
+          - 7687:7687
+    env:
+      ACCEPTANCE_MODE: local
+      GKG_MEMGRAPH_URI: bolt://localhost:7687
+      GKG_EXTRACTOR_MODE: mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Acceptance run (local, mock extractor)
+        run: bash scripts/acceptance.sh

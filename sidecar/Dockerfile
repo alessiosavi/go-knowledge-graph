@@ -4,9 +4,13 @@
 # and the container never phones home afterwards (acceptance #5).
 FROM python:3.12-slim
 
+# The checkpoint is selectable at BUILD time (314m default, 72m or any full
+# repository id): the weights are baked into the image, so the runtime is
+# strictly offline and the knob is a build arg, not a runtime override.
+ARG GLINEREL_MODEL=314m
 ENV PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    GLINEREL_MODEL=314m
+    GLINEREL_MODEL=${GLINEREL_MODEL}
 
 WORKDIR /app
 

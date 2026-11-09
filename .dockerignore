@@ -1,0 +1,15 @@
+# gkg build context hygiene: never send secrets, history or scratch
+# directories into the gkg image build (the sidecar builds from its own
+# context).
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.superpowers
+sidecar/.venv
+__pycache__
+*.pyc
+bin/
+dist/
+deploy/docker-compose.yml
