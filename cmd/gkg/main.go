@@ -4,14 +4,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
+	"github.com/alessiosavi/GoGPUtils/minhash"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/api"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/dedup"
 	"github.com/alessiosavi/go-knowledge-graph/internal/eval"
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
@@ -41,11 +50,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runMigrate(stdout, stderr)
 	case "eval":
 		return runEval(args[1:], stdout, stderr)
+	case "serve":
+		return runServe(args[1:], stdout, stderr)
+	case "ingest":
+		return runIngest(args[1:], stdout, stderr)
 	case "pdf-extract":
 		// Hidden subcommand: the isolated PDF parser (parent kills on
 		// timeout; see ingest.PDFToText).
 		return ingest.PDFExtract(os.Stdin, stdout, stderr)
-	case "serve", "ingest", "mcp":
+	case "mcp":
 		fmt.Fprintln(stdout, "not implemented")
 		return 2
 	default:
@@ -84,16 +97,9 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 	if name == "" {
 		name = cfg.Extractor.Mode
 	}
-	var prov extract.Provider
-	switch name {
-	case "mock":
-		prov = &extract.Mock{}
-	case "openai":
-		prov = extract.NewOpenAI(cfg)
-	case "sidecar":
-		prov = extract.NewSidecar(cfg)
-	default:
-		fmt.Fprintf(stderr, "gkg eval: unknown provider %q\n", name)
+	prov, err := providerFromConfig(cfg, name)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg eval: %v\n", err)
 		return 2
 	}
 	var factJudge ingest.FactJudge
@@ -137,11 +143,226 @@ func runMigrate(stdout, stderr io.Writer) int {
 	return 0
 }
 
+// serveWorkers is the ingestion worker pool size.
+const serveWorkers = 4
+
+// providerFromConfig builds the extractor provider by name; an empty name
+// selects the configured default.
+func providerFromConfig(cfg config.Config, name string) (extract.Provider, error) {
+	if name == "" {
+		name = cfg.Extractor.Mode
+	}
+	switch name {
+	case "mock":
+		return &extract.Mock{}, nil
+	case "openai":
+		return extract.NewOpenAI(cfg), nil
+	case "sidecar":
+		return extract.NewSidecar(cfg), nil
+	default:
+		return nil, fmt.Errorf("unknown provider %q", name)
+	}
+}
+
+// ingestFetcher builds the SSRF-guarded fetcher from the ingest config.
+func ingestFetcher(cfg config.Config) *ingest.Fetcher {
+	return &ingest.Fetcher{
+		MaxBytes:     int64(cfg.Ingest.MaxURLMB) << 20,
+		MaxRedirects: cfg.Ingest.MaxRedirects,
+		TimeoutS:     cfg.Ingest.FetchTimeoutS,
+	}
+}
+
+// seedDedupIndex loads persisted chunk fingerprints into the in-memory
+// candidate index, skipping stale signature formats.
+func seedDedupIndex(ix *dedup.Index, fps []graph.ChunkFP) {
+	for _, fp := range fps {
+		if fp.FP.Version != minhash.SignatureVersion || len(fp.FP.Sig) != dedup.SignatureLength {
+			continue
+		}
+		_ = ix.Add(fp.ChunkID, fp.FP)
+	}
+}
+
+// runServe runs the REST API and the ingestion worker pool until the
+// process is signalled.
+func runServe(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "gkg serve: unexpected argument %q\n", fs.Arg(0))
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cfg, err := config.Load("")
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
+		return 1
+	}
+	st, err := graph.Open(ctx, cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
+		return 1
+	}
+	defer func() { _ = st.Close(context.Background()) }()
+	if err := st.Bootstrap(ctx); err != nil {
+		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
+		return 1
+	}
+	prov, err := providerFromConfig(cfg, "")
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
+		return 1
+	}
+	ix := dedup.New()
+	fps, err := st.AllFingerprints(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
+		return 1
+	}
+	seedDedupIndex(ix, fps)
+
+	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg)))
+	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
+		pipe.SetJudge(judge.NewClient(cfg))
+	}
+	workers := &ingest.Worker{Workers: serveWorkers, Pipeline: pipe}
+	workers.Start(ctx)
+	if err := pipe.Recover(ctx); err != nil {
+		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
+		return 1
+	}
+
+	srv := &http.Server{
+		Addr:              cfg.Server.Addr,
+		Handler:           api.NewServer(cfg, st, pipe).Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+	fmt.Fprintf(stdout, "gkg: listening on %s\n", cfg.Server.Addr)
+
+	select {
+	case <-ctx.Done():
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintf(stderr, "gkg serve: %v\n", err)
+			return 1
+		}
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutdownCtx)
+	return 0
+}
+
+// runIngest ingests one file, URL or stdin payload synchronously and
+// prints the resulting document id and status.
+func runIngest(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "gkg ingest: exactly one <file|url|-> argument is required")
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cfg, err := config.Load("")
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
+		return 1
+	}
+	st, err := graph.Open(ctx, cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
+		return 1
+	}
+	defer func() { _ = st.Close(context.Background()) }()
+	if err := st.Bootstrap(ctx); err != nil {
+		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
+		return 1
+	}
+	prov, err := providerFromConfig(cfg, "")
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
+		return 1
+	}
+	// Seed the dedup index exactly like serve does: a nil index would
+	// silently degrade ChunkDedup=near to exact-key matching for CLI
+	// submissions.
+	ix := dedup.New()
+	fps, err := st.AllFingerprints(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
+		return 1
+	}
+	seedDedupIndex(ix, fps)
+	in, err := ingestArg(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
+		return 1
+	}
+	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg)))
+	res, err := pipe.Submit(ctx, in)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
+		return 1
+	}
+	if !res.Noop {
+		if err := pipe.Process(ctx, res.DocumentID); err != nil {
+			fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
+			return 1
+		}
+	}
+	doc, err := st.Document(ctx, res.DocumentID)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "document_id=%s status=%s noop=%v\n", doc.ID, doc.Status, res.Noop)
+	if doc.Status == graph.StatusFailed {
+		fmt.Fprintf(stderr, "gkg ingest: %s\n", doc.Error)
+		return 1
+	}
+	return 0
+}
+
+// ingestArg maps the command-line argument to an ingest input: "-" reads
+// stdin as text, an http(s) URL is fetched by the pipeline, anything else
+// is a file path.
+func ingestArg(arg string) (ingest.Input, error) {
+	switch {
+	case arg == "-":
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return ingest.Input{}, fmt.Errorf("read stdin: %w", err)
+		}
+		return ingest.Input{Kind: "text", Text: string(data)}, nil
+	case strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://"):
+		return ingest.Input{Kind: "url", URL: arg}, nil
+	default:
+		data, err := os.ReadFile(arg)
+		if err != nil {
+			return ingest.Input{}, fmt.Errorf("read %s: %w", arg, err)
+		}
+		return ingest.Input{Kind: "file", Source: filepath.Base(arg), Bytes: data}, nil
+	}
+}
+
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: gkg <command> [flags]
 
 commands:
-  serve     run the REST API, MCP server and ingestion workers
+  serve     run the REST API and ingestion workers
   ingest    ingest a file, URL or stdin into the knowledge graph
   eval      run the golden-set evaluation harness
   migrate   bootstrap the Memgraph schema

@@ -1,0 +1,557 @@
+openapi: 3.0.3
+info:
+  title: gkg — Go Knowledge Graph API
+  version: v0.1.0
+  description: |
+    REST surface of the gkg service: document ingestion, document status,
+    search, entity views, traversal and a guarded read-only Cypher
+    endpoint. When `GKG_API_KEY` is set every endpoint requires
+    `Authorization: Bearer <key>` (health probes and metrics are exempt).
+    Body sizes are capped by configuration (`Ingest.MaxUploadMB` for
+    ingestion, 1 MiB for JSON endpoints); the Cypher row count and timeout
+    are capped by `Limits.CypherRows` / `Limits.CypherTimeoutMS`.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: http://localhost:8080
+    description: default local address (Server.Addr)
+security:
+  - bearerAuth: []
+paths:
+  /v1/ingest:
+    post:
+      summary: Submit a document for ingestion
+      description: |
+        Accepts JSON (`url` or `text`), or a multipart form with a `file`
+        field. The submission is queued for the worker pool; poll
+        `/v1/documents/{id}/status` until `done` or `failed`. Re-submitting
+        unchanged content is a no-op (`noop: true`) unless `force` is set.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestRequest"
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                source:
+                  type: string
+                  description: identity override; defaults to the filename
+                labels:
+                  type: string
+                  description: label preset name
+                force:
+                  type: string
+                  description: '"true" to re-run unchanged content'
+      responses:
+        "202":
+          description: queued for processing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResponse"
+        "200":
+          description: no-op (unchanged content already ingested)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResponse"
+        "400":
+          description: invalid request or rejected input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: body exceeds the upload cap
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: no ingestion pipeline wired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/documents:
+    get:
+      summary: List documents
+      parameters:
+        - name: limit
+          in: query
+          description: defaults to 100, capped at 1000
+          schema: { type: integer, minimum: 1, maximum: 1000 }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              [
+                received,
+                fetched,
+                chunked,
+                extracted,
+                merged,
+                verifying,
+                done,
+                failed,
+                superseded,
+              ]
+      responses:
+        "200":
+          description: documents, most recently updated first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/documents/{id}:
+    get:
+      summary: Get one document
+      parameters:
+        - $ref: "#/components/parameters/DocumentID"
+      responses:
+        "200":
+          description: the document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/documents/{id}/status:
+    get:
+      summary: Get one document's pipeline status
+      parameters:
+        - $ref: "#/components/parameters/DocumentID"
+      responses:
+        "200":
+          description: status and error of the document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/search:
+    post:
+      summary: Search entities, chunks or both
+      description: Entities and chunks are searched through the Memgraph text indexes; entity-embedding fusion is not wired into the REST surface in v0.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: ranked hits
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/entities/{id}:
+    get:
+      summary: Get an entity with its aliases and evidenced facts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: entity id or entity key
+          schema: { type: string }
+        - name: include_low_confidence
+          in: query
+          description: include facts below the assert floor
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: the entity view
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Entity"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/traverse:
+    post:
+      summary: Walk fact edges from a start entity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TraverseRequest"
+      responses:
+        "200":
+          description: the reachable subgraph with evidence excerpts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TraverseResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/cypher:
+    post:
+      summary: Run a guarded read-only Cypher query
+      description: |
+        Exactly one statement; write clauses (`CREATE`, `MERGE`, `SET`,
+        `DELETE`, `DETACH`, `REMOVE`, `DROP`, `ALTER`, `LOAD`) are
+        rejected, `CALL` is limited to the `vector_search.` and
+        `text_search.` procedure namespaces, and `UNION` is rejected (a
+        per-branch LIMIT cannot enforce a post-union row cap). Queries
+        without `LIMIT` gain `LIMIT $cypher_rows`; a LIMIT that is not a
+        plain integer or `$cypher_rows`, or a numeric LIMIT above the cap,
+        is rejected; `limit` tightens the injected cap and is clamped to
+        `Limits.CypherRows`. Execution is bounded by
+        `Limits.CypherTimeoutMS`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CypherRequest"
+      responses:
+        "200":
+          description: query result; nodes/relationships become JSON objects
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CypherResponse"
+        "400":
+          description: rejected query or query-level failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          description: query exceeded the configured timeout
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: required when `GKG_API_KEY` is set
+  parameters:
+    DocumentID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[0-9a-f]{32}$" }
+  responses:
+    Unauthorized:
+      description: missing or invalid bearer token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: no such document or entity
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadRequest:
+      description: invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: store or value-conversion failure
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: graph store not wired
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error, detail]
+      properties:
+        error: { type: string }
+        detail: { type: string }
+    IngestRequest:
+      type: object
+      description: exactly one of url or text is required
+      properties:
+        url: { type: string, format: uri }
+        text: { type: string }
+        source:
+          type: string
+          description: identity override; defaults to the URL (url) or the hash prefix (text)
+        labels:
+          type: string
+          description: label preset name
+        force:
+          type: boolean
+          default: false
+    IngestResponse:
+      type: object
+      required: [document_id, noop]
+      properties:
+        document_id: { type: string }
+        noop: { type: boolean }
+    Document:
+      type: object
+      required: [id, source_kind, source, status, created_at, updated_at]
+      properties:
+        id: { type: string }
+        source_kind: { type: string, enum: [url, file, text] }
+        source: { type: string }
+        final_url: { type: string }
+        title: { type: string }
+        status:
+          type: string
+          enum:
+            [
+              received,
+              fetched,
+              chunked,
+              extracted,
+              merged,
+              verifying,
+              done,
+              failed,
+              superseded,
+            ]
+        error: { type: string }
+        labels: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        supersedes: { type: string }
+    DocumentsResponse:
+      type: object
+      required: [documents]
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: "#/components/schemas/Document"
+    Status:
+      type: object
+      required: [id, status, updated_at]
+      properties:
+        id: { type: string }
+        status:
+          type: string
+          enum:
+            [
+              received,
+              fetched,
+              chunked,
+              extracted,
+              merged,
+              verifying,
+              done,
+              failed,
+              superseded,
+            ]
+        error: { type: string }
+        updated_at: { type: string, format: date-time }
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string }
+        kind:
+          type: string
+          enum: [entity, chunk, auto]
+          default: auto
+        limit:
+          type: integer
+          minimum: 0
+          maximum: 100
+          default: 20
+          description: 0 selects the default (20); capped at 100
+    SearchResponse:
+      type: object
+      required: [hits]
+      properties:
+        hits:
+          type: array
+          items:
+            $ref: "#/components/schemas/Hit"
+    Hit:
+      type: object
+      required: [kind, id, title, score, snippet]
+      properties:
+        kind: { type: string, enum: [entity, chunk] }
+        id: { type: string }
+        title: { type: string }
+        score: { type: number, format: double }
+        snippet: { type: string }
+    EntityRef:
+      type: object
+      required: [id, key, name, type]
+      properties:
+        id: { type: string }
+        key: { type: string }
+        name: { type: string }
+        type: { type: string }
+    Fact:
+      type: object
+      required:
+        [
+          rel,
+          other,
+          confidence,
+          low_confidence,
+          outgoing,
+          doc_id,
+          chunk_id,
+          excerpt,
+        ]
+      properties:
+        rel: { type: string }
+        other:
+          $ref: "#/components/schemas/EntityRef"
+        confidence: { type: number, format: double }
+        judge: { type: string, enum: ["", confirmed, unclear] }
+        low_confidence: { type: boolean }
+        outgoing: { type: boolean }
+        doc_id: { type: string }
+        chunk_id: { type: string }
+        excerpt: { type: string }
+    Entity:
+      type: object
+      required: [id, key, name, type, aliases, mention_count, facts]
+      properties:
+        id: { type: string }
+        key: { type: string }
+        name: { type: string }
+        type: { type: string }
+        aliases:
+          type: array
+          items: { type: string }
+        mention_count: { type: integer }
+        facts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Fact"
+    TraverseRequest:
+      type: object
+      required: [entity]
+      properties:
+        entity:
+          type: string
+          description: start entity id or key
+        relation: { type: string }
+        direction:
+          type: string
+          enum: [out, in, both]
+          default: out
+        depth:
+          type: integer
+          minimum: 1
+          maximum: 2
+          default: 1
+        limit:
+          type: integer
+          minimum: 0
+          maximum: 200
+          default: 50
+          description: 0 selects the default (50); negative values are rejected
+        include_low_confidence:
+          type: boolean
+          default: false
+    Edge:
+      type: object
+      required:
+        [from, to, rel, confidence, low_confidence, doc_id, chunk_id, excerpt]
+      properties:
+        from: { type: string }
+        to: { type: string }
+        rel: { type: string }
+        confidence: { type: number, format: double }
+        judge: { type: string, enum: ["", confirmed, unclear] }
+        low_confidence: { type: boolean }
+        doc_id: { type: string }
+        chunk_id: { type: string }
+        excerpt: { type: string }
+    TraverseResponse:
+      type: object
+      required: [nodes, edges]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/EntityRef"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/Edge"
+    CypherRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string }
+        limit:
+          type: integer
+          minimum: 1
+          description: clamped to Limits.CypherRows
+    CypherResponse:
+      type: object
+      required: [columns, rows]
+      properties:
+        columns:
+          type: array
+          items: { type: string }
+        rows:
+          type: array
+          items:
+            type: object
+            additionalProperties: true

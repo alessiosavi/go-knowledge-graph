@@ -385,6 +385,34 @@ ORDER BY d.updated_at DESC`
 	return docs, nil
 }
 
+// DocumentsWithStatus returns only the documents in one status, most
+// recently updated first; limit <= 0 returns all. The filter runs in the
+// query, before the row limit, so a page cannot be emptied by newer
+// non-matching documents.
+func (s *Store) DocumentsWithStatus(ctx context.Context, status Status, limit int) ([]Document, error) {
+	q := `
+MATCH (d:Document {status: $status})
+RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
+       d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
+       coalesce(d.labels, '') AS labels,
+       d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
+ORDER BY d.updated_at DESC`
+	params := map[string]any{"status": string(status)}
+	if limit > 0 {
+		q += " LIMIT $limit"
+		params["limit"] = limit
+	}
+	recs, err := s.runRead(ctx, q, params)
+	if err != nil {
+		return nil, fmt.Errorf("graph: documents by status: %w", err)
+	}
+	docs := make([]Document, 0, len(recs))
+	for _, r := range recs {
+		docs = append(docs, *recordToDocument(r))
+	}
+	return docs, nil
+}
+
 // Chunks returns the document's chunks ordered by sequence. It returns
 // ErrNotFound when the document does not exist; a document without chunks
 // yields an empty slice.

@@ -46,9 +46,20 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
 
 - No natural-language `ask` endpoint, no crawling/scheduling, no
   multi-tenancy (see the design's non-goals).
-- URL fetches are capped at 10 MiB by default (`Ingest.MaxURLMB`); the
-  upload path lands in a later task and will enforce `Ingest.MaxUploadMB`
-  (default 20 MiB).
+- URL fetches are capped at `Ingest.MaxURLMB` (default 10 MiB), uploads at
+  `Ingest.MaxUploadMB` (default 20 MiB), and JSON bodies on the read
+  endpoints at 1 MiB.
+
+## Read-only Cypher surface
+
+- `POST /v1/cypher` (and the future MCP `cypher` tool) accepts one
+  statement; write clauses and data loaders are rejected, and `CALL` is
+  limited to the `vector_search.` / `text_search.` namespaces.
+- `UNION` is rejected: a Cypher `UNION` applies its `LIMIT` per branch, so
+  the post-union row cap (`Limits.CypherRows`) cannot be enforced on a
+  single statement. Queries without a LIMIT gain `LIMIT $cypher_rows`; a
+  LIMIT that is not a plain integer or `$cypher_rows` is rejected because
+  an expression (`LIMIT 2 * 1000`) would exceed the cap.
 
 ## Text search and aliases
 

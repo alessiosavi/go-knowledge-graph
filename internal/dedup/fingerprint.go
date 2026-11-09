@@ -22,6 +22,11 @@ const (
 	rows     = numPerm / bands
 )
 
+// SignatureLength is the MinHash signature length in entries (numPerm);
+// persisted signatures of another length are stale format and must be
+// skipped when re-seeding the index.
+const SignatureLength = numPerm
+
 // FP is a chunk fingerprint ready for storage: signature and band keys as
 // signed int64 (bit-preserving reinterpretation of the library's uint64,
 // per its persistence notes), plus an exact key over the normalized tokens.
