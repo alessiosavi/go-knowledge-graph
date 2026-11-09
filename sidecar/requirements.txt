@@ -1,0 +1,9 @@
+# gkg sidecar runtime (torch CPU wheels are layered in the Dockerfile).
+glinerel-fast==0.1.1
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+pydantic>=2.7,<3
+
+# Contract tests (local runs and CI convenience).
+pytest>=8
+httpx>=0.27

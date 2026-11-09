@@ -1,0 +1,22 @@
+# Minimal compose for the local extraction profile (profile: local).
+# The full stack (memgraph + gkg) is assembled in the packaging task.
+services:
+  sidecar:
+    profiles: ["local"]
+    build:
+      context: ../sidecar
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      GLINEREL_MODEL: ${GLINEREL_MODEL:-314m}
+      HF_HUB_OFFLINE: "1"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8090/healthz').status==200 else sys.exit(1)"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s

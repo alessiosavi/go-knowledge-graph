@@ -59,7 +59,8 @@ type OpenAIConfig struct {
 
 // SidecarConfig configures the local GLiNEREL sidecar.
 type SidecarConfig struct {
-	URL string `yaml:"url"`
+	URL   string `yaml:"url"`
+	Model string `yaml:"model"`
 }
 
 // EmbedderConfig configures the optional embedding provider.
@@ -114,7 +115,7 @@ func defaults() Config {
 		Extractor: ExtractorConfig{
 			Mode:    "openai",
 			OpenAI:  OpenAIConfig{BaseURL: "https://api.openai.com/v1", Model: "deepseek-v4.1-flash"},
-			Sidecar: SidecarConfig{URL: "http://localhost:8090"},
+			Sidecar: SidecarConfig{URL: "http://localhost:8090", Model: "glinerel-314m"},
 		},
 		Embedder: EmbedderConfig{
 			Enabled: false,
