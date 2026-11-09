@@ -393,6 +393,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 func runIngest(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	source := fs.String("source", "", "identity override (default: file basename / URL / content hash)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -423,7 +424,7 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
 		return 1
 	}
-	in, err := ingestArg(fs.Arg(0))
+	in, err := ingestArg(fs.Arg(0), *source)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
 		return 1
@@ -504,23 +505,28 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 
 // ingestArg maps the command-line argument to an ingest input: "-" reads
 // stdin as text, an http(s) URL is fetched by the pipeline, anything else
-// is a file path.
-func ingestArg(arg string) (ingest.Input, error) {
+// is a file path. An explicit source overrides the derived identity for
+// every kind — the knob for "a renamed file must supersede its old
+// version".
+func ingestArg(arg, source string) (ingest.Input, error) {
 	switch {
 	case arg == "-":
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return ingest.Input{}, fmt.Errorf("read stdin: %w", err)
 		}
-		return ingest.Input{Kind: "text", Text: string(data)}, nil
+		return ingest.Input{Kind: "text", Text: string(data), Source: source}, nil
 	case strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://"):
-		return ingest.Input{Kind: "url", URL: arg}, nil
+		return ingest.Input{Kind: "url", URL: arg, Source: source}, nil
 	default:
 		data, err := os.ReadFile(arg)
 		if err != nil {
 			return ingest.Input{}, fmt.Errorf("read %s: %w", arg, err)
 		}
-		return ingest.Input{Kind: "file", Source: filepath.Base(arg), Bytes: data}, nil
+		if source == "" {
+			source = filepath.Base(arg)
+		}
+		return ingest.Input{Kind: "file", Source: source, Bytes: data}, nil
 	}
 }
 
@@ -529,7 +535,7 @@ func usage(w io.Writer) {
 
 commands:
   serve     run the REST API, MCP endpoint and ingestion workers
-  ingest    ingest a file, URL or stdin into the knowledge graph
+  ingest    ingest a file, URL or stdin into the knowledge graph (-source <s> overrides the identity)
   eval      run the golden-set evaluation harness
   migrate   bootstrap the Memgraph schema
   version   print the version

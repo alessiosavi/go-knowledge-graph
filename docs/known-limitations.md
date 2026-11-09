@@ -52,6 +52,23 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
   across runs fails with the existing resubmit hint. File/text reload rules
   are unchanged (bytes are not stored).
 
+## Deleting documents
+
+Deletion is permanent: `DELETE /v1/documents/{id}` removes the document
+node with its chunks, fact edges and mentions, and prunes the entities
+left without relationships. There is no undo and no tombstone.
+
+`?chain=1` removes every version of the same source identity — superseded
+history included — in one all-or-nothing transaction; the API default
+without the flag is strictly per-version (the UI's ✕ always sends the
+chain flag, matching "remove this document from the graph").
+
+Deleting a document whose pipeline job is still running is benign: the
+worker's later writes fail with `not found`, are logged, and the job is
+dropped — the document does not come back. A concurrent resubmit of
+identical content can recreate the same content-addressed id after the
+delete.
+
 ## Other v0.1 notes
 
 - No crawling/scheduling, no multi-tenancy (see the design's non-goals).

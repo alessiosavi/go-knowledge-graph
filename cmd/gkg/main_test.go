@@ -219,3 +219,74 @@ func TestConverterFromConfigValidation(t *testing.T) {
 		t.Fatalf("unknown mode err = %v, want it to name the mode", err)
 	}
 }
+
+// TestIngestArgSource pins the -source override: an explicit source is
+// applied to every kind (file, URL, stdin) and the empty default keeps
+// today's identities (file basename, empty for URL/text).
+func TestIngestArgSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.md")
+	content := []byte("# notes\nAda Lovelace wrote the first algorithm.\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name       string
+		arg        string
+		source     string
+		wantKind   string
+		wantSource string
+		wantURL    string
+	}{
+		{"url explicit source", "https://example.com/x", "web/article", "url", "web/article", "https://example.com/x"},
+		{"url default source", "https://example.com/x", "", "url", "", "https://example.com/x"},
+		{"file explicit source", path, "renamed.md", "file", "renamed.md", ""},
+		{"file default source", path, "", "file", "notes.md", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in, err := ingestArg(tc.arg, tc.source)
+			if err != nil {
+				t.Fatalf("ingestArg: %v", err)
+			}
+			if in.Kind != tc.wantKind {
+				t.Errorf("Kind = %q, want %q", in.Kind, tc.wantKind)
+			}
+			if in.Source != tc.wantSource {
+				t.Errorf("Source = %q, want %q", in.Source, tc.wantSource)
+			}
+			if tc.wantURL != "" && in.URL != tc.wantURL {
+				t.Errorf("URL = %q, want %q", in.URL, tc.wantURL)
+			}
+			if tc.wantKind == "file" && string(in.Bytes) != string(content) {
+				t.Errorf("Bytes = %q, want the file content", in.Bytes)
+			}
+		})
+	}
+
+	stdin, err := os.CreateTemp(dir, "stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	if _, err := stdin.WriteString("Ada Lovelace wrote the first algorithm."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdin.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdin
+	os.Stdin = stdin
+	t.Cleanup(func() { os.Stdin = orig })
+
+	in, err := ingestArg("-", "notes/ada")
+	if err != nil {
+		t.Fatalf("ingestArg(stdin): %v", err)
+	}
+	if in.Kind != "text" || in.Source != "notes/ada" {
+		t.Errorf("stdin: Kind = %q Source = %q, want text with the explicit source", in.Kind, in.Source)
+	}
+	if !strings.Contains(in.Text, "Ada Lovelace") {
+		t.Errorf("stdin Text = %q, want the piped content", in.Text)
+	}
+}

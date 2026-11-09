@@ -37,6 +37,7 @@
             <button id="docs-refresh" type="button" class="mini">
               Refresh
             </button>
+            <span id="docs-status" class="muted" aria-live="polite"></span>
           </h2>
           <ul id="documents" class="list">
             <li class="muted">Loading…</li>
@@ -51,6 +52,7 @@
               <select id="ingest-kind">
                 <option value="text">Text</option>
                 <option value="url">URL</option>
+                <option value="file">File</option>
               </select>
               <label for="ingest-source">Source</label>
               <input
@@ -58,6 +60,20 @@
                 type="text"
                 placeholder="optional label"
               />
+              <label for="ingest-labels">Labels</label>
+              <input
+                id="ingest-labels"
+                type="text"
+                placeholder="preset name (general, news)"
+              />
+            </div>
+            <div class="row" id="ingest-file-row" hidden>
+              <label for="ingest-file">File</label>
+              <input id="ingest-file" type="file" />
+              <span class="muted"
+                >md, txt, pdf, docx, … (rich formats need the docling
+                profile)</span
+              >
             </div>
             <textarea
               id="ingest-body"

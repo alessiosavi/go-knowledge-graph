@@ -253,6 +253,23 @@ svg#graph .edge text {
 #auth-bar[hidden] {
   display: none;
 }
+#ingest-file-row[hidden] {
+  display: none;
+}
+#docs-status {
+  margin-left: 0.5rem;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.list .doc-del {
+  float: right;
+  border-color: var(--line);
+  color: var(--muted);
+}
+.list .doc-del:hover:not(:disabled) {
+  background: var(--bad);
+  border-color: var(--bad);
+}
 #reader {
   grid-column: 1 / -1;
 }

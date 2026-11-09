@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -259,28 +260,77 @@ SET d.supersedes = $old`,
 }
 
 // DeleteDocument removes a document with its chunks, mentions and fact
-// edges, and prunes the entities left without relationships.
+// edges, prunes the entities left without relationships, and clears
+// supersedes pointers that reference the removed node, so a surviving
+// newer version cannot dangle.
 func (s *Store) DeleteDocument(ctx context.Context, id string) error {
 	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
-		if _, err := txDocumentStatus(ctx, tx, id); err != nil {
-			return err
-		}
-		touched, err := txMentionedKeys(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		if err := txDeleteSubtree(ctx, tx, id); err != nil {
-			return err
-		}
-		if err := txRun(ctx, tx, `MATCH (d:Document {id: $id}) DETACH DELETE d`,
-			map[string]any{"id": id}); err != nil {
-			return fmt.Errorf("graph: delete document: %w", err)
-		}
-		if err := txRefreshMentionCounts(ctx, tx, touched); err != nil {
-			return err
-		}
-		return txGC(ctx, tx, touched)
+		return txDeleteDocument(ctx, tx, id)
 	})
+}
+
+// DeleteChain removes every version of the document's identity — the live
+// version, its superseded history and their subtrees — inside ONE
+// transaction: all-or-nothing. The version set is snapshotted before the
+// transaction opens, so a concurrent resubmit of identical content can
+// recreate the same content-addressed id after the delete (documented
+// race). Returns the number of removed versions; ErrNotFound when the id
+// is unknown.
+func (s *Store) DeleteChain(ctx context.Context, id string) (int, error) {
+	doc, err := s.Document(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	ids, err := s.SameIdentityDocumentIDs(ctx, doc.SourceKind, doc.Source)
+	if err != nil {
+		return 0, err
+	}
+	ordered := make([]string, 0, len(ids))
+	for did := range ids {
+		ordered = append(ordered, did)
+	}
+	slices.Sort(ordered)
+	err = s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		for _, did := range ordered {
+			if err := txDeleteDocument(ctx, tx, did); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(ordered), nil
+}
+
+// txDeleteDocument deletes one document's mentions, fact edges, chunks and
+// node inside an existing transaction, clears supersedes pointers that
+// reference it, refreshes the mention counts of the touched entities and
+// prunes the ones left without relationships.
+func txDeleteDocument(ctx context.Context, tx neo4j.ManagedTransaction, id string) error {
+	if _, err := txDocumentStatus(ctx, tx, id); err != nil {
+		return err
+	}
+	touched, err := txMentionedKeys(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if err := txDeleteSubtree(ctx, tx, id); err != nil {
+		return err
+	}
+	if err := txRun(ctx, tx, `MATCH (d:Document {id: $id}) DETACH DELETE d`,
+		map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("graph: delete document: %w", err)
+	}
+	if err := txRun(ctx, tx, `MATCH (d:Document) WHERE d.supersedes = $id SET d.supersedes = ''`,
+		map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("graph: clear supersedes pointers: %w", err)
+	}
+	if err := txRefreshMentionCounts(ctx, tx, touched); err != nil {
+		return err
+	}
+	return txGC(ctx, tx, touched)
 }
 
 // txDocumentStatus returns a document's status inside a transaction,

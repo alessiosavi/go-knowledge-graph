@@ -14,9 +14,10 @@ and measuring extraction quality with the built-in eval harness.
   ingest, status, search, entity views with evidence, traversal, document
   listing, and guarded read-only Cypher (write clauses rejected, row cap +
   timeout enforced).
-- **Built-in web UI**: `GET /ui/` serves a self-contained, read-only
-  viewer straight from the binary — search, entity cards with evidence,
-  documents (with a markdown document reader), ingest and a one-hop
+- **Built-in web UI**: `GET /ui/` serves a self-contained viewer straight
+  from the binary — search, entity cards with evidence, documents (with a
+  markdown document reader), ingest (text, URL or file upload),
+  per-document delete (✕ removes the whole version chain) and a one-hop
   neighborhood; no extra tools needed.
 - **Ask the graph**: an optional server-side agent (`POST /v1/agent/ask`,
   disabled by default) answers natural-language questions by running the

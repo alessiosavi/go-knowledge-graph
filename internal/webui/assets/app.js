@@ -56,7 +56,12 @@
     const res = await fetch(path, {
       method: opts.method || "GET",
       headers,
-      body: opts.json ? JSON.stringify(opts.json) : undefined,
+      body:
+        opts.form instanceof FormData
+          ? opts.form
+          : opts.json
+            ? JSON.stringify(opts.json)
+            : undefined,
     });
     if (res.status === 401) {
       showAuthBar();
@@ -513,6 +518,16 @@
       const head = el("div");
       head.append(statusBadge(d.status));
       head.append(document.createTextNode(d.title || d.source || d.id));
+      const del = el("button", "mini doc-del", "✕");
+      del.type = "button";
+      del.title = "delete this document";
+      del.setAttribute("aria-label", "Delete " + (d.title || d.source || d.id));
+      del.addEventListener("click", (ev) => {
+        // The row itself opens the reader: keep the delete self-contained.
+        ev.stopPropagation();
+        deleteDocument(d.id).catch(() => {});
+      });
+      head.append(del);
       item.append(head);
       const meta = el("div", "snippet", (d.source_kind || "?") + " · " + d.id);
       item.append(meta);
@@ -554,26 +569,80 @@
     const kind = $("ingest-kind").value;
     const body = $("ingest-body").value.trim();
     const source = $("ingest-source").value.trim();
+    const labels = $("ingest-labels").value.trim();
     const statusNode = $("ingest-status");
     const submit = $("ingest-submit");
-    if (!body) return;
-    const payload = kind === "url" ? { url: body } : { text: body };
-    if (source) payload.source = source;
+    const fileInput = $("ingest-file");
+    const file = kind === "file" && fileInput.files ? fileInput.files[0] : null;
+    if (kind === "file" && !file) {
+      statusNode.textContent = "choose a file first";
+      statusNode.className = "muted error";
+      return;
+    }
+    if (kind !== "file" && !body) return;
+    const opts = { method: "POST" };
+    if (kind === "file") {
+      // FormData must go through untouched: the browser sets the multipart
+      // Content-Type with the boundary itself.
+      const form = new FormData();
+      form.append("file", file);
+      if (source) form.append("source", source);
+      if (labels) form.append("labels", labels);
+      opts.form = form;
+    } else {
+      const payload = kind === "url" ? { url: body } : { text: body };
+      if (source) payload.source = source;
+      if (labels) payload.labels = labels;
+      opts.json = payload;
+    }
     setBusy(submit, true, "Submitting…");
     statusNode.className = "muted";
     statusNode.textContent = "";
     try {
-      const res = await api("/v1/ingest", { method: "POST", json: payload });
+      const res = await api("/v1/ingest", opts);
       statusNode.textContent =
         "document " +
         res.document_id +
         (res.noop ? " (unchanged, no-op)" : " queued");
+      if (kind === "file") fileInput.value = "";
       await pollStatus(res.document_id, statusNode);
     } catch (err) {
       statusNode.textContent = String(err.message || err);
       statusNode.className = "muted error";
     } finally {
       setBusy(submit, false);
+    }
+  }
+
+  // deleteDocument removes a document with its whole version chain
+  // (DELETE /v1/documents/{id}?chain=1): chunks, facts and mentions go too,
+  // and there is no undo — hence the confirm. The API default stays
+  // per-version; the UI sends the chain flag on purpose.
+  async function deleteDocument(id) {
+    if (
+      !window.confirm(
+        "Delete document " +
+          id +
+          "?\n\nChunks, facts and mentions are removed permanently — including older versions of the same source. This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+    const status = $("docs-status");
+    status.className = "muted";
+    status.textContent = "deleting…";
+    try {
+      const res = await api(
+        "/v1/documents/" + encodeURIComponent(id) + "?chain=1",
+        { method: "DELETE" },
+      );
+      const n = (res && res.deleted) || 0;
+      status.textContent =
+        "deleted " + n + (n === 1 ? " version" : " versions");
+      await loadDocuments();
+    } catch (err) {
+      status.className = "muted error";
+      status.textContent = String(err.message || err);
     }
   }
 
@@ -665,6 +734,21 @@
     $("ingest-form").addEventListener("submit", (ev) => {
       ev.preventDefault();
       ingest();
+    });
+    // The file row and the textarea trade places with the kind; required
+    // moves with visibility (a hidden required control blocks submit).
+    $("ingest-kind").addEventListener("change", () => {
+      const isFile = $("ingest-kind").value === "file";
+      $("ingest-file-row").hidden = !isFile;
+      $("ingest-body").hidden = isFile;
+      $("ingest-body").required = !isFile;
+      $("ingest-file").required = isFile;
+    });
+    // Picking a file prefills the source (editable: the same string is the
+    // stable identity, so a renamed file still supersedes).
+    $("ingest-file").addEventListener("change", () => {
+      const f = $("ingest-file").files && $("ingest-file").files[0];
+      if (f) $("ingest-source").value = f.name;
     });
     $("ask-form").addEventListener("submit", (ev) => {
       ev.preventDefault();

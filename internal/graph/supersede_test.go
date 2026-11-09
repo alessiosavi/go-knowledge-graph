@@ -412,3 +412,180 @@ func TestInFlightListsNonTerminal(t *testing.T) {
 			received.ID, position[received.ID], newer.ID, position[newer.ID])
 	}
 }
+
+// TestDeleteChainRemovesAllVersions builds a three-version supersede chain
+// (v1→v2→v3) and deletes it from the middle id: every version, its chunks,
+// its fact edges and the entities only mentioned there must go, with an
+// exact count.
+func TestDeleteChainRemovesAllVersions(t *testing.T) {
+	st := graphtest.Store(t)
+	uri := os.Getenv(graphtest.URIEnv)
+	ctx := context.Background()
+	source := uniqueSource(t)
+	versions := []graph.UpsertResult{
+		testUpsert(t, st, "file", source, "hash-a"),
+		testUpsert(t, st, "file", source, "hash-b"),
+		testUpsert(t, st, "file", source, "hash-c"),
+	}
+	keys := make([]string, 0, len(versions)*2)
+	for i, res := range versions {
+		fx := newFixture(t)
+		text := fmt.Sprintf("Ada Lovelace wrote algorithm number %d.", i)
+		if err := st.PutChunks(ctx, res.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
+			t.Fatalf("PutChunks v%d: %v", i+1, err)
+		}
+		if err := st.UpsertExtraction(ctx, res.ID, res.ID+"-c0", "mock:1", fx.ents, []graph.FactUpsert{fx.fact}); err != nil {
+			t.Fatalf("UpsertExtraction v%d: %v", i+1, err)
+		}
+		for _, e := range fx.ents {
+			keys = append(keys, e.Key)
+		}
+	}
+	if err := st.Supersede(ctx, versions[0].ID, versions[1].ID); err != nil {
+		t.Fatalf("Supersede v1->v2: %v", err)
+	}
+	if err := st.Supersede(ctx, versions[1].ID, versions[2].ID); err != nil {
+		t.Fatalf("Supersede v2->v3: %v", err)
+	}
+
+	n, err := st.DeleteChain(ctx, versions[1].ID)
+	if err != nil {
+		t.Fatalf("DeleteChain: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("DeleteChain deleted = %d, want 3", n)
+	}
+	for i, res := range versions {
+		if _, err := st.Document(ctx, res.ID); !errors.Is(err, graph.ErrNotFound) {
+			t.Errorf("v%d Document after chain delete = %v, want ErrNotFound", i+1, err)
+		}
+		if got := rawCount(t, uri, fmt.Sprintf("MATCH (c:Chunk {doc_id: '%s'}) RETURN count(c) AS n", res.ID)); got != 0 {
+			t.Errorf("v%d chunks after chain delete = %d, want 0", i+1, got)
+		}
+		if got := rawCount(t, uri, fmt.Sprintf("MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = '%s' RETURN count(r) AS n", res.ID)); got != 0 {
+			t.Errorf("v%d fact edges after chain delete = %d, want 0", i+1, got)
+		}
+	}
+	for _, key := range keys {
+		if got := rawCount(t, uri, fmt.Sprintf("MATCH (e:Entity {key: '%s'}) RETURN count(e) AS n", key)); got != 0 {
+			t.Errorf("orphan entity %q survived chain delete", key)
+		}
+	}
+	ids, err := st.SameIdentityDocumentIDs(ctx, "file", source)
+	if err != nil {
+		t.Fatalf("SameIdentityDocumentIDs: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("identity still holds %d documents after chain delete", len(ids))
+	}
+}
+
+// TestDeleteChainSingleVersion pins the count for an identity with a single
+// version (no supersede history).
+func TestDeleteChainSingleVersion(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	doc := testUpsert(t, st, "file", uniqueSource(t), "hash-a")
+	text := "Ada Lovelace wrote the first algorithm."
+	if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
+		t.Fatalf("PutChunks: %v", err)
+	}
+
+	n, err := st.DeleteChain(ctx, doc.ID)
+	if err != nil {
+		t.Fatalf("DeleteChain: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("DeleteChain deleted = %d, want 1", n)
+	}
+	if _, err := st.Document(ctx, doc.ID); !errors.Is(err, graph.ErrNotFound) {
+		t.Errorf("Document after chain delete = %v, want ErrNotFound", err)
+	}
+}
+
+// TestDeleteChainNotFound pins the missing-id contract.
+func TestDeleteChainNotFound(t *testing.T) {
+	st := graphtest.Store(t)
+	n, err := st.DeleteChain(context.Background(), "missing-doc")
+	if !errors.Is(err, graph.ErrNotFound) {
+		t.Errorf("DeleteChain(missing) = %v, want ErrNotFound", err)
+	}
+	if n != 0 {
+		t.Errorf("DeleteChain(missing) = %d, want 0", n)
+	}
+}
+
+// TestDeleteChainLeavesOtherIdentities pins cross-identity isolation: only
+// the deleted chain disappears.
+func TestDeleteChainLeavesOtherIdentities(t *testing.T) {
+	st := graphtest.Store(t)
+	uri := os.Getenv(graphtest.URIEnv)
+	ctx := context.Background()
+
+	aOld, aNew, _, _ := supersedePair(t, st)
+	if err := st.Supersede(ctx, aOld.ID, aNew.ID); err != nil {
+		t.Fatalf("Supersede A: %v", err)
+	}
+	bOld, bNew, _, bChunk := supersedePair(t, st)
+	if err := st.Supersede(ctx, bOld.ID, bNew.ID); err != nil {
+		t.Fatalf("Supersede B: %v", err)
+	}
+
+	n, err := st.DeleteChain(ctx, aNew.ID)
+	if err != nil {
+		t.Fatalf("DeleteChain A: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("DeleteChain A deleted = %d, want 2", n)
+	}
+	if _, err := st.Document(ctx, aOld.ID); !errors.Is(err, graph.ErrNotFound) {
+		t.Errorf("A old after chain delete = %v, want ErrNotFound", err)
+	}
+	doc, err := st.Document(ctx, bNew.ID)
+	if err != nil {
+		t.Fatalf("B new must survive: %v", err)
+	}
+	if doc.Supersedes != bOld.ID {
+		t.Errorf("B new supersedes = %q, want %q (untouched)", doc.Supersedes, bOld.ID)
+	}
+	if got := rawCount(t, uri, fmt.Sprintf("MATCH (c:Chunk {id: '%s'}) RETURN count(c) AS n", bChunk)); got != 1 {
+		t.Errorf("B chunk after A chain delete = %d, want 1", got)
+	}
+	if got := rawCount(t, uri, fmt.Sprintf("MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = '%s' RETURN count(r) AS n", bNew.ID)); got != 1 {
+		t.Errorf("B fact edges after A chain delete = %d, want 1", got)
+	}
+}
+
+// TestDeleteDocumentClearsSupersedesPointer pins that removing one version
+// clears any supersedes pointer referencing it, so a surviving newer
+// version cannot dangle.
+func TestDeleteDocumentClearsSupersedesPointer(t *testing.T) {
+	st := graphtest.Store(t)
+	uri := os.Getenv(graphtest.URIEnv)
+	ctx := context.Background()
+	old, newer, _, newChunk := supersedePair(t, st)
+	if err := st.Supersede(ctx, old.ID, newer.ID); err != nil {
+		t.Fatalf("Supersede: %v", err)
+	}
+	doc, err := st.Document(ctx, newer.ID)
+	if err != nil {
+		t.Fatalf("setup Document(new): %v", err)
+	}
+	if doc.Supersedes != old.ID {
+		t.Fatalf("setup: newer.Supersedes = %q, want %q", doc.Supersedes, old.ID)
+	}
+
+	if err := st.DeleteDocument(ctx, old.ID); err != nil {
+		t.Fatalf("DeleteDocument(old): %v", err)
+	}
+	doc, err = st.Document(ctx, newer.ID)
+	if err != nil {
+		t.Fatalf("Document(new) after delete: %v", err)
+	}
+	if doc.Supersedes != "" {
+		t.Errorf("newer.Supersedes = %q after deleting the referenced version, want empty", doc.Supersedes)
+	}
+	if got := rawCount(t, uri, fmt.Sprintf("MATCH (c:Chunk {id: '%s'}) RETURN count(c) AS n", newChunk)); got != 1 {
+		t.Errorf("newer chunk after delete = %d, want 1", got)
+	}
+}

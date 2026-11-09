@@ -93,6 +93,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/documents", s.handleDocuments)
 	mux.HandleFunc("GET /v1/documents/{id}", s.handleDocument)
 	mux.HandleFunc("GET /v1/documents/{id}/status", s.handleStatus)
+	mux.HandleFunc("DELETE /v1/documents/{id}", s.handleDocumentDelete)
 	mux.HandleFunc("GET /v1/documents/{id}/content", s.handleDocumentContent)
 	mux.HandleFunc("POST /v1/search", s.handleSearch)
 	mux.HandleFunc("GET /v1/entities/{id}", s.handleEntity)
