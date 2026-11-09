@@ -41,9 +41,11 @@ func normalizeSurface(s string) string {
 	})
 }
 
-// sanitizeRel maps a relation label to an identifier-safe type: lowercase,
-// every non [a-z0-9] character becomes an underscore.
-func sanitizeRel(s string) string {
+// SanitizeRel maps a relation label to the identifier-safe Neo4j type used
+// for fact edges: lowercase, every non [a-z0-9] character becomes an
+// underscore. Exported so the pipeline can key per-chunk dedupes exactly
+// like the store does.
+func SanitizeRel(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range strings.ToLower(s) {
@@ -55,6 +57,9 @@ func sanitizeRel(s string) string {
 	}
 	return b.String()
 }
+
+// sanitizeRel is the internal alias kept for readability at call sites.
+func sanitizeRel(s string) string { return SanitizeRel(s) }
 
 type factKey struct{ head, rel, tail string }
 
@@ -338,7 +343,14 @@ func FactAuditID(headKey, rel, tailKey, chunkID string) string {
 
 // WriteFactAudit records one audit row (:RejectedFact).
 func (s *Store) WriteFactAudit(ctx context.Context, a FactAudit) error {
-	err := s.runWrite(ctx, `
+	return s.runWriteTx(ctx, func(tx neo4j.ManagedTransaction) error {
+		return txWriteFactAudit(ctx, tx, a)
+	})
+}
+
+// txWriteFactAudit merges one audit row inside an existing transaction.
+func txWriteFactAudit(ctx context.Context, tx neo4j.ManagedTransaction, a FactAudit) error {
+	err := txRun(ctx, tx, `
 MERGE (rf:RejectedFact {id: $id})
 SET rf.head_key = $head, rf.rel = $rel, rf.tail_key = $tail, rf.doc_id = $doc,
     rf.chunk_id = $chunk, rf.score = $score, rf.judge_verdict = $verdict,
@@ -360,6 +372,38 @@ SET rf.head_key = $head, rf.rel = $rel, rf.tail_key = $tail, rf.doc_id = $doc,
 		return fmt.Errorf("graph: write fact audit: %w", err)
 	}
 	return nil
+}
+
+// SetFactJudge records a judge verdict (confirmed|unclear) on the fact edge
+// identified by (head, rel, tail, chunk).
+func (s *Store) SetFactJudge(ctx context.Context, headKey, rel, tailKey, chunkID, status string) error {
+	err := s.runWrite(ctx, `
+MATCH (a:Entity {key: $head})-[r]->(b:Entity {key: $tail})
+WHERE r.chunk_id = $chunk AND type(r) = $rel
+SET r.judge = $status`,
+		map[string]any{
+			"head": headKey, "tail": tailKey, "chunk": chunkID,
+			"rel": sanitizeRel(rel), "status": status,
+		})
+	if err != nil {
+		return fmt.Errorf("graph: set fact judge: %w", err)
+	}
+	return nil
+}
+
+// RejectFact deletes a refuted fact edge and records the audit row in one
+// transaction (refuted facts are never silently dropped).
+func (s *Store) RejectFact(ctx context.Context, headKey, rel, tailKey, chunkID string, audit FactAudit) error {
+	return s.runWriteTx(ctx, func(tx neo4j.ManagedTransaction) error {
+		if err := txRun(ctx, tx, `
+MATCH (a:Entity {key: $head})-[r]->(b:Entity {key: $tail})
+WHERE r.chunk_id = $chunk AND type(r) = $rel
+DELETE r`,
+			map[string]any{"head": headKey, "tail": tailKey, "chunk": chunkID, "rel": sanitizeRel(rel)}); err != nil {
+			return fmt.Errorf("graph: reject fact: %w", err)
+		}
+		return txWriteFactAudit(ctx, tx, audit)
+	})
 }
 
 // EntityView returns an entity with its aliases, mention count and facts,

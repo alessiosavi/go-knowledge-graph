@@ -105,6 +105,8 @@ type Pipeline struct {
 	pending map[string]submission
 
 	procLocks sync.Map // docID → *sync.Mutex, serializes Process per document
+
+	judge FactJudge
 }
 
 // NewPipeline wires the pipeline. ix may be nil (near-duplicate detection
@@ -295,6 +297,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 			byChunk[r.ChunkID] = r
 		}
 		version := p.prov.Version()
+		var judgeCandidates []judgeCandidate
 		for _, c := range chunks {
 			if c.DuplicateOf != "" {
 				// A duplicate skips extraction and must not keep facts from
@@ -314,9 +317,21 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 					return fail("audit", err)
 				}
 			}
+			// Judge exactly what was written: UpsertExtraction dedupes per
+			// (head, rel, tail) keeping max confidence, so re-apply that
+			// before collecting judge candidates.
+			for _, f := range dedupeFactCandidates(facts) {
+				judgeCandidates = append(judgeCandidates, judgeCandidate{fact: f, chunkText: c.Text, chunkID: c.ID})
+			}
 		}
 		if err := p.store.SetStatus(ctx, docID, graph.StatusMerged, ""); err != nil {
 			return fail("status", err)
+		}
+		if p.judge != nil && judgeModeActive(p.cfg.Judge.Mode) && len(judgeCandidates) > 0 {
+			if err := p.store.SetStatus(ctx, docID, graph.StatusVerifying, ""); err != nil {
+				return fail("status", err)
+			}
+			p.verifyFacts(ctx, doc, judgeCandidates, version)
 		}
 		st = graph.StatusMerged
 	}
@@ -346,6 +361,82 @@ func (p *Pipeline) forget(docID string) {
 	p.mu.Lock()
 	delete(p.pending, docID)
 	p.mu.Unlock()
+}
+
+// SetJudge attaches the online fact-verification judge; nil means off.
+// Additive to the constructor; attach it before starting workers.
+func (p *Pipeline) SetJudge(j FactJudge) {
+	p.judge = j
+}
+
+type judgeCandidate struct {
+	fact      graph.FactUpsert
+	chunkText string
+	chunkID   string
+}
+
+// dedupeFactCandidates mirrors UpsertExtraction's per-chunk dedupe: one
+// candidate per (head, rel, tail), keeping the highest confidence.
+func dedupeFactCandidates(facts []graph.FactUpsert) []graph.FactUpsert {
+	best := make(map[string]graph.FactUpsert, len(facts))
+	order := make([]string, 0, len(facts))
+	for _, f := range facts {
+		k := f.HeadKey + "\x00" + graph.SanitizeRel(f.Rel) + "\x00" + f.TailKey
+		if cur, ok := best[k]; ok {
+			if f.Confidence > cur.Confidence {
+				best[k] = f
+			}
+			continue
+		}
+		best[k] = f
+		order = append(order, k)
+	}
+	out := make([]graph.FactUpsert, 0, len(order))
+	for _, k := range order {
+		out = append(out, best[k])
+	}
+	return out
+}
+
+// verifyFacts runs the judge over selected facts. Failures never fail the
+// document: unverified facts simply keep judge=”.
+func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candidates []judgeCandidate, version string) {
+	mode := p.cfg.Judge.Mode
+	for _, cand := range candidates {
+		f := cand.fact
+		factKey := f.HeadKey + "|" + f.Rel + "|" + f.TailKey
+		if !ShouldJudge(mode, f.Confidence, p.cfg.Judge.VerifyFloor, p.cfg.Judge.SamplePct, factKey) {
+			continue
+		}
+		evidence := EvidenceSentence(cand.chunkText, f.HeadMention.Start, f.HeadMention.End)
+		verdict, err := p.judge.VerifyFact(ctx, FactInput{
+			Head: f.HeadKey, Rel: f.Rel, Tail: f.TailKey,
+			Evidence: evidence, DocContext: doc.Title, Confidence: f.Confidence,
+		})
+		if err != nil {
+			slog.Warn("ingest: judge unavailable, fact left unverified",
+				"doc", doc.ID, "head", f.HeadKey, "rel", f.Rel, "err", err)
+			continue
+		}
+		switch verdict.Status {
+		case "confirmed", "unclear":
+			if err := p.store.SetFactJudge(ctx, f.HeadKey, f.Rel, f.TailKey, cand.chunkID, verdict.Status); err != nil {
+				slog.Warn("ingest: could not record verdict", "doc", doc.ID, "err", err)
+			}
+		case "refuted":
+			audit := graph.FactAudit{
+				HeadKey: f.HeadKey, Rel: f.Rel, TailKey: f.TailKey,
+				DocID: doc.ID, ChunkID: cand.chunkID, Score: f.Confidence,
+				JudgeVerdict: "refuted", Reason: verdict.Reason,
+				ExtractorVersion: version,
+			}
+			if err := p.store.RejectFact(ctx, f.HeadKey, f.Rel, f.TailKey, cand.chunkID, audit); err != nil {
+				slog.Warn("ingest: could not reject fact", "doc", doc.ID, "err", err)
+			}
+		default:
+			slog.Warn("ingest: judge returned an unknown verdict status", "doc", doc.ID, "status", verdict.Status)
+		}
+	}
 }
 
 // Recover requeues every in-flight document (restart path). Start the
