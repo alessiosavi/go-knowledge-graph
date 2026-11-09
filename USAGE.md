@@ -18,6 +18,7 @@ content supersedes the previous version.
 gkg ingest notes.md                      # a file
 gkg ingest https://example.com/article   # a URL
 echo "Ada Lovelace wrote the first algorithm." | gkg ingest -
+gkg ingest -source notes/ada renamed.md  # keep an earlier source's identity
 ```
 
 **REST**:
@@ -36,6 +37,14 @@ Submissions are queued: poll the returned id until it reaches `done`:
 curl -s localhost:8080/v1/documents/<id>/status
 ```
 
+**From the UI**: the ingest box also takes one file — pick Kind → File,
+choose it, and the Source field prefills with the filename (it stays
+editable). Keep the same source string when re-uploading a changed or
+renamed file and it supersedes its previous version (`gkg ingest -source
+notes/ada renamed.md` is the CLI equivalent). The optional Labels field
+takes a preset name (`general`, `news`). Rich formats (pdf, docx, …)
+convert through the docling profile.
+
 **From an agent**: the MCP `ingest` tool takes `url` or `text`, plus an
 optional `source` label and `force` to re-run an unchanged document.
 
@@ -50,9 +59,11 @@ options:
   see a one-hop neighborhood graph of the selected entity. Clicking a
   document row, a chunk hit, or an evidence link opens the **document
   reader**: the document's stored text rendered as markdown (tables, code,
-  links) by `GET /v1/documents/{id}/content`. It is read-only except the
-  explicit ingest box, and asks for the API key once when `GKG_API_KEY`
-  is set.
+  links) by `GET /v1/documents/{id}/content`. A row's ✕ button deletes the
+  document with its chunks, facts, mentions and older versions of the same
+  source (`DELETE /v1/documents/{id}?chain=1`) — permanently, after a
+  confirm. The UI is otherwise read-only, and asks for the API key once
+  when `GKG_API_KEY` is set.
 - **gkg REST**: `POST /v1/search` (entity + chunk hits), `GET /v1/entities/{id-or-key}`
   (entity card with evidenced facts), `POST /v1/traverse` (fact-edge walk),
   `POST /v1/cypher` (guarded read-only Cypher).

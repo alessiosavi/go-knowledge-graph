@@ -140,6 +140,31 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/Unavailable"
+    delete:
+      summary: Delete a document (or its whole version chain)
+      description: Removes the document with its chunks, fact edges and mentions, and prunes the entities left without relationships. Without the chain flag exactly one version is removed; with it, every version of the same source identity goes in one all-or-nothing transaction. There is no undo.
+      parameters:
+        - $ref: "#/components/parameters/DocumentID"
+        - name: chain
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["1", "true", "0", "false"]
+          description: "1/true removes every version of the same source; default: only this version"
+      responses:
+        "200":
+          description: number of removed document versions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
   /v1/documents/{id}/status:
     get:
       summary: Get one document's pipeline status
@@ -519,6 +544,14 @@ components:
         seq: { type: integer }
         start: { type: integer }
         end: { type: integer }
+    DeleteResult:
+      type: object
+      required: [deleted]
+      properties:
+        deleted:
+          type: integer
+          minimum: 0
+          description: how many document versions were removed
     EntityRef:
       type: object
       required: [id, key, name, type]
