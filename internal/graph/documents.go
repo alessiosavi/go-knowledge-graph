@@ -119,15 +119,13 @@ func (s *Store) requireDocument(ctx context.Context, docID string) error {
 }
 
 // PutChunks persists the document's chunks atomically, deduplicating by
-// derived chunk id (docID+"-c"+seq), and links them with HAS_CHUNK. It
-// returns ErrNotFound when the document does not exist.
+// derived chunk id (docID+"-c"+seq), and links them with HAS_CHUNK. The
+// liveness check and the write share one transaction under Store.mu, so a
+// stale worker racing Supersede cannot re-attach chunks to a superseded
+// document: it either commits before the supersede (its chunks are then
+// deleted) or observes the supersede and receives ErrSuperseded. A missing
+// document yields ErrNotFound.
 func (s *Store) PutChunks(ctx context.Context, docID string, chunks []Chunk) error {
-	if err := s.requireDocument(ctx, docID); err != nil {
-		return err
-	}
-	if len(chunks) == 0 {
-		return nil
-	}
 	rows := make([]map[string]any, 0, len(chunks))
 	for _, c := range chunks {
 		rows = append(rows, map[string]any{
@@ -144,7 +142,18 @@ func (s *Store) PutChunks(ctx context.Context, docID string, chunks []Chunk) err
 			"dup":       c.DuplicateOf,
 		})
 	}
-	err := s.runWrite(ctx, `
+	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		st, err := txDocumentStatus(ctx, tx, docID)
+		if err != nil {
+			return err
+		}
+		if st == StatusSuperseded {
+			return fmt.Errorf("graph: document %s: %w", docID, ErrSuperseded)
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		if err := txRun(ctx, tx, `
 MATCH (d:Document {id: $docID})
 UNWIND $chunks AS c
 MERGE (ch:Chunk {id: c.id})
@@ -153,27 +162,164 @@ SET ch.doc_id = $docID, ch.seq = c.seq, ch.text = c.text, ch.start = c.start, ch
     ch.signature_version = c.version, ch.duplicate_of = c.dup
 MERGE (d)-[h:HAS_CHUNK]->(ch)
 SET h.seq = c.seq`,
-		map[string]any{"docID": docID, "chunks": rows})
-	if err != nil {
-		return fmt.Errorf("graph: put chunks: %w", err)
-	}
-	return nil
+			map[string]any{"docID": docID, "chunks": rows}); err != nil {
+			return fmt.Errorf("graph: put chunks: %w", err)
+		}
+		return nil
+	})
 }
 
-// SetStatus updates a document's status, error text and updated_at.
+// SetStatus updates a document's status, error text and updated_at. A
+// superseded document is terminal: a late status write from a stale worker
+// is dropped instead of reviving it.
 func (s *Store) SetStatus(ctx context.Context, docID string, st Status, errMsg string) error {
 	if err := s.requireDocument(ctx, docID); err != nil {
 		return err
 	}
 	err := s.runWrite(ctx, `
 MATCH (d:Document {id: $id})
+WHERE d.status <> $superseded
 SET d.status = $status, d.error = $error, d.updated_at = $now`,
 		map[string]any{
 			"id": docID, "status": string(st), "error": errMsg,
-			"now": time.Now().UTC().Format(timeLayout),
+			"superseded": string(StatusSuperseded),
+			"now":        time.Now().UTC().Format(timeLayout),
 		})
 	if err != nil {
 		return fmt.Errorf("graph: set status: %w", err)
+	}
+	return nil
+}
+
+// Supersede replaces a live document with its new version inside one
+// transaction: the old version's chunks, mentions and fact edges are
+// deleted, the old node is marked superseded, the new node records which
+// version it replaced, and entities left without any relationship are
+// pruned. It refuses to run when the old version is missing or already
+// superseded, or when the new version is missing. Note: entities merged
+// without any fact have no edges and are therefore invisible to the
+// touched-set GC — the periodic global GC sweeps them.
+func (s *Store) Supersede(ctx context.Context, oldID, newID string) error {
+	if oldID == newID {
+		return fmt.Errorf("graph: supersede %s: old and new are the same document", oldID)
+	}
+	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		st, err := txDocumentStatus(ctx, tx, oldID)
+		if err != nil {
+			return err
+		}
+		if st == StatusSuperseded {
+			return fmt.Errorf("graph: supersede %s: %w", oldID, ErrSuperseded)
+		}
+		if _, err := txDocumentStatus(ctx, tx, newID); err != nil {
+			return err
+		}
+		touched, err := txMentionedKeys(ctx, tx, oldID)
+		if err != nil {
+			return err
+		}
+		if err := txDeleteSubtree(ctx, tx, oldID); err != nil {
+			return err
+		}
+		if err := txRefreshMentionCounts(ctx, tx, touched); err != nil {
+			return err
+		}
+		now := time.Now().UTC().Format(timeLayout)
+		if err := txRun(ctx, tx, `
+MATCH (d:Document {id: $old})
+SET d.status = $superseded, d.error = '', d.updated_at = $now`,
+			map[string]any{"old": oldID, "superseded": string(StatusSuperseded), "now": now}); err != nil {
+			return fmt.Errorf("graph: mark superseded: %w", err)
+		}
+		if err := txRun(ctx, tx, `
+MATCH (d:Document {id: $new})
+SET d.supersedes = $old`,
+			map[string]any{"new": newID, "old": oldID}); err != nil {
+			return fmt.Errorf("graph: record supersedes: %w", err)
+		}
+		return txGC(ctx, tx, touched)
+	})
+}
+
+// DeleteDocument removes a document with its chunks, mentions and fact
+// edges, and prunes the entities left without relationships.
+func (s *Store) DeleteDocument(ctx context.Context, id string) error {
+	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		if _, err := txDocumentStatus(ctx, tx, id); err != nil {
+			return err
+		}
+		touched, err := txMentionedKeys(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if err := txDeleteSubtree(ctx, tx, id); err != nil {
+			return err
+		}
+		if err := txRun(ctx, tx, `MATCH (d:Document {id: $id}) DETACH DELETE d`,
+			map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("graph: delete document: %w", err)
+		}
+		if err := txRefreshMentionCounts(ctx, tx, touched); err != nil {
+			return err
+		}
+		return txGC(ctx, tx, touched)
+	})
+}
+
+// txDocumentStatus returns a document's status inside a transaction,
+// ErrNotFound when the document does not exist.
+func txDocumentStatus(ctx context.Context, tx neo4j.ManagedTransaction, id string) (Status, error) {
+	res, err := tx.Run(ctx, "MATCH (d:Document {id: $id}) RETURN d.status AS status", map[string]any{"id": id})
+	if err != nil {
+		return "", fmt.Errorf("graph: document %s: %w", id, err)
+	}
+	recs, err := res.Collect(ctx)
+	if err != nil {
+		return "", fmt.Errorf("graph: document %s: %w", id, err)
+	}
+	if len(recs) == 0 {
+		return "", fmt.Errorf("graph: document %s: %w", id, ErrNotFound)
+	}
+	return Status(getString(recs[0], "status")), nil
+}
+
+// txMentionedKeys returns the distinct entity keys the document's chunks
+// mention.
+func txMentionedKeys(ctx context.Context, tx neo4j.ManagedTransaction, docID string) ([]string, error) {
+	res, err := tx.Run(ctx, `
+MATCH (:Document {id: $doc})-[:HAS_CHUNK]->(:Chunk)-[:MENTIONS]->(e:Entity)
+RETURN DISTINCT e.key AS key`, map[string]any{"doc": docID})
+	if err != nil {
+		return nil, fmt.Errorf("graph: mentioned keys: %w", err)
+	}
+	recs, err := res.Collect(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("graph: mentioned keys: %w", err)
+	}
+	keys := make([]string, 0, len(recs))
+	for _, r := range recs {
+		keys = append(keys, getString(r, "key"))
+	}
+	return keys, nil
+}
+
+// txDeleteSubtree removes a document's mentions, fact edges and chunks (the
+// document node itself is left to the caller).
+func txDeleteSubtree(ctx context.Context, tx neo4j.ManagedTransaction, docID string) error {
+	if err := txRun(ctx, tx, `
+MATCH (:Document {id: $doc})-[:HAS_CHUNK]->(:Chunk)-[m:MENTIONS]->(:Entity) DELETE m`,
+		map[string]any{"doc": docID}); err != nil {
+		return fmt.Errorf("graph: delete mentions: %w", err)
+	}
+	if err := txRun(ctx, tx, `
+MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = $doc DELETE r`,
+		map[string]any{"doc": docID}); err != nil {
+		return fmt.Errorf("graph: delete facts: %w", err)
+	}
+	if err := txRun(ctx, tx, `
+MATCH (:Document {id: $doc})-[:HAS_CHUNK]->(c:Chunk) DETACH DELETE c`,
+		map[string]any{"doc": docID}); err != nil {
+		return fmt.Errorf("graph: delete chunks: %w", err)
 	}
 	return nil
 }

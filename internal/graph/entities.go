@@ -307,14 +307,8 @@ SET men.start = m.start, men.end = m.end`,
 			}
 		}
 		if len(keys) > 0 {
-			if err := txRun(ctx, tx, `
-UNWIND $keys AS k
-MATCH (e:Entity {key: k})
-OPTIONAL MATCH (:Chunk)-[m:MENTIONS]->(e)
-WITH e, count(m) AS cnt
-SET e.mention_count = cnt`,
-				map[string]any{"keys": keys}); err != nil {
-				return fmt.Errorf("graph: refresh mention counts: %w", err)
+			if err := txRefreshMentionCounts(ctx, tx, keys); err != nil {
+				return err
 			}
 		}
 		return nil
