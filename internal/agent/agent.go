@@ -278,11 +278,12 @@ func toolsUnsupported(err error) bool {
 	return pe.status == http.StatusBadRequest || pe.status == http.StatusUnprocessableEntity
 }
 
-// streamFallbackEligible reports whether a streaming failure means "retry
-// the same request non-streamed once and stop streaming from then on": the
-// provider rejected the streamed payload (or the deployment does not exist),
-// or the stream closed before delivering any event. Auth failures are
-// deliberately excluded — they are operator-fixable, so nothing is memoized.
+// streamFallbackEligible reports whether a streaming failure warrants the
+// caller retrying the same request once non-streamed. runTurn memoizes
+// unsupported streaming only if that retry succeeds. Eligible failures are
+// a rejected streamed payload (or a nonexistent deployment) or a stream
+// closed before delivering any event. Auth failures are deliberately
+// excluded — they are operator-fixable, so nothing is memoized.
 func streamFallbackEligible(err error) bool {
 	if errors.Is(err, errStreamClosedBeforeEvent) {
 		return true

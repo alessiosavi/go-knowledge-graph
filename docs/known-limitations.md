@@ -105,7 +105,7 @@ is benign: the newer version completes normally.
   and endpoints that reject the `tools` parameter fall back to a
   constrained JSON plan (one round of tool calls, then a final answer).
   When streaming is supported, these providers keep streaming the final
-  answer and pay one extra rejected request per ask.
+  answer and pay one extra rejected request per streamed ask.
 - A provider that does not actually stream is detected automatically
   (`GKG_AGENT_STREAM`, default on): the agent falls back to non-streamed
   answers for the process lifetime — answers are unchanged, only the

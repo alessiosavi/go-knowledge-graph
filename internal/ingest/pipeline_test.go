@@ -459,6 +459,44 @@ func TestSupersedeSweepSkipsDeletedOldVersion(t *testing.T) {
 	}
 }
 
+func TestSupersedeSweepSkipsAlreadySuperseded(t *testing.T) {
+	env := newPipelineEnv(t)
+	ctx := context.Background()
+	source, text := uniqueText(t)
+	v1 := mustProcess(t, env, ingest.Input{Kind: "text", Source: source, Text: text})
+	v2, err := env.p.Submit(ctx, ingest.Input{Kind: "text", Source: source, Text: text + " Second revision."})
+	if err != nil {
+		t.Fatalf("Submit(v2): %v", err)
+	}
+	v3, err := env.p.Submit(ctx, ingest.Input{Kind: "text", Source: source, Text: text + " Third revision."})
+	if err != nil {
+		t.Fatalf("Submit(v3): %v", err)
+	}
+	hookCalled := false
+	ingest.SetBeforeSupersede(env.p, func(olds []string) {
+		hookCalled = true
+		if !slices.Equal(olds, []string{v1.DocumentID}) {
+			t.Fatalf("hook olds = %v, want [%s]", olds, v1.DocumentID)
+		}
+		if err := env.st.Supersede(ctx, v1.DocumentID, v3.DocumentID); err != nil {
+			t.Fatalf("Supersede(v1, v3): %v", err)
+		}
+	})
+	if err := env.p.Process(ctx, v2.DocumentID); err != nil {
+		t.Errorf("Process(v2): %v, want nil", err)
+	}
+	if !hookCalled {
+		t.Error("before-supersede hook was not called")
+	}
+	newer, err := env.st.Document(ctx, v2.DocumentID)
+	if err != nil {
+		t.Fatalf("Document(v2): %v", err)
+	}
+	if newer.Status != graph.StatusDone {
+		t.Errorf("v2 status = %q, want done", newer.Status)
+	}
+}
+
 func TestSupersedeSweepNewVersionDeleted(t *testing.T) {
 	env := newPipelineEnv(t)
 	ctx := context.Background()
@@ -477,6 +515,8 @@ func TestSupersedeSweepNewVersionDeleted(t *testing.T) {
 	})
 	if err := env.p.Process(ctx, v2.DocumentID); err == nil {
 		t.Error("Process(v2): want an error for the deleted new version")
+	} else if !strings.Contains(err.Error(), "ingest: status:") {
+		t.Errorf("Process(v2): %v, want ingest: status: error", err)
 	}
 	if !slices.Equal(seen, []string{v1.DocumentID}) {
 		t.Errorf("hook olds = %v, want [%s]", seen, v1.DocumentID)
