@@ -1,0 +1,12 @@
+# Same base references as Dockerfile.gkg; no external Go dependencies.
+FROM golang:1.27-alpine AS build
+WORKDIR /src
+COPY scripts/llmstub/main.go ./main.go
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/llmstub main.go
+
+FROM alpine:3.20
+RUN adduser -D -u 10001 stub
+COPY --from=build /out/llmstub /usr/local/bin/llmstub
+USER stub
+EXPOSE 8099
+ENTRYPOINT ["llmstub"]

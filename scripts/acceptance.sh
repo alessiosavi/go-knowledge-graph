@@ -102,10 +102,11 @@ if [[ "$MODE" == "compose" ]]; then
 	export DOCLING_PORT="${ACCEPTANCE_DOCLING_PORT:-15001}"
 	command -v docker >/dev/null || fail "docker is required for the compose mode"
 	[[ -f .env ]] || fail "compose mode needs .env (copy .env.example and set the keys)"
+	GKG_API_KEY="${GKG_API_KEY:-$(env_value GKG_API_KEY)}"
 	export GKG_API_KEY="${GKG_API_KEY:-$(openssl rand -hex 32)}"
 	"${COMPOSE[@]}" config -q || fail "docker compose config"
 	ok "compose config"
-	AUTH_KEY="${GKG_API_KEY:-$(env_value GKG_API_KEY)}"
+	AUTH_KEY="$GKG_API_KEY"
 else
 	AUTH_KEY="${GKG_API_KEY:-}"
 fi

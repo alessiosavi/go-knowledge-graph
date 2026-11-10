@@ -19,8 +19,8 @@ services:
     image: memgraph/memgraph:3.14.0@sha256:a732421217951066e42f5749111bc3d0c7b51b12c756be04850d4dafa84cc05e
     restart: unless-stopped
     logging: *logging
-    mem_limit: 1792m
-    command: ["--memory-limit=1280"]
+    mem_limit: 1536m
+    command: ["--memory-limit=1024"]
     environment:
       MEMGRAPH_USER: ${MEMGRAPH_USER:-gkg}
       MEMGRAPH_PASSWORD: ${MEMGRAPH_PASSWORD:?set MEMGRAPH_PASSWORD in .env}
@@ -176,8 +176,8 @@ services:
     restart: unless-stopped
     logging: *logging
     # Provisional: Task 6 measures concurrent near-cap requests before release.
-    # This 256 MiB is reserved from Memgraph; long-running sum stays 14 GiB.
-    mem_limit: 256m
+    # This 512 MiB is reserved from Memgraph; long-running sum stays 14 GiB.
+    mem_limit: 512m
     depends_on:
       gkg:
         condition: service_healthy
@@ -196,7 +196,8 @@ services:
       MODSEC_RESP_BODY_ACCESS: "Off"
       ALLOWED_METHODS: "GET HEAD POST OPTIONS DELETE"
       MODSEC_REQ_BODY_LIMIT: "22020096"
-      MODSEC_REQ_BODY_NOFILES_LIMIT: "22020096"
+      MODSEC_REQ_BODY_NOFILES_LIMIT: "4259840"
+      MODSEC_REQ_BODY_LIMIT_ACTION: "Reject"
       MODSEC_AUDIT_LOG_PARTS: ADEFHZ
       PARANOIA: "1"
       BLOCKING_PARANOIA: "1"
@@ -209,6 +210,7 @@ services:
       - "${EDGE_BIND:-127.0.0.1}:${EDGE_HTTPS_PORT:-443}:8443"
     volumes:
       - ./edge/default.conf.template:/etc/nginx/templates/conf.d/default.conf.template:ro
+      - ./edge/setup.conf.template:/etc/nginx/templates/modsecurity.d/setup.conf.template:ro
       - ./edge/15-validate-env.sh:/docker-entrypoint.d/15-validate-env.sh:ro
       - ./edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:ro
       - ./edge/modsec/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:ro
@@ -216,7 +218,7 @@ services:
       - edge-auth:/etc/nginx/edge-auth:ro
       - acme-webroot:/var/www/acme:ro
     healthcheck:
-      test: ["CMD", "curl", "-fsSk", "https://127.0.0.1:8443/healthz"]
+      test: ["CMD", "curl", "-fsSk", "https://localhost:8443/healthz"]
       interval: 5s
       timeout: 3s
       retries: 20

@@ -27,6 +27,10 @@ PASSWD_GENERATE := 0
 ifeq ($(origin GENERATE),command line)
 PASSWD_GENERATE := $(GENERATE)
 endif
+WAF_MODE :=
+ifeq ($(origin MODE),command line)
+WAF_MODE := $(MODE)
+endif
 # Quote literal values before passing them to the shell (Make 3.81 compatible).
 quote = '$(subst ','"'"',$(1))'
 COMPOSE = GKG_ENV_FILE=$(call quote,$(abspath $(ENV_FILE))) EDGE_HTPASSWD=$(call quote,$(abspath $(EDGE_AUTH_PATH))) EDGE_WAF_ENV=$(call quote,$(abspath $(EDGE_WAF_PATH))) $(DOCKER) compose $(COMPOSE_PROJECT) --env-file "$(ENV_FILE)" -f deploy/docker-compose.yml
@@ -37,7 +41,7 @@ ifeq ($(origin COMPOSE_EXTRA),command line)
 COMPOSE += $(if $(strip $(COMPOSE_EXTRA)),-f $(call quote,$(COMPOSE_EXTRA)))
 endif
 
-.PHONY: help up down destroy ps logs build pull restart prune status smoke check-env check-edge passwd
+.PHONY: help up down destroy ps logs build pull restart prune status smoke check-env check-edge passwd waf-mode edge-check
 
 help:
 	@printf '%s\n' \
@@ -53,6 +57,8 @@ help:
 	  'status   Show project services and their resource usage' \
 	  'smoke    Check the running project and delete the temporary document' \
 	  'passwd   Create/update a login: LOGIN=<name> [GENERATE=1]' \
+	  'waf-mode Set MODE=On|DetectionOnly and recreate the edge' \
+	  'edge-check Check an isolated edge stack (Docker required)' \
 	  'check-edge Check that the password file exists' \
 	  'check-env Check that ENV_FILE exists'
 
@@ -64,6 +70,13 @@ check-edge:
 
 passwd:
 	@bash scripts/edge-passwd.sh $(call quote,$(DOCKER)) $(call quote,$(abspath $(EDGE_AUTH_PATH))) $(call quote,$(PASSWD_LOGIN)) $(call quote,$(PASSWD_GENERATE))
+
+waf-mode:
+	@bash scripts/edge-waf-mode.sh $(call quote,$(WAF_MODE)) $(call quote,$(abspath $(EDGE_WAF_PATH)))
+	@$(COMPOSE) up -d --force-recreate --no-deps edge
+
+edge-check:
+	@bash scripts/edge-check.sh
 
 up: check-env check-edge
 	@$(COMPOSE) up -d --build --wait --remove-orphans

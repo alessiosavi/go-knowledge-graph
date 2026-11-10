@@ -382,3 +382,31 @@ func TestMakePasswdGenerate(t *testing.T) {
 		t.Error("generated password must not be saved in plaintext")
 	}
 }
+
+func TestMakeWAFMode(t *testing.T) {
+	for _, mode := range []string{"", "off", "On extra"} {
+		out, calls, code := runMake(t, stubOpts{}, "waf-mode", "MODE="+mode)
+		if code == 0 || len(calls) != 0 || !strings.Contains(out, "MODE") {
+			t.Error("invalid MODE must refuse before Docker")
+		}
+	}
+	for _, mode := range []string{"On", "DetectionOnly"} {
+		file := filepath.Join(t.TempDir(), "waf.env")
+		os.WriteFile(file, []byte("old-state\n"), 0644)
+		_, calls, code := runMake(t, stubOpts{}, "waf-mode", "MODE="+mode, "EDGE_WAF_ENV="+file, "PROJECT=fixture-project", "LIGHT=1", "COMPOSE_EXTRA=deploy/compose.edgecheck.yml")
+		requireMakeOK(t, code)
+		call := oneCall(t, calls)
+		if !strings.HasSuffix(call, " up -d --force-recreate --no-deps edge") || !strings.Contains(call, "-p fixture-project") || !strings.Contains(call, "-f deploy/compose.edgecheck.yml") {
+			t.Error("waf-mode must recreate only this project's edge")
+		}
+		data, _ := os.ReadFile(file)
+		info, err := os.Stat(file)
+		if err != nil || string(data) != "MODSEC_RULE_ENGINE="+mode+"\n" || info.Mode().Perm() != 0600 {
+			t.Error("waf-mode must replace the whole private state file")
+		}
+	}
+	_, calls, code := runMake(t, stubOpts{Env: []string{"MODE=On"}}, "waf-mode")
+	if code == 0 || len(calls) != 0 {
+		t.Error("MODE must come only from the command line")
+	}
+}

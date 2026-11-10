@@ -127,6 +127,9 @@ func TestComposeRestartAndLogRotation(t *testing.T) {
 
 func TestComposeMemoryBudget(t *testing.T) {
 	model := defaultCompose(t)
+	if model.Services["edge"].MemLimit != 512<<20 || model.Services["memgraph"].MemLimit != 1536<<20 || !slices.Contains(model.Services["memgraph"].Command, "--memory-limit=1024") {
+		t.Error("provisional edge budget must keep Memgraph's 512 MiB headroom and the 14 GiB total")
+	}
 	floors := map[string]int64{"memgraph": 1 << 30, "gkg": 512 << 20, "sidecar": 2 << 30, "docling": 2 << 30, "edge": 128 << 20}
 	var total int64
 	for name, floor := range floors {
@@ -181,8 +184,9 @@ func TestComposeEdgeWiring(t *testing.T) {
 	}
 	for key, value := range map[string]string{
 		"MODSEC_RESP_BODY_ACCESS": "Off", "ALLOWED_METHODS": "GET HEAD POST OPTIONS DELETE",
-		"MODSEC_REQ_BODY_LIMIT": "22020096", "MODSEC_REQ_BODY_NOFILES_LIMIT": "22020096",
-		"MODSEC_AUDIT_LOG_PARTS": "ADEFHZ", "PARANOIA": "1", "BLOCKING_PARANOIA": "1", "ANOMALY_INBOUND": "5",
+		"MODSEC_REQ_BODY_LIMIT": "22020096", "MODSEC_REQ_BODY_NOFILES_LIMIT": "4259840",
+		"MODSEC_REQ_BODY_LIMIT_ACTION": "Reject",
+		"MODSEC_AUDIT_LOG_PARTS":       "ADEFHZ", "PARANOIA": "1", "BLOCKING_PARANOIA": "1", "ANOMALY_INBOUND": "5",
 		"GKG_API_KEY": "synthetic-test-key",
 	} {
 		wantEnv(t, edge, key, value)
@@ -196,6 +200,7 @@ func TestComposeEdgeWiring(t *testing.T) {
 	}
 	for _, target := range []string{
 		"/etc/nginx/templates/conf.d/default.conf.template", "/etc/nginx/edge-certs", "/etc/nginx/edge-auth", "/var/www/acme",
+		"/etc/nginx/templates/modsecurity.d/setup.conf.template",
 		"/docker-entrypoint.d/15-validate-env.sh",
 		"/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf",
 		"/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf",
@@ -217,6 +222,21 @@ func TestComposeEdgeWiring(t *testing.T) {
 		if _, ok := model.Volumes[name]; !ok {
 			t.Errorf("volume missing: %s", name)
 		}
+	}
+}
+
+func TestComposeEdgeCheckUsesProductionLimits(t *testing.T) {
+	fixture := writeFixture(t, "MEMGRAPH_PASSWORD=test-only", "GKG_API_KEY=synthetic-test-key")
+	model := renderCompose(t, fixture, "deploy/docker-compose.yml", "deploy/compose.light.yml", "deploy/compose.edgecheck.yml")
+	edge := model.Services["edge"]
+	if edge.MemLimit != 512<<20 {
+		t.Fatal("edge acceptance must use the production memory limit")
+	}
+	for key, value := range map[string]string{
+		"MODSEC_REQ_BODY_LIMIT": "22020096", "MODSEC_REQ_BODY_NOFILES_LIMIT": "4259840",
+		"MODSEC_REQ_BODY_LIMIT_ACTION": "Reject",
+	} {
+		wantEnv(t, edge, key, value)
 	}
 }
 

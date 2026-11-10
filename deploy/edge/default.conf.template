@@ -53,7 +53,7 @@ server {
         root /var/www/acme;
         limit_except GET { deny all; }
     }
-    location / { return 301 https://$host$edge_https_suffix$request_uri; }
+    location / { return 301 https://${SERVER_NAME}$edge_https_suffix$request_uri; }
 }
 
 server {

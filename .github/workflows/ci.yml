@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      GKG_REQUIRE_NODE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -38,6 +40,18 @@ jobs:
           cache: true
       - name: Integration tests
         run: go test -p 1 ./... -count=1
+
+  edge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Edge acceptance
+        run: bash scripts/edge-check.sh
 
   sidecar:
     runs-on: ubuntu-latest

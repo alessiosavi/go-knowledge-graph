@@ -1,0 +1,16 @@
+# Only used by the isolated, offline edge acceptance check.
+services:
+  llmstub:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.llmstub
+    mem_limit: 64m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  gkg:
+    depends_on:
+      llmstub:
+        condition: service_started

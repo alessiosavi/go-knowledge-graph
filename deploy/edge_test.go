@@ -86,6 +86,9 @@ func TestEdgeAllowlist(t *testing.T) {
 
 func TestEdgePolicy(t *testing.T) {
 	template := edgeFile(t, "deploy/edge/default.conf.template")
+	if !strings.Contains(template, "return 301 https://${SERVER_NAME}$edge_https_suffix$request_uri;") || strings.Contains(template, "https://$host") {
+		t.Error("HTTP redirect must use the configured server name")
+	}
 	for _, directive := range []string{
 		"absolute_redirect off;", "auth_basic_user_file /etc/nginx/edge-auth/htpasswd;",
 		"ssl_protocols TLSv1.2 TLSv1.3;", "server_tokens off;", "max-age=${EDGE_HSTS_MAX_AGE}",
@@ -138,6 +141,69 @@ func TestEdgePolicy(t *testing.T) {
 	}
 }
 
+func TestEdgeHealthcheckUsesHostname(t *testing.T) {
+	compose := edgeFile(t, "deploy/docker-compose.yml")
+	if !strings.Contains(compose, `"https://localhost:8443/healthz"`) {
+		t.Fatal("edge healthcheck must avoid CRS numeric Host-header matches")
+	}
+}
+
+func TestEdgeBodyLimitStatusPolicy(t *testing.T) {
+	setup := edgeFile(t, "deploy/edge/setup.conf.template")
+	rule := `SecRule REQBODY_ERROR_MSG "@streq Request body excluding files is bigger than the maximum expected." "id:10004,phase:2,t:none,log,deny,status:413,msg:'Request body exceeds non-file limit.'"`
+	if !strings.HasPrefix(setup, "#") || !strings.Contains(setup, rule) {
+		t.Fatal("only the pinned non-file size error must become 413")
+	}
+	previous := strings.Index(setup, rule)
+	for _, include := range []string{
+		"Include /etc/modsecurity.d/modsecurity.conf",
+		"Include /etc/modsecurity.d/modsecurity-override.conf",
+		"Include /etc/modsecurity.d/owasp-crs/crs-setup.conf",
+		"Include /etc/modsecurity.d/owasp-crs/rules/*.conf",
+	} {
+		next := strings.Index(setup, include)
+		if next <= previous {
+			t.Fatal("body-limit status policy must precede the core parse-error handler and retain CRS")
+		}
+		previous = next
+	}
+	if strings.Contains(setup, "SecRuleRemove") || regexp.MustCompile(`(?i)(SecRuleEngine|ctl:ruleEngine)`).MatchString(setup) || strings.Count(setup, "SecRule ") != 1 {
+		t.Fatal("status policy must not disable or replace other body validation")
+	}
+}
+
+func TestEdgeCheckCleanupSurvivesEvidenceFailure(t *testing.T) {
+	script := edgeFile(t, "scripts/edge-check.sh")
+	cleanup := regexp.MustCompile(`(?ms)^cleanup\(\) \{.*?^\}`).FindString(script)
+	if cleanup == "" {
+		t.Fatal("cleanup function missing")
+	}
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "-c", `set -euo pipefail
+started=$(date +%s)
+tmp="$TEST_WORK"
+active=1
+make_args=(fixture)
+compose=(true)
+mkdir() { return 77; }
+cp() { return 77; }
+make() { printf '%s\n' "$*" > "$TEST_CALLS"; }
+`+cleanup+"\ncleanup\n")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "TEST_WORK=" + work, "TEST_CALLS=" + filepath.Join(dir, "calls"), "EDGE_CHECK_EVIDENCE_DIR=" + filepath.Join(dir, "evidence")}
+	cmd.CombinedOutput()
+	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+	if !strings.Contains(string(calls), "destroy CONFIRM=yes fixture") {
+		t.Error("evidence failures must not prevent project cleanup")
+	}
+	if _, err := os.Stat(work); !os.IsNotExist(err) {
+		t.Error("evidence failures must not prevent temp cleanup")
+	}
+}
+
 func TestEdgeValidateEnv(t *testing.T) {
 	script := filepath.Join(repoRoot(t), "deploy/edge/15-validate-env.sh")
 	if _, err := os.Stat(script); err != nil {
@@ -168,4 +234,55 @@ func TestEdgeValidateEnv(t *testing.T) {
 			t.Error("validation must name rejected variable")
 		}
 	}
+}
+
+func TestEdgeExclusionsScoped(t *testing.T) {
+	before := edgeFile(t, "deploy/edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf")
+	if !scopedExclusions(before) {
+		t.Fatal("exclusions must chain method/path and remove observed IDs from named JSON fields only")
+	}
+	for _, name := range []string{"deploy/edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf", "deploy/edge/modsec/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf", "deploy/edge/default.conf.template"} {
+		if regexp.MustCompile(`(?i)(SecRuleEngine|ctl:ruleEngine)`).MatchString(edgeFile(t, name)) {
+			t.Error("edge policy must never override the rule engine")
+		}
+	}
+}
+
+func TestEdgeExclusionScopeGuard(t *testing.T) {
+	valid := `SecRule REQUEST_METHOD "@streq POST" "id:10001,phase:1,pass,nolog,chain"
+    SecRule REQUEST_FILENAME "@streq /v1/search" "ctl:ruleRemoveTargetById=942100;ARGS:json.query"`
+	if !scopedExclusions(valid) {
+		t.Fatal("guard rejected scoped rule")
+	}
+	for _, invalid := range []string{
+		strings.ReplaceAll(valid, "REQUEST_METHOD", "REQUEST_HEADERS:Host"),
+		strings.ReplaceAll(valid, "REQUEST_FILENAME", "REQUEST_URI"),
+		strings.ReplaceAll(valid, "ARGS:json.query", "ARGS"),
+		strings.ReplaceAll(valid, "ARGS:json.query", "ARGS:json.method"),
+		strings.ReplaceAll(valid, "ARGS:json.query", "ARGS:json.params.name"),
+		strings.ReplaceAll(valid, "@streq /v1/search", "@beginsWith /v1/"),
+		valid + "\nSecRuleUpdateTargetById 942100 !ARGS:json.text",
+	} {
+		if scopedExclusions(invalid) {
+			t.Error("guard accepted an unscoped or protected-field exclusion")
+		}
+	}
+}
+
+func scopedExclusions(text string) bool {
+	text = strings.ReplaceAll(text, "\\\n", "")
+	text = regexp.MustCompile(`(?m)^\s*#[^\n]*`).ReplaceAllString(text, "")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return true
+	}
+	block := regexp.MustCompile(`(?m)^SecRule REQUEST_METHOD "@streq POST" "id:[0-9]+,phase:1,pass,nolog,chain"\s+SecRule REQUEST_FILENAME "@streq (/(v1/(ingest|search|traverse|agent/ask(/stream)?)|mcp))" "((ctl:ruleRemoveTargetById=[0-9]{6};ARGS:json\.[a-zA-Z0-9_.]+)(,ctl:ruleRemoveTargetById=[0-9]{6};ARGS:json\.[a-zA-Z0-9_.]+)*)"`)
+	for _, match := range block.FindAllString(text, -1) {
+		for _, target := range regexp.MustCompile(`ARGS:json\.[a-zA-Z0-9_.]+`).FindAllString(match, -1) {
+			if target == "ARGS:json.method" || strings.HasPrefix(target, "ARGS:json.method.") || target == "ARGS:json.params.name" || strings.HasPrefix(target, "ARGS:json.params.name.") {
+				return false
+			}
+		}
+	}
+	return strings.TrimSpace(block.ReplaceAllString(text, "")) == ""
 }
