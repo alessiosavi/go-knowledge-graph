@@ -21,7 +21,9 @@ and measuring extraction quality with the built-in eval harness.
   neighborhood; no extra tools needed.
 - **Ask the graph**: an optional server-side agent (`POST /v1/agent/ask`,
   disabled by default) answers natural-language questions by running the
-  read-only graph tools and returning the raw evidence it used.
+  read-only graph tools and returning the raw evidence it used; answers
+  stream progressively (`POST /v1/agent/ask/stream`) with the full evidence
+  as the final payload.
 - **Quality**: optional online judge (`off | low-confidence | sample | all`)
   removes refuted facts with a `:RejectedFact` audit; `gkg eval` prints
   lenient F1, judge-scored precision and reference coverage, while the

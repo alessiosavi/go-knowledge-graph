@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -252,4 +254,260 @@ func TestClampSteps(t *testing.T) {
 			t.Errorf("clampSteps(%d) = %d, want %d", tc.in, got, tc.want)
 		}
 	}
+}
+
+// noopEmit counts nothing; it only enables the streaming path.
+func noopEmit(streamEvent) error { return nil }
+
+func TestStreamThisTurn(t *testing.T) {
+	fx := newAgentFixture(t)
+	stub := newLLMStub(t)
+	on := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+	if !on.streamThisTurn(true) || !on.streamThisTurn(false) {
+		t.Errorf("streamThisTurn on = tools:%v toolsless:%v, want true/true",
+			on.streamThisTurn(true), on.streamThisTurn(false))
+	}
+	on.llm.memoContentOnly()
+	if on.streamThisTurn(true) {
+		t.Error("streamThisTurn(tools) after content-only memo = true, want false")
+	}
+	if !on.streamThisTurn(false) {
+		t.Error("streamThisTurn(toolsless) after content-only memo = false, want true (hybrid)")
+	}
+	on.llm.memoStreamUnsupported()
+	if on.streamThisTurn(true) || on.streamThisTurn(false) {
+		t.Error("streamThisTurn after unsupported memo = true, want false")
+	}
+
+	off := askServer(t, fx, stub.srv.URL, nil)
+	if off.streamThisTurn(false) {
+		t.Error("streamThisTurn with cfg.Agent.Stream=false = true, want false")
+	}
+}
+
+func TestStreamUnsupportedMemosAndRetriesPlain(t *testing.T) {
+	fx := newAgentFixture(t)
+	stub := newLLMStub(t, contentReply("plain answer"))
+	stub.withStreamStatus(http.StatusNotFound, `{"error":{"message":"streaming unavailable"}}`)
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+
+	resp, err := s.run(context.Background(), "first", noopEmit)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if resp.Answer != "plain answer" {
+		t.Errorf("Answer = %q, want the non-streamed retry's answer", resp.Answer)
+	}
+	if len(stub.requests) != 2 || stub.requests[0]["stream"] != true || stub.requests[1]["stream"] != nil {
+		t.Fatalf("requests = %v, want [stream, plain]", streamFlags(stub))
+	}
+	if unsupported, _ := s.llm.streamState(); !unsupported {
+		t.Error("streamUnsupported not memoized after a payload rejection")
+	}
+
+	resp, err = s.run(context.Background(), "second", noopEmit)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if resp.Answer != "ok" {
+		t.Errorf("second Answer = %q, want the default reply", resp.Answer)
+	}
+	if len(stub.requests) != 3 || stub.requests[2]["stream"] != nil {
+		t.Errorf("second ask streamed again: %v", streamFlags(stub))
+	}
+}
+
+func TestContentOnlyHybrid(t *testing.T) {
+	fx := newAgentFixture(t)
+	stub := newLLMStub(t,
+		toolCallReply("c1", "search", fmt.Sprintf(`{"query":%q}`, fx.token)),
+		contentReply("final answer"),
+	)
+	// The streamed turn completes with neither content nor tool calls.
+	stub.withStream(sseRole("assistant"), sseFinish("stop"), sseDone)
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+
+	var events []streamEvent
+	emit := func(ev streamEvent) error {
+		events = append(events, ev)
+		return nil
+	}
+	resp, err := s.run(context.Background(), "question", emit)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if resp.Answer != "final answer" {
+		t.Errorf("Answer = %q, want the post-tool answer", resp.Answer)
+	}
+	if len(stub.requests) != 3 || stub.requests[0]["stream"] != true ||
+		stub.requests[1]["stream"] != nil || stub.requests[2]["stream"] != nil {
+		t.Fatalf("requests = %v, want exactly one stream attempt then plain turns", streamFlags(stub))
+	}
+	if _, contentOnly := s.llm.streamState(); !contentOnly {
+		t.Error("contentOnlyStreaming not memoized after the empty streamed turn")
+	}
+	found := false
+	for _, ev := range events {
+		if ev.Kind == "tool" && ev.Tool == "search" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("events = %+v, want the search tool event", events)
+	}
+	if !s.streamThisTurn(false) {
+		t.Error("tools-less streaming disabled after the content-only memo, want still on (hybrid)")
+	}
+}
+
+func TestStreamClosedBeforeFirstEventFallsBack(t *testing.T) {
+	fx := newAgentFixture(t)
+	stub := newLLMStub(t, contentReply("plain answer"))
+	stub.withStream() // 200 text/event-stream, then an immediate close
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+
+	resp, err := s.run(context.Background(), "q", noopEmit)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if resp.Answer != "plain answer" {
+		t.Errorf("Answer = %q, want the non-streamed retry's answer", resp.Answer)
+	}
+	if len(stub.requests) != 2 || stub.requests[0]["stream"] != true || stub.requests[1]["stream"] != nil {
+		t.Fatalf("requests = %v, want [stream, plain]", streamFlags(stub))
+	}
+	if unsupported, _ := s.llm.streamState(); !unsupported {
+		t.Error("streamUnsupported not memoized after the closed-before-first-event stream")
+	}
+}
+
+func TestEmitErrorAbortsTheAsk(t *testing.T) {
+	fx := newAgentFixture(t)
+	stub := newLLMStub(t)
+	stub.withStream(
+		sseTool(0, "c1", "search", fmt.Sprintf(`{"query":%q}`, fx.token)),
+		sseFinish("tool_calls"),
+		sseDone,
+	)
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+
+	sentinel := errors.New("writer gone")
+	_, err := s.run(context.Background(), "q "+fx.token, func(streamEvent) error { return sentinel })
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want the emit error", err)
+	}
+	if len(stub.requests) != 1 {
+		t.Errorf("requests = %d, want 1 (the ask must abort at the first tool event)", len(stub.requests))
+	}
+}
+
+func TestStreamFallbackThenPlan(t *testing.T) {
+	fx := newAgentFixture(t)
+	plan := fmt.Sprintf(`{"tool_calls":[{"name":"search","arguments":{"query":%q}}]}`, fx.token)
+	stub := newLLMStub(t,
+		stubResponse{status: 400, body: `{"error":{"message":"tools are not supported by this model"}}`},
+		contentReply(plan),
+		contentReply("Final answer citing the chunk."),
+	)
+	stub.withStreamStatus(http.StatusBadRequest, `{"error":{"message":"stream rejected"}}`)
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+
+	resp, err := s.run(context.Background(), "fallback chain "+fx.token, noopEmit)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if resp.Answer != "Final answer citing the chunk." {
+		t.Errorf("Answer = %q", resp.Answer)
+	}
+	if len(stub.requests) != 4 {
+		t.Fatalf("requests = %v, want [stream, plain400, plan, final]", streamFlags(stub))
+	}
+	if stub.requests[0]["stream"] != true || stub.requests[1]["stream"] != nil {
+		t.Errorf("fallback order = %v, want the stream attempt first, then plain", streamFlags(stub))
+	}
+	if _, ok := stub.requests[2]["tools"]; ok {
+		t.Errorf("plan call must not send tools: %v", stub.requests[2])
+	}
+	if rf, ok := stub.requests[2]["response_format"].(map[string]any); !ok || rf["type"] != "json_object" {
+		t.Errorf("plan call response_format = %v, want json_object", stub.requests[2]["response_format"])
+	}
+	if _, ok := stub.requests[3]["tools"]; ok {
+		t.Errorf("final call must not send tools: %v", stub.requests[3])
+	}
+	if unsupported, _ := s.llm.streamState(); !unsupported {
+		t.Error("streamUnsupported not memoized after the 400")
+	}
+}
+
+func TestStreamAuthNoFallback(t *testing.T) {
+	fx := newAgentFixture(t)
+	stub := newLLMStub(t)
+	stub.withStreamStatus(http.StatusUnauthorized, `{"error":{"message":"nope"}}`)
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+	s.llm.backoff = nil
+
+	_, err := s.run(context.Background(), "q", noopEmit)
+	if err == nil {
+		t.Fatal("run: want an error")
+	}
+	var pe *providerError
+	if !errors.As(err, &pe) || pe.status != http.StatusUnauthorized {
+		t.Errorf("err = %v, want the classified 401", err)
+	}
+	if len(stub.requests) != 1 {
+		t.Errorf("requests = %d, want 1 (auth failures must not retry non-streamed)", len(stub.requests))
+	}
+	if unsupported, _ := s.llm.streamState(); unsupported {
+		t.Error("auth failure must not memoize streamUnsupported")
+	}
+}
+
+func TestPlanFinalCallStreams(t *testing.T) {
+	fx := newAgentFixture(t)
+	plan := fmt.Sprintf(`{"tool_calls":[{"name":"search","arguments":{"query":%q}}]}`, fx.token)
+	stub := newLLMStub(t, contentReply(plan))
+	stub.withStream(sseContent("Final "), sseContent("answer."), sseFinish("stop"), sseDone)
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+
+	var deltas []string
+	toolSeen := false
+	emit := func(ev streamEvent) error {
+		if ev.Kind == "delta" {
+			deltas = append(deltas, ev.Text)
+		}
+		if ev.Kind == "tool" && ev.Tool == "search" {
+			toolSeen = true
+		}
+		return nil
+	}
+	resp, err := s.askWithPlan(context.Background(), "q "+fx.token, emit)
+	if err != nil {
+		t.Fatalf("askWithPlan: %v", err)
+	}
+	if !toolSeen {
+		t.Error("no tool event for the executed plan call")
+	}
+	if resp.Answer != "Final answer." {
+		t.Errorf("Answer = %q, want the streamed assembly", resp.Answer)
+	}
+	if strings.Join(deltas, "|") != "Final |answer." {
+		t.Errorf("deltas = %q, want the two streamed fragments", deltas)
+	}
+	if len(stub.requests) != 2 || stub.requests[1]["stream"] != true {
+		t.Errorf("requests = %v, want [plan(plain), final(stream)]", streamFlags(stub))
+	}
+}
+
+// streamFlags renders the stream flag of each recorded request for
+// failure messages.
+func streamFlags(stub *llmStub) string {
+	flags := make([]string, 0, len(stub.requests))
+	for _, req := range stub.requests {
+		if req["stream"] == true {
+			flags = append(flags, "stream")
+		} else {
+			flags = append(flags, "plain")
+		}
+	}
+	return strings.Join(flags, ",")
 }

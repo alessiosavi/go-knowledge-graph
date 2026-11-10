@@ -101,6 +101,10 @@ delete.
 - Needs an OpenAI-compatible chat endpoint; function calling is preferred,
   and endpoints that reject the `tools` parameter fall back to a
   constrained JSON plan (one round of tool calls, then a final answer).
+- A provider that does not actually stream is detected automatically
+  (`GKG_AGENT_STREAM`, default on): the agent falls back to non-streamed
+  answers for the process lifetime — answers are unchanged, only the
+  progressive rendering stops.
 - Provider cost and latency apply to every ask. Each ask is bounded by
   `GKG_AGENT_MAX_STEPS` (default 6, hard cap 12 model turns that request
   tools; each turn executes up to 8 tool calls) and `GKG_AGENT_TIMEOUT_S`

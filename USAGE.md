@@ -115,6 +115,26 @@ curl -s localhost:8080/v1/agent/ask -H 'Content-Type: application/json' \
 # → {"answer":"...","evidence":[{"tool":"search","arguments":{...},"result":{...}}],"steps":2}
 ```
 
+**Streaming** (default on) extends the same answer with live progress: the
+panel consumes `POST /v1/agent/ask/stream`, an SSE surface emitting `tool`
+events when a read-only call is about to run, `delta` fragments of the
+answer as the model produces them, and one authoritative `done` event with
+the same `{"answer","evidence","steps"}` payload (`error` events are
+classified). It disables proxy buffering (`X-Accel-Buffering: no`) and
+sends a `: ping` heartbeat every ~15s.
+
+```sh
+curl -N -s localhost:8080/v1/agent/ask/stream -H 'Content-Type: application/json' \
+     -d '{"question":"What does the graph know about Ada Lovelace?"}'
+```
+
+`GET /v1/agent/status` reports the capability as
+`{"enabled":true,"stream":true}`. With `GKG_AGENT_STREAM=false` the stream
+endpoint still answers — SSE framing, tool and done events only, no deltas —
+and the panel uses the JSON endpoint; a provider that does not actually
+stream is detected automatically (the agent falls back to non-streamed
+answers for the process lifetime).
+
 Each ask is independent (no chat memory) and bounded:
 `GKG_AGENT_MAX_STEPS` model turns that request tools (default 6, hard cap
 12; each turn may run up to 8 tool calls) and `GKG_AGENT_TIMEOUT_S`
