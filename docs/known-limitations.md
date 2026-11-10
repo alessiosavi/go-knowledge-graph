@@ -30,14 +30,15 @@ When conversion is off (including light mode), PDF text extraction uses
   to markdown before the pipeline; a conversion failure fails the
   document with the converter's reason instead of falling back to the
   best-effort path.
-- **Image conversion is disabled by default.** Opt in with
-  `GKG_CONVERTER_IMAGES=true` at the risk of docling-serve v1.1.0 on CPU
-  running out of memory and failing concurrent conversions. Converting a PNG or
-  JPEG drives docling-serve past ~5.7 GiB within seconds; it is killed by its
-  memory limit and restarts, the image fails with a converter error, and any
-  conversion running at the same time fails too. Text PDFs and Office
-  documents are unaffected (peak ~3 GiB with 4 in parallel); scanned PDFs
-  (OCR) are untested.
+- **Image limits:** conversion is enabled by default, with Tesseract OCR.
+  The docling image ships English OCR data only; Italian accents can be
+  misread. Images above `GKG_CONVERTER_MAX_IMAGE_MP` (12.5 MP by default) are
+  refused before conversion; downscale them or raise the cap only on a bigger
+  machine after measuring concurrent conversion memory. PNG/JPEG/GIF/BMP/WEBP
+  and the first TIFF image directory are checked; unknown or corrupt image
+  headers are refused. HEIC/AVIF are unsupported: export as PNG or JPEG.
+  Transparent PNGs are flattened onto white. Figures become image placeholders
+  instead of embedded base64. Set `GKG_CONVERTER_IMAGES=false` to refuse images.
 
 ### Fixture extraction results (recorded)
 

@@ -216,9 +216,20 @@ includes model weights and converts scanned PDFs and DOCX/PPTX/XLSX
 to clean markdown for the ingestion pipeline. Use `LIGHT=1` to run without
 it.
 
-Image conversion is disabled by default; opt in with
-`GKG_CONVERTER_IMAGES=true` at the risk of docling-serve v1.1.0 on CPU
-running out of memory and failing concurrent conversions.
+Images are converted by default (`GKG_CONVERTER_IMAGES=true`). Every request
+uses Tesseract OCR (`GKG_CONVERTER_OCR_ENGINE=tesseract`); the docling image
+ships English OCR data only, so Italian accents can be misread. The engine is
+configurable for a docling image that ships another supported engine.
+
+Images larger than 12.5 megapixels are refused from their headers before they
+reach docling. Downscale them, or raise `GKG_CONVERTER_MAX_IMAGE_MP` only on a
+larger-memory machine after measuring peak usage with concurrent conversions.
+PNG, JPEG, GIF, BMP, WEBP and TIFF dimensions are checked; unsupported or
+corrupt image headers are refused. HEIC/AVIF must be exported as PNG or JPEG.
+Transparent PNGs are flattened onto white, one at a time, before conversion.
+Figures in all converted documents use image placeholders instead of embedded
+base64 payloads. Set `GKG_CONVERTER_IMAGES=false` to refuse all image uploads
+while continuing to convert PDF and Office documents.
 
 With `GKG_CONVERTER_MODE=docling`, PDF and Office inputs are
 converted by the sidecar instead of the best-effort pure-Go PDF path. The

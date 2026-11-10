@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -207,7 +210,7 @@ func TestConverterFromConfigImages(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		name := "disabled"
 		if enabled {
-			name = "enabled"
+			name = "default"
 		}
 		t.Run(name, func(t *testing.T) {
 			var calls atomic.Int32
@@ -216,18 +219,44 @@ func TestConverterFromConfigImages(t *testing.T) {
 				if r.Method != http.MethodPost || r.URL.Path != "/v1/convert/file" {
 					t.Error("unexpected docling request")
 				}
+				if err := r.ParseMultipartForm(1 << 20); err != nil {
+					t.Error(err)
+					return
+				}
+				defer r.MultipartForm.RemoveAll()
+				if r.FormValue("to_formats") != "md" || r.FormValue("ocr_engine") != "tesseract" || r.FormValue("image_export_mode") != "placeholder" {
+					t.Error("missing safe docling fields")
+				}
 				io.WriteString(w, `{"status":"success","document":{"md_content":"converted"}}`)
 			}))
 			defer srv.Close()
-			cfg := config.Config{Converter: config.ConverterConfig{Mode: "docling", URL: srv.URL, Images: enabled}}
+			if !enabled {
+				t.Setenv("GKG_CONVERTER_IMAGES", "false")
+			} else {
+				t.Setenv("GKG_CONVERTER_IMAGES", "")
+				if err := os.Unsetenv("GKG_CONVERTER_IMAGES"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := config.Load("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Converter.URL = srv.URL
 			c, err := converterFromConfig(cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			md, err := c.Convert(context.Background(), []byte("\x89PNG\r\n\x1a\n"), "page.png", "application/octet-stream")
+			var body bytes.Buffer
+			img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+			img.Set(0, 0, color.White)
+			if err := png.Encode(&body, img); err != nil {
+				t.Fatal(err)
+			}
+			md, err := c.Convert(context.Background(), body.Bytes(), "page.png", "application/octet-stream")
 			if enabled {
 				if err != nil || md != "converted" || calls.Load() != 1 {
-					t.Fatalf("opt-in image must reach docling: calls=%d, err=%v", calls.Load(), err)
+					t.Fatalf("default image must reach docling: calls=%d, err=%v", calls.Load(), err)
 				}
 			} else if err == nil || !strings.Contains(err.Error(), "GKG_CONVERTER_IMAGES") || calls.Load() != 0 {
 				t.Fatalf("disabled image must fail before docling: calls=%d, err=%v", calls.Load(), err)

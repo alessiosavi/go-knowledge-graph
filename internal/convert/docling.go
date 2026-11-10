@@ -23,10 +23,11 @@ const doclingErrorBodyCap = 4 << 10 // 4KB
 // Docling is the docling-serve client (stable v1 sync endpoint). Safe for
 // concurrent use.
 type Docling struct {
-	client   *http.Client
-	url      string
-	apiKey   string
-	maxBytes int64
+	client    *http.Client
+	url       string
+	apiKey    string
+	maxBytes  int64
+	ocrEngine string
 }
 
 // newDocling builds the client from Converter config; config.Load defaults
@@ -40,11 +41,16 @@ func newDocling(c config.ConverterConfig) *Docling {
 	if maxMB <= 0 {
 		maxMB = 32
 	}
+	ocrEngine := c.OCREngine
+	if ocrEngine == "" {
+		ocrEngine = "tesseract"
+	}
 	return &Docling{
-		client:   &http.Client{Timeout: time.Duration(timeoutS) * time.Second},
-		url:      strings.TrimRight(c.URL, "/") + "/v1/convert/file",
-		apiKey:   c.APIKey,
-		maxBytes: int64(maxMB) << 20,
+		client:    &http.Client{Timeout: time.Duration(timeoutS) * time.Second},
+		url:       strings.TrimRight(c.URL, "/") + "/v1/convert/file",
+		apiKey:    c.APIKey,
+		ocrEngine: ocrEngine,
+		maxBytes:  int64(maxMB) << 20,
 	}
 }
 
@@ -69,8 +75,10 @@ func (d *Docling) Convert(ctx context.Context, body []byte, filename, contentTyp
 	if _, err := part.Write(body); err != nil {
 		return "", fmt.Errorf("convert: docling: encode request: %w", err)
 	}
-	if err := mw.WriteField("to_formats", "md"); err != nil {
-		return "", fmt.Errorf("convert: docling: encode request: %w", err)
+	for _, field := range [][2]string{{"to_formats", "md"}, {"ocr_engine", d.ocrEngine}, {"image_export_mode", "placeholder"}} {
+		if err := mw.WriteField(field[0], field[1]); err != nil {
+			return "", fmt.Errorf("convert: docling: encode request: %w", err)
+		}
 	}
 	if err := mw.Close(); err != nil {
 		return "", fmt.Errorf("convert: docling: encode request: %w", err)

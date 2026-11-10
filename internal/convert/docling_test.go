@@ -39,7 +39,7 @@ func TestNewReturnsNilInterfaceWhenOff(t *testing.T) {
 }
 
 func TestDoclingConvertShape(t *testing.T) {
-	var gotFilename, gotContentType, gotToFormats, gotKey string
+	var gotFilename, gotContentType, gotToFormats, gotKey, gotOCR, gotExport string
 	var gotBody []byte
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -71,6 +71,10 @@ func TestDoclingConvertShape(t *testing.T) {
 				gotBody = data
 			case "to_formats":
 				gotToFormats = string(data)
+			case "ocr_engine":
+				gotOCR = string(data)
+			case "image_export_mode":
+				gotExport = string(data)
 			}
 		}
 		fmt.Fprint(w, `{"document":{"md_content":"# Converted\n\nbody"},"status":"success"}`)
@@ -93,6 +97,9 @@ func TestDoclingConvertShape(t *testing.T) {
 	}
 	if gotToFormats != "md" {
 		t.Errorf("to_formats = %q, want md", gotToFormats)
+	}
+	if gotOCR != "tesseract" || gotExport != "placeholder" {
+		t.Errorf("ocr_engine=%q image_export_mode=%q, want tesseract and placeholder", gotOCR, gotExport)
 	}
 	if gotKey != "dk" {
 		t.Errorf("X-Api-Key = %q, want the configured key", gotKey)
@@ -232,5 +239,25 @@ func TestDoclingContextCancel(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "127.0.0.1") {
 		t.Errorf("err = %v, want no endpoint value echoed", err)
+	}
+}
+
+func TestDoclingConfiguredOCR(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Error(err)
+			return
+		}
+		defer r.MultipartForm.RemoveAll()
+		if r.FormValue("ocr_engine") != "easyocr" || r.FormValue("image_export_mode") != "placeholder" || r.FormValue("to_formats") != "md" {
+			t.Error("configured OCR and safe export fields missing")
+		}
+		fmt.Fprint(w, `{"status":"success","document":{"md_content":"converted"}}`)
+	}))
+	defer ts.Close()
+	cfg := doclingConfig(ts.URL)
+	cfg.Converter.OCREngine = "easyocr"
+	if _, err := New(cfg).Convert(context.Background(), []byte("%PDF-1.7"), "report.pdf", "application/pdf"); err != nil {
+		t.Fatal(err)
 	}
 }

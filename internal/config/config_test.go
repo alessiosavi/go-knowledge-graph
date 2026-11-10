@@ -48,33 +48,70 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestConverterImagesConfig(t *testing.T) {
-	t.Setenv("GKG_CONVERTER_IMAGES", "")
-	if err := os.Unsetenv("GKG_CONVERTER_IMAGES"); err != nil {
-		t.Fatal(err)
+	for _, key := range []string{"GKG_CONVERTER_IMAGES", "GKG_CONVERTER_OCR_ENGINE", "GKG_CONVERTER_MAX_IMAGE_MP"} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Run("default", func(t *testing.T) {
 		cfg, err := config.Load("")
-		if err != nil || cfg.Converter.Images {
-			t.Fatalf("image conversion must default to disabled: %v", err)
+		if err != nil || !cfg.Converter.Images || cfg.Converter.OCREngine != "tesseract" || cfg.Converter.MaxImageMP != 12.5 {
+			t.Fatalf("want images enabled, tesseract, 12.5 MP: %+v, %v", cfg.Converter, err)
 		}
 	})
-	t.Run("env", func(t *testing.T) {
-		t.Setenv("GKG_CONVERTER_IMAGES", "true")
-		cfg, err := config.Load("")
-		if err != nil || !cfg.Converter.Images {
-			t.Fatalf("GKG_CONVERTER_IMAGES must enable image conversion: %v", err)
+	t.Run("env overrides yaml", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte("converter:\n  images: true\n  ocr_engine: tesseract\n  max_image_mp: 12.5\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("GKG_CONVERTER_IMAGES", "false")
+		t.Setenv("GKG_CONVERTER_OCR_ENGINE", "easyocr")
+		t.Setenv("GKG_CONVERTER_MAX_IMAGE_MP", "20.25")
+		cfg, err := config.Load(p)
+		if err != nil || cfg.Converter.Images || cfg.Converter.OCREngine != "easyocr" || cfg.Converter.MaxImageMP != 20.25 {
+			t.Fatalf("env overrides not applied: %+v, %v", cfg.Converter, err)
 		}
 	})
 	t.Run("yaml", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "config.yaml")
-		if err := os.WriteFile(p, []byte("converter:\n  images: true\n"), 0o600); err != nil {
+		if err := os.WriteFile(p, []byte("converter:\n  images: false\n  ocr_engine: easyocr\n  max_image_mp: 8.5\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := config.Load(p)
-		if err != nil || !cfg.Converter.Images {
-			t.Fatalf("converter.images must enable image conversion: %v", err)
+		if err != nil || cfg.Converter.Images || cfg.Converter.OCREngine != "easyocr" || cfg.Converter.MaxImageMP != 8.5 {
+			t.Fatalf("yaml overrides not applied: %+v, %v", cfg.Converter, err)
 		}
 	})
+}
+
+func TestConverterImageValidation(t *testing.T) {
+	for _, tc := range []struct{ key, value string }{
+		{"GKG_CONVERTER_MAX_IMAGE_MP", "0"}, {"GKG_CONVERTER_MAX_IMAGE_MP", "-1"},
+		{"GKG_CONVERTER_MAX_IMAGE_MP", "NaN"}, {"GKG_CONVERTER_MAX_IMAGE_MP", "+Inf"},
+		{"GKG_CONVERTER_MAX_IMAGE_MP", "1e20"}, {"GKG_CONVERTER_MAX_IMAGE_MP", "invalid"},
+		{"GKG_CONVERTER_OCR_ENGINE", ""}, {"GKG_CONVERTER_OCR_ENGINE", "  "},
+	} {
+		t.Run(tc.key+"/"+tc.value, func(t *testing.T) {
+			t.Setenv(tc.key, tc.value)
+			_, err := config.Load("")
+			if err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("want error naming %s, got %v", tc.key, err)
+			}
+		})
+	}
+	for _, body := range []string{"max_image_mp: 0", "ocr_engine: ''"} {
+		t.Run("yaml/"+body, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(p, []byte("converter:\n  "+body+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := config.Load(p)
+			if err == nil || !strings.Contains(err.Error(), "GKG_CONVERTER_") {
+				t.Fatalf("want validation error, got %v", err)
+			}
+		})
+	}
 }
 
 func TestEnvOverridesYAML(t *testing.T) {
