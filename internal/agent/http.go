@@ -25,6 +25,29 @@ func writeError(w http.ResponseWriter, code int, kind, detail string) {
 	writeJSON(w, code, errorBody{Error: kind, Detail: detail})
 }
 
+// decodeAskQuestion decodes and validates the ask request body, writing the
+// JSON error response itself when the request is unusable.
+func decodeAskQuestion(w http.ResponseWriter, r *http.Request) (string, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, responseBodyCap)
+	var req struct {
+		Question string `json:"question"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if isTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body exceeds the agent limit")
+			return "", false
+		}
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return "", false
+	}
+	question := strings.TrimSpace(req.Question)
+	if question == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "question is required")
+		return "", false
+	}
+	return question, true
+}
+
 // AskHandler serves POST /v1/agent/ask: one question, one bounded
 // read-only agent run, one JSON answer with its evidence. Mount it behind
 // the REST bearer policy (like /mcp). While the agent is disabled the
@@ -35,21 +58,8 @@ func (s *Server) AskHandler() http.Handler {
 			writeError(w, http.StatusNotImplemented, "agent_disabled", "the ask agent is not enabled on this server")
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, responseBodyCap)
-		var req struct {
-			Question string `json:"question"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			if isTooLarge(err) {
-				writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body exceeds the agent limit")
-				return
-			}
-			writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
-			return
-		}
-		question := strings.TrimSpace(req.Question)
-		if question == "" {
-			writeError(w, http.StatusBadRequest, "invalid_request", "question is required")
+		question, ok := decodeAskQuestion(w, r)
+		if !ok {
 			return
 		}
 
@@ -72,10 +82,17 @@ func (s *Server) AskHandler() http.Handler {
 }
 
 // StatusHandler serves GET /v1/agent/status: the UI's capability probe
-// (200 {"enabled":bool}), behind the same bearer policy.
+// (200 {"enabled":bool,"stream":bool}), behind the same bearer policy.
+// "stream" reports whether the ask stream endpoint will run the provider
+// calls streamed: the agent must be enabled, streaming on, and streaming
+// not memoized unsupported for this process.
 func (s *Server) StatusHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]bool{"enabled": s.cfg.Agent.Enabled})
+		unsupported, _ := s.llm.streamState()
+		writeJSON(w, http.StatusOK, map[string]bool{
+			"enabled": s.cfg.Agent.Enabled,
+			"stream":  s.cfg.Agent.Enabled && s.cfg.Agent.Stream && !unsupported,
+		})
 	})
 }
 
