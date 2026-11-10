@@ -4,21 +4,23 @@
 #   local   (ACCEPTANCE_MODE=local or GKG_MEMGRAPH_URI set): builds the
 #           binary and runs against an existing Memgraph (mock extractor
 #           unless overridden). This is the CI mode.
-#   compose (default otherwise): drives the full docker compose stack from
-#           deploy/docker-compose.yml with the .env configuration.
+#   compose (default otherwise): drives an isolated light stack with .env;
+#           ACCEPTANCE_FULL=1 includes sidecar and docling. Dedicated ports
+#           default to 17687/18080/18090/15001 (ACCEPTANCE_*_PORT overrides).
 #
 # Checks:
 #   1. ingest a Markdown file and a PDF, both queryable afterwards
 #   2. MCP smoke over stdio: tools/list = 7 tools, search answers
 #   3. `gkg eval` on the golden sample with the mock provider
 #   4. unchanged re-ingest is a no-op; changed content supersedes cleanly
-#   5. local model profile offline (EN+IT) — manual SKIP
+#   5. local model offline (EN+IT) — manual SKIP
 #   6. judge verification on real facts — manual SKIP (needs a key)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 COMPOSE=(docker compose -p gkg-acceptance --env-file .env -f deploy/docker-compose.yml)
+if [[ "${ACCEPTANCE_FULL:-0}" != "1" ]]; then COMPOSE+=(-f deploy/compose.light.yml); fi
 TMP="$(mktemp -d)"
 SERVER_PID=""
 TOKEN="acceptance-$(date +%s)-$RANDOM"
@@ -44,17 +46,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# env_value reads a KEY=value from .env (the documented override location);
-# a missing .env is fine (local/CI mode must not need one).
+# Compose mode only: read a KEY=value from its documented env file.
+# Local/CI mode uses only the shell environment and never reads .env.
 env_value() { { sed -n "s/^$1=//p" .env 2>/dev/null || true; } | head -1; }
 
-# Optional bearer auth: the optional GKG_API_KEY (shell env first, then
-# .env) would 401 every non-exempt REST call, so every request goes through
-# req() which adds the header when the key is set.
-AUTH_KEY="${GKG_API_KEY:-$(env_value GKG_API_KEY)}"
+# Optional bearer auth travels through a private header file, never argv.
 req() {
-	if [[ -n "$AUTH_KEY" ]]; then
-		curl "$@" -H "Authorization: Bearer $AUTH_KEY"
+	if [[ -s "$TMP/auth" ]]; then
+		curl "$@" -H @"$TMP/auth"
 	else
 		curl "$@"
 	fi
@@ -96,11 +95,24 @@ fi
 echo "mode: $MODE"
 
 if [[ "$MODE" == "compose" ]]; then
+	# Isolated acceptance ports must beat any values in .env or the shell.
+	export MEMGRAPH_PORT="${ACCEPTANCE_MEMGRAPH_PORT:-17687}"
+	export GKG_PORT="${ACCEPTANCE_GKG_PORT:-18080}"
+	export SIDECAR_PORT="${ACCEPTANCE_SIDECAR_PORT:-18090}"
+	export DOCLING_PORT="${ACCEPTANCE_DOCLING_PORT:-15001}"
 	command -v docker >/dev/null || fail "docker is required for the compose mode"
 	[[ -f .env ]] || fail "compose mode needs .env (copy .env.example and set the keys)"
 	"${COMPOSE[@]}" config -q || fail "docker compose config"
 	ok "compose config"
+	AUTH_KEY="${GKG_API_KEY:-$(env_value GKG_API_KEY)}"
+else
+	AUTH_KEY="${GKG_API_KEY:-}"
 fi
+if [[ -n "$AUTH_KEY" ]]; then
+	(umask 077; printf 'Authorization: Bearer %s\n' "$AUTH_KEY" >"$TMP/auth")
+	chmod 600 "$TMP/auth"
+fi
+unset AUTH_KEY
 
 # ---------------------------------------------------------------------------
 step "build"
@@ -112,13 +124,8 @@ ok "gkg and mcpsmoke built"
 step "start the service"
 if [[ "$MODE" == "compose" ]]; then
 	"${COMPOSE[@]}" up -d --wait
-	# Host ports: shell env wins, then .env (the documented override), then defaults.
-	GKG_PORT="${GKG_PORT:-$(env_value GKG_PORT)}"
-	GKG_PORT="${GKG_PORT:-8080}"
-	MEMGRAPH_PORT="${MEMGRAPH_PORT:-$(env_value MEMGRAPH_PORT)}"
-	MEMGRAPH_PORT="${MEMGRAPH_PORT:-7687}"
 	BASE_URL="http://127.0.0.1:${GKG_PORT}"
-	MCP_CMD=(docker compose -p gkg-acceptance --env-file .env -f deploy/docker-compose.yml exec -T gkg gkg mcp)
+	MCP_CMD=("${COMPOSE[@]}" exec -T gkg gkg mcp)
 	PDF_INPUT_URL="${ACCEPTANCE_PDF_URL:-https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf}"
 	# Host-side commands (eval, MCP over the container) use the same creds.
 	export GKG_MEMGRAPH_URI="bolt://localhost:${MEMGRAPH_PORT}"
@@ -127,6 +134,8 @@ if [[ "$MODE" == "compose" ]]; then
 else
 	[[ -n "${GKG_MEMGRAPH_URI:-}" ]] || fail "local mode needs GKG_MEMGRAPH_URI"
 	export GKG_EXTRACTOR_MODE="${GKG_EXTRACTOR_MODE:-mock}"
+	# CI and local mode do not start docling.
+	export GKG_CONVERTER_MODE="${GKG_CONVERTER_MODE:-off}"
 	ACCEPTANCE_PORT="${ACCEPTANCE_PORT:-18099}"
 	export GKG_SERVER_ADDR="127.0.0.1:${ACCEPTANCE_PORT}"
 	BASE_URL="http://127.0.0.1:${ACCEPTANCE_PORT}"
@@ -205,7 +214,7 @@ ok "changed content superseded the old version"
 
 # ---------------------------------------------------------------------------
 step "manual checks (out of this script's scope)"
-skip "local model profile fully offline (EN + IT): see docs/quickstart.md (profile local)"
+skip "local model fully offline (EN + IT): see docs/quickstart.md"
 skip "judge verification removes seeded wrong facts (needs a real key): run gkg eval with the judge enabled"
 
 printf '\nACCEPTANCE PASS (%s mode)\n' "$MODE"
