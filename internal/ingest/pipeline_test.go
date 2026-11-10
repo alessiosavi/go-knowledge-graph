@@ -515,8 +515,8 @@ func TestSupersedeSweepNewVersionDeleted(t *testing.T) {
 	})
 	if err := env.p.Process(ctx, v2.DocumentID); err == nil {
 		t.Error("Process(v2): want an error for the deleted new version")
-	} else if !strings.Contains(err.Error(), "ingest: status:") {
-		t.Errorf("Process(v2): %v, want ingest: status: error", err)
+	} else if !strings.Contains(err.Error(), "ingest: supersede:") {
+		t.Errorf("Process(v2): %v, want ingest: supersede: error", err)
 	}
 	if !slices.Equal(seen, []string{v1.DocumentID}) {
 		t.Errorf("hook olds = %v, want [%s]", seen, v1.DocumentID)

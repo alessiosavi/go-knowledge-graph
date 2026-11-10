@@ -402,8 +402,10 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 	// submit time, so versions submitted after this one are untouched) and mark
 	// the document done. The list is re-derived from persisted state so a
 	// recovery run performs the supersede too. A vanished old version is
-	// skipped because it is already no longer live; a vanished new version
-	// still fails at setStatus below.
+	// skipped because its goal state already holds. A missing new version still
+	// fails the sweep, so a node recreated by a concurrent identical resubmit
+	// is marked failed and reprocessed by its own job instead of being marked
+	// done without chunks.
 	olds, err := p.store.OlderLiveVersions(ctx, docID)
 	if err != nil {
 		return fail("supersede", err)
@@ -413,7 +415,13 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 	}
 	for _, oldID := range olds {
 		err := p.store.Supersede(ctx, oldID, docID)
-		if err != nil && !errors.Is(err, graph.ErrSuperseded) && !errors.Is(err, graph.ErrNotFound) {
+		if errors.Is(err, graph.ErrNotFound) {
+			if _, derr := p.store.Document(ctx, oldID); errors.Is(derr, graph.ErrNotFound) {
+				continue
+			}
+			return fail("supersede", err)
+		}
+		if err != nil && !errors.Is(err, graph.ErrSuperseded) {
 			return fail("supersede", err)
 		}
 		if err == nil && p.metrics != nil {
