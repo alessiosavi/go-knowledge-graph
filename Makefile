@@ -2,7 +2,15 @@ SHELL := /bin/bash
 DOCKER ?= docker
 ENV_FILE ?= .env
 
-COMPOSE = GKG_ENV_FILE="$(abspath $(ENV_FILE))" $(DOCKER) compose $(if $(strip $(PROJECT)),-p "$(PROJECT)") --env-file "$(ENV_FILE)" -f deploy/docker-compose.yml
+ifneq ($(words $(ENV_FILE)),1)
+$(error ENV_FILE must be a single path without whitespace)
+endif
+
+COMPOSE_PROJECT :=
+ifeq ($(origin PROJECT),command line)
+COMPOSE_PROJECT = $(if $(strip $(PROJECT)),-p "$(PROJECT)")
+endif
+COMPOSE = GKG_ENV_FILE="$(abspath $(ENV_FILE))" $(DOCKER) compose $(COMPOSE_PROJECT) --env-file "$(ENV_FILE)" -f deploy/docker-compose.yml
 ifeq ($(LIGHT),1)
 COMPOSE += -f deploy/compose.light.yml
 endif
@@ -34,7 +42,7 @@ down:
 	@$(COMPOSE) down --remove-orphans
 
 destroy:
-	@if [ "$(CONFIRM)" != yes ]; then printf '%s\n' 'stack: make destroy CONFIRM=yes deletes the graph volume'; exit 1; fi
+	@if [ "$(origin CONFIRM)" != 'command line' ] || [ "$(CONFIRM)" != yes ]; then printf '%s\n' 'stack: make destroy CONFIRM=yes deletes the graph volume'; exit 1; fi
 	@$(COMPOSE) down -v --remove-orphans
 
 ps:

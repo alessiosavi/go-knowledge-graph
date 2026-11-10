@@ -2,10 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
@@ -195,6 +200,39 @@ func TestConverterFromConfigOff(t *testing.T) {
 	cfg.Converter.Mode = "off"
 	if c, err := converterFromConfig(cfg); err != nil || c != nil {
 		t.Fatalf("converterFromConfig(off) = %v, %v; want nil, nil", c, err)
+	}
+}
+
+func TestConverterFromConfigImages(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		name := "disabled"
+		if enabled {
+			name = "enabled"
+		}
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/convert/file" {
+					t.Error("unexpected docling request")
+				}
+				io.WriteString(w, `{"status":"success","document":{"md_content":"converted"}}`)
+			}))
+			defer srv.Close()
+			cfg := config.Config{Converter: config.ConverterConfig{Mode: "docling", URL: srv.URL, Images: enabled}}
+			c, err := converterFromConfig(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			md, err := c.Convert(context.Background(), []byte("\x89PNG\r\n\x1a\n"), "page.png", "application/octet-stream")
+			if enabled {
+				if err != nil || md != "converted" || calls.Load() != 1 {
+					t.Fatalf("opt-in image must reach docling: calls=%d, err=%v", calls.Load(), err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "GKG_CONVERTER_IMAGES") || calls.Load() != 0 {
+				t.Fatalf("disabled image must fail before docling: calls=%d, err=%v", calls.Load(), err)
+			}
+		})
 	}
 }
 

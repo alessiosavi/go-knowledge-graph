@@ -31,6 +31,10 @@ on (see `.env.example`). When connecting to the compose stack from the
 host, the Memgraph port is `127.0.0.1:${MEMGRAPH_PORT:-7687}` and the
 credentials are the ones in `.env`.
 
+PDF/Office inputs convert through the stack's docling on `localhost:5001`
+by default; set `GKG_CONVERTER_MODE=off` when running the binary without
+the stack.
+
 ## OpenCode (v2 config)
 
 Add to the project's `opencode.jsonc` (or the global config). Under V2,

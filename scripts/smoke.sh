@@ -26,7 +26,7 @@ request() { # method, path, optional JSON body; response goes to TMP/body
 		-X "$method" -o "$TMP/body" -w '%{http_code}')
 	if [[ $# -gt 2 ]]; then args+=(-H 'Content-Type: application/json' --data-binary "$3"); fi
 	if [[ -f "$TMP/auth" ]]; then args+=(-H "@$TMP/auth"); fi
-	HTTP_CODE="$(curl "${args[@]}" "$SMOKE_URL$path" 2>/dev/null)"
+	HTTP_CODE="$(curl -q "${args[@]}" "$SMOKE_URL$path" 2>/dev/null)"
 }
 
 cleanup() {

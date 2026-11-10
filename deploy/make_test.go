@@ -14,6 +14,7 @@ type stubOpts struct {
 	PortOut, ExecOut, IDsOut string
 	EnvFile                  string
 	EnvLog                   *[]string
+	Env                      []string
 }
 
 func runMake(t *testing.T, opts stubOpts, args ...string) (string, []string, int) {
@@ -44,11 +45,12 @@ exit 0
 	// cannot reach the daemon. Do not inherit Docker contexts or Make flags.
 	cmd.Env = []string{
 		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"), "DOCKER_HOST=unix:///nonexistent/docker.sock",
+		"HOME=" + curlConfigHome(t), "DOCKER_HOST=unix:///nonexistent/docker.sock",
 		"STUB_CALLS=" + log, "STUB_ENV_LOG=" + envLog,
 		"STUB_PORT=" + opts.PortOut, "STUB_EXEC=" + opts.ExecOut, "STUB_IDS=" + opts.IDsOut,
 		"SMOKE_TIMEOUT_S=5", "SMOKE_POLL_S=0.1", "SMOKE_REQ_TIMEOUT_S=1",
 	}
+	cmd.Env = append(cmd.Env, opts.Env...)
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if err != nil {
@@ -163,6 +165,32 @@ func TestMakeProject(t *testing.T) {
 	}
 }
 
+func TestMakeIgnoresEnvironmentProject(t *testing.T) {
+	_, calls, code := runMake(t, stubOpts{Env: []string{"PROJECT=" + probeProject(t)}}, "up")
+	requireMakeOK(t, code)
+	if strings.Contains(oneCall(t, calls), " -p ") {
+		t.Error("PROJECT from environment must not select a compose project")
+	}
+}
+
+func TestMakeRejectsWhitespaceEnvFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "a b", "fx.env")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("MEMGRAPH_PASSWORD=test-only\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"help", "up", "down", "destroy", "prune", "smoke"} {
+		t.Run(target, func(t *testing.T) {
+			out, calls, code := runMake(t, stubOpts{EnvFile: file}, target, "CONFIRM=yes")
+			if code == 0 || !strings.Contains(out, "ENV_FILE") || len(calls) != 0 {
+				t.Fatal("ENV_FILE with whitespace must refuse every target before docker")
+			}
+		})
+	}
+}
+
 func TestMakeUpRefusesWithoutEnvFile(t *testing.T) {
 	out, calls, code := runMake(t, stubOpts{EnvFile: filepath.Join(t.TempDir(), "missing")}, "up")
 	if code == 0 || !strings.Contains(out, "cp .env.example .env") || len(calls) != 0 {
@@ -190,6 +218,13 @@ func TestMakeDestroyRequiresConfirm(t *testing.T) {
 	requireMakeOK(t, code)
 	if !strings.Contains(oneCall(t, calls), "down -v --remove-orphans") {
 		t.Error("confirmed destroy must remove volumes and orphans")
+	}
+}
+
+func TestMakeDestroyRejectsEnvironmentConfirm(t *testing.T) {
+	out, calls, code := runMake(t, stubOpts{Env: []string{"CONFIRM=yes"}}, "destroy")
+	if code == 0 || !strings.Contains(out, "CONFIRM=yes") || len(calls) != 0 {
+		t.Error("destroy must refuse environment CONFIRM=yes before docker")
 	}
 }
 

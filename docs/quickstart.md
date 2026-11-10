@@ -29,8 +29,10 @@ Requires Docker Compose ≥ 2.24.4; servers need Docker Engine ≥ 28.
 `make up` starts Memgraph, gkg, GLiNEREL and docling. Open
 `http://127.0.0.1:8080/ui/` (or the configured `GKG_PORT`). All four host
 ports bind to `127.0.0.1`; change `MEMGRAPH_PORT`, `GKG_PORT`, `SIDECAR_PORT`
-or `DOCLING_PORT` in `.env` for port conflicts. `ENV_FILE=other.env` selects
-a different env file; `PROJECT=another-project` selects an isolated stack.
+or `DOCLING_PORT` in `.env` for port conflicts. `ENV_FILE=.env.other` selects
+a different env file; `PROJECT=another-project` selects an isolated stack
+and also needs an `ENV_FILE` with different `*_PORT` values to avoid port
+conflicts with the existing stack.
 
 Memgraph keeps its data in the `gkg_memgraph-data` volume. `make down`
 preserves it; `make destroy CONFIRM=yes` permanently deletes it. `make smoke`
@@ -210,11 +212,15 @@ trail.
 
 [docling-serve](https://github.com/docling-project/docling-serve) starts
 with `make up` and `docling` is the default converter mode. Its CPU image
-includes model weights and converts scanned PDFs, DOCX/PPTX/XLSX and images
+includes model weights and converts scanned PDFs and DOCX/PPTX/XLSX
 to clean markdown for the ingestion pipeline. Use `LIGHT=1` to run without
 it.
 
-With `GKG_CONVERTER_MODE=docling`, PDF, Office and image inputs are
+Image conversion is disabled by default; opt in with
+`GKG_CONVERTER_IMAGES=true` at the risk of docling-serve v1.1.0 on CPU
+running out of memory and failing concurrent conversions.
+
+With `GKG_CONVERTER_MODE=docling`, PDF and Office inputs are
 converted by the sidecar instead of the best-effort pure-Go PDF path. The
 sidecar publishes loopback `127.0.0.1:5001`, so host-run builds use
 the default `GKG_CONVERTER_URL` (`http://localhost:5001`) (compose defaults to
@@ -231,13 +237,14 @@ failure.
 ## 8. Evaluation
 
 ```sh
-docker compose --env-file .env -f deploy/docker-compose.yml run --rm \
+docker compose --env-file .env -f deploy/docker-compose.yml run --rm --no-deps \
   -v "$PWD/eval:/eval" gkg eval --golden /eval/golden/sample.jsonl --provider mock
 ```
 
 (The container's entrypoint is already `gkg`: `run` appends the command to
 it, while `exec` takes a full command — hence `exec gkg gkg ingest …` vs
 `run … gkg eval …`.)
+`--no-deps` keeps model services stopped: eval never opens the graph.
 
 Real extraction numbers need a configured provider/key (or the sidecar);
 `--sweep 'entity=0.2:0.8:0.1 relation=0.1:0.6:0.1'` (one quoted argument)

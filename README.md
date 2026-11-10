@@ -36,7 +36,10 @@ and measuring extraction quality with the built-in eval harness.
 
 The default stack runs Memgraph, the static Go binary (`gkg`), a local
 GLiNEREL sidecar with offline extraction, and docling-serve for high-quality
-conversion of PDFs/Office/images to markdown.
+conversion of PDFs/Office documents to markdown. Image conversion is disabled
+by default; opt in with `GKG_CONVERTER_IMAGES=true` at the risk of
+docling-serve v1.1.0 on CPU running out of memory and failing concurrent
+conversions.
 
 ## Quickstart
 
@@ -68,7 +71,7 @@ and troubleshooting live in [docs/quickstart.md](docs/quickstart.md).
 | `internal/api`     | REST `/v1/*`, health/metrics, bearer auth, body caps, read-only Cypher guard       |
 | `internal/mcp`     | the seven agent tools over stdio and streamable HTTP                               |
 | `internal/ingest`  | pipeline, worker pool, recovery, dedup, URL/PDF/HTML inputs                        |
-| `internal/convert` | default docling-serve converter (PDF/Office/images → markdown)                    |
+| `internal/convert` | default docling-serve converter (PDF/Office → markdown; images require opt-in)     |
 | `internal/graph`   | Memgraph store: documents/chunks/entities/facts, supersede, GC, text/vector search |
 | `internal/search`  | entity/chunk search with rank fusion of text and optional embedding legs           |
 | `internal/extract` | extractor contract + OpenAI-compatible and GLiNEREL-sidecar providers              |

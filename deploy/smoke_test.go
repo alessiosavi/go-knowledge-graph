@@ -103,10 +103,19 @@ type smokeRunOpts struct {
 	curlLog           string
 }
 
+func curlConfigHome(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".curlrc"), []byte("fail\n"), 0o600); err != nil {
+		t.Fatal("write curl config fixture")
+	}
+	return dir
+}
+
 func runSmoke(t *testing.T, url string, opts smokeRunOpts) (string, int, time.Duration) {
 	t.Helper()
 	dir := t.TempDir()
-	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"),
+	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + curlConfigHome(t),
 		"SMOKE_URL=" + url, "SMOKE_TIMEOUT_S=5", "SMOKE_POLL_S=0.1", "SMOKE_REQ_TIMEOUT_S=1"}
 	if opts.timeout != "" {
 		env = append(env, "SMOKE_TIMEOUT_S="+opts.timeout)
@@ -365,5 +374,65 @@ func TestMakeSmokeUsesRunningProject(t *testing.T) {
 	out, _, code = runMake(t, stubOpts{}, "smoke")
 	if code == 0 || !strings.Contains(out, "not running") {
 		t.Error("make smoke must refuse when project has no gkg port")
+	}
+}
+
+func TestMakeSmokePropagatesFailure(t *testing.T) {
+	api := &smokeAPI{deleteFails: true}
+	srv := httptest.NewServer(api)
+	defer srv.Close()
+	out, _, code := runMake(t, stubOpts{PortOut: strings.TrimPrefix(srv.URL, "http://")}, "smoke")
+	if code == 0 || !strings.Contains(out, "delete failed") || strings.Contains(out, "SMOKE PASS") {
+		t.Fatal("make smoke must propagate a failed delete as a non-zero exit")
+	}
+	if countRequests(api, "DELETE") == 0 {
+		t.Fatal("make smoke never exercised the failing delete")
+	}
+}
+
+func TestAcceptanceCurlConfigIsolation(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "acceptance.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, function, setup, call string
+	}{
+		{"anonymous", "req", "", "req -sS test-input"},
+		{"authenticated", "req", `printf 'Authorization: Bearer fixture\n' > "$TMP/auth"`, "req -sS test-input"},
+		{"health", "wait_http", "", "wait_http test-input 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Exercise the real shell functions with a curl stub: no service or
+			// compose stack is started, and the private .env is never read.
+			fn := regexp.MustCompile(`(?ms)^` + tc.function + `\(\) \{.*?^\}`).FindString(string(data))
+			if fn == "" {
+				t.Fatal("acceptance function missing")
+			}
+			script := `set -eu
+curl() { [ "$1" = -q ] || { echo 'curl must have -q as its first argument'; return 77; }; }
+` + fn + "\n" + tc.setup + "\n" + tc.call
+			cmd := exec.Command("bash", "-c", script)
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "TMP=" + t.TempDir(), "HOME=" + curlConfigHome(t)}
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("acceptance curl isolation: %v: %s", err, out)
+			}
+		})
+	}
+}
+
+func TestAcceptanceComposeRebuilds(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "acceptance.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := regexp.MustCompile(`(?m)^\s*"\$\{COMPOSE\[@\]\}" up [^\n]+`).FindString(string(data))
+	if line == "" {
+		t.Fatal("acceptance compose startup command missing")
+	}
+	cmd := exec.Command("bash", "-c", "COMPOSE=(printf '%s\\n')\n"+line)
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.Join(strings.Fields(string(out)), " ") != "up -d --build --wait" {
+		t.Fatal("acceptance compose must use up -d --build --wait")
 	}
 }

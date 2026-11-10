@@ -1,7 +1,7 @@
 // Package convert provides the optional high-quality document converter: an
-// HTTP client for a docling-serve sidecar. Conversion is off by default;
-// when enabled, the ingest loader routes rich binary formats (PDF, Office
-// documents, images) through it and the returned markdown enters the
+// HTTP client for a docling-serve sidecar. The default converter handles PDF
+// and Office documents; images require an explicit opt-in. The ingest
+// loader routes rich binary formats through it and the markdown enters the
 // existing chunk/extract/embed pipeline unchanged.
 package convert
 

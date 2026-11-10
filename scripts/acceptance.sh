@@ -53,16 +53,16 @@ env_value() { { sed -n "s/^$1=//p" .env 2>/dev/null || true; } | head -1; }
 # Optional bearer auth travels through a private header file, never argv.
 req() {
 	if [[ -s "$TMP/auth" ]]; then
-		curl "$@" -H @"$TMP/auth"
+		curl -q "$@" -H @"$TMP/auth"
 	else
-		curl "$@"
+		curl -q "$@"
 	fi
 }
 
 wait_http() { # url, attempts (health probes are auth-exempt)
 	local url="$1" tries="${2:-60}"
 	for _ in $(seq 1 "$tries"); do
-		if curl -fsS -m 2 -o /dev/null "$url"; then return 0; fi
+		if curl -q -fsS -m 2 -o /dev/null "$url"; then return 0; fi
 		sleep 1
 	done
 	return 1
@@ -123,7 +123,7 @@ ok "gkg and mcpsmoke built"
 # ---------------------------------------------------------------------------
 step "start the service"
 if [[ "$MODE" == "compose" ]]; then
-	"${COMPOSE[@]}" up -d --wait
+	"${COMPOSE[@]}" up -d --build --wait
 	BASE_URL="http://127.0.0.1:${GKG_PORT}"
 	MCP_CMD=("${COMPOSE[@]}" exec -T gkg gkg mcp)
 	PDF_INPUT_URL="${ACCEPTANCE_PDF_URL:-https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf}"

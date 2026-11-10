@@ -47,6 +47,36 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestConverterImagesConfig(t *testing.T) {
+	t.Setenv("GKG_CONVERTER_IMAGES", "")
+	if err := os.Unsetenv("GKG_CONVERTER_IMAGES"); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("default", func(t *testing.T) {
+		cfg, err := config.Load("")
+		if err != nil || cfg.Converter.Images {
+			t.Fatalf("image conversion must default to disabled: %v", err)
+		}
+	})
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("GKG_CONVERTER_IMAGES", "true")
+		cfg, err := config.Load("")
+		if err != nil || !cfg.Converter.Images {
+			t.Fatalf("GKG_CONVERTER_IMAGES must enable image conversion: %v", err)
+		}
+	})
+	t.Run("yaml", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte("converter:\n  images: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(p)
+		if err != nil || !cfg.Converter.Images {
+			t.Fatalf("converter.images must enable image conversion: %v", err)
+		}
+	})
+}
+
 func TestEnvOverridesYAML(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.yaml")

@@ -26,16 +26,18 @@ When conversion is off (including light mode), PDF text extraction uses
   deferral; the sidecar in v0.1 extracts entities only.
 - With the default `GKG_CONVERTER_MODE=docling` (see
   [quickstart](quickstart.md#7-high-quality-document-ingestion-docling))
-  docling converts PDFs (scans included), Office formats and
-  images to markdown before the pipeline; a conversion failure fails the
+  docling converts PDFs (scans included) and Office formats
+  to markdown before the pipeline; a conversion failure fails the
   document with the converter's reason instead of falling back to the
   best-effort path.
-- **Image uploads crash the CPU docling image (v1.1.0).** Converting a PNG or
+- **Image conversion is disabled by default.** Opt in with
+  `GKG_CONVERTER_IMAGES=true` at the risk of docling-serve v1.1.0 on CPU
+  running out of memory and failing concurrent conversions. Converting a PNG or
   JPEG drives docling-serve past ~5.7 GiB within seconds; it is killed by its
   memory limit and restarts, the image fails with a converter error, and any
   conversion running at the same time fails too. Text PDFs and Office
   documents are unaffected (peak ~3 GiB with 4 in parallel); scanned PDFs
-  (OCR) are untested. Until this is fixed or tuned, avoid image uploads.
+  (OCR) are untested.
 
 ### Fixture extraction results (recorded)
 

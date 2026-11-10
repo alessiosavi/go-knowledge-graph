@@ -88,6 +88,7 @@ type ConverterConfig struct {
 	APIKey        string `yaml:"api_key"`
 	TimeoutS      int    `yaml:"timeout_s"`
 	MaxResponseMB int    `yaml:"max_response_mb"`
+	Images        bool   `yaml:"images"` // opt in to image conversion (unsafe with CPU docling v1.1.0)
 }
 
 // JudgeConfig configures the optional online verification judge.
