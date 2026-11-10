@@ -1,8 +1,9 @@
 // gkg web UI: a read-only viewer over the existing REST endpoints
 // (/v1/search, /v1/entities, /v1/traverse, /v1/documents, /v1/ingest),
 // plus the explicit ingest box. No dependencies; every request is
-// same-origin. When the server asks for a bearer key (401), the page
-// prompts for it once and keeps it in localStorage — never in URLs.
+// same-origin. Direct gkg bearer keys are saved in localStorage and can be
+// forgotten. An edge Basic challenge clears a stale key and asks for a reload
+// so the browser can sign in. Credentials never go in URLs.
 (() => {
   "use strict";
 
@@ -44,7 +45,30 @@
     $("status").textContent = "API key required";
   }
 
-  // api talks to the gkg REST surface. A 401 reveals the key prompt once;
+  function forgetSavedKey() {
+    apiKey = "";
+    try {
+      localStorage.removeItem(KEY_STORE);
+    } catch (_) {}
+    $("auth-key").value = "";
+    $("auth-forget").hidden = true;
+    $("status").textContent = "";
+  }
+
+  function unauthorized(res) {
+    let message = "unauthorized — provide the API key";
+    if (/^\s*Basic(?:\s|$)/i.test(res.headers.get("WWW-Authenticate") || "")) {
+      forgetSavedKey();
+      $("auth-bar").hidden = true;
+      message = "Reload the page to sign in.";
+      $("status").textContent = message;
+    } else {
+      showAuthBar();
+    }
+    return Object.assign(new Error(message), { classified: true });
+  }
+
+  // api talks to the gkg REST surface. A 401 selects Basic or bearer sign-in;
   // errors carry the server's detail when there is one.
   async function api(path, options) {
     const opts = options || {};
@@ -64,8 +88,7 @@
             : undefined,
     });
     if (res.status === 401) {
-      showAuthBar();
-      throw new Error("unauthorized — provide the API key");
+      throw unauthorized(res);
     }
     let data = null;
     try {
@@ -517,10 +540,7 @@
       body: JSON.stringify({ question: question }),
     });
     if (res.status === 401) {
-      showAuthBar();
-      throw Object.assign(new Error("unauthorized — provide the API key"), {
-        classified: true,
-      });
+      throw unauthorized(res);
     }
     if (!res.ok) {
       let detail = "HTTP " + res.status + " " + res.statusText;
@@ -893,10 +913,13 @@
       } catch (_) {}
       $("auth-key").value = "";
       $("auth-bar").hidden = true;
+      $("auth-forget").hidden = !apiKey;
       $("status").textContent = "";
       loadDocuments().catch(() => {});
       probeAgent();
     });
+    $("auth-forget").addEventListener("click", forgetSavedKey);
+    $("auth-forget").hidden = !apiKey;
     $("status").textContent = apiKey ? "using a saved API key" : "";
     loadDocuments().catch(() => {});
     probeAgent();
