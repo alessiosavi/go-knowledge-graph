@@ -321,12 +321,18 @@
 
   // ---- ask the graph -------------------------------------------------------
 
+  // askStreaming mirrors GET /v1/agent/status's stream field: when true the
+  // ask panel consumes the SSE endpoint; otherwise it uses the JSON one.
+  let askStreaming = false;
+
   async function probeAgent() {
     try {
       const st = await api("/v1/agent/status");
       $("ask-panel").hidden = !(st && st.enabled);
+      askStreaming = !!(st && st.enabled && st.stream);
     } catch (_) {
       $("ask-panel").hidden = true;
+      askStreaming = false;
     }
   }
 
@@ -464,6 +470,111 @@
     }
   }
 
+  // parseSSEFrame parses one SSE block ("event: x\ndata: {...}"); comments
+  // and frames without a JSON payload return null.
+  function parseSSEFrame(frame) {
+    let name = "message";
+    let data = null;
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) {
+        name = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        try {
+          data = JSON.parse(line.slice(5).trim());
+        } catch (_) {
+          data = null;
+        }
+      }
+    }
+    return data === null ? null : { name: name, data: data };
+  }
+
+  // toolEventRow renders a provisional evidence row for a running tool call;
+  // the authoritative done payload replaces it.
+  function toolEventRow(data) {
+    const li = el("li");
+    const head = el("div");
+    head.append(el("span", "badge", (data && data.name) || "tool"));
+    li.append(head);
+    li.append(jsonPreview(data && data.arguments));
+    return li;
+  }
+
+  // askViaStream runs one question against the SSE endpoint, rendering
+  // delta fragments as they arrive and tool calls as provisional rows; the
+  // done payload is authoritative and replaces everything. A classified
+  // error event (the ask itself failed server-side) throws with
+  // err.classified so ask() shows it; transport-level failures throw plain
+  // errors so ask() can fall back to the JSON endpoint.
+  async function askViaStream(question, statusNode) {
+    const headers = Object.assign(
+      { "Content-Type": "application/json" },
+      apiKey ? { Authorization: "Bearer " + apiKey } : {},
+    );
+    const res = await fetch("/v1/agent/ask/stream", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ question: question }),
+    });
+    if (res.status === 401) {
+      showAuthBar();
+      throw Object.assign(new Error("unauthorized — provide the API key"), {
+        classified: true,
+      });
+    }
+    if (!res.ok) {
+      let detail = "HTTP " + res.status + " " + res.statusText;
+      try {
+        const body = await res.json();
+        if (body && body.detail) detail = body.detail;
+      } catch (_) {
+        // keep the status line
+      }
+      throw new Error(detail);
+    }
+    if (!res.body || !res.body.getReader) {
+      throw new Error("this browser cannot read streams");
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const answer = $("ask-answer");
+    const evidence = $("ask-evidence");
+    let answerNode = null;
+    let buffer = "";
+    let done = null;
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        const ev = parseSSEFrame(frame);
+        if (!ev) continue;
+        if (ev.name === "delta") {
+          if (!answerNode) {
+            answerNode = el("p", "answer");
+            answer.replaceChildren(answerNode);
+          }
+          answerNode.textContent += (ev.data && ev.data.text) || "";
+        } else if (ev.name === "tool") {
+          evidence.append(toolEventRow(ev.data));
+        } else if (ev.name === "done") {
+          done = ev.data;
+        } else if (ev.name === "error") {
+          const detail =
+            (ev.data && (ev.data.detail || ev.data.error)) ||
+            "the agent failed";
+          throw Object.assign(new Error(detail), { classified: true });
+        }
+      }
+    }
+    if (!done) throw new Error("the answer stream ended early");
+    statusNode.textContent = "";
+    renderAnswer(done);
+  }
+
   async function ask() {
     const question = $("ask-input").value.trim();
     const statusNode = $("ask-status");
@@ -475,6 +586,19 @@
     $("ask-answer").replaceChildren();
     $("ask-evidence").replaceChildren();
     try {
+      if (askStreaming) {
+        try {
+          await askViaStream(question, statusNode);
+          return;
+        } catch (err) {
+          if (err && err.classified) {
+            statusNode.textContent = String(err.message || err);
+            statusNode.className = "muted error";
+            return;
+          }
+          // Transport-level stream failure: fall back to the JSON endpoint.
+        }
+      }
       const res = await api("/v1/agent/ask", {
         method: "POST",
         json: { question: question },
