@@ -3,7 +3,6 @@
 # context).
 .env
 .env.*
-!.env.example
 .git
 .gitignore
 .superpowers
@@ -19,3 +18,8 @@ deploy/aws/.box-ids
 deploy/edge/htpasswd
 deploy/edge/certs
 docs/superpowers
+*.env
+**/*.env
+**/.env
+**/.env.*
+!.env.example

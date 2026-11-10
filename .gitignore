@@ -34,3 +34,4 @@ deploy/edge/htpasswd
 deploy/edge/certs/
 # Planning artifacts live outside the repo
 docs/superpowers/
+*.env
