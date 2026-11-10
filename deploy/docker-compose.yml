@@ -3,6 +3,10 @@
 # Copy .env.example to .env, set MEMGRAPH_PASSWORD, then run make up.
 # Use make up LIGHT=1 for CI or laptops without the model services.
 name: gkg
+# Memory limits: peak x 1.5 (at least peak + 512 MiB), from a concurrent-load
+# measurement (docling: 4 parallel documents on 2 engine workers; sidecar:
+# 4 ingest workers extracting; 4 streamed asks). Memgraph keeps headroom for
+# corpus growth. The sum (13.25 GiB) leaves 2 GiB of a 16 GiB host.
 x-logging: &logging
   driver: json-file
   options:
@@ -33,7 +37,7 @@ services:
   gkg:
     restart: unless-stopped
     logging: *logging
-    mem_limit: 1g
+    mem_limit: 768m
     build:
       context: ..
       dockerfile: deploy/Dockerfile.gkg
@@ -91,7 +95,7 @@ services:
   sidecar:
     restart: unless-stopped
     logging: *logging
-    mem_limit: 4g
+    mem_limit: 4864m
     build:
       context: ../sidecar
       args:
@@ -120,7 +124,7 @@ services:
   docling:
     restart: unless-stopped
     logging: *logging
-    mem_limit: 6g
+    mem_limit: 4864m
     image: ghcr.io/docling-project/docling-serve-cpu:v1.1.0@sha256:739f4e08e3164e242ec64f76f22a1864b82c5648c775ce6fa77fb25e66f1150e
     ports:
       - "127.0.0.1:${DOCLING_PORT:-5001}:5001"
