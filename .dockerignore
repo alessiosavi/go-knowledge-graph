@@ -13,3 +13,4 @@ __pycache__
 bin/
 dist/
 deploy/docker-compose.yml
+.worktrees

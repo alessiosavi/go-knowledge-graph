@@ -23,3 +23,5 @@ __pycache__/
 
 # OS
 .DS_Store
+# Git worktrees (one per branch; never committed or sent to docker builds)
+.worktrees/
