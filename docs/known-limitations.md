@@ -183,3 +183,29 @@ is benign: the newer version completes normally.
   the kind explicitly when that matters.
 - Traversal surfaces one edge per (head, rel, tail, chunk); the same triple
   appearing in several chunks is intentionally several evidence rows.
+
+## Edge (nginx + ModSecurity)
+
+- **One password = full access**: every login can ingest, delete and ask; there
+  are no per-user permissions.
+- **JSON bodies are capped at 4 MiB at the edge** (pasted text, MCP calls);
+  files keep 20 MiB. In `DetectionOnly` mode the cap is not enforced
+  (ModSecurity processes oversized bodies partially) — keep that mode short.
+- **Not exposed through the edge:** `/v1/cypher`, `/metrics`, `/readyz`; use
+  the `cypher` MCP tool or the loopback ports on the host.
+- **Free-text fields are not WAF-inspected for attack payloads**: document
+  text, search queries and agent questions are data to gkg (parameterized
+  Cypher, no shell, sanitized rendering), so the SQLi/RCE/XSS/LFI/RFI/injection
+  and protocol rule tags skip exactly those fields; every other field, header
+  and the URI stay inspected.
+- **Java-exploit rules skip the raw body of `POST /v1/ingest` and `POST /mcp`**
+  (gkg runs no JVM; design documents contain Java code); they still inspect
+  query parameters and headers. The restricted-upload filename rule (932180)
+  is off for ingest uploads only, because it substring-matches names such as
+  `dockerfile-notes.md` and gkg never writes uploads by name.
+- **Matched request data reaches the WAF audit log** for blocked requests (an
+  attack excerpt, never the password or the internal key); the log stays on
+  the box with Docker's rotation (3 × 10 MB per service).
+- **Reload and long streams:** after a certificate renewal an old nginx worker
+  stays alive while an MCP session it serves remains open (the pinned image
+  has no place for `worker_shutdown_timeout`).

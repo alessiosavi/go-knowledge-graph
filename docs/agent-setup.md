@@ -6,7 +6,11 @@
   over stdio. Recommended for local agents.
 - **streamable HTTP**: `POST /mcp` on the `serve` surface — for remote or
   shared deployments. Set `GKG_API_KEY` to require
-  `Authorization: Bearer <key>` (the health probes stay exempt).
+  `Authorization: Bearer <key>` (the health probes stay exempt). Through the
+  edge (`https://<host>/mcp`) clients send the edge password instead:
+  `Authorization: Basic <base64 of login:password>`; the edge swaps it for the
+  internal bearer. Keep the credential in an environment variable, not in a
+  shared config file.
 
 The tool set is the same on both transports:
 
