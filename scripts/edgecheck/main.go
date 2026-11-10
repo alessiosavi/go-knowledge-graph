@@ -125,8 +125,12 @@ func (p *probe) ingest(name string, data []byte, extra ...string) string {
 	expect(r.code == 200 || r.code == 202, name)
 	id, _ := object(r.body)["document_id"].(string)
 	expect(id != "", name+" document ID")
+	return p.waitIngest(name, id)
+}
+
+func (p *probe) waitIngest(name, id string) string {
 	for i := 0; i < 120; i++ {
-		r = p.request("GET", "/v1/documents/"+id+"/status", "auth.curl", nil)
+		r := p.request("GET", "/v1/documents/"+id+"/status", "auth.curl", nil)
 		status, _ := object(r.body)["status"].(string)
 		if status == "done" {
 			return id
@@ -149,7 +153,11 @@ func (p *probe) routing() {
 	}
 	marker := string(read(filepath.Join(p.dir, "marker")))
 	var ids []string
-	for _, file := range []string{"design.md", "sql.md"} {
+	files, err := filepath.Glob("deploy/edge/testdata/*.md")
+	must(err)
+	expect(len(files) >= 13, "synthetic polyglot corpus has at least 13 documents")
+	for _, path := range files {
+		file := filepath.Base(path)
 		text := string(read(filepath.Join("deploy/edge/testdata", file))) + "\n" + marker
 		ids = append(ids, p.ingest("JSON corpus "+file, encode(map[string]any{"text": text, "source": "edge-json-" + file})))
 		copy := filepath.Join(p.dir, "Città progetto ("+file+")")
@@ -172,7 +180,7 @@ func (p *probe) routing() {
 	p.check("traverse", "POST", "/v1/traverse", encode(map[string]any{"entity": id, "depth": 1}), 200)
 	r = p.check("agent enabled", "GET", "/v1/agent/status", nil, 200)
 	expect(object(r.body)["enabled"] == true && object(r.body)["stream"] == true, "offline agent and streaming enabled")
-	r = p.check("SQL-looking ask", "POST", "/v1/agent/ask", encode(map[string]any{"question": "Explain SELECT * FROM users WHERE id = 1 OR 1=1;"}), 200)
+	r = p.check("SQL-looking ask", "POST", "/v1/agent/ask", encode(map[string]any{"question": string(read("deploy/edge/testdata/javascript.md")) + string(read("deploy/edge/testdata/bash.md"))}), 200)
 	expect(strings.Contains(string(r.body), "Offline edge check completed."), "deterministic stub answer")
 	// Versions share a source but have different hashes.
 	a := p.ingest("version one", encode(map[string]any{"text": "Ada works for EdgeLabs. " + marker, "source": "edge-versions"}))
@@ -292,9 +300,15 @@ func (p *probe) limits() {
 	}
 }
 
-func (p *probe) stream() {
+func (p *probe) stream() { p.streamDuring(nil) }
+
+func (p *probe) streamDuring(reload func()) {
 	file := filepath.Join(p.dir, "stream-request.json")
-	write(file, encode(map[string]any{"question": "Explain SELECT * FROM users WHERE id = 1 OR 1=1;"}))
+	question := "Explain SELECT * FROM users WHERE id = 1 OR 1=1;"
+	if reload != nil {
+		question = "edge-check held renewal " + question
+	}
+	write(file, encode(map[string]any{"question": question}))
 	cmd, _, headers := p.command("POST", "/v1/agent/ask/stream", "auth.curl", 30, "-N", "-H", "Content-Type: application/json", "--data-binary", "@"+file)
 	// Replace the output file with stdout so arrivals are measured as read.
 	for i := range cmd.Args {
@@ -306,6 +320,12 @@ func (p *probe) stream() {
 	must(err)
 	cmd.Stderr = io.Discard
 	must(cmd.Start())
+	defer func() {
+		if cmd.ProcessState == nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	}()
 	var first, done time.Time
 	deltas := 0
 	scan := bufio.NewScanner(stdout)
@@ -314,6 +334,10 @@ func (p *probe) stream() {
 		case "event: delta":
 			if first.IsZero() {
 				first = time.Now()
+				if reload != nil {
+					reload()
+					expect(time.Since(first) < 12*time.Second, "reload and concurrent requests completed while ask stream was held")
+				}
 			}
 			deltas++
 		case "event: done":
@@ -326,9 +350,14 @@ func (p *probe) stream() {
 	must(cmd.Wait())
 	expect(deltas >= 3 && !first.IsZero() && done.Sub(first) >= 500*time.Millisecond, "TLS Basic stream first frame before completion")
 	expect(parseHeaders(headers).Get("X-Accel-Buffering") == "no", "stream buffering disabled")
+	if reload != nil {
+		expect(done.Sub(first) >= 12*time.Second, "held ask stream completed across renewal reload")
+	}
 }
 
-func (p *probe) mcp(long bool) {
+func (p *probe) mcp(long bool) { p.mcpDuring(long, nil) }
+
+func (p *probe) mcpDuring(long bool, reload func()) {
 	init := encode(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "edge-check", "version": "1"}}})
 	// Legal JSON whitespace exercises the transport cap without inventing a
 	// multi-megabyte client name or changing the MCP initialize schema.
@@ -342,22 +371,45 @@ func (p *probe) mcp(long bool) {
 	expect(r.code == 202, "MCP initialized notification")
 	for i, call := range []map[string]any{
 		{"method": "tools/list"},
-		{"method": "tools/call", "params": map[string]any{"name": "search", "arguments": map[string]any{"query": "SELECT * FROM users WHERE id = 1 OR 1=1;", "kind": "chunk"}}},
+		{"method": "tools/call", "params": map[string]any{"name": "search", "arguments": map[string]any{"query": "SELECT * FROM users WHERE id = 1 OR 1=1; UNION SELECT password FROM users;", "kind": "chunk"}}},
 		{"method": "tools/call", "params": map[string]any{"name": "cypher", "arguments": map[string]any{"query": "MATCH (n:Entity) WHERE n.name = 'Ada' RETURN n LIMIT 5"}}},
 	} {
 		call["jsonrpc"] = "2.0"
 		call["id"] = i + 2
 		r = p.request("POST", "/mcp", "auth.curl", encode(call), h...)
 		result, err := rpcResult(r.body)
+		if err != nil || r.code != 200 {
+			write(filepath.Join(p.dir, "mcp-failure.log"), r.body)
+		}
 		expect(r.code == 200 && err == nil, fmt.Sprintf("MCP call %d", i))
 		if i == 0 {
 			tools, _ := result["tools"].([]any)
 			expect(len(tools) == 7, "MCP lists seven tools")
 		}
 	}
+	if reload == nil && long {
+		files, err := filepath.Glob("deploy/edge/testdata/*.md")
+		must(err)
+		marker := string(read(filepath.Join(p.dir, "marker")))
+		for i, file := range files {
+			call := map[string]any{"jsonrpc": "2.0", "id": 100 + i, "method": "tools/call", "params": map[string]any{"name": "ingest", "arguments": map[string]any{"text": string(read(file)) + "\n" + marker, "source": "edge-mcp-" + filepath.Base(file)}}}
+			r = p.request("POST", "/mcp", "auth.curl", encode(call), h...)
+			result, err := rpcResult(r.body)
+			expect(r.code == 200 && err == nil, "MCP corpus "+filepath.Base(file))
+			content, ok := result["structuredContent"].(map[string]any)
+			expect(ok, "MCP ingest structured content")
+			id, _ := content["document_id"].(string)
+			expect(id != "", "MCP ingest document ID")
+			p.waitIngest("MCP corpus "+filepath.Base(file), id)
+			p.check("MCP corpus DELETE", "DELETE", "/v1/documents/"+id, nil, 200)
+		}
+	}
 	seconds := 2
 	if long {
 		seconds = 75
+	}
+	if reload != nil {
+		seconds = 90
 	}
 	cmd, _, headers := p.command("GET", "/mcp", "auth.curl", seconds, append(h, "-N")...)
 	for i, arg := range cmd.Args {
@@ -369,7 +421,25 @@ func (p *probe) mcp(long bool) {
 	cmd.Stdout = &out
 	cmd.Stderr = io.Discard
 	start := time.Now()
-	err := cmd.Run()
+	must(cmd.Start())
+	defer func() {
+		if cmd.ProcessState == nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	}()
+	if reload != nil {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if b, err := os.ReadFile(headers); err == nil && bytes.Contains(b, []byte("text/event-stream")) {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		expect(strings.HasPrefix(parseHeaders(headers).Get("Content-Type"), "text/event-stream"), "MCP headers before reload")
+		reload()
+	}
+	err := cmd.Wait()
 	exit, ok := err.(*exec.ExitError)
 	metadata := strings.Fields(out.String())
 	expect(len(metadata) == 2 && metadata[0] == "200", "MCP GET HTTP status")
@@ -381,6 +451,10 @@ func (p *probe) mcp(long bool) {
 }
 
 func (p *probe) attacks(mode string) {
+	// Prove that Java rules still inspect query parameters on a route with a
+	// raw-body exclusion. Named JSON Java matches are not required: the pinned
+	// CRS can report those payloads only against REQUEST_BODY.
+	java := "java.lang.Runtime java.lang.ProcessBuilder unmarshaller"
 	items := [][2]string{
 		{"SQLi", "/ui/?probe=" + url.QueryEscape("1' OR 1=1 --")},
 		{"XSS", "/ui/?probe=" + url.QueryEscape("<script>alert(1)</script>")},
@@ -401,6 +475,21 @@ func (p *probe) attacks(mode string) {
 	for _, attack := range []struct{ name, header string }{{"log4shell", "X-Edge-Probe: ${jndi:ldap://example.invalid/a}"}, {"scanner UA", "User-Agent: sqlmap/1.0"}} {
 		r = p.request("GET", "/ui/", "auth.curl", nil, "-H", attack.header)
 		expect((mode == "On" && r.code == 403) || (mode != "On" && r.code != 403), attack.name+" "+mode)
+	}
+	for _, attack := range []struct {
+		name, path string
+		body       map[string]any
+	}{
+		{"ingest source", "/v1/ingest", map[string]any{"text": "synthetic", "source": "<script>alert(1)</script>"}},
+		{"ingest url", "/v1/ingest", map[string]any{"url": "<script>alert(1)</script>"}},
+		{"ingest labels", "/v1/ingest", map[string]any{"text": "synthetic", "labels": []string{"<script>alert(1)</script>"}}},
+		{"MCP tool name", "/mcp", map[string]any{"jsonrpc": "2.0", "id": 98, "method": "tools/call", "params": map[string]any{"name": "<script>alert(1)</script>", "arguments": map[string]any{"text": "synthetic"}}}},
+		{"MCP source", "/mcp", map[string]any{"jsonrpc": "2.0", "id": 97, "method": "tools/call", "params": map[string]any{"name": "ingest", "arguments": map[string]any{"source": "<script>alert(1)</script>", "text": "synthetic"}}}},
+		{"query parameter on excluded route", "/v1/search?query=" + url.QueryEscape("1' OR 1=1 --"), map[string]any{"query": "synthetic"}},
+		{"Java query parameter", "/v1/ingest?edgecheck_java_query=" + url.QueryEscape(java), map[string]any{"text": "synthetic"}},
+	} {
+		r := p.request("POST", attack.path, "auth.curl", encode(attack.body))
+		expect((mode == "On" && r.code == 403) || (mode != "On" && r.code != 403), attack.name+" remains inspected "+mode)
 	}
 	block := string(read(filepath.Join(p.dir, "attack-marker")))
 	r = p.request("POST", "/mcp?edgecheck_attack_marker=1", "auth.curl", encode(map[string]any{"jsonrpc": "2.0", "id": 99, "method": "<script>" + strings.Repeat(block, 2048/len(block)) + "</script>"}))
@@ -464,6 +553,7 @@ func main() {
 		}
 		if args[3] == "positive" {
 			expect(positiveAudit(records, ids), "WAF positive control attack logged rule matches")
+			expect(javaProbeMatched(records, ids, "edgecheck_java_query=", "ARGS:edgecheck_java_query"), "Java rule matched outside excluded body: ARGS:edgecheck_java_query")
 		}
 	case "hygiene":
 		hygiene(args[1], args[2], args[3])
@@ -485,6 +575,33 @@ func main() {
 			p.stream()
 		case "mcp":
 			p.mcp(args[3] == "long")
+		case "reload":
+			p.mcpDuring(false, func() {
+				p.streamDuring(func() {
+					cmd := exec.Command(args[3], args[4:]...)
+					var output bytes.Buffer
+					cmd.Stdout, cmd.Stderr = &output, &output
+					must(cmd.Start())
+					finished := make(chan error, 1)
+					go func() { finished <- cmd.Wait() }()
+					requests := 0
+					for {
+						select {
+						case err := <-finished:
+							write(filepath.Join(p.dir, "held-renew.log"), output.Bytes())
+							must(err)
+							expect(!bytes.Contains(output.Bytes(), []byte("fallback")), "renewal reload works as unprivileged nginx user")
+							expect(requests > 0, "new requests succeeded throughout certificate renewal")
+							p.check("new request after reload", "GET", "/v1/documents", nil, 200)
+							return
+						default:
+							p.check("new request during renewal/reload", "GET", "/v1/documents", nil, 200)
+							requests++
+							time.Sleep(100 * time.Millisecond)
+						}
+					}
+				})
+			})
 		case "waf":
 			p.attacks(args[3])
 		default:

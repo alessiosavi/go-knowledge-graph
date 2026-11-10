@@ -224,13 +224,14 @@ services:
       retries: 20
       start_period: 10s
 
-  # Issuance and renewal commands are added in the certificate task.
+  # One-shot certificate commands; never started with the default stack.
   certbot:
     image: certbot/certbot:v5.8.0@sha256:f70ad0adbb7e117f0fe42a63c553f28ea451edabc0148757b6efcd9735acaa20
     profiles: [cert]
     mem_limit: 256m
     logging: *logging
     volumes:
+      - ./edge/install-cert.sh:/edge-install-cert.sh:ro
       - letsencrypt:/etc/letsencrypt
       - acme-webroot:/var/www/acme
       - edge-certs:/etc/nginx/edge-certs

@@ -19,6 +19,7 @@ cleanup() {
   set +e
   if [ -n "${EDGE_CHECK_EVIDENCE_DIR:-}" ]; then
     if [ "$active" = 1 ]; then
+      "${compose[@]}" exec -T edge sh -c 'printf "memory.peak="; cat /sys/fs/cgroup/memory.peak; cat /sys/fs/cgroup/memory.events' >"$tmp/resources-exit.log" 2>&1 || :
       "${compose[@]}" logs --no-color --no-log-prefix edge >"$tmp/final-edge.log" 2>&1 || :
       "${compose[@]}" logs --no-color --no-log-prefix gkg >"$tmp/final-gkg.log" 2>&1 || :
       ids="$("${compose[@]}" ps -aq)"
@@ -99,7 +100,7 @@ ok 'TLS certificate trusted explicitly'
 
 # Test ACME from the HTTP listener without credentials, with our own webroot.
 # edge's mount is read-only; a one-shot with the same isolated volume writes it.
-"${compose[@]}" run --rm --no-deps --entrypoint sh edge-init -c 'printf "edge-acme-check\n" > /var/www/acme/.well-known/acme-challenge/edge-check' >"$tmp/acme-write.log" 2>&1 || fail 'ACME fixture'
+"${compose[@]}" --profile cert run --rm --no-deps --entrypoint sh certbot -c 'mkdir -p /var/www/acme/.well-known/acme-challenge; printf "edge-acme-check\n" > /var/www/acme/.well-known/acme-challenge/edge-check' >"$tmp/acme-write.log" 2>&1 || fail 'ACME fixture'
 code="$(curl -q --silent --show-error --noproxy '*' --max-time 10 -o "$tmp/acme" -w '%{http_code}' "http://localhost:$EDGE_HTTP_PORT/.well-known/acme-challenge/edge-check")"
 [ "$code" = 200 ] && [ "$(cat "$tmp/acme")" = edge-acme-check ] || fail 'ACME without auth'
 ok 'ACME HTTP without auth'
@@ -160,6 +161,111 @@ for mode in DetectionOnly On; do
   cat "$tmp/resources-$mode.log"
   if grep -E '^(oom|oom_kill|oom_group_kill) [1-9]|restarts=[1-9]|oom=true' "$tmp/resources-$mode.log" >/dev/null; then fail 'container OOM or restart'; fi
 done
-# TODO(Task 3): renewal section, reload during a held ask stream/new request,
-# and old-worker shutdown observation for a held MCP GET, per Rev 2 Step 3.
+ok 'section renewal (offline fake lineage only)'
+workers() {
+  "${compose[@]}" exec -T edge sh -c '
+    for path in /proc/[0-9]*/cmdline; do
+      command=$(tr "\000" " " <"$path" 2>/dev/null) || continue
+      case "$command" in "nginx: worker process"*) pid=${path#/proc/}; printf "%s\n" "${pid%/cmdline}" ;; esac
+    done' | sort -n
+}
+served_fingerprint() {
+  "${compose[@]}" exec -T edge sh -c '
+    timeout 5 openssl s_client -connect 127.0.0.1:8443 -servername "$SERVER_NAME" </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256'
+}
+live_fingerprint() {
+  "${compose[@]}" --profile cert run --rm --entrypoint sh certbot -c 'openssl x509 -in /etc/letsencrypt/live/localhost/fullchain.pem -noout -fingerprint -sha256' 2>"$tmp/live-fingerprint.log"
+}
+fake_lineage() {
+  "${compose[@]}" --profile cert run --rm --entrypoint sh certbot -c '
+    set -eu
+    live=/etc/letsencrypt/live/localhost
+    mkdir -p "$live"
+    openssl req -x509 -nodes -newkey rsa:2048 -days "$1" -subj /CN=localhost -addext subjectAltName=DNS:localhost -keyout "$live/privkey.pem" -out "$live/fullchain.pem" >/dev/null 2>&1
+    chmod 0600 "$live/privkey.pem"
+  ' sh "$1" >"$tmp/fake-lineage.log" 2>&1 || fail 'fake certificate fixture'
+}
+refresh_ca() {
+  "${compose[@]}" cp edge:/etc/nginx/edge-certs/current.crt "$tmp/ca.crt" >"$tmp/cp.log" 2>&1 || fail 'copy renewed trust certificate'
+}
+assert_changed_workers() {
+  after_workers="$(workers)"
+  [ -n "$after_workers" ] && [ "$before_workers" != "$after_workers" ] || fail 'reload changed nginx worker PIDs'
+  printf 'OK: nginx worker PIDs before=[%s] after=[%s]\n' "$(printf '%s' "$before_workers" | tr '\n' ',')" "$(printf '%s' "$after_workers" | tr '\n' ',')"
+}
+initial="$(served_fingerprint)"
+before_workers="$(workers)"
+[ -n "$before_workers" ] || fail 'nginx worker PID observation'
+make renew "${make_args[@]}" >"$tmp/renew-empty.log" 2>&1 || fail 'renew with no live certificate'
+grep -F 'unchanged' "$tmp/renew-empty.log" >/dev/null || fail 'no-live install result'
+[ "$(served_fingerprint)" = "$initial" ] && [ "$(workers)" = "$before_workers" ] || fail 'no-live renewal changed edge'
+ok 'no-live renewal unchanged: fingerprint and worker PIDs'
+fake_lineage 365
+expected="$(live_fingerprint)"
+[ "$expected" != "$initial" ] || fail 'fake lineage fingerprint differs'
+# Trust both local certificates during HUP so requests can authenticate either
+# generation while proving uninterrupted service throughout renewal.
+"${compose[@]}" --profile cert run --rm --entrypoint sh certbot -c 'cat /etc/letsencrypt/live/localhost/fullchain.pem' >"$tmp/next-ca.crt" 2>"$tmp/next-ca.log"
+cat "$tmp/ca.crt" "$tmp/next-ca.crt" >"$tmp/both-ca.crt"
+mv "$tmp/both-ca.crt" "$tmp/ca.crt"
+# The wrapper replaces the bundle with the new trust anchor after verification.
+{
+  printf '#!/bin/bash\nset -euo pipefail\n'
+  printf '%q ' make renew "${make_args[@]}"; printf '\n'
+  printf '%q ' "${compose[@]}" cp edge:/etc/nginx/edge-certs/current.crt "$tmp/ca.crt"; printf '\n'
+} >"$tmp/renew-held.sh"
+chmod 700 "$tmp/renew-held.sh"
+"$tmp/check" reload "$tmp" "$base" bash "$tmp/renew-held.sh"
+[ "$(served_fingerprint)" = "$expected" ] || fail 'served fingerprint equals live certificate'
+assert_changed_workers
+ok 'served fingerprint changed and equals live certificate'
+# This image has no main-context shutdown-timeout include; once the held GET
+# closes, the old worker must drain. The 120-second timeout remains unset.
+for ((attempt=0; attempt<10; attempt++)); do
+  remaining=0
+  current_workers="$(workers)"
+  for pid in $before_workers; do
+    for current in $current_workers; do [ "$pid" != "$current" ] || remaining=1; done
+  done
+  [ "$remaining" = 1 ] || break
+  sleep 1
+done
+[ "$remaining" = 0 ] || fail 'old nginx workers drained after held MCP GET'
+ok 'old workers drained after held MCP GET (shutdown timeout unset)'
+permissions="$("${compose[@]}" exec -T edge stat -c '%a:%g' /etc/nginx/edge-certs/current.crt /etc/nginx/edge-certs/current.key)"
+[ "$permissions" = "$(printf '644:101\n640:101')" ] || fail 'installed certificate mode and nginx group'
+ok 'certificate modes 0644/0640, group 101'
+before_workers="$(workers)"
+make renew "${make_args[@]}" >"$tmp/renew-noop.log" 2>&1 || fail 'idempotent renewal'
+grep -F 'unchanged' "$tmp/renew-noop.log" >/dev/null || fail 'idempotent install result'
+[ "$(served_fingerprint)" = "$expected" ] && [ "$(workers)" = "$before_workers" ] || fail 'idempotent renewal changed edge'
+ok 'repeat renewal unchanged: fingerprint and worker PIDs'
+"${compose[@]}" --profile cert run --rm --entrypoint sh certbot -c 'chmod 000 /etc/letsencrypt/live/localhost/privkey.pem' >"$tmp/key-mode.log" 2>&1
+if make renew "${make_args[@]}" >"$tmp/renew-failed.log" 2>&1; then fail 'unreadable live key accepted'; fi
+[ "$(served_fingerprint)" = "$expected" ] && [ "$(workers)" = "$before_workers" ] || fail 'failed installation changed edge'
+ok 'unreadable key: nonzero exit, served fingerprint and worker PIDs unchanged'
+# Recover a failed reload from a previous invocation: disk is new, TLS is old.
+fake_lineage 365
+"${compose[@]}" --profile cert run --rm --entrypoint /edge-install-cert.sh certbot localhost >"$tmp/install-only.log" 2>&1 || fail 'install-only recovery fixture'
+[ "$(served_fingerprint)" = "$expected" ] || fail 'install-only unexpectedly reloaded'
+expected="$(live_fingerprint)"
+make renew "${make_args[@]}" >"$tmp/renew-repair.log" 2>&1 || fail 'recover installed but unserved certificate'
+grep -F 'unchanged' "$tmp/renew-repair.log" >/dev/null || fail 'recovery should find installed files'
+[ "$(served_fingerprint)" = "$expected" ] || fail 'recovery served fingerprint'
+refresh_ca
+assert_changed_workers
+ok 'recovered installed-but-unserved certificate by fingerprint'
+fake_lineage 7
+expected="$(live_fingerprint)"
+if make renew "${make_args[@]}" >"$tmp/renew-expiry.log" 2>&1; then fail '7-day expiry accepted'; fi
+[ "$(served_fingerprint)" = "$expected" ] || fail 'short-lived certificate was not served'
+grep -E '(6|7) days left' "$tmp/renew-expiry.log" >/dev/null || fail 'expiry failure names remaining days'
+ok '7-day certificate installed and served; renew exits nonzero below 14 days'
+refresh_ca
+"$tmp/check" stream "$tmp" "$base"
+"${compose[@]}" logs --no-color --no-log-prefix >"$tmp/all-renewal.log" 2>&1
+"$tmp/check" hygiene "$tmp" "$tmp/all-renewal.log" "$tmp/after-legit"
+"${compose[@]}" exec -T edge sh -c 'printf "memory.peak="; cat /sys/fs/cgroup/memory.peak; cat /sys/fs/cgroup/memory.events' >"$tmp/resources-renewal.log"
+cat "$tmp/resources-renewal.log"
+if grep -E '^(oom|oom_kill|oom_group_kill) [1-9]' "$tmp/resources-renewal.log" >/dev/null; then fail 'renewal OOM'; fi
 printf '%s\n' 'EDGE CHECK PASS (engine On)'

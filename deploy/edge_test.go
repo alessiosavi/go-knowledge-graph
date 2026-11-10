@@ -239,7 +239,7 @@ func TestEdgeValidateEnv(t *testing.T) {
 func TestEdgeExclusionsScoped(t *testing.T) {
 	before := edgeFile(t, "deploy/edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf")
 	if !scopedExclusions(before) {
-		t.Fatal("exclusions must chain method/path and remove observed IDs from named JSON fields only")
+		t.Fatal("exclusions must chain exact method/path and remove only approved rule/target combinations")
 	}
 	for _, name := range []string{"deploy/edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf", "deploy/edge/modsec/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf", "deploy/edge/default.conf.template"} {
 		if regexp.MustCompile(`(?i)(SecRuleEngine|ctl:ruleEngine)`).MatchString(edgeFile(t, name)) {
@@ -276,13 +276,149 @@ func scopedExclusions(text string) bool {
 	if text == "" {
 		return true
 	}
-	block := regexp.MustCompile(`(?m)^SecRule REQUEST_METHOD "@streq POST" "id:[0-9]+,phase:1,pass,nolog,chain"\s+SecRule REQUEST_FILENAME "@streq (/(v1/(ingest|search|traverse|agent/ask(/stream)?)|mcp))" "((ctl:ruleRemoveTargetById=[0-9]{6};ARGS:json\.[a-zA-Z0-9_.]+)(,ctl:ruleRemoveTargetById=[0-9]{6};ARGS:json\.[a-zA-Z0-9_.]+)*)"`)
-	for _, match := range block.FindAllString(text, -1) {
-		for _, target := range regexp.MustCompile(`ARGS:json\.[a-zA-Z0-9_.]+`).FindAllString(match, -1) {
-			if target == "ARGS:json.method" || strings.HasPrefix(target, "ARGS:json.method.") || target == "ARGS:json.params.name" || strings.HasPrefix(target, "ARGS:json.params.name.") {
-				return false
+	action := `ctl:ruleRemoveTargetBy(?:Id=[0-9]{6}|Tag=(?:attack-(?:sqli|rce|xss|lfi|rfi|injection-php|injection-generic|fixation|protocol)|OWASP_CRS/ATTACK-JAVA));(?:ARGS:json\.[a-zA-Z0-9_.]+|REQUEST_BODY|FILES:file)`
+	block := regexp.MustCompile(`(?m)^SecRule REQUEST_METHOD "@streq POST" "id:[0-9]+,phase:1,pass,nolog,chain"\s+SecRule REQUEST_FILENAME "@streq (/[^" ]+)" "(` + action + `(?:,` + action + `)*)"`)
+	allowed := map[string]map[string]bool{
+		"/v1/ingest": {"json.text": true}, "/v1/search": {"json.query": true},
+		"/v1/agent/ask": {"json.question": true}, "/v1/agent/ask/stream": {"json.question": true},
+		"/mcp": {"json.params.arguments.text": true, "json.params.arguments.query": true},
+	}
+	for _, match := range block.FindAllStringSubmatch(text, -1) {
+		for _, removal := range strings.Split(match[2], ",") {
+			selector, target, _ := strings.Cut(removal, ";")
+			switch target {
+			case "REQUEST_BODY":
+				if (match[1] != "/v1/ingest" && match[1] != "/mcp") || selector != "ctl:ruleRemoveTargetByTag=OWASP_CRS/ATTACK-JAVA" {
+					return false
+				}
+			case "FILES:file":
+				if match[1] != "/v1/ingest" || selector != "ctl:ruleRemoveTargetById=932180" {
+					return false
+				}
+			default:
+				if selector == "ctl:ruleRemoveTargetByTag=OWASP_CRS/ATTACK-JAVA" || !allowed[match[1]][strings.TrimPrefix(target, "ARGS:")] {
+					return false
+				}
 			}
 		}
 	}
 	return strings.TrimSpace(block.ReplaceAllString(text, "")) == ""
+}
+
+func TestEdgeTagCoverage(t *testing.T) {
+	before := edgeFile(t, "deploy/edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf")
+	for _, field := range []string{"json.text", "json.query", "json.question", "json.params.arguments.text", "json.params.arguments.query"} {
+		for _, tag := range []string{"attack-sqli", "attack-rce", "attack-xss", "attack-lfi", "attack-rfi", "attack-injection-php", "attack-injection-generic", "attack-fixation", "attack-protocol"} {
+			if !strings.Contains(before, "ctl:ruleRemoveTargetByTag="+tag+";ARGS:"+field) {
+				t.Errorf("missing %s on %s", tag, field)
+			}
+		}
+	}
+	if strings.Contains(before, "ByTag=attack-injection-java;") {
+		t.Error("Java filename-only tag must not exclude named ARGS fields")
+	}
+	if strings.Contains(before, "arguments.question") {
+		t.Error("nonexistent MCP question argument must not be excluded")
+	}
+}
+
+func TestEdgeFilenameScopeGuard(t *testing.T) {
+	valid := `SecRule REQUEST_METHOD "@streq POST" "id:10010,phase:1,pass,nolog,chain"
+    SecRule REQUEST_FILENAME "@streq /v1/ingest" "ctl:ruleRemoveTargetById=932180;FILES:file"`
+	if !scopedExclusions(valid) {
+		t.Error("guard rejected the approved filename exclusion")
+	}
+	for _, invalid := range []string{
+		strings.ReplaceAll(valid, "/v1/ingest", "/mcp"),
+		strings.ReplaceAll(valid, "/v1/ingest", "/v1/ingest/"),
+		strings.ReplaceAll(valid, "POST", "GET"),
+		strings.ReplaceAll(valid, "932180", "932181"),
+		strings.ReplaceAll(valid, "ById=932180", "ByTag=attack-rce"),
+		strings.ReplaceAll(valid, "FILES:file", "FILES"),
+		strings.ReplaceAll(valid, "FILES:file", "FILES_NAMES:file"),
+		strings.ReplaceAll(valid, "FILES:file", "FILES:other"),
+		strings.ReplaceAll(valid, "FILES:file", "REQUEST_BODY"),
+	} {
+		if scopedExclusions(invalid) {
+			t.Errorf("guard accepted broadened filename exclusion: %s", invalid)
+		}
+	}
+}
+
+func TestEdgeFilenameExclusion(t *testing.T) {
+	before := edgeFile(t, "deploy/edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf")
+	if !strings.Contains(before, "ctl:ruleRemoveTargetById=932180;FILES:file") {
+		t.Fatal("missing observed dockerfile.md multipart filename exclusion")
+	}
+}
+
+func TestEdgeBodyScopeGuard(t *testing.T) {
+	for _, path := range []string{"/v1/ingest", "/mcp"} {
+		valid := `SecRule REQUEST_METHOD "@streq POST" "id:10011,phase:1,pass,nolog,chain"
+    SecRule REQUEST_FILENAME "@streq ` + path + `" "ctl:ruleRemoveTargetByTag=OWASP_CRS/ATTACK-JAVA;REQUEST_BODY"`
+		if !scopedExclusions(valid) {
+			t.Errorf("guard rejected approved Java body exclusion on %s", path)
+		}
+		for _, route := range []string{"/v1/search", "/v1/agent/ask", "/v1/agent/ask/stream", "/ui/", "/mcp/", "/v1/ingest/", "/other"} {
+			if scopedExclusions(strings.ReplaceAll(valid, path, route)) {
+				t.Errorf("guard accepted REQUEST_BODY removal on %s", route)
+			}
+		}
+		for _, selector := range []string{"Tag=attack-java", "Tag=attack-rce", "Tag=attack-protocol", "Tag=attack-sqli", "Tag=language-java", "Tag=OWASP_CRS/ATTACK-JAVA-extra", "Id=944100", "Id=921130"} {
+			if scopedExclusions(strings.ReplaceAll(valid, "Tag=OWASP_CRS/ATTACK-JAVA", selector)) {
+				t.Errorf("guard accepted REQUEST_BODY removal for %s", selector)
+			}
+		}
+		for _, invalid := range []string{
+			strings.ReplaceAll(valid, "POST", "GET"),
+			strings.ReplaceAll(valid, "@streq "+path, "@beginsWith "+path),
+			strings.ReplaceAll(valid, "REQUEST_BODY", "ARGS:json.text"),
+			valid + "\nSecRuleUpdateTargetById 944100 !REQUEST_BODY",
+		} {
+			if scopedExclusions(invalid) {
+				t.Error("guard accepted broadened Java body exclusion")
+			}
+		}
+	}
+}
+
+func TestEdgeBodyExclusions(t *testing.T) {
+	before := edgeFile(t, "deploy/edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf")
+	for _, path := range []string{"/v1/ingest", "/mcp"} {
+		if !strings.Contains(before, `SecRule REQUEST_FILENAME "@streq `+path+`" "ctl:ruleRemoveTargetByTag=OWASP_CRS/ATTACK-JAVA;REQUEST_BODY"`) {
+			t.Errorf("missing observed Java corpus REQUEST_BODY exclusion on %s", path)
+		}
+	}
+}
+
+func TestEdgeTagScopeGuard(t *testing.T) {
+	valid := `SecRule REQUEST_METHOD "@streq POST" "id:10001,phase:1,pass,nolog,chain"
+    SecRule REQUEST_FILENAME "@streq /v1/search" "ctl:ruleRemoveTargetByTag=attack-sqli;ARGS:json.query"`
+	if !scopedExclusions(valid) {
+		t.Fatal("guard rejected scoped attack tag")
+	}
+	for _, invalid := range []string{
+		strings.ReplaceAll(valid, "ARGS:json.query", "ARGS"),
+		strings.ReplaceAll(valid, "json.query", "json.method"),
+		strings.ReplaceAll(valid, "json.query", "json.params.name"),
+		strings.ReplaceAll(valid, "json.query", "json.source"),
+		strings.ReplaceAll(valid, "/v1/search", "/v1/ingest"),
+		strings.ReplaceAll(valid, "@streq /v1/search", "@beginsWith /v1/"),
+		strings.ReplaceAll(valid, "REQUEST_METHOD", "REQUEST_URI"),
+		strings.ReplaceAll(valid, "attack-sqli", "paranoia-level/1"),
+		strings.ReplaceAll(valid, "attack-sqli", "attack-injection-java"),
+		strings.ReplaceAll(valid, "attack-sqli", "OWASP_CRS/ATTACK-JAVA"),
+	} {
+		if scopedExclusions(invalid) {
+			t.Error("guard accepted broadened exclusion")
+		}
+	}
+}
+
+func TestEdgePolyglotCorpus(t *testing.T) {
+	for _, name := range []string{"design", "sql", "go", "python", "javascript", "java", "yaml", "dockerfile", "bash", "cypher", "regex", "html", "italian"} {
+		if len(edgeFile(t, "deploy/edge/testdata/"+name+".md")) < 40 {
+			t.Errorf("empty synthetic corpus %s", name)
+		}
+	}
 }

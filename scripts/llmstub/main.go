@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -15,7 +16,10 @@ func completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Stream bool `json:"stream"`
+		Stream   bool `json:"stream"`
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&request) != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -33,12 +37,20 @@ func completions(w http.ResponseWriter, r *http.Request) {
 		`{"id":"edge-check","choices":[{"index":0,"delta":{"content":"completed."},"finish_reason":"stop"}]}`,
 		`[DONE]`,
 	}
+	hold := false
+	for _, message := range request.Messages {
+		hold = hold || strings.Contains(message.Content, "edge-check held renewal")
+	}
 	for i, frame := range frames {
 		if i > 0 {
+			delay := 300 * time.Millisecond
+			if hold && i == 1 {
+				delay = 12 * time.Second
+			}
 			select {
 			case <-r.Context().Done():
 				return
-			case <-time.After(300 * time.Millisecond):
+			case <-time.After(delay):
 			}
 		}
 		if _, err := fmt.Fprintf(w, "data: %s\n\n", frame); err != nil {

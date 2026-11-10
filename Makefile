@@ -33,15 +33,24 @@ WAF_MODE := $(MODE)
 endif
 # Quote literal values before passing them to the shell (Make 3.81 compatible).
 quote = '$(subst ','"'"',$(1))'
-COMPOSE = GKG_ENV_FILE=$(call quote,$(abspath $(ENV_FILE))) EDGE_HTPASSWD=$(call quote,$(abspath $(EDGE_AUTH_PATH))) EDGE_WAF_ENV=$(call quote,$(abspath $(EDGE_WAF_PATH))) $(DOCKER) compose $(COMPOSE_PROJECT) --env-file "$(ENV_FILE)" -f deploy/docker-compose.yml
+COMPOSE_ENV = GKG_ENV_FILE=$(call quote,$(abspath $(ENV_FILE))) EDGE_HTPASSWD=$(call quote,$(abspath $(EDGE_AUTH_PATH))) EDGE_WAF_ENV=$(call quote,$(abspath $(EDGE_WAF_PATH)))
+COMPOSE_CMD = $(DOCKER) compose $(COMPOSE_PROJECT) --env-file "$(ENV_FILE)" -f deploy/docker-compose.yml
 ifeq ($(LIGHT),1)
-COMPOSE += -f deploy/compose.light.yml
+COMPOSE_CMD += -f deploy/compose.light.yml
 endif
 ifeq ($(origin COMPOSE_EXTRA),command line)
-COMPOSE += $(if $(strip $(COMPOSE_EXTRA)),-f $(call quote,$(COMPOSE_EXTRA)))
+COMPOSE_CMD += $(if $(strip $(COMPOSE_EXTRA)),-f $(call quote,$(COMPOSE_EXTRA)))
 endif
 
-.PHONY: help up down destroy ps logs build pull restart prune status smoke check-env check-edge passwd waf-mode edge-check
+COMPOSE = $(COMPOSE_ENV) $(COMPOSE_CMD)
+CERT_STAGING :=
+ifeq ($(origin STAGING),command line)
+ifeq ($(STAGING),1)
+CERT_STAGING := --test-cert
+endif
+endif
+
+.PHONY: help up down destroy ps logs build pull restart prune status smoke check-env check-edge passwd waf-mode edge-check cert renew
 
 help:
 	@printf '%s\n' \
@@ -58,6 +67,8 @@ help:
 	  'smoke    Check the running project and delete the temporary document' \
 	  'passwd   Create/update a login: LOGIN=<name> [GENERATE=1]' \
 	  'waf-mode Set MODE=On|DetectionOnly and recreate the edge' \
+	  'cert     Issue and install for the running edge [STAGING=1]' \
+	  'renew    Renew, install, reload and verify served certificate' \
 	  'edge-check Check an isolated edge stack (Docker required)' \
 	  'check-edge Check that the password file exists' \
 	  'check-env Check that ENV_FILE exists'
@@ -74,6 +85,13 @@ passwd:
 waf-mode:
 	@bash scripts/edge-waf-mode.sh $(call quote,$(WAF_MODE)) $(call quote,$(abspath $(EDGE_WAF_PATH)))
 	@$(COMPOSE) up -d --force-recreate --no-deps edge
+
+cert:
+	@$(COMPOSE_ENV) bash scripts/edge-renew.sh --issue $(CERT_STAGING) $(COMPOSE_CMD)
+
+renew:
+	@$(COMPOSE) --profile cert run --rm certbot renew
+	@$(COMPOSE_ENV) bash scripts/edge-renew.sh $(COMPOSE_CMD)
 
 edge-check:
 	@bash scripts/edge-check.sh

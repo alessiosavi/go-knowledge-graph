@@ -57,3 +57,27 @@ func TestStubStreamsSeparatedFrames(t *testing.T) {
 		t.Fatal("expected one OpenAI completion without tools")
 	}
 }
+
+func TestStubHoldsRenewalStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(completions))
+	defer srv.Close()
+	res, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"stream":true,"messages":[{"role":"user","content":"edge-check held renewal"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	scan := bufio.NewScanner(res.Body)
+	start := time.Now()
+	frames := 0
+	for scan.Scan() {
+		if strings.HasPrefix(scan.Text(), "data:") {
+			frames++
+			if frames == 2 {
+				break
+			}
+		}
+	}
+	if frames < 2 || time.Since(start) < 12*time.Second {
+		t.Fatal("renewal stream must stay open after the first frame for 12 seconds")
+	}
+}

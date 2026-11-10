@@ -1,5 +1,8 @@
 # Only used by the isolated, offline edge acceptance check.
 services:
+  # Fake lineage only: acceptance cannot contact an ACME service.
+  certbot:
+    network_mode: none
   llmstub:
     build:
       context: ..

@@ -11,14 +11,16 @@ import (
 )
 
 type stubOpts struct {
-	PortOut, ExecOut, IDsOut string
-	EnvFile                  string
-	NoEdge                   bool
-	Input                    string
-	EdgeEnvLog               *[]string
-	StdinLog                 *string
-	EnvLog                   *[]string
-	Env                      []string
+	PortOut, ExecOut, IDsOut                string
+	CertName, InstallOut, DiskFP, ServedOut string
+	RenewFail, ReloadFail, VerifyFail       bool
+	EnvFile                                 string
+	NoEdge                                  bool
+	Input                                   string
+	EdgeEnvLog                              *[]string
+	StdinLog                                *string
+	EnvLog                                  *[]string
+	Env                                     []string
 }
 
 func runMake(t *testing.T, opts stubOpts, args ...string) (string, []string, int) {
@@ -30,12 +32,18 @@ func runMake(t *testing.T, opts stubOpts, args ...string) (string, []string, int
 	edgeEnvLog := filepath.Join(dir, "edge-env-calls")
 	stdinLog := filepath.Join(dir, "stdin")
 	script := `#!/bin/bash
-printf '%s\n' "$*" >> "$STUB_CALLS"
+printf '%s\n' "${*//$'\n'/ }" >> "$STUB_CALLS"
 printf '%s\n' "${GKG_ENV_FILE:-}" >> "$STUB_ENV_LOG"
 printf '%s|%s\n' "${EDGE_HTPASSWD:-}" "${EDGE_WAF_ENV:-}" >> "$STUB_EDGE_ENV_LOG"
 case " $* " in
  *" htpasswd "*) cat > "$STUB_STDIN"; printf '%s:$2y$synthetic-hash\n' "${@: -1}" ;;
   *" port "*) printf '%s' "$STUB_PORT" ;;
+  *" printenv SERVER_NAME "*) printf '%s' "$STUB_CERT_NAME" ;;
+  *" certbot certonly "*|*" certbot renew "*) [ "$STUB_RENEW_FAIL" != true ] || exit 71 ;;
+  *" /edge-install-cert.sh certbot "*) printf '%s\n' "$STUB_INSTALL" ;;
+  *" nginx -s reload "*) [ "$STUB_RELOAD_FAIL" != true ] || exit 72 ;;
+  *" exec -T edge openssl x509 "*) printf '%s\n' "$STUB_DISK_FP" ;;
+  *" exec -T edge sh "*) [ "$STUB_VERIFY_FAIL" != true ] || exit 73; printf '%s\n' "$STUB_SERVED" ;;
   *" exec "*) printf '%s' "$STUB_EXEC" ;;
   *" ps -q "*) printf '%s' "$STUB_IDS" ;;
 esac
@@ -68,6 +76,8 @@ exit 0
 		"STUB_PORT=" + opts.PortOut, "STUB_EXEC=" + opts.ExecOut, "STUB_IDS=" + opts.IDsOut,
 		"SMOKE_TIMEOUT_S=5", "SMOKE_POLL_S=0.1", "SMOKE_REQ_TIMEOUT_S=1",
 	}
+	cmd.Env = append(cmd.Env, "STUB_CERT_NAME="+opts.CertName, "STUB_INSTALL="+opts.InstallOut, "STUB_DISK_FP="+opts.DiskFP, "STUB_SERVED="+opts.ServedOut,
+		"STUB_RENEW_FAIL="+fmt.Sprint(opts.RenewFail), "STUB_RELOAD_FAIL="+fmt.Sprint(opts.ReloadFail), "STUB_VERIFY_FAIL="+fmt.Sprint(opts.VerifyFail))
 	cmd.Env = append(cmd.Env, opts.Env...)
 	out, err := cmd.CombinedOutput()
 	code := 0
@@ -408,5 +418,73 @@ func TestMakeWAFMode(t *testing.T) {
 	_, calls, code := runMake(t, stubOpts{Env: []string{"MODE=On"}}, "waf-mode")
 	if code == 0 || len(calls) != 0 {
 		t.Error("MODE must come only from the command line")
+	}
+}
+
+func TestMakeCert(t *testing.T) {
+	for _, name := range []string{"", "localhost", "bad/name", "-bad.example"} {
+		out, calls, code := runMake(t, stubOpts{CertName: name}, "cert")
+		if code == 0 || len(calls) != 1 || !strings.Contains(out, "SERVER_NAME") {
+			t.Errorf("invalid edge name must refuse issuance")
+		}
+	}
+	for _, staging := range []bool{false, true} {
+		args := []string{"cert", "PROJECT=fixture-project", "LIGHT=1", "COMPOSE_EXTRA=deploy/compose.edgecheck.yml"}
+		if staging {
+			args = append(args, "STAGING=1")
+		}
+		out, calls, code := runMake(t, stubOpts{CertName: "edge.example", InstallOut: "unchanged", DiskFP: "FP", ServedOut: "FP\n365"}, args...)
+		if code != 0 {
+			t.Fatalf("cert failed: %s", out)
+		}
+		joined := strings.Join(calls, "\n")
+		want := "--profile cert run --rm certbot certonly --webroot -w /var/www/acme -d edge.example --non-interactive --agree-tos --register-unsafely-without-email"
+		if !strings.Contains(joined, want) || strings.Contains(joined, "--test-cert") != staging || !strings.Contains(joined, "--entrypoint /edge-install-cert.sh certbot edge.example") {
+			t.Error("cert must issue for the running edge then install/verify")
+		}
+		for _, call := range calls {
+			if !strings.Contains(call, "-p fixture-project") || !strings.Contains(call, "-f deploy/compose.edgecheck.yml") {
+				t.Error("certificate operations lost compose selection")
+			}
+		}
+	}
+}
+
+func TestMakeRenewConvergence(t *testing.T) {
+	for _, test := range []struct {
+		name, install, disk, served                     string
+		reload, fail, renewFail, reloadFail, verifyFail bool
+	}{
+		{name: "no-live", install: "unchanged", disk: "FP", served: "FP\n365"},
+		{name: "installed", install: "installed", disk: "FP", served: "FP\n365", reload: true},
+		{name: "repair-failed-reload", install: "unchanged", disk: "NEW", served: "OLD\n365", reload: true, fail: true},
+		{name: "short-expiry", install: "installed", disk: "FP", served: "FP\n7", reload: true, fail: true},
+		{name: "install-failure", install: "unexpected", fail: true},
+		{name: "certbot-failure", renewFail: true, fail: true},
+		{name: "reload-fallback", install: "installed", disk: "FP", served: "FP\n365", reload: true, reloadFail: true},
+		{name: "verification-failure", install: "installed", disk: "FP", reload: true, verifyFail: true, fail: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			out, calls, code := runMake(t, stubOpts{CertName: "localhost", InstallOut: test.install, DiskFP: test.disk, ServedOut: test.served, RenewFail: test.renewFail, ReloadFail: test.reloadFail, VerifyFail: test.verifyFail, Env: []string{"EDGE_RENEW_ATTEMPTS=1"}}, "renew")
+			if (code != 0) != test.fail {
+				t.Fatalf("wrong renewal result: %s", out)
+			}
+			joined := strings.Join(calls, "\n")
+			if !strings.Contains(joined, "--profile cert run --rm certbot renew") {
+				t.Error("renew did not call certbot")
+			}
+			if strings.Contains(joined, "nginx -s reload") != test.reload {
+				t.Error("wrong reload decision")
+			}
+			if test.reloadFail && (!strings.Contains(joined, "restart edge") || !strings.Contains(out, "fallback")) {
+				t.Error("reload fallback must be recorded")
+			}
+			if test.name == "short-expiry" && !strings.Contains(out, "7 days") {
+				t.Error("expiry failure must name remaining days")
+			}
+			if test.renewFail && strings.Contains(joined, "/edge-install-cert.sh") {
+				t.Error("failed certbot must stop renewal")
+			}
+		})
 	}
 }

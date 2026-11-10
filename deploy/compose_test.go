@@ -278,3 +278,20 @@ func TestComposeCertProfile(t *testing.T) {
 		t.Fatal("certbot must be pinned, bounded, and profile-only")
 	}
 }
+
+func TestComposeCertInstaller(t *testing.T) {
+	cert := defaultCompose(t).Services["certbot"]
+	mounts := map[string]bool{}
+	for _, v := range cert.Volumes {
+		mounts[v.Target] = v.ReadOnly
+	}
+	for _, target := range []string{"/etc/letsencrypt", "/var/www/acme", "/etc/nginx/edge-certs"} {
+		ro, ok := mounts[target]
+		if !ok || ro {
+			t.Errorf("certbot needs writable %s", target)
+		}
+	}
+	if !mounts["/edge-install-cert.sh"] {
+		t.Error("certbot installer must be mounted read-only")
+	}
+}

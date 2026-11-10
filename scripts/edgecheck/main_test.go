@@ -7,9 +7,41 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
+
+func TestJavaQueryProbeOutsideExcludedBody(t *testing.T) {
+	var seen atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(r.URL.Query().Get("edgecheck_java_query"), "java.lang.Runtime") {
+			if r.Method != "POST" || r.URL.Path != "/v1/ingest" {
+				t.Error("query probe must exercise a route with a body exclusion")
+			}
+			var document struct{ Text string }
+			if json.Unmarshal(body, &document) != nil || document.Text != "synthetic" || strings.Contains(string(body), "java.lang.Runtime") {
+				t.Error("Java query proof requires a benign body")
+			}
+			seen.Add(1)
+		}
+		if strings.Contains(r.URL.RawPath, "%2e%2e") {
+			w.WriteHeader(400)
+		} else {
+			w.WriteHeader(403)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	write(filepath.Join(dir, "auth.curl"), nil)
+	write(filepath.Join(dir, "attack-marker"), []byte("synthetic-marker"))
+	p := &probe{dir: dir, base: server.URL}
+	p.attacks("On")
+	if seen.Load() != 1 {
+		t.Fatal("attack battery must include one Java query probe")
+	}
+}
 
 func TestClosedRouteResponses(t *testing.T) {
 	for _, mode := range []string{"DetectionOnly", "On"} {

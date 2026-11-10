@@ -12,6 +12,7 @@ type auditRecord struct {
 	ID    string
 	URI   string
 	Rules []string
+	Data  map[string][]string
 	Raw   string
 }
 
@@ -76,6 +77,7 @@ func parseAudit(input string) ([]auditRecord, error) {
 				Messages []struct {
 					Details struct {
 						RuleID json.RawMessage `json:"ruleId"`
+						Data   string          `json:"data"`
 					} `json:"details"`
 				} `json:"messages"`
 			} `json:"transaction"`
@@ -83,13 +85,14 @@ func parseAudit(input string) ([]auditRecord, error) {
 		if json.Unmarshal(pending.Bytes(), &envelope) != nil || envelope.Transaction == nil || envelope.Transaction.ID == "" {
 			return nil, fmt.Errorf("invalid audit transaction")
 		}
-		record := auditRecord{ID: envelope.Transaction.ID, URI: envelope.Transaction.Request.URI, Raw: pending.String()}
+		record := auditRecord{ID: envelope.Transaction.ID, URI: envelope.Transaction.Request.URI, Raw: pending.String(), Data: map[string][]string{}}
 		for _, message := range envelope.Transaction.Messages {
 			id := strings.Trim(string(message.Details.RuleID), `"`)
 			if id == "" || strings.Trim(id, "0123456789") != "" {
 				return nil, fmt.Errorf("audit message has no numeric details.ruleId")
 			}
 			record.Rules = append(record.Rules, id)
+			record.Data[id] = append(record.Data[id], message.Details.Data)
 		}
 		records = append(records, record)
 		pending.Reset()
@@ -122,6 +125,25 @@ func positiveAudit(records []auditRecord, baseline map[string]bool) bool {
 	for _, record := range records {
 		if !baseline[record.ID] && strings.Contains(record.URI, "edgecheck_attack_marker=1") && len(record.Rules) > 0 {
 			return true
+		}
+	}
+	return false
+}
+
+func javaProbeMatched(records []auditRecord, baseline map[string]bool, marker, target string) bool {
+	for _, record := range records {
+		if baseline[record.ID] || !strings.Contains(record.URI, marker) {
+			continue
+		}
+		for rule, data := range record.Data {
+			if !strings.HasPrefix(rule, "944") {
+				continue
+			}
+			for _, match := range data {
+				if strings.HasSuffix(match, "within "+target) || strings.HasSuffix(match, "within MATCHED_VARS:"+target) {
+					return true
+				}
+			}
 		}
 	}
 	return false

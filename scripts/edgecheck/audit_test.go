@@ -1,10 +1,38 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 )
+
+func TestJavaAuditRequiresNamedTarget(t *testing.T) {
+	const marker = "edgecheck_java_source="
+	const target = "ARGS:json.params.arguments.source"
+	for _, tc := range []struct {
+		name, rule, data string
+		baseline         bool
+		want             bool
+	}{
+		{"named Java match", "944100", "Matched Data: java.lang.Runtime found within " + target, false, true},
+		{"chained Java match", "944110", "Matched Data: runtime found within MATCHED_VARS:" + target, false, true},
+		{"raw body only", "944100", "Matched Data: java.lang.Runtime found within REQUEST_BODY", false, false},
+		{"other rule", "941100", "Matched Data: payload found within " + target, false, false},
+		{"old Java match", "944100", "Matched Data: java.lang.Runtime found within " + target, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := fmt.Sprintf(`{"transaction":{"unique_id":"java","request":{"uri":"/mcp?%s1"},"messages":[{"details":{"ruleId":%q,"data":%q}}]}}`, marker, tc.rule, tc.data)
+			records, err := parseAudit(fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := javaProbeMatched(records, map[string]bool{"java": tc.baseline}, marker, target); got != tc.want {
+				t.Fatalf("Java named-target proof = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestAuditCapturedFixture(t *testing.T) {
 	// Captured from the pinned edge image's DetectionOnly XSS request. Only
