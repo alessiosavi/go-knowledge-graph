@@ -149,6 +149,9 @@ delete.
   becomes a persisted document-side row in the embeddings service (its
   content-hash cache, no TTL) — that is the service's contract and what
   makes unchanged re-ingests cheap.
+- Vector search is approximate: entities whose distances are exactly tied
+  may be selected arbitrarily among the tied set. Real embeddings have
+  graded similarities, so this is not observable in practice.
 
 ## Text search and aliases
 
