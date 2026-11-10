@@ -543,7 +543,15 @@
     let buffer = "";
     let done = null;
     for (;;) {
-      const chunk = await reader.read();
+      let chunk;
+      try {
+        chunk = await reader.read();
+      } catch (err) {
+        // A read error after the authoritative payload is not worth a
+        // second ask: keep it, the response is complete.
+        if (done) break;
+        throw err;
+      }
       if (chunk.done) break;
       buffer += decoder.decode(chunk.value, { stream: true });
       let idx;
