@@ -35,7 +35,8 @@ cleanup() {
     done
   fi
   if [ "$active" = 1 ]; then
-    if ! make destroy CONFIRM=yes "${make_args[@]}" >"$tmp/cleanup.log" 2>&1; then
+    # Include cert-only volumes left by the removed renewal one-shots.
+    if ! COMPOSE_PROFILES=cert make destroy CONFIRM=yes "${make_args[@]}" >"$tmp/cleanup.log" 2>&1; then
       printf '%s\n' 'FAIL: isolated project cleanup'
       result=1
     fi
@@ -273,6 +274,21 @@ grep -E '(6|7) days left' "$tmp/renew-expiry.log" >/dev/null || fail 'expiry fai
 ok '7-day certificate installed and served; renew exits nonzero below 14 days'
 refresh_ca
 "$tmp/check" stream "$tmp" "$base"
+ok 'section password rotation (running stack, plain make up)'
+before_edge="$("${compose[@]}" ps -q edge)"
+[ -n "$before_edge" ] || fail 'running edge before password rotation'
+cp "$tmp/auth.curl" "$tmp/old.curl"
+cp "$tmp/password" "$tmp/old-password"
+printf 'rotated$:\047"%s' "$(openssl rand -hex 12)" >"$tmp/password"
+{ cat "$tmp/password"; printf '\n'; } | make passwd LOGIN=edgecheck "${make_args[@]}" >"$tmp/passwd-rotation.log" 2>&1 || fail 'rotate existing login password'
+# Use the documented up target: no force-recreate, explicit edge-init run,
+# nginx reload or restart. The completed one-shot must copy the new password.
+make up "${make_args[@]}" >"$tmp/up-rotation.log" 2>&1 || fail 'plain make up after password rotation'
+after_edge="$("${compose[@]}" ps -q edge)"
+[ "$before_edge" = "$after_edge" ] || fail 'password rotation recreated the edge'
+printf 'OK: password rotation edge container unchanged: %s\n' "$after_edge" | tee "$tmp/rotation.log"
+"$tmp/check" prepare "$tmp"
+"$tmp/check" rotation "$tmp" "$base" | tee -a "$tmp/rotation.log"
 "${compose[@]}" logs --no-color --no-log-prefix >"$tmp/all-renewal.log" 2>&1
 "$tmp/check" hygiene "$tmp" "$tmp/all-renewal.log" "$tmp/after-legit"
 "${compose[@]}" exec -T edge sh -c 'printf "memory.peak="; cat /sys/fs/cgroup/memory.peak; cat /sys/fs/cgroup/memory.events' >"$tmp/resources-renewal.log"

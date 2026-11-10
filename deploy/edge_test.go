@@ -24,7 +24,7 @@ func TestEdgeAllowlist(t *testing.T) {
 	// These expressions are the complete public method/path contract. Named
 	// locations can only be reached through try_files, after Basic auth.
 	want := map[string]string{
-		"^(GET|HEAD):/ui/.*$":                               "@edge_default",
+		"^(GET|HEAD):/ui(/.*)?$":                            "@edge_default",
 		"^(GET|HEAD):/v1/entities/[^/]+$":                   "@edge_default",
 		"^(GET|HEAD):/v1/documents$":                        "@edge_default",
 		"^(GET|HEAD|DELETE):/v1/documents/[^/]+$":           "@edge_default",
@@ -221,13 +221,16 @@ make_args=(fixture)
 compose=(true)
 mkdir() { return 77; }
 cp() { return 77; }
-make() { printf '%s\n' "$*" > "$TEST_CALLS"; }
+make() { printf '%s\n' "$*" "profiles=${COMPOSE_PROFILES:-}" > "$TEST_CALLS"; }
 `+cleanup+"\ncleanup\n")
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "TEST_WORK=" + work, "TEST_CALLS=" + filepath.Join(dir, "calls"), "EDGE_CHECK_EVIDENCE_DIR=" + filepath.Join(dir, "evidence")}
 	cmd.CombinedOutput()
 	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	if !strings.Contains(string(calls), "destroy CONFIRM=yes fixture") {
 		t.Error("evidence failures must not prevent project cleanup")
+	}
+	if !strings.Contains(string(calls), "profiles=cert\n") {
+		t.Error("cleanup must include cert-only volumes left by removed renewal one-shots")
 	}
 	if _, err := os.Stat(work); !os.IsNotExist(err) {
 		t.Error("evidence failures must not prevent temp cleanup")

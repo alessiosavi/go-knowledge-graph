@@ -2,16 +2,108 @@ package main
 
 import (
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
+
+func TestProbeCommandCA(t *testing.T) {
+	for _, tls := range []bool{false, true} {
+		name := "http"
+		if tls {
+			name = "https"
+		}
+		t.Run(name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+			var server *httptest.Server
+			dir := t.TempDir()
+			if tls {
+				server = httptest.NewTLSServer(handler)
+				write(filepath.Join(dir, "ca.crt"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
+			} else {
+				server = httptest.NewServer(handler)
+			}
+			defer server.Close()
+			p := &probe{dir: dir, base: server.URL}
+			cmd, _, _ := p.command("GET", "/healthz", "", 5)
+			found := false
+			for i, arg := range cmd.Args {
+				if arg == "--cacert" {
+					found = true
+					if i+1 >= len(cmd.Args) || cmd.Args[i+1] != filepath.Join(dir, "ca.crt") {
+						t.Fatal("HTTPS must use the private CA file")
+					}
+				}
+			}
+			if found != tls {
+				t.Fatalf("--cacert present=%t for %s base", found, name)
+			}
+			if r := p.request("GET", "/healthz", "", nil); r.code != http.StatusOK {
+				t.Fatalf("probe returned HTTP %d", r.code)
+			}
+		})
+	}
+}
+
+func TestPasswordRotationProbe(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "edgecheck")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build probe: %v: %s", err, out)
+	}
+	for _, tc := range []struct {
+		name             string
+		oldCode, newCode int
+		wantOK           bool
+	}{
+		{"rotated", 401, 200, true},
+		{"old password still accepted", 200, 200, false},
+		{"new password rejected", 401, 401, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var oldSeen, newSeen atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				login, password, ok := r.BasicAuth()
+				if !ok || login != "edgecheck" || r.Method != "GET" || r.URL.Path != "/v1/documents" {
+					t.Error("rotation must authenticate the same login on a protected route")
+					w.WriteHeader(400)
+					return
+				}
+				switch password {
+				case "old-password":
+					oldSeen.Add(1)
+					w.WriteHeader(tc.oldCode)
+				case "new-password":
+					newSeen.Add(1)
+					w.WriteHeader(tc.newCode)
+				default:
+					t.Error("unexpected rotation credential")
+					w.WriteHeader(400)
+				}
+			}))
+			defer server.Close()
+			dir := t.TempDir()
+			write(filepath.Join(dir, "old.curl"), []byte("user = \"edgecheck:old-password\"\n"))
+			write(filepath.Join(dir, "auth.curl"), []byte("user = \"edgecheck:new-password\"\n"))
+			out, err := exec.Command(bin, "rotation", dir, server.URL).CombinedOutput()
+			if (err == nil) != tc.wantOK {
+				t.Fatalf("rotation success=%t, want %t: %s", err == nil, tc.wantOK, out)
+			}
+			if oldSeen.Load() != 1 || tc.oldCode == 401 && newSeen.Load() != 1 {
+				t.Fatalf("rotation did not check both credential generations: old=%d new=%d", oldSeen.Load(), newSeen.Load())
+			}
+		})
+	}
+}
 
 func TestJavaQueryProbeOutsideExcludedBody(t *testing.T) {
 	var seen atomic.Int64
@@ -27,7 +119,7 @@ func TestJavaQueryProbeOutsideExcludedBody(t *testing.T) {
 			}
 			seen.Add(1)
 		}
-		if strings.Contains(r.URL.RawPath, "%2e%2e") {
+		if strings.Contains(strings.ToLower(r.URL.RawPath), "%2e%2e") {
 			w.WriteHeader(400)
 		} else {
 			w.WriteHeader(403)

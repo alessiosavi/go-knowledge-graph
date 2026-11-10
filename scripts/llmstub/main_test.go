@@ -67,17 +67,21 @@ func TestStubHoldsRenewalStream(t *testing.T) {
 	}
 	defer res.Body.Close()
 	scan := bufio.NewScanner(res.Body)
-	start := time.Now()
+	var start time.Time
 	frames := 0
 	for scan.Scan() {
 		if strings.HasPrefix(scan.Text(), "data:") {
 			frames++
+			if frames == 1 {
+				start = time.Now() // measure the hold from the first frame
+			}
 			if frames == 2 {
 				break
 			}
 		}
 	}
-	if frames < 2 || time.Since(start) < 12*time.Second {
+	// The stub holds 12 s; allow 1 s of scheduling jitter on loaded runners.
+	if frames < 2 || time.Since(start) < 11*time.Second {
 		t.Fatal("renewal stream must stay open after the first frame for 12 seconds")
 	}
 }

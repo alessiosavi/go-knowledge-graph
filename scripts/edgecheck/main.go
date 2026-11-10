@@ -67,7 +67,10 @@ type response struct {
 func (p *probe) command(method, path, config string, timeout int, extra ...string) (*exec.Cmd, string, string) {
 	p.serial++
 	body, headers := filepath.Join(p.dir, fmt.Sprintf("body-%d", p.serial)), filepath.Join(p.dir, fmt.Sprintf("headers-%d", p.serial))
-	args := []string{"-q", "--silent", "--show-error", "--noproxy", "*", "--path-as-is", "--max-time", strconv.Itoa(timeout), "--cacert", filepath.Join(p.dir, "ca.crt"), "-X", method, "-D", headers, "-o", body, "-w", "%{http_code}"}
+	args := []string{"-q", "--silent", "--show-error", "--noproxy", "*", "--path-as-is", "--max-time", strconv.Itoa(timeout), "-X", method, "-D", headers, "-o", body, "-w", "%{http_code}"}
+	if strings.HasPrefix(p.base, "https://") {
+		args = append(args, "--cacert", filepath.Join(p.dir, "ca.crt"))
+	}
 	if config != "" {
 		args = append(args, "-K", filepath.Join(p.dir, config))
 	}
@@ -146,6 +149,8 @@ func (p *probe) waitIngest(name, id string) string {
 func (p *probe) routing() {
 	root := p.check("root relative redirect", "GET", "/", nil, 302)
 	expect(root.headers.Get("Location") == "/ui/", "root preserves the external port with a relative Location")
+	redirect := p.check("bare UI redirect", "GET", "/ui", nil, 301)
+	expect(redirect.headers.Get("Location") == "/ui/", "bare UI preserves the external port with a relative Location")
 	r := p.check("UI shell", "GET", "/ui/", nil, 200)
 	expect(bytes.Contains(r.body, []byte(`id="graph"`)), "embedded UI shell content")
 	for _, asset := range []string{"app.js", "app.css"} {
@@ -556,10 +561,22 @@ func prepare(dir string) {
 	write(filepath.Join(dir, "bearer.curl"), []byte("header = \"Authorization: Bearer "+key+"\"\n"))
 }
 
+func (p *probe) rotation() {
+	r := p.request("GET", "/v1/documents", "old.curl", nil)
+	expect(r.code == 401, fmt.Sprintf("old password rejected after rotation (HTTP %d)", r.code))
+	p.check("new password accepted after rotation", "GET", "/v1/documents", nil, 200)
+}
+
 func hygiene(dir, logs, edgeLogs string) {
 	data := read(logs)
 	login, password := string(read(filepath.Join(dir, "login"))), string(read(filepath.Join(dir, "password")))
-	for _, secret := range []string{password, base64.StdEncoding.EncodeToString([]byte(login + ":" + password)), string(read(filepath.Join(dir, "api-key"))), string(read(filepath.Join(dir, "memgraph-password"))), string(read(filepath.Join(dir, "marker")))} {
+	secrets := []string{password, base64.StdEncoding.EncodeToString([]byte(login + ":" + password)), string(read(filepath.Join(dir, "api-key"))), string(read(filepath.Join(dir, "memgraph-password"))), string(read(filepath.Join(dir, "marker")))}
+	if old, err := os.ReadFile(filepath.Join(dir, "old-password")); err == nil {
+		secrets = append(secrets, string(old), base64.StdEncoding.EncodeToString(append([]byte(login+":"), old...)))
+	} else if !os.IsNotExist(err) {
+		must(err)
+	}
+	for _, secret := range secrets {
 		expect(!bytes.Contains(data, []byte(secret)), "service logs omit private credential/corpus marker")
 	}
 	records, err := parseAudit(string(read(edgeLogs)))
@@ -618,6 +635,8 @@ func main() {
 		switch args[0] {
 		case "routing":
 			p.routing()
+		case "rotation":
+			p.rotation()
 		case "auth":
 			p.auth(args[3])
 		case "encoded-paths":
