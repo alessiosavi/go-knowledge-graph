@@ -2,8 +2,8 @@
 
 ## PDF extraction (best-effort, pure Go)
 
-PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
-**best-effort by design**:
+When conversion is off (including light mode), PDF text extraction uses
+`github.com/dslipak/pdf` v0.0.2 (pinned) and is **best-effort by design**:
 
 - **No OCR** — scanned or image-only PDFs fail with a clear
   "no extractable text" error; they are never silently ingested empty.
@@ -24,9 +24,9 @@ PDF text extraction uses `github.com/dslipak/pdf` v0.0.2 (pinned) and is
   tests.
 - The optional sidecar's higher-quality PDF text path is an explicit v0.1
   deferral; the sidecar in v0.1 extracts entities only.
-- With `GKG_CONVERTER_MODE=docling` (see
-  [quickstart](quickstart.md#7-optional-high-quality-document-ingestion-docling))
-  the `docling` profile converts PDFs (scans included), Office formats and
+- With the default `GKG_CONVERTER_MODE=docling` (see
+  [quickstart](quickstart.md#7-high-quality-document-ingestion-docling))
+  docling converts PDFs (scans included), Office formats and
   images to markdown before the pipeline; a conversion failure fails the
   document with the converter's reason instead of falling back to the
   best-effort path.
@@ -73,6 +73,10 @@ A per-version delete of an older version while a newer version is finishing
 is benign: the newer version completes normally.
 
 ## Other v0.1 notes
+
+- With the stack down, a host-run binary's ingests fail at extraction or
+  conversion because the defaults need sidecar/docling. There is no silent
+  fallback; set the modes explicitly for a setup without those services.
 
 - No crawling/scheduling, no multi-tenancy (see the design's non-goals).
 - The gliner2.5 (Apache-2.0) local extraction swap is a v0.1 item: the

@@ -7,8 +7,8 @@ from agents over MCP + REST — optionally verifying facts with an LLM judge
 and measuring extraction quality with the built-in eval harness.
 
 - **Pipeline**: decode → sentence-aware chunks → near-duplicate detection
-  (MinHash/LSH) → extraction (OpenAI-compatible LLM or a local GLiNEREL
-  sidecar) → confidence floors → provenance merge. Unchanged re-ingest is a
+  (MinHash/LSH) → extraction (local GLiNEREL sidecar by default, or an
+  OpenAI-compatible LLM) → confidence floors → provenance merge. Unchanged re-ingest is a
   no-op; changed content supersedes the old version with an audit trail.
 - **Agent surface**: MCP over stdio and streamable HTTP, mirrored by REST:
   ingest, status, search, entity views with evidence, traversal, document
@@ -34,18 +34,25 @@ and measuring extraction quality with the built-in eval harness.
   service (separate document and query Function URLs, 768d) is configured;
   without one, search is text-only.
 
-Everything runs from one static Go binary (`gkg`) plus a Memgraph instance;
-the sidecar profile adds a local, fully-offline extraction option, and the
-`docling` profile optional high-quality conversion of PDFs/Office/images to
-markdown via docling-serve.
+The default stack runs Memgraph, the static Go binary (`gkg`), a local
+GLiNEREL sidecar with offline extraction, and docling-serve for high-quality
+conversion of PDFs/Office/images to markdown.
 
 ## Quickstart
 
+Prerequisites: Docker with Compose ≥ 2.24.4; servers need Engine ≥ 28.
+
 ```sh
-cp .env.example .env    # set MEMGRAPH_PASSWORD and your extractor key
-docker compose --env-file .env -f deploy/docker-compose.yml up -d --wait
-curl -s -F 'file=@notes.md' localhost:8080/v1/ingest
+cp .env.example .env    # set MEMGRAPH_PASSWORD; provider keys for agent/embeddings if enabled
+make up
 ```
+
+Open `http://127.0.0.1:8080/ui/` (use `GKG_PORT` if changed).
+
+- `make up LIGHT=1` starts Memgraph + gkg with mock extraction and conversion off.
+- `make down` stops the stack and preserves graph data.
+- `make smoke` checks the running project and deletes its temporary document.
+- `make destroy CONFIRM=yes` permanently deletes the graph volume.
 
 Then connect an agent ([docs/agent-setup.md](docs/agent-setup.md)),
 evaluate ([docs/quickstart.md#8-evaluation](docs/quickstart.md)), or run
@@ -61,7 +68,7 @@ and troubleshooting live in [docs/quickstart.md](docs/quickstart.md).
 | `internal/api`     | REST `/v1/*`, health/metrics, bearer auth, body caps, read-only Cypher guard       |
 | `internal/mcp`     | the seven agent tools over stdio and streamable HTTP                               |
 | `internal/ingest`  | pipeline, worker pool, recovery, dedup, URL/PDF/HTML inputs                        |
-| `internal/convert` | optional docling-serve converter (PDF/Office/images → markdown)                    |
+| `internal/convert` | default docling-serve converter (PDF/Office/images → markdown)                    |
 | `internal/graph`   | Memgraph store: documents/chunks/entities/facts, supersede, GC, text/vector search |
 | `internal/search`  | entity/chunk search with rank fusion of text and optional embedding legs           |
 | `internal/extract` | extractor contract + OpenAI-compatible and GLiNEREL-sidecar providers              |

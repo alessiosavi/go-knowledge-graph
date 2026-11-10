@@ -48,7 +48,7 @@ servers live under `mcp.servers` and secrets stay in the environment:
           "GKG_MEMGRAPH_URI": "bolt://localhost:7687",
           "GKG_MEMGRAPH_USER": "gkg",
           "GKG_MEMGRAPH_PASSWORD": "{env:GKG_MEMGRAPH_PASSWORD}",
-          "GKG_EXTRACTOR_MODE": "openai",
+          "GKG_EXTRACTOR_MODE": "openai", // override the sidecar default
           "GKG_EXTRACTOR_OPENAI_API_KEY": "{env:OPENAI_API_KEY}",
         },
       },
@@ -86,7 +86,8 @@ Notes:
 
 ## Claude Desktop
 
-Edit `claude_desktop_config.json` (Settings → Developer → Edit Config):
+Edit `claude_desktop_config.json` (Settings → Developer → Edit Config).
+The `GKG_EXTRACTOR_MODE=openai` setting below overrides the sidecar default:
 
 ```json
 {

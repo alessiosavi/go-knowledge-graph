@@ -11,22 +11,50 @@ git clone https://github.com/alessiosavi/go-knowledge-graph && cd go-knowledge-g
 cp .env.example .env
 # edit .env:
 #   MEMGRAPH_PASSWORD=<generate one, e.g. openssl rand -hex 24>
-#   GKG_EXTRACTOR_OPENAI_API_KEY=<your key>       (LLM extraction mode)
+#   provider keys for agent/embeddings, if enabled
 ```
 
 Every knob is documented in `.env.example`; environment variables are the
 `GKG_<SECTION>_<KEY>` form of `config.yaml` and override it.
 
-## 2. Start the stack (LLM mode)
+## 2. Start the stack
 
 ```sh
-docker compose --env-file .env -f deploy/docker-compose.yml up -d --wait
+make up
 curl -s localhost:8080/healthz        # {"status":"ok"}
 curl -s localhost:8080/readyz         # {"status":"ready"}
 ```
 
-Memgraph keeps its data in the `gkg_memgraph-data` volume; `down -v`
-removes it. Host port conflicts: set `MEMGRAPH_PORT` / `GKG_PORT` in `.env`.
+Requires Docker Compose ≥ 2.24.4; servers need Docker Engine ≥ 28.
+`make up` starts Memgraph, gkg, GLiNEREL and docling. Open
+`http://127.0.0.1:8080/ui/` (or the configured `GKG_PORT`). All four host
+ports bind to `127.0.0.1`; change `MEMGRAPH_PORT`, `GKG_PORT`, `SIDECAR_PORT`
+or `DOCLING_PORT` in `.env` for port conflicts. `ENV_FILE=other.env` selects
+a different env file; `PROJECT=another-project` selects an isolated stack.
+
+Memgraph keeps its data in the `gkg_memgraph-data` volume. `make down`
+preserves it; `make destroy CONFIRM=yes` permanently deletes it. `make smoke`
+checks the running project's readiness, ingestion, search and deletion.
+
+**Upgrade from an older `.env`:** existing `GKG_EXTRACTOR_MODE=openai` and
+`GKG_CONVERTER_MODE=off` values override the new defaults, so gkg will not
+use the sidecar/docling even though they start. Set them to `sidecar` and
+`docling`, or delete the two lines to use the defaults.
+
+**Host-run binaries:** the default sidecar and converter URLs use localhost
+ports 8090 and 5001. Keep the stack up, configure URLs explicitly if its
+host ports change, or set the extractor/converter modes explicitly for a
+standalone setup. An unavailable model service fails ingestion without a
+silent fallback. Leave the two URL overrides unset when sharing `.env`
+between Compose and a host-run binary.
+
+**Memory limits:** `deploy/docker-compose.yml` holds each service's
+`mem_limit` and Memgraph's `--memory-limit` (MiB). The provisional limits
+are 3/1/4/6 GiB for Memgraph/gkg/sidecar/docling; they await load measurement.
+Raise a service's limit there if needed, retain host headroom, keep Memgraph's
+internal budget below its container limit, then run `make up` to apply it.
+`DOCLING_ENG_WORKERS` (default 2) and `DOCLING_NUM_THREADS` (default 4) tune
+conversion concurrency.
 
 ## 3. Ingest and query
 
@@ -86,27 +114,30 @@ Claude Desktop are in [agent-setup.md](agent-setup.md); the tool set is
 `ingest`, `status`, `search`, `get_entity`, `traverse`, `list_documents`,
 `cypher`.
 
-## 5. Optional: local, fully-offline extraction
+## 5. Local, fully-offline extraction
 
-The `local` profile runs the GLiNEREL sidecar with weights baked into the
-image (runtime `HF_HUB_OFFLINE=1`, no network):
+The GLiNEREL sidecar starts with `make up`; `sidecar` is the default
+extractor mode. Weights are baked into the image (runtime
+`HF_HUB_OFFLINE=1`, no network).
 
-```sh
-# in .env:
-#   GKG_EXTRACTOR_MODE=sidecar
-docker compose --env-file .env --profile local -f deploy/docker-compose.yml up -d --wait
-```
-
-The checkpoint is selected at **image build time** through `GLINEREL_MODEL`
-in `.env` (`314m` default, `72m` smaller/faster; both resolve to the
-`VAGOsolutions/SauerkrautLM-GLiNEREL-*` repositories). Changing it needs a
-rebuild, because the weights are baked and the runtime is offline:
+Select the checkpoint at **image build time** with `GLINEREL_MODEL` in
+`.env` (`314m` default, `72m` smaller/faster; both resolve to the
+`VAGOsolutions/SauerkrautLM-GLiNEREL-*` repositories). After changing it:
 
 ```sh
-# GLINEREL_MODEL=72m in .env, then:
-docker compose --env-file .env --profile local -f deploy/docker-compose.yml build sidecar
-docker compose --env-file .env --profile local -f deploy/docker-compose.yml up -d --wait
+make build S=sidecar && make up
 ```
+
+To run without either model service on CI or a laptop:
+
+```sh
+make up LIGHT=1
+```
+
+Light mode uses mock extraction and disables conversion; neither model
+service is built or pulled. Set `GKG_LIGHT_EXTRACTOR_MODE=openai` and the
+OpenAI-compatible extractor settings to use an LLM instead. Include
+`LIGHT=1` with subsequent stack commands for that setup.
 
 Any other Hugging Face repository id is passed through verbatim; the
 checkpoint must be loadable by the bundled `glinerel-fast` runtime (the
@@ -173,24 +204,18 @@ without them search is text-only. The judge verifies facts after extraction
 against their evidence sentence and removes refuted ones with an audit
 trail.
 
-## 7. Optional: high-quality document ingestion (docling)
+## 7. High-quality document ingestion (docling)
 
-The `docling` compose profile runs
-[docling-serve](https://github.com/docling-project/docling-serve) (CPU
-image, ~4.4 GB, model weights included) and converts rich formats — scanned
-PDFs, DOCX/PPTX/XLSX, images — to clean markdown that enters the same
-pipeline as any other document:
-
-```sh
-# in .env:
-#   GKG_CONVERTER_MODE=docling
-docker compose --env-file .env --profile docling -f deploy/docker-compose.yml up -d docling
-```
+[docling-serve](https://github.com/docling-project/docling-serve) starts
+with `make up` and `docling` is the default converter mode. Its CPU image
+includes model weights and converts scanned PDFs, DOCX/PPTX/XLSX and images
+to clean markdown for the ingestion pipeline. Use `LIGHT=1` to run without
+it.
 
 With `GKG_CONVERTER_MODE=docling`, PDF, Office and image inputs are
 converted by the sidecar instead of the best-effort pure-Go PDF path. The
 sidecar publishes loopback `127.0.0.1:5001`, so host-run builds use
-`GKG_CONVERTER_URL=http://localhost:5001` (compose defaults to
+the default `GKG_CONVERTER_URL` (`http://localhost:5001`) (compose defaults to
 `http://docling:5001`). Set `DOCLING_API_KEY` in `.env` to require the
 `X-Api-Key` header on the sidecar. A conversion failure fails the document
 with the converter's reason — there is no silent fallback.
@@ -225,7 +250,10 @@ searches confidence floors, and `--out report` writes `report.md` +
   (`GKG_API_KEY`).
 - End-to-end acceptance: `scripts/acceptance.sh` (compose mode by default;
   `ACCEPTANCE_MODE=local GKG_MEMGRAPH_URI=…` for an existing Memgraph, which
-  is the CI mode).
+  is the CI mode). Compose acceptance uses an isolated light stack and
+  ports 17687/18080/18090/15001 by default; `ACCEPTANCE_FULL=1` includes
+  model services, and `ACCEPTANCE_MEMGRAPH_PORT`, `ACCEPTANCE_GKG_PORT`,
+  `ACCEPTANCE_SIDECAR_PORT`, `ACCEPTANCE_DOCLING_PORT` override those ports.
 
 ## Troubleshooting
 
@@ -234,7 +262,7 @@ searches confidence floors, and `--out report` writes `report.md` +
   services (compose wires both).
 - **Port 7687 already used** (e.g. another Neo4j/Memgraph): set
   `MEMGRAPH_PORT=17687` in `.env`; the port is only for host access.
-- **PDFs without text**: scanned PDFs fail with "no extractable text"; see
+- **PDFs without text in light mode**: the pure-Go path has no OCR; see
   [known-limitations.md](known-limitations.md).
 
 ## License notes
