@@ -15,6 +15,12 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	if cfg.Extractor.Mode != "sidecar" {
+		t.Errorf("Extractor.Mode = %q, want sidecar", cfg.Extractor.Mode)
+	}
+	if cfg.Extractor.Sidecar.URL != "http://localhost:8090" {
+		t.Errorf("Extractor.Sidecar.URL differs from the localhost default")
+	}
 	if cfg.Ingest.StoreFloor != 0.15 {
 		t.Errorf("Ingest.StoreFloor = %v, want 0.15", cfg.Ingest.StoreFloor)
 	}
@@ -39,6 +45,36 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Ingest.MaxRedirects != 5 {
 		t.Errorf("Ingest.MaxRedirects = %d, want 5", cfg.Ingest.MaxRedirects)
 	}
+}
+
+func TestConverterImagesConfig(t *testing.T) {
+	t.Setenv("GKG_CONVERTER_IMAGES", "")
+	if err := os.Unsetenv("GKG_CONVERTER_IMAGES"); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("default", func(t *testing.T) {
+		cfg, err := config.Load("")
+		if err != nil || cfg.Converter.Images {
+			t.Fatalf("image conversion must default to disabled: %v", err)
+		}
+	})
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("GKG_CONVERTER_IMAGES", "true")
+		cfg, err := config.Load("")
+		if err != nil || !cfg.Converter.Images {
+			t.Fatalf("GKG_CONVERTER_IMAGES must enable image conversion: %v", err)
+		}
+	})
+	t.Run("yaml", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(p, []byte("converter:\n  images: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(p)
+		if err != nil || !cfg.Converter.Images {
+			t.Fatalf("converter.images must enable image conversion: %v", err)
+		}
+	})
 }
 
 func TestEnvOverridesYAML(t *testing.T) {
@@ -319,8 +355,11 @@ func TestConverterDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Converter.Mode != "off" {
-		t.Errorf("Converter.Mode = %q, want off", cfg.Converter.Mode)
+	if cfg.Converter.Mode != "docling" {
+		t.Errorf("Converter.Mode = %q, want docling", cfg.Converter.Mode)
+	}
+	if cfg.Converter.URL != "http://localhost:5001" {
+		t.Errorf("Converter.URL differs from the localhost default")
 	}
 	if cfg.Converter.TimeoutS != 300 {
 		t.Errorf("Converter.TimeoutS = %d, want 300", cfg.Converter.TimeoutS)

@@ -1,0 +1,12 @@
+# Light mode for CI and laptops: no model services are built or pulled.
+# Use with the base file through make up LIGHT=1.
+services:
+  sidecar: !reset null
+  docling: !reset null
+  gkg:
+    depends_on: !override
+      memgraph:
+        condition: service_healthy
+    environment:
+      GKG_EXTRACTOR_MODE: ${GKG_LIGHT_EXTRACTOR_MODE:-mock}
+      GKG_CONVERTER_MODE: "off"

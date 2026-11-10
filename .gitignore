@@ -5,6 +5,8 @@
 # Secrets
 .env
 *.env.local
+.env.*
+!.env.example
 
 # Binaries and build output
 /gkg
@@ -25,3 +27,11 @@ __pycache__/
 .DS_Store
 # Git worktrees (one per branch; never committed or sent to docker builds)
 .worktrees/
+# Deploy secrets and box state (never committed)
+deploy/aws/box.env
+deploy/aws/.box-ids
+deploy/edge/htpasswd
+deploy/edge/certs/
+# Planning artifacts live outside the repo
+docs/superpowers/
+*.env

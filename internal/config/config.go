@@ -88,6 +88,7 @@ type ConverterConfig struct {
 	APIKey        string `yaml:"api_key"`
 	TimeoutS      int    `yaml:"timeout_s"`
 	MaxResponseMB int    `yaml:"max_response_mb"`
+	Images        bool   `yaml:"images"` // opt in to image conversion (unsafe with CPU docling v1.1.0)
 }
 
 // JudgeConfig configures the optional online verification judge.
@@ -144,7 +145,7 @@ func defaults() Config {
 		Memgraph: MemgraphConfig{URI: "bolt://localhost:7687"},
 		Server:   ServerConfig{Addr: ":8080"},
 		Extractor: ExtractorConfig{
-			Mode:    "openai",
+			Mode:    "sidecar",
 			OpenAI:  OpenAIConfig{BaseURL: "https://api.openai.com/v1", Model: "deepseek-v4.1-flash"},
 			Sidecar: SidecarConfig{URL: "http://localhost:8090", Model: "glinerel-314m"},
 		},
@@ -154,7 +155,8 @@ func defaults() Config {
 			Dim:     768,
 		},
 		Converter: ConverterConfig{
-			Mode:          "off",
+			Mode:          "docling",
+			URL:           "http://localhost:5001",
 			TimeoutS:      300,
 			MaxResponseMB: 32,
 		},

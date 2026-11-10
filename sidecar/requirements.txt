@@ -1,8 +1,8 @@
 # gkg sidecar runtime (torch CPU wheels are layered in the Dockerfile).
 glinerel-fast==0.1.1
-fastapi>=0.115,<1
-uvicorn[standard]>=0.30,<1
-pydantic>=2.7,<3
+fastapi==0.162.2
+uvicorn[standard]==0.54.0
+pydantic==2.14.3
 
 # Contract tests (local runs and CI convenience).
 pytest>=8

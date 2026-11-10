@@ -31,6 +31,10 @@ on (see `.env.example`). When connecting to the compose stack from the
 host, the Memgraph port is `127.0.0.1:${MEMGRAPH_PORT:-7687}` and the
 credentials are the ones in `.env`.
 
+PDF/Office inputs convert through the stack's docling on `localhost:5001`
+by default; set `GKG_CONVERTER_MODE=off` when running the binary without
+the stack.
+
 ## OpenCode (v2 config)
 
 Add to the project's `opencode.jsonc` (or the global config). Under V2,
@@ -48,7 +52,7 @@ servers live under `mcp.servers` and secrets stay in the environment:
           "GKG_MEMGRAPH_URI": "bolt://localhost:7687",
           "GKG_MEMGRAPH_USER": "gkg",
           "GKG_MEMGRAPH_PASSWORD": "{env:GKG_MEMGRAPH_PASSWORD}",
-          "GKG_EXTRACTOR_MODE": "openai",
+          "GKG_EXTRACTOR_MODE": "openai", // override the sidecar default
           "GKG_EXTRACTOR_OPENAI_API_KEY": "{env:OPENAI_API_KEY}",
         },
       },
@@ -86,7 +90,8 @@ Notes:
 
 ## Claude Desktop
 
-Edit `claude_desktop_config.json` (Settings → Developer → Edit Config):
+Edit `claude_desktop_config.json` (Settings → Developer → Edit Config).
+The `GKG_EXTRACTOR_MODE=openai` setting below overrides the sidecar default:
 
 ```json
 {

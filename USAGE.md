@@ -8,7 +8,7 @@ product limits are recorded in [docs/known-limitations.md](docs/known-limitation
 ## 1. Ingest knowledge
 
 Ingest text, files (Markdown/txt/PDF/DOCX/… — rich formats convert through
-the optional `docling` compose profile) or URLs. Every submission becomes a
+docling by default) or URLs. Every submission becomes a
 document with full provenance; unchanged content is a no-op, changed
 content supersedes the previous version.
 
@@ -43,7 +43,8 @@ editable). Keep the same source string when re-uploading a changed or
 renamed file and it supersedes its previous version (`gkg ingest -source
 notes/ada renamed.md` is the CLI equivalent). The optional Labels field
 takes a preset name (`general`, `news`). Rich formats (pdf, docx, …)
-convert through the docling profile.
+convert through docling by default. Extraction uses the GLiNEREL sidecar
+by default; both services start with `make up`.
 
 **From an agent**: the MCP `ingest` tool takes `url` or `text`, plus an
 optional `source` label and `force` to re-run an unchanged document.
@@ -159,9 +160,11 @@ reference-fact coverage; `--out` writes a Markdown + JSON report.
 
 - Health: `GET /healthz`, `GET /readyz`; metrics: `GET /metrics`
   (auth-exempt).
+- `make up` starts the default sidecar extractor and docling converter;
+  `make up LIGHT=1` uses mock extraction with conversion off. `make down`
+  preserves graph data; `make smoke` checks the running stack.
 - Optional knobs (defaults documented in `.env.example`): bearer auth,
   embeddings (OpenAI-compatible or the asymmetric `furls` service), the
-  `docling` converter profile, the local offline extraction sidecar, the
   online fact judge, and the read-only ask agent (`GKG_AGENT_*`).
 - Troubleshooting and known limits:
   [docs/known-limitations.md](docs/known-limitations.md) and the
