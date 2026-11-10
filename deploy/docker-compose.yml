@@ -19,8 +19,8 @@ services:
     image: memgraph/memgraph:3.14.0@sha256:a732421217951066e42f5749111bc3d0c7b51b12c756be04850d4dafa84cc05e
     restart: unless-stopped
     logging: *logging
-    mem_limit: 1536m
-    command: ["--memory-limit=1024"]
+    mem_limit: 1344m
+    command: ["--memory-limit=832"]
     environment:
       MEMGRAPH_USER: ${MEMGRAPH_USER:-gkg}
       MEMGRAPH_PASSWORD: ${MEMGRAPH_PASSWORD:?set MEMGRAPH_PASSWORD in .env}
@@ -175,9 +175,10 @@ services:
     image: owasp/modsecurity-crs:4.30.0-nginx-202610180210@sha256:7698c48a41a43138ae317feeec964d1515b861cc1d9e50617bc1cdfe9f314e1d
     restart: unless-stopped
     logging: *logging
-    # Provisional: Task 6 measures concurrent near-cap requests before release.
-    # This 512 MiB is reserved from Memgraph; long-running sum stays 14 GiB.
-    mem_limit: 512m
+    # Measured (2 workers): 4 near-cap JSON + 4 near-20 MiB uploads + 4 streamed
+    # asks at once peaked at 455 MiB anon -> limit 1.5x; taken from Memgraph's
+    # headroom, so the long-running sum stays 14 GiB.
+    mem_limit: 704m
     depends_on:
       gkg:
         condition: service_healthy
@@ -198,6 +199,9 @@ services:
       MODSEC_REQ_BODY_LIMIT: "22020096"
       MODSEC_REQ_BODY_NOFILES_LIMIT: "4259840"
       MODSEC_REQ_BODY_LIMIT_ACTION: "Reject"
+      # Two workers: each loads the full CRS and a reload doubles them until
+      # long streams drain, so a fixed count keeps memory host-independent.
+      NGINX_WORKER_PROCESSES: "2"
       MODSEC_AUDIT_LOG_PARTS: ADEFHZ
       PARANOIA: "1"
       BLOCKING_PARANOIA: "1"
