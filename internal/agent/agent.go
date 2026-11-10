@@ -126,12 +126,29 @@ func rawOrNull(raw []byte) json.RawMessage {
 	return json.RawMessage(q)
 }
 
-// ask drives the bounded tool loop: chat with tools, execute the requested
-// read-only calls (one step is one model turn that requests tools), then
-// answer when the model stops asking. A provider that cannot take the tools
-// parameter falls back to the constrained JSON plan within the same
-// request.
+// streamEvent is one progressive update emitted while an ask runs: a tool
+// call about to execute, or a fragment of the final answer.
+type streamEvent struct {
+	Kind      string          // "tool" | "delta"
+	Tool      string          // tool name (Kind=tool)
+	Arguments json.RawMessage // tool arguments (Kind=tool)
+	Text      string          // answer fragment (Kind=delta)
+}
+
+// ask drives the bounded tool loop over the JSON endpoint (no streaming:
+// emit is nil) and returns the full answer with its evidence.
 func (s *Server) ask(ctx context.Context, question string) (askResponse, error) {
+	return s.run(ctx, question, nil)
+}
+
+// run drives the bounded tool loop: chat with tools, execute the requested
+// read-only calls (one step is one model turn that requests tools), then
+// answer when the model stops asking. When emit is non-nil the turns run
+// streamed (when enabled and supported), answer fragments are forwarded as
+// delta events and each tool call as a tool event. A provider that cannot
+// take the tools parameter falls back to the constrained JSON plan within
+// the same request.
+func (s *Server) run(ctx context.Context, question string, emit func(streamEvent) error) (askResponse, error) {
 	msgs := []chatMessage{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: question},
@@ -139,12 +156,12 @@ func (s *Server) ask(ctx context.Context, question string) (askResponse, error) 
 	ev := make([]evidenceItem, 0, s.maxSteps)
 	steps := 0
 	for steps < s.maxSteps {
-		reply, err := s.llm.chat(ctx, chatRequest{
+		reply, err := s.runTurn(ctx, chatRequest{
 			Model: s.llm.model, Messages: msgs, Tools: toolDefs(), ToolChoice: "auto",
-		})
+		}, emit)
 		if err != nil {
 			if toolsUnsupported(err) {
-				return s.askWithPlan(ctx, question)
+				return s.askWithPlan(ctx, question, emit)
 			}
 			return askResponse{}, err
 		}
@@ -159,6 +176,11 @@ func (s *Server) ask(ctx context.Context, question string) (askResponse, error) 
 		steps++
 		executed := 0
 		for _, tc := range reply.ToolCalls {
+			if emit != nil {
+				if err := emit(streamEvent{Kind: "tool", Tool: tc.Function.Name, Arguments: rawOrNull([]byte(tc.Function.Arguments))}); err != nil {
+					return askResponse{}, err
+				}
+			}
 			var result any
 			var err error
 			if executed >= maxCallsPerStep {
@@ -180,6 +202,49 @@ func (s *Server) ask(ctx context.Context, question string) (askResponse, error) 
 		}
 	}
 	return askResponse{Answer: noAnswerText, Evidence: ev, Steps: steps}, nil
+}
+
+// runTurn performs one model turn. When emit is non-nil and the turn may
+// stream (see streamThisTurn), it tries the streamed client first and
+// applies the negotiation fallbacks: a streamed turn with no content and
+// no tool calls memoizes content-only streaming and retries the same turn
+// non-streamed; a payload rejection or a stream closed before its first
+// event memoizes unsupported streaming and retries non-streamed once.
+func (s *Server) runTurn(ctx context.Context, req chatRequest, emit func(streamEvent) error) (chatReply, error) {
+	if emit != nil && s.streamThisTurn(len(req.Tools) > 0) {
+		reply, err := s.llm.chatStream(ctx, req, func(text string) error {
+			return emit(streamEvent{Kind: "delta", Text: text})
+		})
+		if err == nil {
+			if reply.Content == "" && len(reply.ToolCalls) == 0 {
+				s.llm.memoContentOnly()
+				return s.llm.chat(ctx, req)
+			}
+			return reply, nil
+		}
+		if streamFallbackEligible(err) {
+			s.llm.memoStreamUnsupported()
+			return s.llm.chat(ctx, req)
+		}
+		return chatReply{}, err
+	}
+	return s.llm.chat(ctx, req)
+}
+
+// streamThisTurn decides whether one model turn runs streamed: streaming
+// must be enabled and not memoized unsupported. After a content-only
+// memoization tool-bearing turns run non-streamed (the provider cannot
+// deliver tool-call deltas) while tools-less calls keep streaming — the
+// hybrid.
+func (s *Server) streamThisTurn(hasTools bool) bool {
+	if !s.cfg.Agent.Stream {
+		return false
+	}
+	unsupported, contentOnly := s.llm.streamState()
+	if unsupported {
+		return false
+	}
+	return !hasTools || !contentOnly
 }
 
 // toolPayload shapes one tool outcome for the model and the evidence array:
@@ -226,8 +291,10 @@ func streamFallbackEligible(err error) bool {
 
 // askWithPlan is the fallback for endpoints without tool-calling support:
 // one constrained JSON plan, execute its calls (bounded by the budget), then
-// one final call over the results.
-func (s *Server) askWithPlan(ctx context.Context, question string) (askResponse, error) {
+// one final call over the results. The plan call stays non-streamed (it must
+// return the constrained JSON); the final answer call rides the normal turn
+// path, so it streams when streaming is available.
+func (s *Server) askWithPlan(ctx context.Context, question string, emit func(streamEvent) error) (askResponse, error) {
 	msgs := []chatMessage{
 		{Role: "system", Content: planSystemPrompt},
 		{Role: "user", Content: question},
@@ -259,6 +326,11 @@ func (s *Server) askWithPlan(ctx context.Context, question string) (askResponse,
 	results := make([]map[string]any, 0, len(plan.ToolCalls))
 	executed := 0
 	for _, tc := range plan.ToolCalls {
+		if emit != nil {
+			if err := emit(streamEvent{Kind: "tool", Tool: tc.Name, Arguments: rawOrNull(tc.Arguments)}); err != nil {
+				return askResponse{}, err
+			}
+		}
 		var result any
 		var callErr error
 		if executed >= maxCallsPerStep {
@@ -284,7 +356,7 @@ func (s *Server) askWithPlan(ctx context.Context, question string) (askResponse,
 		return askResponse{}, fmt.Errorf("agent: encode plan results: %w", err)
 	}
 	msgs = append(msgs, chatMessage{Role: "user", Content: "Tool results: " + string(payload) + "\n\n" + planFinalPrompt})
-	reply, err = s.llm.chat(ctx, chatRequest{Model: s.llm.model, Messages: msgs})
+	reply, err = s.runTurn(ctx, chatRequest{Model: s.llm.model, Messages: msgs}, emit)
 	if err != nil {
 		return askResponse{}, err
 	}
