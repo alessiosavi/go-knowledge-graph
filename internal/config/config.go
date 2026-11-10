@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"reflect"
 	"strconv"
@@ -83,12 +84,14 @@ type EmbedderConfig struct {
 // ConverterConfig configures the optional high-quality document converter
 // (a docling-serve sidecar).
 type ConverterConfig struct {
-	Mode          string `yaml:"mode"` // off | docling
-	URL           string `yaml:"url"`
-	APIKey        string `yaml:"api_key"`
-	TimeoutS      int    `yaml:"timeout_s"`
-	MaxResponseMB int    `yaml:"max_response_mb"`
-	Images        bool   `yaml:"images"` // opt in to image conversion (unsafe with CPU docling v1.1.0)
+	Mode          string  `yaml:"mode"` // off | docling
+	URL           string  `yaml:"url"`
+	APIKey        string  `yaml:"api_key"`
+	TimeoutS      int     `yaml:"timeout_s"`
+	MaxResponseMB int     `yaml:"max_response_mb"`
+	Images        bool    `yaml:"images"`
+	OCREngine     string  `yaml:"ocr_engine"`
+	MaxImageMP    float64 `yaml:"max_image_mp"`
 }
 
 // JudgeConfig configures the optional online verification judge.
@@ -159,6 +162,9 @@ func defaults() Config {
 			URL:           "http://localhost:5001",
 			TimeoutS:      300,
 			MaxResponseMB: 32,
+			Images:        true,
+			OCREngine:     "tesseract",
+			MaxImageMP:    12.5,
 		},
 		Judge: JudgeConfig{
 			Mode:        "off",
@@ -236,6 +242,13 @@ func Load(path string) (Config, error) {
 			}
 			cfg.Embedder.BatchSize = n
 		}
+	}
+	if strings.TrimSpace(cfg.Converter.OCREngine) == "" {
+		return Config{}, errors.New("config: GKG_CONVERTER_OCR_ENGINE must not be empty")
+	}
+	mp := cfg.Converter.MaxImageMP
+	if mp <= 0 || math.IsNaN(mp) || math.IsInf(mp, 0) || mp >= float64(math.MaxInt64)/1e6 {
+		return Config{}, errors.New("config: GKG_CONVERTER_MAX_IMAGE_MP must be positive, finite and fit an int64 pixel count")
 	}
 	return cfg, nil
 }

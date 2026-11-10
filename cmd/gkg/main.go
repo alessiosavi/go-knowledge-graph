@@ -259,11 +259,7 @@ func converterFromConfig(cfg config.Config) (convert.Converter, error) {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return nil, errors.New("converter docling: GKG_CONVERTER_URL must be a valid http(s) URL")
 		}
-		c := convert.New(cfg)
-		if !cfg.Converter.Images {
-			c = convert.WithoutImages(c)
-		}
-		return c, nil
+		return convert.ImagePolicy(convert.New(cfg), cfg.Converter.Images, int64(cfg.Converter.MaxImageMP*1e6)), nil
 	default:
 		return nil, fmt.Errorf("converter: unknown mode %q (want off or docling)", cfg.Converter.Mode)
 	}

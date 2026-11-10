@@ -122,6 +122,7 @@ services:
   # High-quality document conversion (PDF/Office/images → markdown)
   # via docling-serve. The image carries
   # the model weights (~4.4 GB); set DOCLING_API_KEY to require X-Api-Key.
+  # Tesseract: 12 MP photo peak 4.80 GiB; 2 photos + 101-page PDF peak 5.74 GiB.
   docling:
     restart: unless-stopped
     logging: *logging
