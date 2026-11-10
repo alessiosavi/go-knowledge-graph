@@ -360,6 +360,47 @@ func TestContentOnlyHybrid(t *testing.T) {
 	}
 }
 
+func TestStreamClosedBeforeFirstEventFallsBack(t *testing.T) {
+	fx := newAgentFixture(t)
+	stub := newLLMStub(t, contentReply("plain answer"))
+	stub.withStream() // 200 text/event-stream, then an immediate close
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+
+	resp, err := s.run(context.Background(), "q", noopEmit)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if resp.Answer != "plain answer" {
+		t.Errorf("Answer = %q, want the non-streamed retry's answer", resp.Answer)
+	}
+	if len(stub.requests) != 2 || stub.requests[0]["stream"] != true || stub.requests[1]["stream"] != nil {
+		t.Fatalf("requests = %v, want [stream, plain]", streamFlags(stub))
+	}
+	if unsupported, _ := s.llm.streamState(); !unsupported {
+		t.Error("streamUnsupported not memoized after the closed-before-first-event stream")
+	}
+}
+
+func TestEmitErrorAbortsTheAsk(t *testing.T) {
+	fx := newAgentFixture(t)
+	stub := newLLMStub(t)
+	stub.withStream(
+		sseTool(0, "c1", "search", fmt.Sprintf(`{"query":%q}`, fx.token)),
+		sseFinish("tool_calls"),
+		sseDone,
+	)
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+
+	sentinel := errors.New("writer gone")
+	_, err := s.run(context.Background(), "q "+fx.token, func(streamEvent) error { return sentinel })
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want the emit error", err)
+	}
+	if len(stub.requests) != 1 {
+		t.Errorf("requests = %d, want 1 (the ask must abort at the first tool event)", len(stub.requests))
+	}
+}
+
 func TestStreamFallbackThenPlan(t *testing.T) {
 	fx := newAgentFixture(t)
 	plan := fmt.Sprintf(`{"tool_calls":[{"name":"search","arguments":{"query":%q}}]}`, fx.token)
@@ -429,15 +470,22 @@ func TestPlanFinalCallStreams(t *testing.T) {
 	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
 
 	var deltas []string
+	toolSeen := false
 	emit := func(ev streamEvent) error {
 		if ev.Kind == "delta" {
 			deltas = append(deltas, ev.Text)
+		}
+		if ev.Kind == "tool" && ev.Tool == "search" {
+			toolSeen = true
 		}
 		return nil
 	}
 	resp, err := s.askWithPlan(context.Background(), "q "+fx.token, emit)
 	if err != nil {
 		t.Fatalf("askWithPlan: %v", err)
+	}
+	if !toolSeen {
+		t.Error("no tool event for the executed plan call")
 	}
 	if resp.Answer != "Final answer." {
 		t.Errorf("Answer = %q, want the streamed assembly", resp.Answer)

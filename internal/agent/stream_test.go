@@ -79,11 +79,18 @@ func TestStreamHandlerFramingAndDone(t *testing.T) {
 	events := parseSSE(t, rr.Body.String())
 	var toolEvent, doneEvent *sseEvent
 	var deltas []string
+	toolIdx, firstDeltaIdx, doneIdx := -1, -1, -1
 	for i := range events {
 		switch events[i].name {
 		case "tool":
+			if toolIdx == -1 {
+				toolIdx = i
+			}
 			toolEvent = &events[i]
 		case "delta":
+			if firstDeltaIdx == -1 {
+				firstDeltaIdx = i
+			}
 			var payload struct {
 				Text string `json:"text"`
 			}
@@ -92,8 +99,12 @@ func TestStreamHandlerFramingAndDone(t *testing.T) {
 			}
 			deltas = append(deltas, payload.Text)
 		case "done":
+			doneIdx = i
 			doneEvent = &events[i]
 		}
+	}
+	if !(toolIdx >= 0 && firstDeltaIdx >= 0 && doneIdx >= 0 && toolIdx < firstDeltaIdx && firstDeltaIdx < doneIdx) {
+		t.Errorf("event order tool=%d first-delta=%d done=%d, want tool < delta < done", toolIdx, firstDeltaIdx, doneIdx)
 	}
 	if toolEvent == nil {
 		t.Fatalf("no tool event in %+v", events)
@@ -308,13 +319,21 @@ func TestStreamHandlerClientCanceled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
+	defer resp.Body.Close()
 	cancel()
 
-	start := time.Now()
-	_, _ = bufio.NewReader(resp.Body).ReadString('\n')
-	_ = resp.Body.Close()
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("read after cancel took %v, want the stream to end promptly", elapsed)
+	// The server-side handler must exit after the request context dies:
+	// httptest.Server.Close blocks until outstanding handlers return, so a
+	// bounded close proves the select loop (and the ask goroutine) stopped.
+	closed := make(chan struct{})
+	go func() {
+		front.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream handler did not exit after the client canceled")
 	}
 }
 
@@ -389,6 +408,10 @@ func TestStatusStreamField(t *testing.T) {
 	on := NewServer(onCfg, nil, nil)
 	if enabled, stream := status(on.StatusHandler()); !enabled || !stream {
 		t.Errorf("enabled+stream on: enabled=%v stream=%v, want true/true", enabled, stream)
+	}
+	on.llm.memoContentOnly()
+	if enabled, stream := status(on.StatusHandler()); !enabled || !stream {
+		t.Errorf("after content-only memo: enabled=%v stream=%v, want true/true (deltas still stream)", enabled, stream)
 	}
 	on.llm.memoStreamUnsupported()
 	if enabled, stream := status(on.StatusHandler()); !enabled || stream {
