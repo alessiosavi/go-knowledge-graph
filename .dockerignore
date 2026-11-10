@@ -14,3 +14,8 @@ bin/
 dist/
 deploy/docker-compose.yml
 .worktrees
+deploy/aws/box.env
+deploy/aws/.box-ids
+deploy/edge/htpasswd
+deploy/edge/certs
+docs/superpowers
