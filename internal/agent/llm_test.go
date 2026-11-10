@@ -511,3 +511,70 @@ func TestStreamFallbackEligible(t *testing.T) {
 		})
 	}
 }
+
+func TestChatStreamNoRetryAfterDeliveredDeltas(t *testing.T) {
+	stub := newLLMStub(t).withStream(sseContent("first"), sseError("cut"))
+	c := testClient(t, stub.srv.URL) // the 1ms backoff would retry without the fix
+
+	var deltas []string
+	_, err := c.chatStream(context.Background(), chatRequest{Messages: []chatMessage{{Role: "user", Content: "hi"}}}, func(text string) error {
+		deltas = append(deltas, text)
+		return nil
+	})
+	if err == nil {
+		t.Fatal("chatStream: want the classified error after the cut")
+	}
+	if len(stub.requests) != 1 {
+		t.Errorf("stream attempts = %d, want 1 (no retry once fragments were delivered)", len(stub.requests))
+	}
+	if strings.Join(deltas, "|") != "first" {
+		t.Errorf("deltas = %q, want just the first attempt's fragments", deltas)
+	}
+}
+
+func TestChatStreamCutFirstFrameFallsBack(t *testing.T) {
+	stub := newLLMStub(t).withStream(`data: {"choices":[{"delta":{"content":"cu`)
+	c := testClient(t, stub.srv.URL)
+
+	_, err := c.chatStream(context.Background(), chatRequest{Messages: []chatMessage{{Role: "user", Content: "hi"}}}, nil)
+	if !errors.Is(err, errStreamClosedBeforeEvent) {
+		t.Errorf("err = %v, want errStreamClosedBeforeEvent for a first frame cut mid-JSON", err)
+	}
+}
+
+func TestChatStreamTruncatedFinalLineClassifiedAsCut(t *testing.T) {
+	stub := newLLMStub(t).withStream(sseContent("partial"), `data: {"choices":[{"delta":{"content":"cu`)
+	c := testClient(t, stub.srv.URL)
+
+	_, err := c.chatStream(context.Background(), chatRequest{Messages: []chatMessage{{Role: "user", Content: "hi"}}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "completion marker") {
+		t.Errorf("err = %v, want the premature-close classification for a cut final line", err)
+	}
+	if strings.Contains(err.Error(), "decode stream frame") {
+		t.Errorf("err = %v, must not blame the truncated JSON", err)
+	}
+}
+
+func TestChatStreamNameBytesCountTowardCap(t *testing.T) {
+	stub := newLLMStub(t).withStream(sseTool(0, "call_1", strings.Repeat("n", (4<<20)+64), ""), sseDone)
+	c := testClient(t, stub.srv.URL)
+
+	_, err := c.chatStream(context.Background(), chatRequest{Messages: []chatMessage{{Role: "user", Content: "hi"}}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "cap") {
+		t.Errorf("err = %v, want the cap error for unbounded tool-call name bytes", err)
+	}
+}
+
+func TestChatStreamRawByteBound(t *testing.T) {
+	old := streamRawCap
+	streamRawCap = 64
+	t.Cleanup(func() { streamRawCap = old })
+
+	stub := newLLMStub(t).withStream(sseRole("assistant"), sseContent("ok"), sseDone)
+	c := testClient(t, stub.srv.URL)
+
+	_, err := c.chatStream(context.Background(), chatRequest{Messages: []chatMessage{{Role: "user", Content: "hi"}}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "cap") {
+		t.Errorf("err = %v, want the cap error once the raw byte bound is exhausted", err)
+	}
+}

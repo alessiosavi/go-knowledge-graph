@@ -255,9 +255,13 @@ func (c *client) doChat(ctx context.Context, body []byte) (chatReply, error) {
 
 // chatStream performs one streamed chat-completions call, forwarding every
 // content fragment to onDelta (nil disables forwarding) and assembling the
-// assistant message from the SSE frames. The retry envelope mirrors chat;
-// a stream that never delivers an event reports errStreamClosedBeforeEvent
-// so the caller can fall back to the non-streamed path once.
+// assistant message from the SSE frames. The retry envelope mirrors chat
+// until a fragment has been forwarded: retrying after delivery would
+// concatenate two attempts in the caller's progressive state, so a late
+// failure surfaces as the classified error instead (the fallback table
+// treats anything past the first event as "any other failure"). A stream
+// that never delivers an event reports errStreamClosedBeforeEvent so the
+// caller can fall back to the non-streamed path once.
 func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(string) error) (chatReply, error) {
 	req.Stream = true
 	body, err := json.Marshal(req)
@@ -265,6 +269,14 @@ func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(s
 		return chatReply{}, fmt.Errorf("agent: encode request: %w", err)
 	}
 	var lastErr error
+	delivered := false
+	forward := func(text string) error {
+		if onDelta == nil {
+			return nil
+		}
+		delivered = true
+		return onDelta(text)
+	}
 	for attempt := 0; attempt <= len(c.backoff); attempt++ {
 		if attempt > 0 {
 			select {
@@ -273,7 +285,7 @@ func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(s
 				return chatReply{}, ctx.Err()
 			}
 		}
-		reply, err := c.doStream(ctx, body, onDelta)
+		reply, err := c.doStream(ctx, body, forward)
 		if err == nil {
 			return reply, nil
 		}
@@ -283,6 +295,9 @@ func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(s
 		lastErr = err
 		var pe *providerError
 		if !errors.As(err, &pe) || !pe.retryable() {
+			return chatReply{}, err
+		}
+		if delivered {
 			return chatReply{}, err
 		}
 	}
@@ -334,13 +349,20 @@ type streamWireChunk struct {
 	} `json:"error"`
 }
 
+// streamRawCap bounds the bytes read from one streamed body, framing
+// included; tests override it. It stays above the assembled cap so normal
+// SSE overhead cannot trip it.
+var streamRawCap = int64(responseCap * 2)
+
 // readSSE consumes one SSE chat-completions stream: content and
 // index-keyed tool-call fragments assemble into the assistant message and
 // [DONE] terminates. A stream that never delivered a data frame reports
-// errStreamClosedBeforeEvent; a stream cut after events reports a
-// classified premature-close error.
+// errStreamClosedBeforeEvent; a stream cut after events — including a
+// connection that ends mid-line — reports a classified premature-close
+// error instead of blaming the truncated frame.
 func readSSE(body io.Reader, onDelta func(string) error) (chatReply, error) {
-	reader := bufio.NewReader(body)
+	limited := &io.LimitedReader{R: body, N: streamRawCap + 1}
+	reader := bufio.NewReader(limited)
 	var (
 		content   strings.Builder
 		calls     = map[int]*toolCall{}
@@ -367,48 +389,55 @@ func readSSE(body io.Reader, onDelta func(string) error) (chatReply, error) {
 			}
 			var chunk streamWireChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				return chatReply{}, fmt.Errorf("agent: decode stream frame: %w", err)
-			}
-			frames++
-			if chunk.Error != nil {
-				return chatReply{}, &providerError{status: http.StatusBadGateway, detail: trimPreview(chunk.Error.Message)}
-			}
-			if len(chunk.Choices) == 0 {
-				continue
-			}
-			delta := chunk.Choices[0].Delta
-			if delta.Content != "" {
-				assembled += len(delta.Content)
-				if assembled > responseCap {
-					return chatReply{}, fmt.Errorf("agent: streamed response exceeds the %d MiB cap", responseCap>>20)
+				if readErr == nil {
+					return chatReply{}, fmt.Errorf("agent: decode stream frame: %w", err)
 				}
-				content.WriteString(delta.Content)
-				if onDelta != nil {
-					if err := onDelta(delta.Content); err != nil {
-						return chatReply{}, err
+				// The connection ended mid-line: classify the stream end
+				// below instead of blaming the truncated JSON.
+			} else {
+				frames++
+				if chunk.Error != nil {
+					return chatReply{}, &providerError{status: http.StatusBadGateway, detail: trimPreview(chunk.Error.Message)}
+				}
+				if len(chunk.Choices) > 0 {
+					delta := chunk.Choices[0].Delta
+					if delta.Content != "" {
+						assembled += len(delta.Content)
+						if assembled > responseCap {
+							return chatReply{}, fmt.Errorf("agent: streamed response exceeds the %d MiB cap", responseCap>>20)
+						}
+						content.WriteString(delta.Content)
+						if onDelta != nil {
+							if err := onDelta(delta.Content); err != nil {
+								return chatReply{}, err
+							}
+						}
+					}
+					for _, frag := range delta.ToolCalls {
+						assembled += len(frag.Function.Arguments) + len(frag.Function.Name)
+						if assembled > responseCap {
+							return chatReply{}, fmt.Errorf("agent: streamed response exceeds the %d MiB cap", responseCap>>20)
+						}
+						call := calls[frag.Index]
+						if call == nil {
+							call = &toolCall{Type: "function"}
+							calls[frag.Index] = call
+							order = append(order, frag.Index)
+						}
+						if frag.ID != "" {
+							call.ID = frag.ID
+						}
+						call.Function.Name += frag.Function.Name
+						call.Function.Arguments += frag.Function.Arguments
 					}
 				}
-			}
-			for _, frag := range delta.ToolCalls {
-				assembled += len(frag.Function.Arguments)
-				if assembled > responseCap {
-					return chatReply{}, fmt.Errorf("agent: streamed response exceeds the %d MiB cap", responseCap>>20)
-				}
-				call := calls[frag.Index]
-				if call == nil {
-					call = &toolCall{Type: "function"}
-					calls[frag.Index] = call
-					order = append(order, frag.Index)
-				}
-				if frag.ID != "" {
-					call.ID = frag.ID
-				}
-				call.Function.Name += frag.Function.Name
-				call.Function.Arguments += frag.Function.Arguments
 			}
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
+				if limited.N <= 0 {
+					return chatReply{}, fmt.Errorf("agent: streamed response exceeds the %d MiB cap", responseCap>>20)
+				}
 				if frames == 0 {
 					return chatReply{}, errStreamClosedBeforeEvent
 				}
