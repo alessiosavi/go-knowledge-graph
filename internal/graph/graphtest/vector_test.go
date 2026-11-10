@@ -1,5 +1,24 @@
 package graphtest
 
+import (
+	"fmt"
+	"math"
+	"reflect"
+	"testing"
+)
+
+// cosine returns the cosine similarity of a and b; the formula is part of the
+// pin (see TestVectorFixtureGeometry).
+func cosine(a, b []float64) float64 {
+	var dot, na, nb float64
+	for i := range a {
+		dot += a[i] * b[i]
+		na += a[i] * a[i]
+		nb += b[i] * b[i]
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+}
+
 // TestVectorFixtureGeometry pins the properties every vector-consuming test
 // relies on (the 2026-11-10 CI-flake investigation): determinism; the self-match
 // as the unique global nearest neighbour; and — the point of the dense
@@ -11,26 +30,6 @@ package graphtest
 // The cosine formula is pinned here on purpose: the natural
 // dot/(sqrt(na)*sqrt(nb)) formulation gives self-similarity values of 1±2e-16
 // for part of the seed space, so an exact == 1 assertion would be fragile.
-
-import (
-	"fmt"
-	"math"
-	"reflect"
-	"testing"
-)
-
-// cosine returns the cosine similarity of a and b; the formula is part of the
-// pin (see the package comment above).
-func cosine(a, b []float64) float64 {
-	var dot, na, nb float64
-	for i := range a {
-		dot += a[i] * b[i]
-		na += a[i] * a[i]
-		nb += b[i] * b[i]
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
-}
-
 func TestVectorFixtureGeometry(t *testing.T) {
 	const dim = 768
 	const seeds = 40
@@ -102,6 +101,8 @@ func TestVectorFixtureGeometry(t *testing.T) {
 			}
 		}
 	}
+	// Sanity bound only — assertion (a) above is the real fixture pin; this
+	// merely checks non-self pairs stay well clear of the self-match.
 	if maxPair >= 0.99 {
 		t.Errorf("max non-self similarity = %.17g, want < 0.99", maxPair)
 	}

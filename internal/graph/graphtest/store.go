@@ -23,11 +23,12 @@ const URIEnv = "GKG_TEST_MEMGRAPH_URI"
 
 // Vector returns a deterministic synthetic embedding for seed: three sparse
 // spikes derived from a hash of the seed plus a small deterministic dense
-// component (≈5% of the vector's magnitude, chained sha256). The spikes alone
-// are pairwise exactly orthogonal, which makes Memgraph's approximate
-// vector-search walk navigation-degenerate and lets it deterministically miss
-// specific freshly inserted nodes at small k (2026-11-10 CI-flake
-// investigation); the dense component turns the exact-tie distance plateau
+// component (0.05 against the spike norm — ≈4.4% of the vector's magnitude,
+// chained sha256). The spike-only form creates a mass exact-tie plateau (most
+// pairs sit at exactly distance 1.0), which makes Memgraph's approximate
+// vector-search walk navigation-degenerate and was co-pinned to it
+// deterministically missing specific freshly inserted nodes at small k
+// (2026-11-10 CI-flake investigation); the dense component turns the plateau
 // into a graded field while keeping determinism and a unique ~0-distance
 // self-match. Do not remove the dense component.
 func Vector(seed string, dim int) []float64 {
