@@ -4,9 +4,10 @@
 # Use make up LIGHT=1 for CI or laptops without the model services.
 name: gkg
 # Memory limits: peak x 1.5 (at least peak + 512 MiB), from a concurrent-load
-# measurement (docling: 4 parallel documents on 2 engine workers; sidecar:
-# 4 ingest workers extracting; 4 streamed asks). Memgraph keeps headroom for
-# corpus growth. The sum (13.25 GiB) leaves 2 GiB of a 16 GiB host.
+# measurement (docling: 4 parallel documents incl. a 101-page PDF on 2 engine
+# workers, peak 4.3 GiB; sidecar: 4 ingest workers extracting, 3.1 GiB; 4
+# streamed asks). Memgraph (peak 0.4 GiB) keeps ~4x headroom for corpus
+# growth. The sum (14 GiB) leaves 2 GiB of a 16 GiB host.
 x-logging: &logging
   driver: json-file
   options:
@@ -18,8 +19,8 @@ services:
     image: memgraph/memgraph:3.14.0@sha256:a732421217951066e42f5749111bc3d0c7b51b12c756be04850d4dafa84cc05e
     restart: unless-stopped
     logging: *logging
-    mem_limit: 3g
-    command: ["--memory-limit=2560"]
+    mem_limit: 2g
+    command: ["--memory-limit=1536"]
     environment:
       MEMGRAPH_USER: ${MEMGRAPH_USER:-gkg}
       MEMGRAPH_PASSWORD: ${MEMGRAPH_PASSWORD:?set MEMGRAPH_PASSWORD in .env}
@@ -124,7 +125,7 @@ services:
   docling:
     restart: unless-stopped
     logging: *logging
-    mem_limit: 4864m
+    mem_limit: 6656m
     image: ghcr.io/docling-project/docling-serve-cpu:v1.1.0@sha256:739f4e08e3164e242ec64f76f22a1864b82c5648c775ce6fa77fb25e66f1150e
     ports:
       - "127.0.0.1:${DOCLING_PORT:-5001}:5001"

@@ -49,9 +49,10 @@ silent fallback. Leave the two URL overrides unset when sharing `.env`
 between Compose and a host-run binary.
 
 **Memory limits:** `deploy/docker-compose.yml` holds each service's
-`mem_limit` and Memgraph's `--memory-limit` (MiB): 3 GiB / 768 MiB / 4.75 GiB /
-4.75 GiB for Memgraph/gkg/sidecar/docling (13.25 GiB in total), sized from
-measured peaks under concurrent ingestion, conversion and asks.
+`mem_limit` and Memgraph's `--memory-limit` (MiB): 2 GiB / 768 MiB / 4.75 GiB /
+6.5 GiB for Memgraph/gkg/sidecar/docling (14 GiB in total), sized from
+measured peaks under concurrent ingestion, conversion (incl. a 101-page PDF)
+and asks.
 Raise a service's limit there if needed, retain host headroom, keep Memgraph's
 internal budget below its container limit, then run `make up` to apply it.
 `DOCLING_ENG_WORKERS` (default 2) and `DOCLING_NUM_THREADS` (default 4) tune
