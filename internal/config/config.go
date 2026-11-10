@@ -105,6 +105,7 @@ type JudgeConfig struct {
 // disabled and the web UI hides its ask panel.
 type AgentConfig struct {
 	Enabled  bool   `yaml:"enabled"`
+	Stream   bool   `yaml:"stream"` // stream the provider response (GKG_AGENT_STREAM; default true)
 	BaseURL  string `yaml:"base_url"`
 	APIKey   string `yaml:"api_key"`
 	Model    string `yaml:"model"`
@@ -165,6 +166,7 @@ func defaults() Config {
 		},
 		Agent: AgentConfig{
 			Enabled:  false,
+			Stream:   true,
 			BaseURL:  "https://api.openai.com/v1",
 			Model:    "deepseek-v4.1-flash",
 			MaxSteps: 6,

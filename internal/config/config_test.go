@@ -134,6 +134,7 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_AGENT_MODEL", "am", "am", func(c config.Config) any { return c.Agent.Model }},
 		{"GKG_AGENT_MAX_STEPS", "3", 3, func(c config.Config) any { return c.Agent.MaxSteps }},
 		{"GKG_AGENT_TIMEOUT_S", "30", 30, func(c config.Config) any { return c.Agent.TimeoutS }},
+		{"GKG_AGENT_STREAM", "false", false, func(c config.Config) any { return c.Agent.Stream }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
@@ -352,6 +353,9 @@ func TestAgentDefaults(t *testing.T) {
 	}
 	if cfg.Agent.Enabled {
 		t.Errorf("Agent.Enabled = true, want the disabled default")
+	}
+	if !cfg.Agent.Stream {
+		t.Errorf("Agent.Stream = false, want the streaming client enabled by default")
 	}
 	if cfg.Agent.BaseURL != "https://api.openai.com/v1" {
 		t.Errorf("Agent.BaseURL = %q, want the OpenAI-compatible default", cfg.Agent.BaseURL)
