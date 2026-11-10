@@ -432,7 +432,7 @@ func TestAcceptanceComposeRebuilds(t *testing.T) {
 	}
 	cmd := exec.Command("bash", "-c", "COMPOSE=(printf '%s\\n')\n"+line)
 	out, err := cmd.CombinedOutput()
-	if err != nil || strings.Join(strings.Fields(string(out)), " ") != "up -d --build --wait" {
-		t.Fatal("acceptance compose must use up -d --build --wait")
+	if err != nil || strings.Join(strings.Fields(string(out)), " ") != "up -d --build --wait gkg" {
+		t.Fatal("acceptance compose must use up -d --build --wait gkg")
 	}
 }

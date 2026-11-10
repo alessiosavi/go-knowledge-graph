@@ -2,6 +2,7 @@ package deploy_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -12,13 +13,16 @@ import (
 
 func defaultCompose(t *testing.T) composeModel {
 	t.Helper()
-	return renderCompose(t, writeFixture(t, "MEMGRAPH_PASSWORD=test-only"))
+	return renderCompose(t, writeFixture(t, "MEMGRAPH_PASSWORD=test-only", "GKG_API_KEY=synthetic-test-key"))
 }
 
 func wantServices(t *testing.T, model composeModel, want ...string) {
 	t.Helper()
 	var got []string
-	for name := range model.Services {
+	for name, service := range model.Services {
+		if len(service.Profiles) > 0 {
+			continue
+		}
 		got = append(got, name)
 	}
 	slices.Sort(got)
@@ -46,7 +50,7 @@ func wantDependencies(t *testing.T, gkg composeService, want ...string) {
 
 func TestComposeDefaultStackRunsModelServices(t *testing.T) {
 	model := defaultCompose(t)
-	wantServices(t, model, "memgraph", "gkg", "sidecar", "docling")
+	wantServices(t, model, "memgraph", "gkg", "sidecar", "docling", "edge-init", "edge")
 	for _, name := range []string{"sidecar", "docling"} {
 		if len(model.Services[name].Profiles) != 0 {
 			t.Errorf("%s still requires a profile", name)
@@ -68,13 +72,16 @@ func TestComposeEnvFileFollowsGKGEnvFile(t *testing.T) {
 	if !strings.Contains(string(data), "${GKG_ENV_FILE:-../.env}") {
 		t.Error("gkg env_file does not follow GKG_ENV_FILE")
 	}
-	model := renderCompose(t, writeFixture(t, "MEMGRAPH_PASSWORD=test-only", "GKG_PROBE_ONLY_IN_FILE=from-fixture"))
+	model := renderCompose(t, writeFixture(t, "MEMGRAPH_PASSWORD=test-only", "GKG_API_KEY=synthetic-test-key", "GKG_PROBE_ONLY_IN_FILE=from-fixture"))
 	wantEnv(t, model.Services["gkg"], "GKG_PROBE_ONLY_IN_FILE", "from-fixture")
 }
 
 func TestComposePortsLoopbackOnly(t *testing.T) {
 	for name, service := range defaultCompose(t).Services {
-		if len(service.Ports) == 0 {
+		if len(service.Profiles) > 0 {
+			continue
+		}
+		if len(service.Ports) == 0 && name != "edge-init" {
 			t.Errorf("%s has no published port", name)
 		}
 		for _, port := range service.Ports {
@@ -87,7 +94,7 @@ func TestComposePortsLoopbackOnly(t *testing.T) {
 
 func TestComposePortOverrides(t *testing.T) {
 	for _, overrides := range []bool{false, true} {
-		lines := []string{"MEMGRAPH_PASSWORD=test-only"}
+		lines := []string{"MEMGRAPH_PASSWORD=test-only", "GKG_API_KEY=synthetic-test-key"}
 		want := map[string]string{"memgraph": "7687", "gkg": "8080", "sidecar": "8090", "docling": "5001"}
 		if overrides {
 			lines = append(lines, "MEMGRAPH_PORT=17687", "GKG_PORT=18080", "SIDECAR_PORT=18090", "DOCLING_PORT=15001")
@@ -106,7 +113,10 @@ func TestComposePortOverrides(t *testing.T) {
 
 func TestComposeRestartAndLogRotation(t *testing.T) {
 	for name, service := range defaultCompose(t).Services {
-		if service.Restart != "unless-stopped" {
+		if len(service.Profiles) > 0 {
+			continue
+		}
+		if service.Restart != "unless-stopped" && !(name == "edge-init" && service.Restart == "no") {
 			t.Errorf("%s restart policy missing", name)
 		}
 		if service.Logging.Driver != "json-file" || service.Logging.Options["max-size"] != "10m" || service.Logging.Options["max-file"] != "3" {
@@ -117,7 +127,7 @@ func TestComposeRestartAndLogRotation(t *testing.T) {
 
 func TestComposeMemoryBudget(t *testing.T) {
 	model := defaultCompose(t)
-	floors := map[string]int64{"memgraph": 1 << 30, "gkg": 512 << 20, "sidecar": 2 << 30, "docling": 2 << 30}
+	floors := map[string]int64{"memgraph": 1 << 30, "gkg": 512 << 20, "sidecar": 2 << 30, "docling": 2 << 30, "edge": 128 << 20}
 	var total int64
 	for name, floor := range floors {
 		limit := model.Services[name].MemLimit
@@ -142,7 +152,7 @@ func TestComposeMemoryBudget(t *testing.T) {
 
 func TestComposeImagesPinned(t *testing.T) {
 	model := defaultCompose(t)
-	for _, name := range []string{"memgraph", "docling"} {
+	for _, name := range []string{"memgraph", "docling", "edge-init", "edge"} {
 		if !strings.Contains(model.Services[name].Image, "@sha256:") {
 			t.Errorf("%s image is not digest-pinned", name)
 		}
@@ -151,14 +161,100 @@ func TestComposeImagesPinned(t *testing.T) {
 
 func TestComposeLightOverride(t *testing.T) {
 	for _, mode := range []string{"mock", "openai"} {
-		lines := []string{"MEMGRAPH_PASSWORD=test-only"}
+		lines := []string{"MEMGRAPH_PASSWORD=test-only", "GKG_API_KEY=synthetic-test-key"}
 		if mode == "openai" {
 			lines = append(lines, "GKG_LIGHT_EXTRACTOR_MODE=openai")
 		}
 		model := renderCompose(t, writeFixture(t, lines...), "deploy/docker-compose.yml", "deploy/compose.light.yml")
-		wantServices(t, model, "memgraph", "gkg")
+		wantServices(t, model, "memgraph", "gkg", "edge-init", "edge")
 		wantDependencies(t, model.Services["gkg"], "memgraph")
 		wantEnv(t, model.Services["gkg"], "GKG_EXTRACTOR_MODE", mode)
 		wantEnv(t, model.Services["gkg"], "GKG_CONVERTER_MODE", "off")
+	}
+}
+
+func TestComposeEdgeWiring(t *testing.T) {
+	model := defaultCompose(t)
+	edge, init := model.Services["edge"], model.Services["edge-init"]
+	if edge.DependsOn["gkg"].Condition != "service_healthy" || edge.DependsOn["edge-init"].Condition != "service_completed_successfully" {
+		t.Error("edge needs healthy gkg and completed edge-init")
+	}
+	for key, value := range map[string]string{
+		"MODSEC_RESP_BODY_ACCESS": "Off", "ALLOWED_METHODS": "GET HEAD POST OPTIONS DELETE",
+		"MODSEC_REQ_BODY_LIMIT": "22020096", "MODSEC_REQ_BODY_NOFILES_LIMIT": "22020096",
+		"MODSEC_AUDIT_LOG_PARTS": "ADEFHZ", "PARANOIA": "1", "BLOCKING_PARANOIA": "1", "ANOMALY_INBOUND": "5",
+		"GKG_API_KEY": "synthetic-test-key",
+	} {
+		wantEnv(t, edge, key, value)
+	}
+	if init.User != "0:0" || init.MemLimit != 64<<20 {
+		t.Error("edge-init must be a bounded root one-shot")
+	}
+	mounts := map[string]bool{}
+	for _, v := range edge.Volumes {
+		mounts[v.Target] = v.ReadOnly
+	}
+	for _, target := range []string{
+		"/etc/nginx/templates/conf.d/default.conf.template", "/etc/nginx/edge-certs", "/etc/nginx/edge-auth", "/var/www/acme",
+		"/docker-entrypoint.d/15-validate-env.sh",
+		"/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf",
+		"/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf",
+	} {
+		if !mounts[target] {
+			t.Errorf("read-only mount missing: %s", target)
+		}
+	}
+	found := false
+	for _, v := range init.Volumes {
+		if v.Type == "bind" && strings.HasSuffix(v.Source, "/htpasswd") {
+			found = v.ReadOnly && !v.Bind.CreateHostPath
+		}
+	}
+	if !found {
+		t.Error("htpasswd bind must be read-only and refuse auto-creation")
+	}
+	for _, name := range []string{"edge-certs", "edge-auth", "acme-webroot", "letsencrypt"} {
+		if _, ok := model.Volumes[name]; !ok {
+			t.Errorf("volume missing: %s", name)
+		}
+	}
+}
+
+func TestComposeEdgeBind(t *testing.T) {
+	for _, bind := range []string{"127.0.0.1", "0.0.0.0"} {
+		model := renderCompose(t, writeFixture(t, "MEMGRAPH_PASSWORD=test-only", "GKG_API_KEY=synthetic-test-key", "EDGE_BIND="+bind, "EDGE_HTTP_PORT=28080", "EDGE_HTTPS_PORT=28443"))
+		ports := model.Services["edge"].Ports
+		if len(ports) != 2 {
+			t.Fatal("edge must publish exactly HTTP and HTTPS")
+		}
+		for _, port := range ports {
+			if port.HostIP != bind || (port.Target != 8080 && port.Target != 8443) || (port.Target == 8080 && port.Published != "28080") || (port.Target == 8443 && port.Published != "28443") {
+				t.Error("edge port mapping differs")
+			}
+		}
+	}
+}
+
+func TestComposeEdgeRequiresKey(t *testing.T) {
+	fixture := writeFixture(t, "MEMGRAPH_PASSWORD=test-only")
+	cmd := exec.Command("docker", "compose", "--env-file", fixture, "-f", "deploy/docker-compose.yml", "config", "-q")
+	cmd.Dir, cmd.Env = repoRoot(t), append(minimalEnv(), "GKG_ENV_FILE="+fixture, "EDGE_WAF_ENV="+filepath.Join(t.TempDir(), "absent.env"))
+	version := exec.Command("docker", "compose", "version")
+	version.Env = cmd.Env
+	if version.Run() != nil {
+		t.Skip("docker compose unavailable")
+	}
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "GKG_API_KEY") {
+		t.Error("missing GKG_API_KEY must fail by variable name")
+	}
+}
+
+func TestComposeCertProfile(t *testing.T) {
+	model := defaultCompose(t)
+	cert, ok := model.Services["certbot"]
+	// config includes profiled services; they are not started by default.
+	if !ok || !slices.Equal(cert.Profiles, []string{"cert"}) || !strings.Contains(cert.Image, "@sha256:") || cert.MemLimit != 256<<20 {
+		t.Fatal("certbot must be pinned, bounded, and profile-only")
 	}
 }

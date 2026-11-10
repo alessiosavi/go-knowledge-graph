@@ -19,8 +19,8 @@ services:
     image: memgraph/memgraph:3.14.0@sha256:a732421217951066e42f5749111bc3d0c7b51b12c756be04850d4dafa84cc05e
     restart: unless-stopped
     logging: *logging
-    mem_limit: 2g
-    command: ["--memory-limit=1536"]
+    mem_limit: 1792m
+    command: ["--memory-limit=1280"]
     environment:
       MEMGRAPH_USER: ${MEMGRAPH_USER:-gkg}
       MEMGRAPH_PASSWORD: ${MEMGRAPH_PASSWORD:?set MEMGRAPH_PASSWORD in .env}
@@ -150,5 +150,92 @@ services:
       retries: 10
       start_period: 60s
 
+  edge-init:
+    image: owasp/modsecurity-crs:4.30.0-nginx-202610180210@sha256:7698c48a41a43138ae317feeec964d1515b861cc1d9e50617bc1cdfe9f314e1d
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/edge-init.sh"]
+    restart: "no"
+    logging: *logging
+    mem_limit: 64m
+    environment:
+      SERVER_NAME: ${EDGE_SERVER_NAME:-localhost}
+    volumes:
+      - ./edge/init.sh:/edge-init.sh:ro
+      - edge-certs:/etc/nginx/edge-certs
+      - edge-auth:/etc/nginx/edge-auth
+      - acme-webroot:/var/www/acme
+      - type: bind
+        source: ${EDGE_HTPASSWD:-./edge/htpasswd}
+        target: /run/edge/htpasswd
+        read_only: true
+        bind:
+          create_host_path: false
+
+  edge:
+    image: owasp/modsecurity-crs:4.30.0-nginx-202610180210@sha256:7698c48a41a43138ae317feeec964d1515b861cc1d9e50617bc1cdfe9f314e1d
+    restart: unless-stopped
+    logging: *logging
+    # Provisional: Task 6 measures concurrent near-cap requests before release.
+    # This 256 MiB is reserved from Memgraph; long-running sum stays 14 GiB.
+    mem_limit: 256m
+    depends_on:
+      gkg:
+        condition: service_healthy
+      edge-init:
+        condition: service_completed_successfully
+    env_file:
+      - path: ${EDGE_WAF_ENV:-./edge/waf.env}
+        required: false
+    environment:
+      SERVER_NAME: ${EDGE_SERVER_NAME:-localhost}
+      GKG_API_KEY: ${GKG_API_KEY:?set GKG_API_KEY in .env — the edge sends it to gkg}
+      EDGE_HTTPS_PORT: ${EDGE_HTTPS_PORT:-443}
+      EDGE_HSTS_MAX_AGE: ${EDGE_HSTS_MAX_AGE:-0}
+      EDGE_INGEST_TIMEOUT_S: ${EDGE_INGEST_TIMEOUT_S:-390}
+      EDGE_ASK_TIMEOUT_S: ${EDGE_ASK_TIMEOUT_S:-90}
+      MODSEC_RESP_BODY_ACCESS: "Off"
+      ALLOWED_METHODS: "GET HEAD POST OPTIONS DELETE"
+      MODSEC_REQ_BODY_LIMIT: "22020096"
+      MODSEC_REQ_BODY_NOFILES_LIMIT: "22020096"
+      MODSEC_AUDIT_LOG_PARTS: ADEFHZ
+      PARANOIA: "1"
+      BLOCKING_PARANOIA: "1"
+      ANOMALY_INBOUND: "5"
+      # No proxy in front; do not trust inbound real-IP headers.
+      SET_REAL_IP_FROM: ""
+      REAL_IP_HEADER: ""
+    ports:
+      - "${EDGE_BIND:-127.0.0.1}:${EDGE_HTTP_PORT:-80}:8080"
+      - "${EDGE_BIND:-127.0.0.1}:${EDGE_HTTPS_PORT:-443}:8443"
+    volumes:
+      - ./edge/default.conf.template:/etc/nginx/templates/conf.d/default.conf.template:ro
+      - ./edge/15-validate-env.sh:/docker-entrypoint.d/15-validate-env.sh:ro
+      - ./edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:ro
+      - ./edge/modsec/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:ro
+      - edge-certs:/etc/nginx/edge-certs:ro
+      - edge-auth:/etc/nginx/edge-auth:ro
+      - acme-webroot:/var/www/acme:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsSk", "https://127.0.0.1:8443/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  # Issuance and renewal commands are added in the certificate task.
+  certbot:
+    image: certbot/certbot:v5.8.0@sha256:f70ad0adbb7e117f0fe42a63c553f28ea451edabc0148757b6efcd9735acaa20
+    profiles: [cert]
+    mem_limit: 256m
+    logging: *logging
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - acme-webroot:/var/www/acme
+      - edge-certs:/etc/nginx/edge-certs
+
 volumes:
   memgraph-data:
+  edge-certs:
+  edge-auth:
+  acme-webroot:
+  letsencrypt:

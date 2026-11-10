@@ -10,12 +10,34 @@ COMPOSE_PROJECT :=
 ifeq ($(origin PROJECT),command line)
 COMPOSE_PROJECT = $(if $(strip $(PROJECT)),-p "$(PROJECT)")
 endif
-COMPOSE = GKG_ENV_FILE="$(abspath $(ENV_FILE))" $(DOCKER) compose $(COMPOSE_PROJECT) --env-file "$(ENV_FILE)" -f deploy/docker-compose.yml
+# Only explicit make arguments may select edge state or extra compose files.
+EDGE_AUTH_PATH := deploy/edge/htpasswd
+ifeq ($(origin EDGE_HTPASSWD),command line)
+EDGE_AUTH_PATH := $(EDGE_HTPASSWD)
+endif
+EDGE_WAF_PATH := deploy/edge/waf.env
+ifeq ($(origin EDGE_WAF_ENV),command line)
+EDGE_WAF_PATH := $(EDGE_WAF_ENV)
+endif
+PASSWD_LOGIN :=
+ifeq ($(origin LOGIN),command line)
+PASSWD_LOGIN := $(LOGIN)
+endif
+PASSWD_GENERATE := 0
+ifeq ($(origin GENERATE),command line)
+PASSWD_GENERATE := $(GENERATE)
+endif
+# Quote literal values before passing them to the shell (Make 3.81 compatible).
+quote = '$(subst ','"'"',$(1))'
+COMPOSE = GKG_ENV_FILE=$(call quote,$(abspath $(ENV_FILE))) EDGE_HTPASSWD=$(call quote,$(abspath $(EDGE_AUTH_PATH))) EDGE_WAF_ENV=$(call quote,$(abspath $(EDGE_WAF_PATH))) $(DOCKER) compose $(COMPOSE_PROJECT) --env-file "$(ENV_FILE)" -f deploy/docker-compose.yml
 ifeq ($(LIGHT),1)
 COMPOSE += -f deploy/compose.light.yml
 endif
+ifeq ($(origin COMPOSE_EXTRA),command line)
+COMPOSE += $(if $(strip $(COMPOSE_EXTRA)),-f $(call quote,$(COMPOSE_EXTRA)))
+endif
 
-.PHONY: help up down destroy ps logs build pull restart prune status smoke check-env
+.PHONY: help up down destroy ps logs build pull restart prune status smoke check-env check-edge passwd
 
 help:
 	@printf '%s\n' \
@@ -30,12 +52,20 @@ help:
 	  'prune    Prune dangling images and host-wide builder cache older than 7 days' \
 	  'status   Show project services and their resource usage' \
 	  'smoke    Check the running project and delete the temporary document' \
+	  'passwd   Create/update a login: LOGIN=<name> [GENERATE=1]' \
+	  'check-edge Check that the password file exists' \
 	  'check-env Check that ENV_FILE exists'
 
 check-env:
 	@test -f "$(ENV_FILE)" || { printf '%s\n' 'stack: $(ENV_FILE) not found — cp .env.example .env and set MEMGRAPH_PASSWORD'; exit 1; }
 
-up: check-env
+check-edge:
+	@test -s $(call quote,$(abspath $(EDGE_AUTH_PATH))) || { printf '%s\n' 'stack: password file missing or empty — run make passwd LOGIN=<name>'; exit 1; }
+
+passwd:
+	@bash scripts/edge-passwd.sh $(call quote,$(DOCKER)) $(call quote,$(abspath $(EDGE_AUTH_PATH))) $(call quote,$(PASSWD_LOGIN)) $(call quote,$(PASSWD_GENERATE))
+
+up: check-env check-edge
 	@$(COMPOSE) up -d --build --wait --remove-orphans
 
 down:
