@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -206,10 +207,11 @@ func (s *Server) run(ctx context.Context, question string, emit func(streamEvent
 
 // runTurn performs one model turn. When emit is non-nil and the turn may
 // stream (see streamThisTurn), it tries the streamed client first and
-// applies the negotiation fallbacks: a streamed turn with no content and
-// no tool calls memoizes content-only streaming and retries the same turn
-// non-streamed; a payload rejection or a stream closed before its first
-// event memoizes unsupported streaming and retries non-streamed once.
+// retries non-streamed once after an empty turn, a payload rejection, or a
+// stream closed before its first event. Degradation is memoized only after
+// the retry proves it can complete non-streamed: an empty turn's retry must
+// return tool calls to memoize content-only streaming; a rejected or closed
+// stream's retry must succeed to memoize unsupported streaming.
 func (s *Server) runTurn(ctx context.Context, req chatRequest, emit func(streamEvent) error) (chatReply, error) {
 	if emit != nil && s.streamThisTurn(len(req.Tools) > 0) {
 		reply, err := s.llm.chatStream(ctx, req, func(text string) error {
@@ -217,14 +219,22 @@ func (s *Server) runTurn(ctx context.Context, req chatRequest, emit func(streamE
 		})
 		if err == nil {
 			if reply.Content == "" && len(reply.ToolCalls) == 0 {
-				s.llm.memoContentOnly()
-				return s.llm.chat(ctx, req)
+				slog.Warn("agent: streamed turn returned no content and no tool calls; retrying non-streamed",
+					"hint", "GKG_AGENT_STREAM=false")
+				plain, perr := s.llm.chat(ctx, req)
+				if perr == nil && len(plain.ToolCalls) > 0 {
+					s.llm.memoContentOnly()
+				}
+				return plain, perr
 			}
 			return reply, nil
 		}
 		if streamFallbackEligible(err) {
-			s.llm.memoStreamUnsupported()
-			return s.llm.chat(ctx, req)
+			plain, perr := s.llm.chat(ctx, req)
+			if perr == nil {
+				s.llm.memoStreamUnsupported()
+			}
+			return plain, perr
 		}
 		return chatReply{}, err
 	}

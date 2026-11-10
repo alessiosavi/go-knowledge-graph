@@ -410,6 +410,7 @@ func TestStreamFallbackThenPlan(t *testing.T) {
 		contentReply("Final answer citing the chunk."),
 	)
 	stub.withStreamStatus(http.StatusBadRequest, `{"error":{"message":"stream rejected"}}`)
+	stub.withStreamStatus(http.StatusBadRequest, `{"error":{"message":"stream rejected"}}`)
 	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
 
 	resp, err := s.run(context.Background(), "fallback chain "+fx.token, noopEmit)
@@ -419,11 +420,16 @@ func TestStreamFallbackThenPlan(t *testing.T) {
 	if resp.Answer != "Final answer citing the chunk." {
 		t.Errorf("Answer = %q", resp.Answer)
 	}
-	if len(stub.requests) != 4 {
-		t.Fatalf("requests = %v, want [stream, plain400, plan, final]", streamFlags(stub))
+	if len(stub.requests) != 5 {
+		t.Fatalf("requests = %v, want [stream, plain400, plan, stream-final400, plain-final]", streamFlags(stub))
 	}
 	if stub.requests[0]["stream"] != true || stub.requests[1]["stream"] != nil {
 		t.Errorf("fallback order = %v, want the stream attempt first, then plain", streamFlags(stub))
+	}
+	for _, i := range []int{0, 1} {
+		if _, ok := stub.requests[i]["tools"]; !ok {
+			t.Errorf("request[%d] must send tools", i)
+		}
 	}
 	if _, ok := stub.requests[2]["tools"]; ok {
 		t.Errorf("plan call must not send tools: %v", stub.requests[2])
@@ -431,11 +437,162 @@ func TestStreamFallbackThenPlan(t *testing.T) {
 	if rf, ok := stub.requests[2]["response_format"].(map[string]any); !ok || rf["type"] != "json_object" {
 		t.Errorf("plan call response_format = %v, want json_object", stub.requests[2]["response_format"])
 	}
-	if _, ok := stub.requests[3]["tools"]; ok {
-		t.Errorf("final call must not send tools: %v", stub.requests[3])
+	if stub.requests[3]["stream"] != true || stub.requests[4]["stream"] != nil {
+		t.Errorf("final fallback order = %v, want stream-final400 then plain-final", streamFlags(stub))
+	}
+	for _, i := range []int{3, 4} {
+		if _, ok := stub.requests[i]["tools"]; ok {
+			t.Errorf("final request[%d] must not send tools", i)
+		}
 	}
 	if unsupported, _ := s.llm.streamState(); !unsupported {
-		t.Error("streamUnsupported not memoized after the 400")
+		t.Error("streamUnsupported not memoized after the successful final retry")
+	}
+}
+
+func TestToolsRejectedStreamingStaysOn(t *testing.T) {
+	fx := newAgentFixture(t)
+	plan := fmt.Sprintf(`{"tool_calls":[{"name":"search","arguments":{"query":%q}}]}`, fx.token)
+	toolsRejected := stubResponse{status: http.StatusBadRequest, body: `{"error":{"message":"tools are not supported by this model"}}`}
+	stub := newLLMStub(t, toolsRejected, contentReply(plan))
+	stub.withStreamStatus(http.StatusBadRequest, toolsRejected.body)
+	stub.withStream(sseContent("Final "), sseContent("answer."), sseFinish("stop"), sseDone)
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+
+	var deltas []string
+	resp, err := s.run(context.Background(), "q "+fx.token, func(ev streamEvent) error {
+		if ev.Kind == "delta" {
+			deltas = append(deltas, ev.Text)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if resp.Answer != "Final answer." {
+		t.Errorf("Answer = %q, want the streamed final answer", resp.Answer)
+	}
+	if len(stub.requests) != 4 {
+		t.Fatalf("requests = %v, want [stream400, plain400, plan, stream-final]", streamFlags(stub))
+	}
+	if stub.requests[3]["stream"] != true {
+		t.Errorf("final request stream = %v, want true", stub.requests[3]["stream"])
+	}
+	if _, ok := stub.requests[3]["tools"]; ok {
+		t.Error("final request must not send tools")
+	}
+	if strings.Join(deltas, "|") != "Final |answer." {
+		t.Errorf("deltas = %q, want [Final  answer.]", deltas)
+	}
+	if unsupported, _ := s.llm.streamState(); unsupported {
+		t.Error("streamUnsupported = true, want false after both requests rejected tools")
+	}
+	rr := doReq(t, s.StatusHandler(), http.MethodGet, "/v1/agent/status", "", nil)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"stream":true`) {
+		t.Errorf("status code = %d, body = %s, want stream:true", rr.Code, rr.Body.String())
+	}
+
+	stub.script = append(stub.script, toolsRejected, contentReply(plan))
+	stub.withStreamStatus(http.StatusBadRequest, toolsRejected.body)
+	stub.withStream(sseContent("Final "), sseContent("answer."), sseFinish("stop"), sseDone)
+	resp, err = s.run(context.Background(), "second "+fx.token, noopEmit)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if resp.Answer != "Final answer." {
+		t.Errorf("second Answer = %q, want the streamed final answer", resp.Answer)
+	}
+	if len(stub.requests) != 8 {
+		t.Errorf("requests after second ask = %v, want two [stream400, plain400, plan, stream-final] sequences", streamFlags(stub))
+	}
+	if len(stub.requests) < 5 {
+		t.Fatal("second ask sent no request")
+	}
+	if stub.requests[4]["stream"] != true {
+		t.Errorf("second ask first request stream = %v, want true", stub.requests[4]["stream"])
+	}
+	if _, ok := stub.requests[4]["tools"]; !ok {
+		t.Error("second ask first request must send tools")
+	}
+}
+
+func TestStreamAndPlainNotFoundNoMemo(t *testing.T) {
+	fx := newAgentFixture(t)
+	stub := newLLMStub(t, stubResponse{status: http.StatusNotFound, body: `{"error":{"message":"deployment not found"}}`})
+	stub.withStreamStatus(http.StatusNotFound, `{"error":{"message":"deployment not found"}}`)
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+
+	_, err := s.run(context.Background(), "q", noopEmit)
+	var pe *providerError
+	if !errors.As(err, &pe) || pe.status != http.StatusNotFound {
+		t.Errorf("err = %v, want the classified 404", err)
+	}
+	if len(stub.requests) != 2 || stub.requests[0]["stream"] != true || stub.requests[1]["stream"] != nil {
+		t.Errorf("requests = %v, want [stream404, plain404]", streamFlags(stub))
+	}
+	if unsupported, _ := s.llm.streamState(); unsupported {
+		t.Error("streamUnsupported = true, want false after both requests returned 404")
+	}
+}
+
+func TestEmptyStreamRetryContentOnlyNoMemo(t *testing.T) {
+	fx := newAgentFixture(t)
+	stub := newLLMStub(t, contentReply("plain answer"))
+	stub.withStream(sseRole("assistant"), sseFinish("stop"), sseDone)
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+
+	resp, err := s.run(context.Background(), "first", noopEmit)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if resp.Answer != "plain answer" {
+		t.Errorf("Answer = %q, want the non-streamed retry's answer", resp.Answer)
+	}
+	if len(stub.requests) != 2 || stub.requests[0]["stream"] != true || stub.requests[1]["stream"] != nil {
+		t.Errorf("requests = %v, want [stream, plain]", streamFlags(stub))
+	}
+	if _, contentOnly := s.llm.streamState(); contentOnly {
+		t.Error("contentOnly = true, want false after a content-only retry")
+	}
+	resp, err = s.run(context.Background(), "second", noopEmit)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if resp.Answer != "ok" {
+		t.Errorf("second Answer = %q, want the default streamed reply", resp.Answer)
+	}
+	if len(stub.requests) != 3 || stub.requests[2]["stream"] != true {
+		t.Errorf("requests = %v, want the second ask to stream again", streamFlags(stub))
+	}
+}
+
+func TestEmptyStreamRetryErrorNoMemo(t *testing.T) {
+	fx := newAgentFixture(t)
+	stub := newLLMStub(t, stubResponse{status: http.StatusServiceUnavailable})
+	stub.withStream(sseRole("assistant"), sseFinish("stop"), sseDone)
+	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.Stream = true })
+	s.llm.backoff = nil
+
+	_, err := s.run(context.Background(), "first", noopEmit)
+	var pe *providerError
+	if !errors.As(err, &pe) || pe.status != http.StatusServiceUnavailable {
+		t.Errorf("err = %v, want the classified 503", err)
+	}
+	if len(stub.requests) != 2 || stub.requests[0]["stream"] != true || stub.requests[1]["stream"] != nil {
+		t.Errorf("requests = %v, want [stream, plain503]", streamFlags(stub))
+	}
+	if unsupported, contentOnly := s.llm.streamState(); unsupported || contentOnly {
+		t.Errorf("streamUnsupported = %v, contentOnly = %v, want false/false after a failed retry", unsupported, contentOnly)
+	}
+	resp, err := s.run(context.Background(), "second", noopEmit)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if resp.Answer != "ok" {
+		t.Errorf("second Answer = %q, want the default streamed reply", resp.Answer)
+	}
+	if len(stub.requests) != 3 || stub.requests[2]["stream"] != true {
+		t.Errorf("requests = %v, want the second ask to stream again", streamFlags(stub))
 	}
 }
 
