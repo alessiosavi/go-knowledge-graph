@@ -15,7 +15,7 @@ ENV PIP_NO_CACHE_DIR=1 \
 WORKDIR /app
 
 # CPU-only torch first, so the heavier GPU wheels never enter the image.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
