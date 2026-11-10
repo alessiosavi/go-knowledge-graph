@@ -203,6 +203,27 @@ func toolsUnsupported(err error) bool {
 	return pe.status == http.StatusBadRequest || pe.status == http.StatusUnprocessableEntity
 }
 
+// streamFallbackEligible reports whether a streaming failure means "retry
+// the same request non-streamed once and stop streaming from then on": the
+// provider rejected the streamed payload (or the deployment does not exist),
+// or the stream closed before delivering any event. Auth failures are
+// deliberately excluded — they are operator-fixable, so nothing is memoized.
+func streamFallbackEligible(err error) bool {
+	if errors.Is(err, errStreamClosedBeforeEvent) {
+		return true
+	}
+	var pe *providerError
+	if !errors.As(err, &pe) {
+		return false
+	}
+	switch pe.status {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed,
+		http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
+}
+
 // askWithPlan is the fallback for endpoints without tool-calling support:
 // one constrained JSON plan, execute its calls (bounded by the budget), then
 // one final call over the results.
