@@ -10,17 +10,18 @@ work=$(mktemp -d "$certs/.init.XXXXXX")
 auth_tmp=
 trap 'rm -rf "$work"; if [ -n "$auth_tmp" ]; then rm -f "$auth_tmp"; fi' EXIT
 trap 'exit 1' HUP INT TERM
-if [ ! -s "$certs/current.crt" ] || [ ! -s "$certs/current.key" ]; then
+if [ ! -s "$certs/current.pem" ]; then
  case "${SERVER_NAME:-}" in ''|*[!A-Za-z0-9.-]*) printf '%s\n' 'edge-init: invalid SERVER_NAME' >&2; exit 1 ;; esac
  openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
   -subj "/CN=${SERVER_NAME}" -addext "subjectAltName=DNS:${SERVER_NAME}" \
   -keyout "$work/current.key" -out "$work/current.crt" >/dev/null 2>&1
- chown 0:101 "$work/current.key" "$work/current.crt"
- chmod 0640 "$work/current.key"
- chmod 0644 "$work/current.crt"
- mv "$work/current.key" "$certs/current.key"
- mv "$work/current.crt" "$certs/current.crt"
+ cat "$work/current.crt" "$work/current.key" > "$work/current.pem"
+ chown 0:101 "$work/current.pem"
+ chmod 0640 "$work/current.pem"
+ mv "$work/current.pem" "$certs/current.pem"
 fi
+# Old two-file generations are never used to decide whether init is complete.
+rm -f "$certs/current.crt" "$certs/current.key"
 auth_tmp=$(mktemp "$auth/.htpasswd.XXXXXX")
 cat /run/edge/htpasswd > "$auth_tmp"
 [ -s "$auth_tmp" ] || { printf '%s\n' 'edge-init: empty htpasswd' >&2; exit 1; }

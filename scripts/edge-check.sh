@@ -88,8 +88,12 @@ go build -o "$tmp/check" ./scripts/edgecheck
 { cat "$tmp/password"; printf '\n'; } | make passwd LOGIN=edgecheck "${make_args[@]}" >"$tmp/passwd.log" 2>&1 || fail 'password helper'
 ok 'private password with dollar, colon and quotes'
 active=1
+# A stale, mismatched two-file generation must not prevent fresh TLS startup.
+"${compose[@]}" --profile cert run --rm --no-deps --entrypoint sh certbot -c 'printf "obsolete certificate\n" > /etc/nginx/edge-certs/current.crt; printf "obsolete key\n" > /etc/nginx/edge-certs/current.key' >"$tmp/legacy-certs.log" 2>&1 || fail 'legacy certificate fixture'
 make up "${make_args[@]}" >"$tmp/up.log" 2>&1 || fail 'isolated stack startup (private diagnostics withheld)'
-"${compose[@]}" cp edge:/etc/nginx/edge-certs/current.crt "$tmp/ca.crt" >"$tmp/cp.log" 2>&1 || fail 'copy placeholder certificate'
+"${compose[@]}" exec -T edge openssl x509 -in /etc/nginx/edge-certs/current.pem -outform PEM >"$tmp/ca.crt" 2>"$tmp/cp.log" || fail 'read placeholder certificate'
+"${compose[@]}" exec -T edge sh -c 'test ! -e /etc/nginx/edge-certs/current.crt && test ! -e /etc/nginx/edge-certs/current.key' || fail 'legacy certificate cleanup'
+ok 'legacy certificate/key ignored and removed at startup'
 ready=0
 for ((attempt=0; attempt<60; attempt++)); do
   if curl -q --silent --show-error --noproxy '*' --max-time 2 --cacert "$tmp/ca.crt" -f -o /dev/null "$base/healthz" 2>/dev/null; then ready=1; break; fi
@@ -121,6 +125,10 @@ for mode in DetectionOnly On; do
   # separate from the legitimate corpus whose CRS count must be zero.
   ok "section auth ($mode)"
   "$tmp/check" auth "$tmp" "$base" "$mode"
+  "${compose[@]}" logs --no-color --no-log-prefix gkg >"$tmp/before-encoded-$mode.log" 2>&1
+  "$tmp/check" encoded-paths "$tmp" "$base" "$mode"
+  "${compose[@]}" logs --no-color --no-log-prefix gkg >"$tmp/after-encoded-$mode.log" 2>&1
+  "$tmp/check" encoded-upstream "$tmp/before-encoded-$mode.log" "$tmp/after-encoded-$mode.log"
   # Positive control precedes every zero-match assertion. Logs are compared by
   # unique transaction ID, never grep-counted or sliced by uncertain timestamps.
   ok "section waf ($mode)"
@@ -186,7 +194,8 @@ fake_lineage() {
   ' sh "$1" >"$tmp/fake-lineage.log" 2>&1 || fail 'fake certificate fixture'
 }
 refresh_ca() {
-  "${compose[@]}" cp edge:/etc/nginx/edge-certs/current.crt "$tmp/ca.crt" >"$tmp/cp.log" 2>&1 || fail 'copy renewed trust certificate'
+  "${compose[@]}" exec -T edge openssl x509 -in /etc/nginx/edge-certs/current.pem -outform PEM >"$tmp/next-ca.crt" 2>"$tmp/cp.log" || fail 'read renewed trust certificate'
+  mv "$tmp/next-ca.crt" "$tmp/ca.crt"
 }
 assert_changed_workers() {
   after_workers="$(workers)"
@@ -212,7 +221,8 @@ mv "$tmp/both-ca.crt" "$tmp/ca.crt"
 {
   printf '#!/bin/bash\nset -euo pipefail\n'
   printf '%q ' make renew "${make_args[@]}"; printf '\n'
-  printf '%q ' "${compose[@]}" cp edge:/etc/nginx/edge-certs/current.crt "$tmp/ca.crt"; printf '\n'
+  printf '%q ' "${compose[@]}" exec -T edge openssl x509 -in /etc/nginx/edge-certs/current.pem -outform PEM; printf ' > %q\n' "$tmp/next-ca.crt"
+  printf '%q ' mv "$tmp/next-ca.crt" "$tmp/ca.crt"; printf '\n'
 } >"$tmp/renew-held.sh"
 chmod 700 "$tmp/renew-held.sh"
 "$tmp/check" reload "$tmp" "$base" bash "$tmp/renew-held.sh"
@@ -232,9 +242,9 @@ for ((attempt=0; attempt<10; attempt++)); do
 done
 [ "$remaining" = 0 ] || fail 'old nginx workers drained after held MCP GET'
 ok 'old workers drained after held MCP GET (shutdown timeout unset)'
-permissions="$("${compose[@]}" exec -T edge stat -c '%a:%g' /etc/nginx/edge-certs/current.crt /etc/nginx/edge-certs/current.key)"
-[ "$permissions" = "$(printf '644:101\n640:101')" ] || fail 'installed certificate mode and nginx group'
-ok 'certificate modes 0644/0640, group 101'
+permissions="$("${compose[@]}" exec -T edge stat -c '%a:%u:%g' /etc/nginx/edge-certs/current.pem)"
+[ "$permissions" = '640:0:101' ] || fail 'installed certificate bundle mode and owner/group'
+ok 'certificate bundle mode 0640, owner root, group 101'
 before_workers="$(workers)"
 make renew "${make_args[@]}" >"$tmp/renew-noop.log" 2>&1 || fail 'idempotent renewal'
 grep -F 'unchanged' "$tmp/renew-noop.log" >/dev/null || fail 'idempotent install result'

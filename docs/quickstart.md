@@ -74,6 +74,7 @@ loopback (`EDGE_BIND`, default `127.0.0.1`; the EC2 box sets `0.0.0.0`).
   the UI uses and `/mcp`. `/v1/cypher`, `/metrics`, `/readyz` and every other
   path or method are a 404 behind the password (use the `cypher` MCP tool or
   the loopback ports on the host). `/healthz` answers without a password.
+  Paths carrying a percent-encoded `/`, `.` or `\` are refused with 400.
 - **Upstream:** the edge replaces the client's `Authorization` with
   `GKG_API_KEY` (now required), so users never see gkg's key.
 - **Limits:** files up to 20 MiB (form overhead included); JSON bodies

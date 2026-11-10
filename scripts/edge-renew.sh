@@ -19,7 +19,7 @@ if [ "$issue" = 1 ]; then
 fi
 status="$("$@" --profile cert run --rm --entrypoint /edge-install-cert.sh certbot "$name")"
 case "$status" in installed|unchanged) printf 'edge: certificate %s\n' "$status" ;; *) printf '%s\n' 'edge: invalid installer result' >&2; exit 1 ;; esac
-expected="$("$@" exec -T edge openssl x509 -in /etc/nginx/edge-certs/current.crt -noout -fingerprint -sha256)"
+expected="$("$@" exec -T edge openssl x509 -in /etc/nginx/edge-certs/current.pem -noout -fingerprint -sha256)"
 [ -n "$expected" ] || { printf '%s\n' 'edge: installed fingerprint missing' >&2; exit 1; }
 served() {
   "$@" exec -T edge sh -c '

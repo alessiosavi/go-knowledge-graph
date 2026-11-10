@@ -84,6 +84,36 @@ func TestEdgeAllowlist(t *testing.T) {
 	}
 }
 
+func TestEdgeEncodedPathGuard(t *testing.T) {
+	template := edgeFile(t, "deploy/edge/default.conf.template")
+	guard := regexp.MustCompile(`(?s)map \$request_uri \$edge_encoded_path \{\s*default 0;\s*"~\*([^"\n]+)" 1;\s*\}`).FindStringSubmatch(template)
+	if len(guard) != 2 {
+		t.Fatal("raw request path needs a case-insensitive encoded separator/dot guard")
+	}
+	pattern, err := regexp.Compile("(?i)" + guard[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/v1%2Fdocuments", "/v1/documents/%2e%2e/metrics", "/ui/%2E%2E/metrics", "/v1/documents/x%5Cy", "/v1%2fagent%2fstatus", "/v1/documents/x%5cy"} {
+		if !pattern.MatchString(path) {
+			t.Errorf("encoded path bypass: %s", path)
+		}
+	}
+	for _, path := range []string{"/v1/documents/abcdef012345", "/v1/documents?x=a%2Fb", "/v1/documents?x=%2e%5C", "/ui/app.js", "/v1/documents?x=/v1%2fdocuments"} {
+		if pattern.MatchString(path) {
+			t.Errorf("legitimate path or query rejected: %s", path)
+		}
+	}
+	// A server rewrite check runs before try_files or any named proxy group.
+	servers := strings.Split(template, "server {\n")[1:]
+	for _, server := range servers {
+		check := strings.Index(server, "if ($edge_encoded_path) { return 400; }")
+		if check < 0 || check > strings.Index(server, "location ") {
+			t.Error("encoded paths must be rejected at server scope before dispatch")
+		}
+	}
+}
+
 func TestEdgePolicy(t *testing.T) {
 	template := edgeFile(t, "deploy/edge/default.conf.template")
 	if !strings.Contains(template, "return 301 https://${SERVER_NAME}$edge_https_suffix$request_uri;") || strings.Contains(template, "https://$host") {
@@ -201,6 +231,41 @@ make() { printf '%s\n' "$*" > "$TEST_CALLS"; }
 	}
 	if _, err := os.Stat(work); !os.IsNotExist(err) {
 		t.Error("evidence failures must not prevent temp cleanup")
+	}
+}
+
+func TestEdgeCheckTrustRefreshIsAtomic(t *testing.T) {
+	script := edgeFile(t, "scripts/edge-check.sh")
+	wrapper := regexp.MustCompile(`(?ms)^\{\n  printf '#!/bin/bash.*?^\} >"\$tmp/renew-held.sh"`).FindString(script)
+	if wrapper == "" {
+		t.Fatal("held-renewal wrapper missing")
+	}
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"ca.crt": "old trust\n",
+		"make":   "#!/bin/sh\nexit 0\n",
+		"certificate-fixture": `#!/bin/sh
+# A concurrent reader must still see the old trust file while extraction runs.
+[ "$(cat "$TEST_DIR/ca.crt")" = 'old trust' ] || exit 71
+printf 'new trust\n'
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("/bin/bash", "-c", `set -e
+tmp="$TEST_DIR"
+make_args=(fixture)
+compose=("$TEST_DIR/certificate-fixture")
+`+wrapper+"\n/bin/bash \"$tmp/renew-held.sh\"\n")
+	cmd.Env = append(os.Environ(), "TEST_DIR="+dir, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("trust extraction truncated the active CA file: %v\n%s", err, output)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "ca.crt"))
+	if err != nil || string(data) != "new trust\n" {
+		t.Error("new trust anchor was not published")
 	}
 }
 

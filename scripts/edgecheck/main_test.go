@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -106,6 +107,39 @@ func TestNoFilesUpstreamProof(t *testing.T) {
 	for _, after := range [][]byte{before, append(append(append([]byte{}, before...), positive...), ingest...), positive} {
 		if noFilesUpstreamProof(before, after) == nil {
 			t.Fatal("missing positive control, new upstream ingest or truncated log accepted")
+		}
+	}
+}
+
+func TestEncodedPathsUpstreamProof(t *testing.T) {
+	record := func(method, path string) []byte {
+		return append(encode(map[string]string{"msg": "http", "method": method, "path": path}), '\n')
+	}
+	control := record("GET", "/v1/documents")
+	before := append([]byte{}, control...)
+	for _, pair := range encodedPathProbes {
+		path, err := url.PathUnescape(pair[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		before = append(before, record(pair[0], path)...)
+	}
+	after := append(append([]byte{}, before...), control...)
+	if err := encodedPathsUpstreamProof(before, after); err != nil {
+		t.Fatal("historical requests must not invalidate a fresh log proof:", err)
+	}
+	for _, invalid := range [][]byte{before, control} {
+		if encodedPathsUpstreamProof(before, invalid) == nil {
+			t.Error("missing positive control or truncated logs accepted")
+		}
+	}
+	for _, pair := range encodedPathProbes {
+		decoded, _ := url.PathUnescape(pair[1])
+		for _, path := range []string{pair[1], decoded} {
+			leak := append(append([]byte{}, after...), record(pair[0], path)...)
+			if encodedPathsUpstreamProof(before, leak) == nil {
+				t.Errorf("missed upstream leak: %s %s", pair[0], path)
+			}
 		}
 	}
 }

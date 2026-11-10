@@ -30,28 +30,31 @@ def install():
         return k.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     if public(cert.public_key()) != public(key.public_key()):
         raise ValueError()
-    current = dest / 'current.crt'
-    if current.exists() and (dest / 'current.key').exists():
-        old = x509.load_pem_x509_certificate(current.read_bytes())
-        old_key = serialization.load_pem_private_key((dest / 'current.key').read_bytes(), password=None)
+    current = dest / 'current.pem'
+    if current.exists() and current.stat().st_size:
+        old_bytes = current.read_bytes()
+        old = x509.load_pem_x509_certificate(old_bytes)
+        old_key = serialization.load_pem_private_key(old_bytes, password=None)
         if old.fingerprint(hashes.SHA256()) == cert.fingerprint(hashes.SHA256()) and public(old_key.public_key()) == public(key.public_key()):
             print('unchanged')
             return
-    pending = []
+    pending = None
     try:
-        for name, data, mode in [('current.key', key_bytes, 0o640), ('current.crt', cert_bytes, 0o644)]:
-            fd, path = tempfile.mkstemp(prefix='.install-', dir=dest)
-            pending.append((path, dest / name))
-            with os.fdopen(fd, 'wb') as f:
-                f.write(data)
-                os.fchown(f.fileno(), 0, 101)
-                os.fchmod(f.fileno(), mode)
-        for source, target in pending:
-            os.replace(source, target)
+        fd, pending = tempfile.mkstemp(prefix='.install-', dir=dest)
+        with os.fdopen(fd, 'wb') as f:
+            f.write(cert_bytes)
+            if not cert_bytes.endswith(b'\n'):
+                f.write(b'\n')
+            f.write(key_bytes)
+            os.fchown(f.fileno(), 0, 101)
+            os.fchmod(f.fileno(), 0o640)
+            f.flush()
+            os.fsync(f.fileno())
+        # nginx opens this same generation for both its chain and private key.
+        os.replace(pending, current)
     finally:
-        for source, _ in pending:
-            if os.path.exists(source):
-                os.unlink(source)
+        if pending is not None and os.path.exists(pending):
+            os.unlink(pending)
     print('installed')
 
 try:

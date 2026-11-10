@@ -1,4 +1,9 @@
 # The image's separate modsecurity.conf.template enables the WAF at http scope.
+# Match only the original path, before nginx normalizes it for the allowlist.
+map $request_uri $edge_encoded_path {
+    default 0;
+    "~*^[^?]*%(2f|2e|5c)" 1;
+}
 # BACKEND is unused. All upstream access is dispatched by this method/path map.
 map "$request_method:$uri" $edge_route {
     default @edge_not_found;
@@ -48,6 +53,7 @@ server {
     server_name ${SERVER_NAME};
     absolute_redirect off;
     server_tokens off;
+    if ($edge_encoded_path) { return 400; }
     location ^~ /.well-known/acme-challenge/ {
         auth_basic off;
         root /var/www/acme;
@@ -62,8 +68,9 @@ server {
     server_name ${SERVER_NAME};
     absolute_redirect off;
     server_tokens off;
-    ssl_certificate /etc/nginx/edge-certs/current.crt;
-    ssl_certificate_key /etc/nginx/edge-certs/current.key;
+    if ($edge_encoded_path) { return 400; }
+    ssl_certificate /etc/nginx/edge-certs/current.pem;
+    ssl_certificate_key /etc/nginx/edge-certs/current.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
     ssl_prefer_server_ciphers off;

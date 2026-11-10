@@ -169,6 +169,7 @@ func (p *probe) routing() {
 	expect(len(hits) > 0, "ingested marker is searchable")
 	p.check("SQL-looking search", "POST", "/v1/search", encode(map[string]any{"query": "SELECT * FROM users WHERE id = 1 OR 1=1; UNION SELECT password FROM users;"}), 200)
 	p.check("documents list", "GET", "/v1/documents", nil, 200)
+	p.check("encoded slash in query remains allowed", "GET", "/v1/documents?x=a%2Fb", nil, 200)
 	for _, suffix := range []string{"", "/status", "/content"} {
 		p.check("document read "+suffix, "GET", "/v1/documents/"+ids[0]+suffix, nil, 200)
 	}
@@ -238,6 +239,55 @@ func (p *probe) auth(mode string) {
 		r = p.request(pair[0], pair[1], "auth.curl", nil)
 		expect(closedRouteResponse(mode, r), "allowlist "+pair[0]+" "+pair[1])
 	}
+}
+
+var encodedPathProbes = [][2]string{
+	{"GET", "/v1%2Fdocuments"},
+	{"GET", "/v1/documents/%2e%2e/metrics"},
+	{"GET", "/ui/%2E%2E/metrics"},
+	{"DELETE", "/v1/documents/x%5Cy"},
+	{"GET", "/v1%2fagent%2fstatus"},
+}
+
+func (p *probe) encodedPaths(mode string) {
+	for _, pair := range encodedPathProbes {
+		r := p.request(pair[0], pair[1], "auth.curl", nil)
+		expect((r.code == 400 || mode == "On" && r.code == 403) && !strings.Contains(r.headers.Get("Content-Type"), "application/json"), fmt.Sprintf("encoded path %s %s (HTTP %d)", pair[0], pair[1], r.code))
+	}
+	p.check("encoded-path upstream log positive control", "GET", "/v1/documents", nil, 200)
+}
+
+func encodedPathsUpstreamProof(before, after []byte) error {
+	// gkg logs URL.Path, which is decoded even when Go routes escaped segments.
+	// Count both spellings, including the alias of the positive-control path.
+	counts := func(data []byte) map[string]int {
+		result := map[string]int{}
+		for _, line := range bytes.Split(data, []byte("\n")) {
+			var record struct{ Msg, Method, Path string }
+			if json.Unmarshal(line, &record) == nil && record.Msg == "http" {
+				result[record.Method+" "+record.Path]++
+			}
+		}
+		return result
+	}
+	a, b := counts(before), counts(after)
+	control := "GET /v1/documents"
+	if b[control]-a[control] != 1 {
+		return fmt.Errorf("missing unique positive control or encoded document-list alias reached upstream")
+	}
+	for _, pair := range encodedPathProbes {
+		decoded, err := url.PathUnescape(pair[1])
+		if err != nil {
+			return err
+		}
+		for _, path := range []string{pair[1], decoded} {
+			key := pair[0] + " " + path
+			if key != control && b[key] != a[key] {
+				return fmt.Errorf("encoded path reached upstream or request logs were truncated")
+			}
+		}
+	}
+	return nil
 }
 
 func sizedJSON(size int) []byte {
@@ -560,6 +610,9 @@ func main() {
 	case "nofiles-upstream":
 		must(noFilesUpstreamProof(read(args[1]), read(args[2])))
 		expect(true, "oversized JSON absent from upstream logs with fresh positive control")
+	case "encoded-upstream":
+		must(encodedPathsUpstreamProof(read(args[1]), read(args[2])))
+		expect(true, "encoded paths absent from upstream logs with fresh positive control")
 	default:
 		p := &probe{dir: args[1], base: args[2]}
 		switch args[0] {
@@ -567,6 +620,8 @@ func main() {
 			p.routing()
 		case "auth":
 			p.auth(args[3])
+		case "encoded-paths":
+			p.encodedPaths(args[3])
 		case "reject-json":
 			p.rejectJSON()
 		case "limits":
