@@ -141,6 +141,8 @@ type Pipeline struct {
 	judge   FactJudge
 	emb     Embedder
 	metrics Metrics
+
+	beforeSupersede func(olds []string) // Test hook; nil in production.
 }
 
 // NewPipeline wires the pipeline. ix may be nil (near-duplicate detection
@@ -399,14 +401,19 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 	// Finish: supersede every older live version of this identity (ordering by
 	// submit time, so versions submitted after this one are untouched) and mark
 	// the document done. The list is re-derived from persisted state so a
-	// recovery run performs the supersede too.
+	// recovery run performs the supersede too. A vanished old version is
+	// skipped because it is already no longer live; a vanished new version
+	// still fails at setStatus below.
 	olds, err := p.store.OlderLiveVersions(ctx, docID)
 	if err != nil {
 		return fail("supersede", err)
 	}
+	if p.beforeSupersede != nil {
+		p.beforeSupersede(olds)
+	}
 	for _, oldID := range olds {
 		err := p.store.Supersede(ctx, oldID, docID)
-		if err != nil && !errors.Is(err, graph.ErrSuperseded) {
+		if err != nil && !errors.Is(err, graph.ErrSuperseded) && !errors.Is(err, graph.ErrNotFound) {
 			return fail("supersede", err)
 		}
 		if err == nil && p.metrics != nil {

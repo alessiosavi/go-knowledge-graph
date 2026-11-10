@@ -425,6 +425,119 @@ func TestRedigestSupersedesPrevious(t *testing.T) {
 	}
 }
 
+func TestSupersedeSweepSkipsDeletedOldVersion(t *testing.T) {
+	env := newPipelineEnv(t)
+	ctx := context.Background()
+	source, text := uniqueText(t)
+	v1 := mustProcess(t, env, ingest.Input{Kind: "text", Source: source, Text: text})
+	v2, err := env.p.Submit(ctx, ingest.Input{Kind: "text", Source: source, Text: text + " Revised."})
+	if err != nil {
+		t.Fatalf("Submit(v2): %v", err)
+	}
+	var seen []string
+	ingest.SetBeforeSupersede(env.p, func(olds []string) {
+		seen = slices.Clone(olds)
+		if err := env.st.DeleteDocument(ctx, v1.DocumentID); err != nil {
+			t.Fatalf("DeleteDocument(v1): %v", err)
+		}
+	})
+	if err := env.p.Process(ctx, v2.DocumentID); err != nil {
+		t.Errorf("Process(v2): %v, want nil", err)
+	}
+	if !slices.Equal(seen, []string{v1.DocumentID}) {
+		t.Errorf("hook olds = %v, want [%s]", seen, v1.DocumentID)
+	}
+	newer, err := env.st.Document(ctx, v2.DocumentID)
+	if err != nil {
+		t.Fatalf("Document(v2): %v", err)
+	}
+	if newer.Status != graph.StatusDone {
+		t.Errorf("v2 status = %q, want done", newer.Status)
+	}
+	if _, err := env.st.Document(ctx, v1.DocumentID); !errors.Is(err, graph.ErrNotFound) {
+		t.Errorf("Document(v1): %v, want ErrNotFound", err)
+	}
+}
+
+func TestSupersedeSweepNewVersionDeleted(t *testing.T) {
+	env := newPipelineEnv(t)
+	ctx := context.Background()
+	source, text := uniqueText(t)
+	v1 := mustProcess(t, env, ingest.Input{Kind: "text", Source: source, Text: text})
+	v2, err := env.p.Submit(ctx, ingest.Input{Kind: "text", Source: source, Text: text + " Revised."})
+	if err != nil {
+		t.Fatalf("Submit(v2): %v", err)
+	}
+	var seen []string
+	ingest.SetBeforeSupersede(env.p, func(olds []string) {
+		seen = slices.Clone(olds)
+		if err := env.st.DeleteDocument(ctx, v2.DocumentID); err != nil {
+			t.Fatalf("DeleteDocument(v2): %v", err)
+		}
+	})
+	if err := env.p.Process(ctx, v2.DocumentID); err == nil {
+		t.Error("Process(v2): want an error for the deleted new version")
+	}
+	if !slices.Equal(seen, []string{v1.DocumentID}) {
+		t.Errorf("hook olds = %v, want [%s]", seen, v1.DocumentID)
+	}
+	if _, err := env.st.Document(ctx, v2.DocumentID); !errors.Is(err, graph.ErrNotFound) {
+		t.Errorf("Document(v2): %v, want ErrNotFound (nothing recreated)", err)
+	}
+	old, err := env.st.Document(ctx, v1.DocumentID)
+	if err != nil {
+		t.Fatalf("Document(v1): %v", err)
+	}
+	if old.Status != graph.StatusDone {
+		t.Errorf("v1 status = %q, want done", old.Status)
+	}
+}
+
+func TestSupersedeSweepPartialChain(t *testing.T) {
+	env := newPipelineEnv(t)
+	ctx := context.Background()
+	source, text := uniqueText(t)
+	v1 := mustProcess(t, env, ingest.Input{Kind: "text", Source: source, Text: text})
+	v2, err := env.p.Submit(ctx, ingest.Input{Kind: "text", Source: source, Text: text + " Revised."})
+	if err != nil {
+		t.Fatalf("Submit(v2): %v", err)
+	}
+	v3, err := env.p.Submit(ctx, ingest.Input{Kind: "text", Source: source, Text: text + " Revised again."})
+	if err != nil {
+		t.Fatalf("Submit(v3): %v", err)
+	}
+	var seen []string
+	ingest.SetBeforeSupersede(env.p, func(olds []string) {
+		seen = slices.Clone(olds)
+		if err := env.st.DeleteDocument(ctx, v1.DocumentID); err != nil {
+			t.Fatalf("DeleteDocument(v1): %v", err)
+		}
+	})
+	if err := env.p.Process(ctx, v3.DocumentID); err != nil {
+		t.Errorf("Process(v3): %v, want nil", err)
+	}
+	if !slices.Equal(seen, []string{v1.DocumentID, v2.DocumentID}) {
+		t.Errorf("hook olds = %v, want [%s %s]", seen, v1.DocumentID, v2.DocumentID)
+	}
+	newer, err := env.st.Document(ctx, v3.DocumentID)
+	if err != nil {
+		t.Fatalf("Document(v3): %v", err)
+	}
+	if newer.Status != graph.StatusDone || newer.Supersedes != v2.DocumentID {
+		t.Errorf("v3 status = %q, supersedes = %q, want done superseding %s", newer.Status, newer.Supersedes, v2.DocumentID)
+	}
+	old, err := env.st.Document(ctx, v2.DocumentID)
+	if err != nil {
+		t.Fatalf("Document(v2): %v", err)
+	}
+	if old.Status != graph.StatusSuperseded {
+		t.Errorf("v2 status = %q, want superseded", old.Status)
+	}
+	if _, err := env.st.Document(ctx, v1.DocumentID); !errors.Is(err, graph.ErrNotFound) {
+		t.Errorf("Document(v1): %v, want ErrNotFound", err)
+	}
+}
+
 func TestDuplicateChunkSkipsExtraction(t *testing.T) {
 	env := newPipelineEnv(t)
 	ctx := context.Background()
