@@ -15,6 +15,12 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	if cfg.Extractor.Mode != "sidecar" {
+		t.Errorf("Extractor.Mode = %q, want sidecar", cfg.Extractor.Mode)
+	}
+	if cfg.Extractor.Sidecar.URL != "http://localhost:8090" {
+		t.Errorf("Extractor.Sidecar.URL differs from the localhost default")
+	}
 	if cfg.Ingest.StoreFloor != 0.15 {
 		t.Errorf("Ingest.StoreFloor = %v, want 0.15", cfg.Ingest.StoreFloor)
 	}
@@ -319,8 +325,11 @@ func TestConverterDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Converter.Mode != "off" {
-		t.Errorf("Converter.Mode = %q, want off", cfg.Converter.Mode)
+	if cfg.Converter.Mode != "docling" {
+		t.Errorf("Converter.Mode = %q, want docling", cfg.Converter.Mode)
+	}
+	if cfg.Converter.URL != "http://localhost:5001" {
+		t.Errorf("Converter.URL differs from the localhost default")
 	}
 	if cfg.Converter.TimeoutS != 300 {
 		t.Errorf("Converter.TimeoutS = %d, want 300", cfg.Converter.TimeoutS)
