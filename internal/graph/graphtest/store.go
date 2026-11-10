@@ -7,6 +7,8 @@ package graphtest
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -20,16 +22,41 @@ import (
 const URIEnv = "GKG_TEST_MEMGRAPH_URI"
 
 // Vector returns a deterministic synthetic embedding for seed: three sparse
-// spikes derived from a hash of the seed. Tests use it so every entity has
-// a strictly unique nearest neighbor — smooth ramp vectors are nearly
-// colinear and tie-degenerate in f32, which makes top-K assertions flaky
-// against accumulated state.
+// spikes derived from a hash of the seed plus a small deterministic dense
+// component (≈5% of the vector's magnitude, chained sha256). The spikes alone
+// are pairwise exactly orthogonal, which makes Memgraph's approximate
+// vector-search walk navigation-degenerate and lets it deterministically miss
+// specific freshly inserted nodes at small k (2026-11-10 CI-flake
+// investigation); the dense component turns the exact-tie distance plateau
+// into a graded field while keeping determinism and a unique ~0-distance
+// self-match. Do not remove the dense component.
 func Vector(seed string, dim int) []float64 {
 	h := sha256.Sum256([]byte(seed))
 	vec := make([]float64, dim)
 	vec[int(h[0])*3%dim] = 1
 	vec[int(h[1])*5%dim] = 0.5
 	vec[int(h[2])*7%dim] = 0.25
+	noise := make([]float64, dim)
+	for block := 0; block*32 < dim; block++ {
+		hb := sha256.Sum256([]byte(fmt.Sprintf("dense|%s|%d", seed, block)))
+		for j := 0; j < 32; j++ {
+			i := block*32 + j
+			if i >= dim {
+				break
+			}
+			noise[i] = float64(hb[j])/127.5 - 1.0
+		}
+	}
+	var norm float64
+	for _, v := range noise {
+		norm += v * v
+	}
+	if norm > 0 {
+		norm = math.Sqrt(norm)
+		for i := range vec {
+			vec[i] += 0.05 * noise[i] / norm
+		}
+	}
 	return vec
 }
 
