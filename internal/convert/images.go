@@ -21,7 +21,15 @@ func (c withoutImages) Convert(ctx context.Context, body []byte, filename, conte
 	// Mirror ingest/load.go's image signatures, including its BOM tolerance.
 	// ZIP's signature belongs to Office documents and must pass through.
 	b := bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
-	if strings.HasPrefix(ct, "image/") ||
+	// ISO-BMFF images share the ftyp box with videos; only block image brands.
+	bmffImage := false
+	if len(b) >= 12 && bytes.Equal(b[4:8], []byte("ftyp")) {
+		switch string(b[8:12]) {
+		case "avif", "avis", "heic", "heix", "heim", "heis", "hevc", "hevx", "hevm", "hevs", "mif1", "msf1":
+			bmffImage = true
+		}
+	}
+	if bmffImage || strings.HasPrefix(ct, "image/") ||
 		bytes.HasPrefix(b, []byte{0x89, 'P', 'N', 'G'}) ||
 		bytes.HasPrefix(b, []byte{0xFF, 0xD8, 0xFF}) ||
 		bytes.HasPrefix(b, []byte{'I', 'I', 0x2A, 0x00}) ||
