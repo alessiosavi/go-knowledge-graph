@@ -69,6 +69,9 @@ dropped — the document does not come back. A concurrent resubmit of
 identical content can recreate the same content-addressed id after the
 delete.
 
+A per-version delete of an older version while a newer version is finishing
+is benign: the newer version completes normally.
+
 ## Other v0.1 notes
 
 - No crawling/scheduling, no multi-tenancy (see the design's non-goals).
@@ -101,6 +104,8 @@ delete.
 - Needs an OpenAI-compatible chat endpoint; function calling is preferred,
   and endpoints that reject the `tools` parameter fall back to a
   constrained JSON plan (one round of tool calls, then a final answer).
+  When streaming is supported, these providers keep streaming the final
+  answer and pay one extra rejected request per ask.
 - A provider that does not actually stream is detected automatically
   (`GKG_AGENT_STREAM`, default on): the agent falls back to non-streamed
   answers for the process lifetime — answers are unchanged, only the
