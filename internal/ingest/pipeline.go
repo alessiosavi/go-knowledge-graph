@@ -65,6 +65,10 @@ type Result struct {
 // finds both this sentinel and the underlying error.
 var ErrStore = errors.New("ingest: store failure")
 
+// ErrBusy marks a document whose processing lock is held. Admissions that
+// need to replace its payload must retry after the worker releases it.
+var ErrBusy = errors.New("ingest: document is busy; retry later")
+
 // Default label sets (sidecar starting points per the design: entity 0.4,
 // relation 0.25). Named presets from Labels.PresetsDir override them.
 var (
@@ -226,13 +230,26 @@ func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 
 func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submission, force bool) (Result, error) {
 	id := graph.DocumentID(in.Kind, in.Source, in.Hash)
+	// A duplicate is only a read: do not wait on processing or touch the
+	// spool, which may be full or unavailable while this version is live.
+	doc, err := p.store.Document(ctx, id)
+	if err != nil && !errors.Is(err, graph.ErrNotFound) {
+		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
+	}
+	if err == nil && doc.Status != graph.StatusFailed && doc.Status != graph.StatusSuperseded && !force {
+		return Result{DocumentID: id, Noop: true}, nil
+	}
 	lock := p.docLock(id)
-	lock.Lock()
+	if !lock.TryLock() {
+		return Result{}, ErrBusy
+	}
 	defer lock.Unlock()
 	p.spool.mu.Lock()
 	defer p.spool.mu.Unlock()
-	// Preserve no-op semantics even when the spool is full or unavailable.
-	doc, err := p.store.Document(ctx, id)
+	// Recheck after acquiring the locks: another admission may have
+	// published this version since our first read. Keep payload writes and
+	// publication serialized with Process's forget and the spool sweep.
+	doc, err = p.store.Document(ctx, id)
 	if err != nil && !errors.Is(err, graph.ErrNotFound) {
 		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
@@ -698,7 +715,10 @@ func (p *Pipeline) Recover(ctx context.Context) error {
 	for _, d := range docs {
 		p.enqueue(ctx, d.ID)
 	}
-	return p.spool.sweep(ctx, p.store)
+	if err := p.spool.sweep(ctx, p.store); err != nil {
+		slog.Warn("ingest: spool recovery cleanup failed", "err", err)
+	}
+	return nil
 }
 
 // docLock returns the per-document processing lock.

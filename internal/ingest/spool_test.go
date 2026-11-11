@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
@@ -20,16 +21,20 @@ import (
 // only the operations used by these durability scenarios are faked.
 type spoolStore struct {
 	*graph.Store
+	mu             sync.Mutex
 	docs           map[string]graph.Document
 	chunks         map[string][]graph.Chunk
 	beforeUpsert   func(graph.DocumentInput)
 	older          []string
 	readErr        error
 	statusErr      error
+	inFlightErr    error
 	afterSupersede func()
 }
 
 func (s *spoolStore) Document(_ context.Context, id string) (*graph.Document, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.readErr != nil {
 		return nil, s.readErr
 	}
@@ -43,6 +48,8 @@ func (s *spoolStore) UpsertDocument(_ context.Context, in graph.DocumentInput) (
 	if s.beforeUpsert != nil {
 		s.beforeUpsert(in)
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	id := graph.DocumentID(in.Kind, in.Source, in.Hash)
 	if d, ok := s.docs[id]; ok && d.Status != graph.StatusFailed && d.Status != graph.StatusSuperseded && !in.Force {
 		return graph.UpsertResult{ID: id, Noop: true}, nil
@@ -51,6 +58,8 @@ func (s *spoolStore) UpsertDocument(_ context.Context, in graph.DocumentInput) (
 	return graph.UpsertResult{ID: id}, nil
 }
 func (s *spoolStore) SetStatus(_ context.Context, id string, status graph.Status, msg string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.statusErr != nil {
 		return s.statusErr
 	}
@@ -60,6 +69,8 @@ func (s *spoolStore) SetStatus(_ context.Context, id string, status graph.Status
 	return nil
 }
 func (s *spoolStore) PutChunks(_ context.Context, id string, chunks []graph.Chunk) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i := range chunks {
 		chunks[i].ID = fmt.Sprintf("%s-c%d", id, i)
 	}
@@ -68,6 +79,8 @@ func (s *spoolStore) PutChunks(_ context.Context, id string, chunks []graph.Chun
 }
 func (s *spoolStore) DeleteChunksFrom(context.Context, string, int) error { return nil }
 func (s *spoolStore) Chunks(_ context.Context, id string) ([]graph.Chunk, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.chunks[id], nil
 }
 func (s *spoolStore) UpsertExtraction(context.Context, string, string, string, []graph.EntityUpsert, []graph.FactUpsert) error {
@@ -85,6 +98,11 @@ func (s *spoolStore) Supersede(ctx context.Context, old, _ string) error {
 	return err
 }
 func (s *spoolStore) InFlight(context.Context) ([]graph.Document, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inFlightErr != nil {
+		return nil, s.inFlightErr
+	}
 	var out []graph.Document
 	for _, d := range s.docs {
 		if d.Status != graph.StatusDone && d.Status != graph.StatusFailed && d.Status != graph.StatusSuperseded {
@@ -292,6 +310,162 @@ func TestSpoolWriteFailureRejectsSubmission(t *testing.T) {
 	_, err := p.Submit(context.Background(), Input{Text: "No memory-only acceptance."})
 	if !errors.Is(err, ErrSpool) || len(st.docs) != 0 || len(p.jobs) != 0 || len(p.pending) != 0 {
 		t.Fatalf("submission: %v, docs/jobs/pending %d/%d/%d", err, len(st.docs), len(p.jobs), len(p.pending))
+	}
+}
+
+func TestRecoverSpoolSweepFailureIsNonfatal(t *testing.T) {
+	p, st := spoolPipeline(t)
+	res := submitSpool(t, p, Input{Text: "Recover despite cleanup failure."})
+	<-p.jobs
+	path := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p.spool.dir = path
+	if err := p.Recover(context.Background()); err != nil {
+		t.Fatalf("cleanup error prevented recovery: %v", err)
+	}
+	select {
+	case id := <-p.jobs:
+		if id != res.DocumentID {
+			t.Fatalf("recovered %q, want %q", id, res.DocumentID)
+		}
+	default:
+		t.Fatal("in-flight document not requeued")
+	}
+	st.inFlightErr = errors.New("graph unavailable")
+	if err := p.Recover(context.Background()); !errors.Is(err, st.inFlightErr) {
+		t.Fatalf("InFlight error must remain fatal: %v", err)
+	}
+}
+
+// Holding the processing lock simulates a worker stalled in extraction.
+// Release it even on timeout, and drain Submit before the test cleans up.
+func submitWithWorkerLock(t *testing.T, p *Pipeline, id string, in Input) (Result, error) {
+	t.Helper()
+	lock := p.docLock(id)
+	lock.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	type outcome struct {
+		res Result
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := p.Submit(ctx, in)
+		done <- outcome{res, err}
+	}()
+	select {
+	case out := <-done:
+		lock.Unlock()
+		return out.res, out.err
+	case <-ctx.Done():
+		lock.Unlock()
+		<-done
+		t.Fatal("Submit waited for the worker's document lock")
+		return Result{}, ctx.Err()
+	}
+}
+
+func TestSubmitUnchangedWhileProcessingIsNoop(t *testing.T) {
+	for _, status := range []graph.Status{graph.StatusReceived, graph.StatusFetched, graph.StatusChunked, graph.StatusExtracted, graph.StatusMerged, graph.StatusVerifying, graph.StatusDone} {
+		for _, spool := range []string{"full", "unavailable"} {
+			t.Run(string(status)+"/"+spool, func(t *testing.T) {
+				p, st := spoolPipeline(t)
+				in := Input{Text: "Unchanged text."}
+				first := submitSpool(t, p, in)
+				if err := st.SetStatus(context.Background(), first.DocumentID, status, ""); err != nil {
+					t.Fatal(err)
+				}
+				if spool == "full" {
+					p.spool.maxCount = 0
+				} else {
+					p.spool.dir = spoolPath(p, first.DocumentID) // A regular file.
+				}
+				res, err := submitWithWorkerLock(t, p, first.DocumentID, in)
+				if err != nil || !res.Noop || res.DocumentID != first.DocumentID {
+					t.Fatalf("duplicate submission: %+v, %v", res, err)
+				}
+				if len(p.jobs) != 1 || st.docs[first.DocumentID].Status != status {
+					t.Fatal("no-op queued or reset the document")
+				}
+			})
+		}
+	}
+}
+
+func TestSubmitPayloadWhileProcessingIsBusy(t *testing.T) {
+	for _, status := range []graph.Status{graph.StatusFetched, graph.StatusFailed, graph.StatusSuperseded} {
+		t.Run(string(status), func(t *testing.T) {
+			p, st := spoolPipeline(t)
+			in := Input{Text: "Retry this text."}
+			first := submitSpool(t, p, in)
+			if err := st.SetStatus(context.Background(), first.DocumentID, status, ""); err != nil {
+				t.Fatal(err)
+			}
+			p.forget(first.DocumentID)
+			in.Force = status == graph.StatusFetched
+			_, err := submitWithWorkerLock(t, p, first.DocumentID, in)
+			if !errors.Is(err, ErrBusy) {
+				t.Fatalf("submission with active worker: %v, want ErrBusy", err)
+			}
+			if len(p.jobs) != 1 || st.docs[first.DocumentID].Status != status {
+				t.Fatal("busy submission queued or reset the document")
+			}
+			absentSpool(t, p, first.DocumentID)
+		})
+	}
+}
+
+// A stale read simulates another admission publishing before TryLock succeeds.
+type staleAdmissionStore struct {
+	*spoolStore
+	reads int
+}
+
+func (s *staleAdmissionStore) Document(ctx context.Context, id string) (*graph.Document, error) {
+	s.reads++
+	if s.reads == 1 {
+		return nil, graph.ErrNotFound
+	}
+	return s.spoolStore.Document(ctx, id)
+}
+
+func TestSubmitRechecksStatusBeforeSpooling(t *testing.T) {
+	p, st := spoolPipeline(t)
+	in := Input{Text: "Already admitted text."}
+	first := submitSpool(t, p, in)
+	p.spool.maxCount = 0 // Any payload write would fail.
+	racing := &staleAdmissionStore{spoolStore: st}
+	p.store = racing
+	res, err := p.Submit(context.Background(), in)
+	if err != nil || !res.Noop || res.DocumentID != first.DocumentID {
+		t.Fatalf("concurrent admission: %+v, %v", res, err)
+	}
+	if racing.reads != 2 || len(p.jobs) != 1 {
+		t.Fatalf("status reads/jobs = %d/%d, want 2/1", racing.reads, len(p.jobs))
+	}
+}
+
+func TestSubmitFailedOrSupersededWithoutWorkerIsAccepted(t *testing.T) {
+	for _, status := range []graph.Status{graph.StatusFailed, graph.StatusSuperseded} {
+		t.Run(string(status), func(t *testing.T) {
+			p, st := spoolPipeline(t)
+			in := Input{Text: "Retry this text."}
+			first := submitSpool(t, p, in)
+			if err := st.SetStatus(context.Background(), first.DocumentID, status, ""); err != nil {
+				t.Fatal(err)
+			}
+			p.forget(first.DocumentID)
+			res := submitSpool(t, p, in)
+			if res.Noop || res.DocumentID != first.DocumentID || st.docs[res.DocumentID].Status != graph.StatusReceived {
+				t.Fatalf("retry submission: %+v, status %q", res, st.docs[res.DocumentID].Status)
+			}
+			if _, err := os.Stat(spoolPath(p, res.DocumentID)); err != nil {
+				t.Fatalf("retry payload not persisted: %v", err)
+			}
+		})
 	}
 }
 

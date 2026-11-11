@@ -84,7 +84,30 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
-          $ref: "#/components/responses/InternalError"
+          description: |
+            Store or value-conversion failure, or a spool write failure
+            (`error: ingest_unavailable`, `detail: could not persist submission`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: |
+            Retryable admission failure: the spool is full (`error: ingest_busy`),
+            or a submission needs a payload while a worker holds the document
+            lock (`error: document_busy`). Unchanged non-force submissions for a
+            live version return a no-op even while that version is processing.
+          headers:
+            Retry-After:
+              description: seconds to wait before retrying
+              schema:
+                type: integer
+                minimum: 0
+                example: 30
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/documents:
     get:
       summary: List documents

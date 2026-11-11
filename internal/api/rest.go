@@ -142,6 +142,11 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.in.Submit(r.Context(), in)
 	if err != nil {
+		if errors.Is(err, ingest.ErrBusy) {
+			w.Header().Set("Retry-After", "30")
+			writeError(w, http.StatusServiceUnavailable, "document_busy", "document is being processed; retry later")
+			return
+		}
 		if errors.Is(err, ingest.ErrSpoolFull) {
 			w.Header().Set("Retry-After", "30")
 			writeError(w, http.StatusServiceUnavailable, "ingest_busy", "ingest spool is full; retry later")

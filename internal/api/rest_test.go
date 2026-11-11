@@ -508,13 +508,18 @@ func TestIngestErrorClassification(t *testing.T) {
 		err   error
 		code  int
 		retry string
+		kind  string
 	}{
-		{fmt.Errorf("%w: disk unavailable", ingest.ErrSpool), http.StatusInternalServerError, ""},
-		{fmt.Errorf("%w: %w", ingest.ErrSpool, ingest.ErrSpoolFull), http.StatusServiceUnavailable, "30"},
+		{fmt.Errorf("%w: disk unavailable", ingest.ErrSpool), http.StatusInternalServerError, "", "ingest_unavailable"},
+		{fmt.Errorf("%w: %w", ingest.ErrSpool, ingest.ErrSpoolFull), http.StatusServiceUnavailable, "30", "ingest_busy"},
+		{fmt.Errorf("%w: active worker", ingest.ErrBusy), http.StatusServiceUnavailable, "30", "document_busy"},
 	} {
-		rr := doJSON(t, apiHandler(t, config.Config{}, nil, &fakeSubmitter{err: tc.err}), http.MethodPost, "/v1/ingest", `{"text":"hello"}`)
+		rr := doJSON(t, apiHandler(t, config.Config{}, nil, &fakeSubmitter{err: tc.err}), http.MethodPost, "/v1/ingest", `{"text":"hello","force":true}`)
 		if rr.Code != tc.code || rr.Header().Get("Retry-After") != tc.retry {
-			t.Errorf("spool failure: code %d, Retry-After %q; want %d, %q", rr.Code, rr.Header().Get("Retry-After"), tc.code, tc.retry)
+			t.Errorf("admission failure: code %d, Retry-After %q; want %d, %q", rr.Code, rr.Header().Get("Retry-After"), tc.code, tc.retry)
+		}
+		if body := decode[errorBody](t, rr); body.Error != tc.kind {
+			t.Errorf("admission failure: error %q, want %q", body.Error, tc.kind)
 		}
 	}
 }

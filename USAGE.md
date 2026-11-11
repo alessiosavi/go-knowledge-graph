@@ -48,8 +48,13 @@ alongside Memgraph's data. For standalone `gkg serve`, the default is
 `GKG_INGEST_SPOOL_DIR` to another writable persistent directory if needed.
 Use one gkg process per spool directory. `GKG_INGEST_SPOOL_MAX_COUNT` (1024)
 and `GKG_INGEST_SPOOL_MAX_BYTES` (1073741824, 1 GiB of serialized payloads)
-bound queued storage. When full, REST returns `503` with `Retry-After: 30`;
-retry after capacity is freed. A spool write failure returns `500`.
+bound queued storage. When full, REST returns `503` (`error: ingest_busy`)
+with `Retry-After: 30`; retry after capacity is freed. A force or failed/superseded
+re-submit while a worker holds that document's processing lock returns `503`
+(`error: document_busy`) with the same retry header. An unchanged live version
+without force returns a no-op immediately, even while processing or when the
+spool is full or unavailable. A spool write failure returns `500`
+(`error: ingest_unavailable`).
 
 Sidecar inference runs one request at a time per process, using the available
 CPU threads. `GKG_EXTRACTOR_SIDECAR_TIMEOUT_S` defaults to 300 seconds per
