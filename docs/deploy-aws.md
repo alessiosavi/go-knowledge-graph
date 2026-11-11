@@ -153,8 +153,11 @@ maintenance window: it runs `dnf upgrade --releasever=latest -y`, then schedules
 `systemd-run --on-active=15 /usr/bin/systemctl reboot` so the SSM invocation can
 finish successfully. The Mac waits up to 15 minutes for SSM Online with a
 LastPingDateTime newer than the command start, then runs the same HTTPS edge
-checks as deploy. Failure to reconnect or pass those checks returns nonzero.
-Updates are not automatic.
+checks as deploy with a separate 900-second deadline to match the boot service's
+startup limit. Deploy keeps its 60-second edge-check deadline. `BOX_CHECK_TIMEOUT`
+may shorten either deadline but cannot exceed 900 seconds for update or 60 seconds
+for deploy. Failure to reconnect or pass those checks returns nonzero. Updates
+are not automatic.
 
 The volume has `$NAME-backup=daily`. DLM creates daily crash-consistent snapshots
 and retains seven. The pinned Memgraph image enables WAL, recovery on startup,

@@ -480,6 +480,16 @@ func awsStub() {
 				unexpected()
 			}
 		}
+		if mode == "edge-delayed" {
+			n, _ := os.ReadFile(filepath.Join(dir, "edge-attempts"))
+			attempts, _ := strconv.Atoi(string(n))
+			attempts++
+			os.WriteFile(filepath.Join(dir, "edge-attempts"), []byte(strconv.Itoa(attempts)), 0600)
+			if attempts <= 3 {
+				emit("502")
+				break
+			}
+		}
 		if mode == "edge-fail" || mode == "health-fail" {
 			emit("503")
 			break
@@ -1080,6 +1090,47 @@ func TestAWSRemoteProtocol(t *testing.T) {
 	_, code = h.run("remote.sh", "deploy.sh", "bad;echo")
 	if code == 0 || h.count("send-command") != 0 {
 		t.Fatal("unsafe remote argument accepted")
+	}
+}
+func TestAWSRemoteEdgeTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name, script, timeout string
+		wantCalls             int
+		wantError             string
+	}{
+		{"update-default", "--update", "", 6, ""},
+		{"deploy-default", "deploy.sh", "", 3, "through-edge deploy check failed"},
+		{"update-shortened", "--update", "60", 3, "through-edge deploy check failed"},
+		{"update-limit", "--update", "900", 6, ""},
+		{"update-over-limit", "--update", "901", 0, "check timeout exceeds"},
+		{"deploy-limit", "deploy.sh", "60", 3, "through-edge deploy check failed"},
+		{"deploy-over-limit", "deploy.sh", "61", 0, "check timeout exceeds"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newAWS(t)
+			h.ids()
+			h.mode("edge-delayed")
+			// Each polling pause advances Bash's clock by 70 seconds. The
+			// first three edge requests fail, then all endpoints become ready.
+			h.write("clock.sh", "SECONDS=0\nsleep() { SECONDS=$((SECONDS+70)); }\n")
+			h.env = append(h.env, "BASH_ENV="+filepath.Join(h.dir, "clock.sh"), "BOX_CHECK_TIMEOUT="+tc.timeout)
+			args := []string{tc.script}
+			if tc.script == "deploy.sh" {
+				args = append(args, "abc123")
+			} else {
+				h.env = append(h.env, "STUB_REQUIRE_RECONNECT=1")
+			}
+			out, code := h.run("remote.sh", args...)
+			if (code == 0) != (tc.wantError == "") || (tc.wantError != "" && !strings.Contains(out, tc.wantError)) {
+				t.Fatalf("remote edge check exit=%d, want error %q: %s", code, tc.wantError, out)
+			}
+			if got := h.count("curl"); got != tc.wantCalls {
+				t.Fatalf("edge requests=%d, want %d", got, tc.wantCalls)
+			}
+			if h.count("--connect-timeout 5 --max-time 5") != tc.wantCalls {
+				t.Fatal("edge requests must retain their five-second bound")
+			}
+		})
 	}
 }
 func TestAWSDeployRollback(t *testing.T) {

@@ -33,6 +33,8 @@ esac
 command="export AWS_REGION='$AWS_REGION' AWS_DEFAULT_REGION='$AWS_REGION' GKG_SSM_PREFIX='/$NAME'; $command"
 jq -n --arg command "$command" --arg timeout "$seconds" '{commands:[$command],executionTimeout:[$timeout]}' >"$work/parameters"
 command_start=$(date -u +%s)
+# SendCommand delivery budget is 600 s; execution is bounded by executionTimeout=$seconds.
+# Total timeout is their sum: https://docs.aws.amazon.com/systems-manager/latest/userguide/monitor-commands.html#monitor-about-status-timeouts
 id=$(aws ssm send-command --document-name AWS-RunShellScript --instance-ids "$instance" --timeout-seconds 600 --parameters "file://$work/parameters" --output json | jq -r '.Command.CommandId')
 [ -n "$id" ] && [ "$id" != null ] || fail 'SSM command id missing'
 start=$SECONDS
@@ -85,13 +87,16 @@ fi
 if [ "$script" = deploy.sh ] || [ "$script" = --update ]; then
   netrc=${BOX_NETRC:-$AWS_DIR/box.netrc}
   [ -s "$netrc" ] || fail 'deploy login missing; run make box-login'
-  deadline=$((SECONDS+60))
-  # A shorter deadline is useful for hermetic failure tests, never a longer one.
+  timeout=60
+  # Reboot startup can take the full gkg-stack.service TimeoutStartSec budget.
+  [ "$script" != --update ] || timeout=900
+  # Allow a shorter deadline, never a longer one than the operation's default.
   if [ -n "${BOX_CHECK_TIMEOUT:-}" ]; then
     case "$BOX_CHECK_TIMEOUT" in *[!0-9]*|'') fail 'invalid check timeout' ;; esac
-    [ "$BOX_CHECK_TIMEOUT" -le 60 ] || fail 'check timeout exceeds 60 seconds'
-    deadline=$((SECONDS+BOX_CHECK_TIMEOUT))
+    [ "$BOX_CHECK_TIMEOUT" -le "$timeout" ] || fail "check timeout exceeds $timeout seconds"
+    timeout=$BOX_CHECK_TIMEOUT
   fi
+  deadline=$((SECONDS+timeout))
   while :; do
     healthy=1
     for path in /healthz /v1/agent/status /v1/documents; do
