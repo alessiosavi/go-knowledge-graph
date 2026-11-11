@@ -121,7 +121,7 @@ The `GKG_EXTRACTOR_MODE=openai` setting below overrides the sidecar default:
   it is done."
 - "Search for 'Memgraph' and summarise the top chunks with their sources."
 - "Show everything the graph knows about Ada Lovelace, with citations."
-- "Traverse from the entity `person:ada lovelace` two hops, relations
+- "Traverse from the entity `ada lovelace` two hops, relations
   `wrote` and `located_in`, and list the evidence excerpts."
 - "Run read-only Cypher: `MATCH (d:Document) RETURN d.id, d.status`."
 

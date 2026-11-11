@@ -23,22 +23,65 @@ func EntityID(key string) string {
 	return hex.EncodeToString(sum[:])[:32]
 }
 
-// EntityKey builds the stable key of an entity: type + ":" + normalized
-// surface form.
-func EntityKey(typ, name string) string {
-	return typ + ":" + normalizeSurface(name)
+// EntityKey builds the stable key of an entity from its normalized name.
+func EntityKey(name string) string {
+	return NormalizeSurface(name)
 }
 
-// normalizeSurface folds a surface form to its canonical shape: NFKC,
-// Unicode case folding, whitespace collapse, edge punctuation and spaces
-// stripped. Symbols are part of the surface form (C++ stays c++).
-func normalizeSurface(s string) string {
+// ScopedEntityKey builds an entity key scoped to a document. The leading #
+// cannot occur in an unscoped key because edge punctuation is stripped.
+func ScopedEntityKey(docID, name string) string {
+	return "#" + docID + ":" + NormalizeSurface(name)
+}
+
+// NormalizeSurface canonicalizes a name with NFKC, Unicode case folding,
+// whitespace collapse, edge punctuation/space/backtick trimming and removal
+// of one trailing possessive. Other symbols stay (C++ becomes c++).
+func NormalizeSurface(s string) string {
 	s = norm.NFKC.String(s)
 	s = cases.Fold().String(s)
 	s = strings.Join(strings.Fields(s), " ")
-	return strings.TrimFunc(s, func(r rune) bool {
-		return unicode.IsPunct(r) || unicode.IsSpace(r)
-	})
+	trimEdge := func(r rune) bool {
+		return unicode.IsPunct(r) || unicode.IsSpace(r) || r == '`'
+	}
+	// Keep a leading apostrophe until after removing the possessive so a
+	// surface consisting only of "'s" or "’s" normalizes to empty.
+	s = strings.TrimRightFunc(s, trimEdge)
+	s = stripPossessive(s)
+	return strings.TrimFunc(s, trimEdge)
+}
+
+// DisplayName removes edge whitespace, wrapping markdown and one trailing
+// possessive from a name, preserving case and other punctuation.
+func DisplayName(s string) string {
+	s = trimNameWrappers(s)
+	s = stripPossessive(s)
+	return trimNameWrappers(s)
+}
+
+// trimNameWrappers peels balanced code/emphasis wrappers only. Underscores
+// and unmatched markers can be part of identifiers (__init__, *args).
+func trimNameWrappers(s string) string {
+	s = strings.TrimSpace(s)
+	for len(s) > 0 && (s[0] == '`' || s[0] == '*') {
+		marker := string(s[0])
+		left := len(s) - len(strings.TrimLeft(s, marker))
+		right := len(s) - len(strings.TrimRight(s, marker))
+		if left != right || len(s) < 2*left || (s[0] == '*' && left > 2) {
+			break
+		}
+		s = strings.TrimSpace(s[left : len(s)-right])
+	}
+	return s
+}
+
+func stripPossessive(s string) string {
+	for _, suffix := range []string{"'s", "’s"} {
+		if strings.HasSuffix(s, suffix) {
+			return strings.TrimSuffix(s, suffix)
+		}
+	}
+	return s
 }
 
 // SanitizeRel maps a relation label to the identifier-safe Neo4j type used
@@ -281,8 +324,9 @@ func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorV
 			if err := txRun(ctx, tx, `
 UNWIND $ents AS ent
 MERGE (e:Entity {key: ent.key})
-ON CREATE SET e.id = ent.id, e.mention_count = 0
-SET e.name = ent.name, e.type = ent.type,
+ON CREATE SET e.id = ent.id, e.mention_count = 0, e.type = ent.type
+ON MATCH SET e.type = coalesce(e.type, ent.type)
+SET e.name = ent.name,
     e.aliases = CASE WHEN size(ent.aliases) > 0 THEN ent.aliases ELSE coalesce(e.aliases, []) END`,
 				map[string]any{"ents": entRows}); err != nil {
 				return fmt.Errorf("graph: merge entities: %w", err)

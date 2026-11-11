@@ -101,10 +101,11 @@ func TestBootstrapIgnoresNonUniqueConstraint(t *testing.T) {
 }
 
 func TestMigrateCommand(t *testing.T) {
+	graphtest.MigrationStore(t)
 	uri := os.Getenv(graphtest.URIEnv)
-	if uri == "" {
-		t.Skipf("set %s to run integration tests", graphtest.URIEnv)
-	}
+	// This command now processes every in-flight document. Isolate foreign
+	// fixtures, whose original statuses MigrationStore restores on cleanup.
+	rawRun(t, uri, `MATCH (d:Document) SET d.status = 'failed'`)
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +119,8 @@ func TestMigrateCommand(t *testing.T) {
 	for i := 1; i <= 2; i++ {
 		cmd := exec.Command(bin, "migrate")
 		cmd.Dir = t.TempDir()
-		cmd.Env = append(os.Environ(), "GKG_MEMGRAPH_URI="+uri)
+		cmd.Env = append(os.Environ(), "GKG_MEMGRAPH_URI="+uri, "GKG_EXTRACTOR_MODE=mock",
+			"GKG_CONVERTER_MODE=off", "GKG_EMBEDDER_ENABLED=false", "GKG_JUDGE_MODE=off", "GKG_CONFIG=")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("gkg migrate run %d: %v\n%s", i, err, out)

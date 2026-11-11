@@ -17,7 +17,7 @@ func traverseFixture(t *testing.T, st *graph.Store) (a, b, c string, docID strin
 	t.Helper()
 	ctx := context.Background()
 	fx := newFixture(t)
-	a, b, c = fx.ents[0].Key, fx.ents[1].Key, graph.EntityKey("place", "Paris "+uniqueSource(t))
+	a, b, c = fx.ents[0].Key, fx.ents[1].Key, graph.EntityKey("Paris "+uniqueSource(t))
 	docID = testUpsert(t, st, "file", uniqueSource(t), "hash-a").ID
 	text := "Ada Lovelace wrote the first algorithm in Paris."
 	if err := st.PutChunks(ctx, docID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {

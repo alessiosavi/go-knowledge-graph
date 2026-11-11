@@ -128,7 +128,7 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runMigrate opens Memgraph and bootstraps the schema, idempotently.
+// runMigrate upgrades the schema and synchronously finishes in-flight work.
 func runMigrate(stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -148,6 +148,51 @@ func runMigrate(stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintln(stdout, "schema ok")
+	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
+		fmt.Fprintf(stderr, "gkg migrate: %v\n", err)
+		return 1
+	}
+	pipe, _, err := buildPipeline(ctx, cfg, st)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg migrate: %v; start \"gkg serve\" with a usable extractor to finish the re-extraction of queued documents\n", err)
+		return 1
+	}
+	docs, err := st.InFlight(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg migrate: %v\n", err)
+		return 1
+	}
+	processed, failed := 0, 0
+	for _, doc := range docs {
+		if err := pipe.Process(ctx, doc.ID); err != nil {
+			failed++
+			fmt.Fprintf(stderr, "gkg migrate: document %s: %v\n", doc.ID, err)
+			// Process records failures as terminal. Keep this recovery work
+			// in flight so serve (or a later migrate) can finish after the
+			// extractor/configuration is repaired, using the stored chunks.
+			resume := doc.Status
+			if resume == graph.StatusReceived || resume == graph.StatusFetched {
+				chunks, err := st.Chunks(ctx, doc.ID)
+				if err != nil {
+					fmt.Fprintf(stderr, "gkg migrate: could not inspect recovery chunks for %s: %v\n", doc.ID, err)
+				} else if len(chunks) > 0 {
+					// Chunking may have completed and removed the spool before
+					// extraction failed; resume from those durable chunks.
+					resume = graph.StatusChunked
+				}
+			}
+			if err := st.SetStatus(ctx, doc.ID, resume, ""); err != nil {
+				fmt.Fprintf(stderr, "gkg migrate: could not requeue document %s: %v\n", doc.ID, err)
+			}
+			continue
+		}
+		processed++
+	}
+	fmt.Fprintf(stdout, "re-extraction: processed=%d failed=%d\n", processed, failed)
+	if failed > 0 {
+		fmt.Fprintln(stderr, "gkg migrate: start \"gkg serve\" with a usable extractor to finish the re-extraction of queued documents")
+		return 1
+	}
 	return 0
 }
 
@@ -341,6 +386,10 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
 		return 1
 	}
+	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
+		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
+		return 1
+	}
 	pipe, emb, err := buildPipeline(ctx, cfg, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
@@ -420,6 +469,15 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
 		return 1
 	}
+	current, err := st.ExtractionSchemaCurrent(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
+		return 1
+	}
+	if !current {
+		fmt.Fprintln(stderr, `gkg ingest: graph extraction schema is outdated; run "gkg migrate" (re-extracts all documents) or start "gkg serve" first`)
+		return 1
+	}
 	pipe, _, err := buildPipeline(ctx, cfg, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
@@ -484,6 +542,10 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1
 	}
+	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
+		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
+		return 1
+	}
 	pipe, emb, err := buildPipeline(ctx, cfg, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
@@ -538,7 +600,7 @@ commands:
   serve     run the REST API, MCP endpoint and ingestion workers
   ingest    ingest a file, URL or stdin into the knowledge graph (-source <s> overrides the identity)
   eval      run the golden-set evaluation harness
-  migrate   bootstrap the Memgraph schema
+  migrate   upgrade the Memgraph schema and re-extract in-flight documents
   version   print the version
   mcp       run the MCP server over stdio
 `)

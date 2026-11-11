@@ -942,9 +942,12 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract
 		if strings.TrimSpace(m.Text) == "" || m.Label == "" {
 			continue
 		}
-		key := graph.EntityKey(m.Label, m.Text)
+		key := graph.EntityKey(m.Text)
+		if key == "" {
+			continue
+		}
 		if _, ok := ents[key]; !ok {
-			ents[key] = graph.EntityUpsert{Key: key, Name: m.Text, Type: m.Label}
+			ents[key] = graph.EntityUpsert{Key: key, Name: graph.DisplayName(m.Text), Type: m.Label}
 		}
 	}
 
@@ -959,8 +962,11 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract
 			cand.Label == "" || hm.Label == "" || tm.Label == "" {
 			continue
 		}
-		headKey := graph.EntityKey(hm.Label, hm.Text)
-		tailKey := graph.EntityKey(tm.Label, tm.Text)
+		headKey := graph.EntityKey(hm.Text)
+		tailKey := graph.EntityKey(tm.Text)
+		if headKey == "" || tailKey == "" {
+			continue
+		}
 		if cand.Score < p.cfg.Ingest.StoreFloor {
 			audits = append(audits, graph.FactAudit{
 				HeadKey: headKey, Rel: cand.Label, TailKey: tailKey,
