@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v4"
 )
 
 func defaultCompose(t *testing.T) composeModel {
@@ -74,6 +76,77 @@ func TestComposeSidecarCustomModelRevision(t *testing.T) {
 		t.Fatal("sidecar build must receive the custom repository and its immutable revision")
 	}
 	wantEnv(t, sidecar, "GLINEREL_MODEL", "org/custom")
+}
+
+func TestComposeDoclingEntrypoint(t *testing.T) {
+	for _, key := range []string{"", "synthetic-test-key"} {
+		model := renderCompose(t, writeFixture(t,
+			"MEMGRAPH_PASSWORD=test-only", "GKG_API_KEY=synthetic-test-key", "DOCLING_API_KEY="+key))
+		docling := model.Services["docling"]
+		if len(docling.Entrypoint) != 4 || !slices.Equal(docling.Entrypoint[:2], []string{"/bin/sh", "-c"}) || docling.Entrypoint[3] != "--" {
+			t.Fatal("docling must wrap the image entrypoint with a shell and an explicit $0")
+		}
+		if !slices.Equal(docling.Command, []string{"docling-serve", "run"}) {
+			t.Fatal("docling must explicitly restore the image command")
+		}
+		wantEnv(t, docling, "DOCLING_SERVE_API_KEY", key)
+		wantEnv(t, model.Services["gkg"], "GKG_CONVERTER_API_KEY", key)
+	}
+}
+
+func TestDoclingEntrypointAPIKey(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy/docker-compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Services map[string]struct {
+			Entrypoint []string `yaml:"entrypoint"`
+			Command    []string `yaml:"command"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	docling := config.Services["docling"]
+	if len(docling.Entrypoint) != 4 || docling.Entrypoint[0] != "/bin/sh" || docling.Entrypoint[1] != "-c" {
+		t.Fatal("docling must have a shell wrapper with an explicit $0")
+	}
+	// Compose turns $$ into a literal $ before handing the script to /bin/sh.
+	docling.Entrypoint[2] = strings.ReplaceAll(docling.Entrypoint[2], "$$", "$")
+	bin := t.TempDir()
+	stub := `#!/bin/sh
+printf 'present=%s\nkey=%s\n' "${DOCLING_SERVE_API_KEY+x}" "${DOCLING_SERVE_API_KEY-}"
+printf 'arg=%s\n' "$@"
+`
+	if err := os.WriteFile(filepath.Join(bin, "container-entrypoint"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, key, present string
+		set                bool
+	}{
+		{name: "empty", set: true},
+		{name: "unset"},
+		{name: "non-empty", key: `synthetic $key # "quoted"`, present: "x", set: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append(slices.Clone(docling.Entrypoint[1:]), docling.Command...)
+			cmd := exec.Command(docling.Entrypoint[0], args...)
+			cmd.Env = []string{"PATH=" + bin}
+			if tc.set {
+				cmd.Env = append(cmd.Env, "DOCLING_SERVE_API_KEY="+tc.key)
+			}
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("docling wrapper: %v\n%s", err, out)
+			}
+			want := "present=" + tc.present + "\nkey=" + tc.key + "\narg=docling-serve\narg=run\n"
+			if string(out) != want {
+				t.Fatalf("wrapper output = %q, want %q", out, want)
+			}
+		})
+	}
 }
 
 func TestComposeEnvFileFollowsGKGEnvFile(t *testing.T) {
