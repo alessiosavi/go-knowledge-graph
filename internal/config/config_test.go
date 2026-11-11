@@ -207,6 +207,7 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_AGENT_MODEL", "am", "am", func(c config.Config) any { return c.Agent.Model }},
 		{"GKG_AGENT_MAX_STEPS", "3", 3, func(c config.Config) any { return c.Agent.MaxSteps }},
 		{"GKG_AGENT_TIMEOUT_S", "30", 30, func(c config.Config) any { return c.Agent.TimeoutS }},
+		{"GKG_AGENT_CONTEXT_BUDGET_KB", "64", 64, func(c config.Config) any { return c.Agent.ContextBudgetKB }},
 		{"GKG_AGENT_STREAM", "false", false, func(c config.Config) any { return c.Agent.Stream }},
 	}
 	for _, tc := range cases {
@@ -439,10 +440,24 @@ func TestAgentDefaults(t *testing.T) {
 	if cfg.Agent.Model != "deepseek-v4.1-flash" {
 		t.Errorf("Agent.Model = %q, want the default model", cfg.Agent.Model)
 	}
+	if cfg.Agent.ContextBudgetKB != 256 {
+		t.Errorf("Agent.ContextBudgetKB = %d, want 256", cfg.Agent.ContextBudgetKB)
+	}
 	if cfg.Agent.MaxSteps != 6 {
 		t.Errorf("Agent.MaxSteps = %d, want 6", cfg.Agent.MaxSteps)
 	}
 	if cfg.Agent.TimeoutS != 60 {
 		t.Errorf("Agent.TimeoutS = %d, want 60", cfg.Agent.TimeoutS)
+	}
+}
+
+func TestAgentContextBudgetYAML(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("agent:\n  context_budget_kb: 64\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil || cfg.Agent.ContextBudgetKB != 64 {
+		t.Fatalf("budget=%d err=%v", cfg.Agent.ContextBudgetKB, err)
 	}
 }

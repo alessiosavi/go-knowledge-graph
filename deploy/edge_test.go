@@ -490,3 +490,91 @@ func TestEdgePolyglotCorpus(t *testing.T) {
 		}
 	}
 }
+
+func TestEdgeAskTimeouts(t *testing.T) {
+	script := filepath.Join(repoRoot(t), "deploy/edge/15-validate-env.sh")
+	for _, tc := range []struct{ name, agent, ask, want, rejected string }{
+		{name: "defaults", want: "90"},
+		{name: "derived", agent: "100", want: "130"},
+		{name: "long ask", agent: "300", want: "330"},
+		{name: "explicit margin", agent: "100", ask: "115", want: "115"},
+		{name: "explicit higher", agent: "100", ask: "200", want: "200"},
+		{name: "undercuts agent", agent: "100", ask: "90", rejected: "EDGE_ASK_TIMEOUT_S"},
+		{name: "below margin", agent: "100", ask: "114", rejected: "EDGE_ASK_TIMEOUT_S"},
+		{name: "default margin", ask: "74", rejected: "EDGE_ASK_TIMEOUT_S"},
+		{name: "zero agent uses default", agent: "0", want: "90"},
+		{name: "decimal leading zero", agent: "000100", ask: "000115", want: "115"},
+		{name: "bad agent", agent: "bad", rejected: "GKG_AGENT_TIMEOUT_S"},
+		{name: "agent injection", agent: "60;bad", rejected: "GKG_AGENT_TIMEOUT_S"},
+		{name: "ask injection", ask: "90;bad", rejected: "EDGE_ASK_TIMEOUT_S"},
+		{name: "negative ask", ask: "-1", rejected: "EDGE_ASK_TIMEOUT_S"},
+		{name: "zero ask", ask: "0", rejected: "EDGE_ASK_TIMEOUT_S"},
+		{name: "large agent", agent: "999999999999", rejected: "GKG_AGENT_TIMEOUT_S"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Sourcing models the image entrypoint's *.envsh handling. The child
+			// shell proves the derived value is exported for the envsubst process.
+			cmd := exec.Command("sh", "-c", `. "$1"; sh -c 'printf "%s" "$EDGE_ASK_TIMEOUT_S"'`, "sh", script)
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GKG_API_KEY=synthetic-test-key", "SERVER_NAME=localhost", "GKG_AGENT_TIMEOUT_S=" + tc.agent, "EDGE_ASK_TIMEOUT_S=" + tc.ask}
+			out, err := cmd.CombinedOutput()
+			if tc.rejected != "" {
+				if err == nil || !strings.Contains(string(out), tc.rejected) {
+					t.Fatalf("wanted rejection of %s; err=%v output=%s", tc.rejected, err, out)
+				}
+				if tc.rejected == "EDGE_ASK_TIMEOUT_S" && tc.ask == "114" && !strings.Contains(string(out), "+ 15") {
+					t.Fatal("must explain the required agent margin")
+				}
+			} else if err != nil || string(out) != tc.want {
+				t.Fatalf("timeout=%q err=%v, want %s", out, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestEdgeDerivedTimeoutReachesEnvsubst(t *testing.T) {
+	envsubst, err := exec.LookPath("envsubst")
+	if err != nil {
+		t.Skip("envsubst is required for the entrypoint integration check")
+	}
+	compose := edgeFile(t, "deploy/docker-compose.yml")
+	for _, want := range []string{
+		`GKG_AGENT_TIMEOUT_S: ${GKG_AGENT_TIMEOUT_S:-60}`,
+		`EDGE_ASK_TIMEOUT_S: "${EDGE_ASK_TIMEOUT_S:-}"`,
+		`./edge/15-validate-env.sh:/docker-entrypoint.d/15-validate-env.envsh:ro`,
+	} {
+		if !strings.Contains(compose, want) {
+			t.Fatalf("missing edge environment wiring: %s", want)
+		}
+	}
+	dir := t.TempDir()
+	validator := filepath.Join(dir, "15-validate-env.envsh")
+	source := filepath.Join(repoRoot(t), "deploy/edge/15-validate-env.sh")
+	info, err := os.Stat(source)
+	if err != nil || info.Mode()&0111 == 0 {
+		t.Fatal("sourced entrypoint files must be executable")
+	}
+	if err := os.Symlink(source, validator); err != nil {
+		t.Fatal(err)
+	}
+	renderer := filepath.Join(dir, "20-envsubst-on-templates.sh")
+	if err := os.WriteFile(renderer, []byte("#!/bin/sh\nexec \"$ENVSUBST\" '${EDGE_ASK_TIMEOUT_S}' < \"$TEMPLATE\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// The published entrypoint sources *.envsh and executes *.sh in the
+	// same loop shell. An executed validator would lose its exports.
+	cmd := exec.Command("sh", "-c", `set -e
+printf '%s\n' "$1" "$2" | while read -r f; do
+ case "$f" in
+  *.envsh) [ -x "$f" ] && . "$f" ;;
+  *.sh) [ -x "$f" ] && "$f" ;;
+ esac
+done`, "sh", validator, renderer)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GKG_API_KEY=synthetic-test-key", "SERVER_NAME=localhost", "GKG_AGENT_TIMEOUT_S=100", "ENVSUBST=" + envsubst, "TEMPLATE=" + filepath.Join(repoRoot(t), "deploy/edge/default.conf.template")}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("entrypoint: %v\n%s", err, out)
+	}
+	if strings.Count(string(out), "proxy_read_timeout 130s;") != 2 || strings.Contains(string(out), "${EDGE_ASK_TIMEOUT_S}") {
+		t.Fatalf("derived timeout missing from ask/stream locations:\n%s", out)
+	}
+}

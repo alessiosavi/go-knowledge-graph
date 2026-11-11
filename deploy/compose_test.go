@@ -199,7 +199,8 @@ func TestComposeEdgeWiring(t *testing.T) {
 		"MODSEC_REQ_BODY_LIMIT": "22020096", "MODSEC_REQ_BODY_NOFILES_LIMIT": "4259840",
 		"MODSEC_REQ_BODY_LIMIT_ACTION": "Reject", "NGINX_WORKER_PROCESSES": "2",
 		"MODSEC_AUDIT_LOG_PARTS": "ADEFHZ", "PARANOIA": "1", "BLOCKING_PARANOIA": "1", "ANOMALY_INBOUND": "5",
-		"GKG_API_KEY": "synthetic-test-key",
+		"GKG_API_KEY":         "synthetic-test-key",
+		"GKG_AGENT_TIMEOUT_S": "60", "EDGE_ASK_TIMEOUT_S": "",
 	} {
 		wantEnv(t, edge, key, value)
 	}
@@ -213,7 +214,7 @@ func TestComposeEdgeWiring(t *testing.T) {
 	for _, target := range []string{
 		"/etc/nginx/templates/conf.d/default.conf.template", "/etc/nginx/edge-certs", "/etc/nginx/edge-auth", "/var/www/acme",
 		"/etc/nginx/templates/modsecurity.d/setup.conf.template",
-		"/docker-entrypoint.d/15-validate-env.sh",
+		"/docker-entrypoint.d/15-validate-env.envsh",
 		"/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf",
 		"/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf",
 	} {

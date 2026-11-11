@@ -129,7 +129,7 @@ func TestStreamHandlerFramingAndDone(t *testing.T) {
 	if err := json.Unmarshal([]byte(doneEvent.data), &resp); err != nil {
 		t.Fatalf("done payload %q: %v", doneEvent.data, err)
 	}
-	if resp.Answer != "done answer" || resp.Steps != 1 || len(resp.Evidence) != 1 || resp.Evidence[0].Tool != "search" {
+	if resp.AnswerHTML != "<p>done answer</p>\n" || resp.Answer != "done answer" || resp.Steps != 1 || len(resp.Evidence) != 1 || resp.Evidence[0].Tool != "search" {
 		t.Errorf("done payload = %+v, want the authoritative answer with one search evidence", resp)
 	}
 }
