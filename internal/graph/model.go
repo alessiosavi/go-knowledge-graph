@@ -95,12 +95,20 @@ type Span struct {
 	Text  string
 }
 
-// EntityUpsert is one entity to merge into the graph.
+// MentionSpan is an entity mention's byte range and extracted type.
+type MentionSpan struct {
+	Start int
+	End   int
+	Type  string
+}
+
+// EntityUpsert is one entity to merge into the graph with its chunk mentions.
 type EntityUpsert struct {
-	Key     string
-	Name    string
-	Type    string
-	Aliases []string
+	Key      string
+	Name     string
+	Type     string // seeds a new entity; typed mentions determine its displayed type
+	Aliases  []string
+	Mentions []MentionSpan
 }
 
 // FactUpsert is one extracted relation with its mention evidence.

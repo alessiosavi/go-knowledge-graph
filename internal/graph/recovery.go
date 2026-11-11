@@ -70,7 +70,8 @@ DETACH DELETE e`,
 }
 
 // txRefreshMentionCounts recomputes mention_count for the given entity keys
-// from the actual MENTIONS edges.
+// from the actual MENTIONS edges and votes on their non-null types. Ties break
+// alphabetically; without a typed mention the entity keeps its current type.
 func txRefreshMentionCounts(ctx context.Context, tx neo4j.ManagedTransaction, keys []string) error {
 	if len(keys) == 0 {
 		return nil
@@ -79,8 +80,10 @@ func txRefreshMentionCounts(ctx context.Context, tx neo4j.ManagedTransaction, ke
 UNWIND $keys AS k
 MATCH (e:Entity {key: k})
 OPTIONAL MATCH (:Chunk)-[m:MENTIONS]->(e)
-WITH e, count(m) AS cnt
-SET e.mention_count = cnt`,
+WITH e, m.type AS typ, count(m) AS votes
+ORDER BY votes DESC, typ ASC
+WITH e, sum(votes) AS cnt, collect(typ) AS types
+SET e.mention_count = cnt, e.type = coalesce(types[0], e.type)`,
 		map[string]any{"keys": keys}); err != nil {
 		return fmt.Errorf("graph: refresh mention counts: %w", err)
 	}

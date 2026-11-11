@@ -10,8 +10,9 @@ import (
 )
 
 // ExtractionSchemaVersion versions derived extraction data. Version 2 uses
-// name-only entity keys; older graphs must be re-extracted from stored chunks.
-const ExtractionSchemaVersion = 2
+// name-only entity keys; version 3 links every mention and votes on its type.
+// Older graphs must be re-extracted from stored chunks.
+const ExtractionSchemaVersion = 3
 
 const extractionSchemaMetaID = "extraction_schema"
 const extractionMigrationBatch = 1000

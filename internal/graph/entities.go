@@ -132,26 +132,36 @@ func dedupeFacts(facts []FactUpsert) []FactUpsert {
 type mentionEdge struct {
 	key        string
 	start, end int
+	typ        string
 }
 
-// mentionEdges derives the chunk's mention edges from the facts' spans,
-// deduplicating identical (entity, span) occurrences.
-func mentionEdges(facts []FactUpsert) []mentionEdge {
-	seen := make(map[mentionEdge]bool)
+// mentionEdges unions entity mentions and fact spans, deduplicating identical
+// (entity, span) occurrences. Entity mentions supply the type when spans overlap.
+func mentionEdges(ents []EntityUpsert, facts []FactUpsert) []mentionEdge {
+	type mentionKey struct {
+		key        string
+		start, end int
+	}
+	seen := make(map[mentionKey]bool)
 	out := make([]mentionEdge, 0, 2*len(facts))
-	add := func(key string, sp Span) {
+	add := func(key string, start, end int, typ string) {
 		if key == "" {
 			return
 		}
-		e := mentionEdge{key, sp.Start, sp.End}
-		if !seen[e] {
-			seen[e] = true
-			out = append(out, e)
+		k := mentionKey{key, start, end}
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, mentionEdge{key, start, end, typ})
+		}
+	}
+	for _, e := range ents {
+		for _, m := range e.Mentions {
+			add(e.Key, m.Start, m.End, m.Type)
 		}
 	}
 	for _, f := range facts {
-		add(f.HeadKey, f.HeadMention)
-		add(f.TailKey, f.TailMention)
+		add(f.HeadKey, f.HeadMention.Start, f.HeadMention.End, "")
+		add(f.TailKey, f.TailMention.Start, f.TailMention.End, "")
 	}
 	return out
 }
@@ -160,9 +170,9 @@ func mentionEdges(facts []FactUpsert) []mentionEdge {
 // single transaction: the chunk's MENTIONS and every fact edge carrying its
 // chunk_id are deleted, entities are merged by key, facts are recreated
 // (deduplicated by head+rel+tail keeping the highest confidence) and
-// mention edges are rebuilt from the facts' spans. Every touched entity's
-// mention_count is refreshed — including entities the new extraction no
-// longer mentions, so counts cannot go stale. Facts whose relation label
+// mention edges are rebuilt from every entity mention plus the facts' spans.
+// Every touched entity's mention_count and voted type are refreshed, including
+// entities the new extraction no longer mentions. Facts whose relation label
 // has no alphanumeric content or whose entity keys are empty are rejected
 // before anything is written; entries with an empty entity Key are skipped.
 //
@@ -193,7 +203,7 @@ func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorV
 		}
 	}
 	facts = dedupeFacts(facts)
-	mentions := mentionEdges(facts)
+	mentions := mentionEdges(ents, facts)
 
 	touched := make(map[string]bool, len(ents))
 	keys := make([]string, 0, len(ents))
@@ -234,7 +244,11 @@ func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorV
 	}
 	menRows := make([]map[string]any, 0, len(mentions))
 	for _, m := range mentions {
-		menRows = append(menRows, map[string]any{"key": m.key, "start": m.start, "end": m.end})
+		var typ any
+		if m.typ != "" {
+			typ = m.typ
+		}
+		menRows = append(menRows, map[string]any{"key": m.key, "start": m.start, "end": m.end, "type": typ})
 	}
 
 	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
@@ -325,7 +339,6 @@ func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorV
 UNWIND $ents AS ent
 MERGE (e:Entity {key: ent.key})
 ON CREATE SET e.id = ent.id, e.mention_count = 0, e.type = ent.type
-ON MATCH SET e.type = coalesce(e.type, ent.type)
 SET e.name = ent.name,
     e.aliases = CASE WHEN size(ent.aliases) > 0 THEN ent.aliases ELSE coalesce(e.aliases, []) END`,
 				map[string]any{"ents": entRows}); err != nil {
@@ -351,7 +364,7 @@ SET r.confidence = f.confidence, r.low_confidence = f.low, r.judge = '',
 UNWIND $mentions AS m
 MATCH (c:Chunk {id: $cid}), (e:Entity {key: m.key})
 CREATE (c)-[men:MENTIONS]->(e)
-SET men.start = m.start, men.end = m.end`,
+SET men.start = m.start, men.end = m.end, men.type = m.type`,
 				map[string]any{"mentions": menRows, "cid": chunkID}); err != nil {
 				return fmt.Errorf("graph: create mentions: %w", err)
 			}
@@ -556,9 +569,9 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
 
 // EntityByName returns the entity whose stored name matches the argument
 // exactly after trimming and case folding. Several entities may fold to the
-// same name (distinct types): the most mentioned one wins, with the id as
-// the deterministic tie-breaker. ErrNotFound when nothing matches — this is
-// an exact lookup, not a fuzzy text search.
+// same name (for example, with scoped keys): the most mentioned one wins,
+// with the id as the deterministic tie-breaker. ErrNotFound when nothing
+// matches — this is an exact lookup, not a fuzzy text search.
 func (s *Store) EntityByName(ctx context.Context, name string) (EntityRef, error) {
 	recs, err := s.runRead(ctx, `
 MATCH (e:Entity)

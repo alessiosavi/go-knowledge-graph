@@ -58,15 +58,19 @@ When conversion is off (including light mode), PDF text extraction uses
   fails or is superseded. Startup sweeps orphan payloads and abandoned
   temporary files after requeueing in-flight documents. Retain Compose's
   `gkg-data` volume as well as Memgraph's volume across redeploys.
-- **Name-only entity identity upgrade:** `gkg serve`, `gkg mcp` and
-  `gkg migrate` upgrade outdated graphs by clearing derived entities,
+- **Extraction-schema upgrades:** v2 introduced name-only entity identity;
+  v3 links every extracted mention to its chunk and sets entity types by a
+  majority vote of typed mentions (ties alphabetical). `gkg serve`, `gkg mcp`
+  and `gkg migrate` upgrade outdated graphs by clearing derived entities,
   mentions, facts and judge audits, then re-extracting
   previously extracted live documents from stored chunk text. Documents,
   chunks and fingerprints are retained; no source re-fetch is needed. The
   graph is partial until the recovery queue drains (`gkg migrate` waits for
-  re-extraction to finish), and judge audits are regenerated. Failed and
-  superseded documents are not requeued. `gkg ingest` refuses an outdated
-  graph; run `gkg migrate` or start `gkg serve` before ingesting.
+  re-extraction to finish; it exits nonzero if any document fails and leaves
+  those documents queued for `gkg serve`), and judge audits are regenerated.
+  Previously failed and superseded documents are not requeued. `gkg ingest`
+  refuses an outdated graph; run `gkg migrate` or start `gkg serve` before
+  ingesting.
 - Legacy or missing-spool **URLs** re-fetch and re-convert, then hash-check;
   changed content fails with a resubmit hint. Missing-spool **files/text**
   cannot reload; re-push them. **Failed** documents are not automatically
