@@ -892,8 +892,8 @@ func TestAdminRebuild(t *testing.T) {
 		{name: "queued and busy", body: `{"document_id":"doc","labels":"news"}`, res: ingest.RebuildResult{Queued: []string{"doc"}, Busy: []string{"busy"}}, code: 202},
 		{name: "all defaults", body: `{}`, code: 202},
 		{name: "unknown preset", body: `{"labels":"nope"}`, err: errors.New("unknown preset"), code: 400},
-		{name: "unknown document", body: `{"document_id":"missing"}`, err: fmt.Errorf("%w: %w", ingest.ErrStore, graph.ErrNotFound), code: 404},
-		{name: "not done", body: `{"document_id":"queued"}`, err: fmt.Errorf("%w: %w", ingest.ErrStore, graph.ErrNotDone), code: 409},
+		{name: "unknown document", body: `{"document_id":"missing"}`, err: fmt.Errorf("graph: document missing: %w", graph.ErrNotFound), code: 404},
+		{name: "not done", body: `{"document_id":"queued"}`, err: fmt.Errorf("graph: reset document queued (chunked): %w", graph.ErrNotDone), code: 409},
 		{name: "store unavailable", body: `{}`, err: fmt.Errorf("%w: unavailable", ingest.ErrStore), code: 500},
 		{name: "invalid JSON", body: `{`, code: 400},
 	} {

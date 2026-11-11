@@ -45,7 +45,7 @@ paths:
                   description: One document ID; empty or omitted selects every done document.
       responses:
         "202":
-          description: Completed documents reset and queued; busy IDs skipped.
+          description: Completed documents reset and queued; busy IDs (lock held) skipped. Documents that stop being done during a bulk run are skipped and not listed.
           content:
             application/json:
               schema:
@@ -69,14 +69,34 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           description: Unknown document ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           description: Selected document is not done.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "413":
           description: JSON body exceeds 1 MiB.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           description: Store failure; earlier successful resets remain queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "501":
           description: No rebuild pipeline wired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/ingest:
     post:
       summary: Submit a document for ingestion

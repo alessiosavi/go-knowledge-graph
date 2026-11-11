@@ -123,12 +123,13 @@ func TestRebuildRejectsUnknownPresetFirst(t *testing.T) {
 
 func TestRebuildUnknownDocumentAndNotDone(t *testing.T) {
 	p, st := rebuildPipeline(t)
-	if _, err := p.Rebuild(t.Context(), "missing", ""); !errors.Is(err, graph.ErrNotFound) {
+	// Client errors, not store failures: callers map ErrStore to 5xx.
+	if _, err := p.Rebuild(t.Context(), "missing", ""); !errors.Is(err, graph.ErrNotFound) || errors.Is(err, ErrStore) {
 		t.Fatalf("unknown document: %v", err)
 	}
 	st.docs["c"] = graph.Document{ID: "c", Status: graph.StatusChunked}
 	before := st.docs["c"]
-	if _, err := p.Rebuild(t.Context(), "c", ""); !errors.Is(err, graph.ErrNotDone) {
+	if _, err := p.Rebuild(t.Context(), "c", ""); !errors.Is(err, graph.ErrNotDone) || errors.Is(err, ErrStore) {
 		t.Fatalf("not done: %v", err)
 	}
 	if !reflect.DeepEqual(st.docs["c"], before) || len(st.resetIDs) != 0 {
@@ -203,6 +204,21 @@ func TestRebuildSkipsDocumentDeletedAfterSnapshot(t *testing.T) {
 	res, err := p.Rebuild(t.Context(), "", "")
 	if err != nil || !slices.Equal(res.Queued, []string{"b"}) || len(res.Busy) != 0 {
 		t.Fatalf("Rebuild = %+v, err=%v, want only b queued", res, err)
+	}
+	if queuedID(t, p) != "b" {
+		t.Fatal("remaining document not queued")
+	}
+}
+
+// A document that stops being done during a bulk run (re-ingested,
+// superseded, failed) is skipped, and not reported busy: retrying it later
+// would only return 409.
+func TestRebuildSkipsDocumentNoLongerDone(t *testing.T) {
+	p, st := rebuildPipeline(t)
+	st.resetErr = map[string]error{"a": fmt.Errorf("graph: reset document a (superseded): %w", graph.ErrNotDone)}
+	res, err := p.Rebuild(t.Context(), "", "")
+	if err != nil || !slices.Equal(res.Queued, []string{"b"}) || len(res.Busy) != 0 {
+		t.Fatalf("Rebuild = %+v, err=%v, want only b queued and nothing busy", res, err)
 	}
 	if queuedID(t, p) != "b" {
 		t.Fatal("remaining document not queued")

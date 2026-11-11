@@ -757,8 +757,11 @@ func (p *Pipeline) Rebuild(ctx context.Context, docID, labels string) (res Rebui
 		for _, id := range ids {
 			doc, err := p.store.Document(ctx, id)
 			if err != nil {
-				if docID == "" && errors.Is(err, graph.ErrNotFound) {
-					continue // deleted since the snapshot; the reset skips it
+				if errors.Is(err, graph.ErrNotFound) {
+					if docID == "" {
+						continue // deleted since the snapshot; the reset skips it
+					}
+					return res, err // a client error, not a store failure
 				}
 				return res, fmt.Errorf("%w: %w", ErrStore, err)
 			}
@@ -790,15 +793,15 @@ func (p *Pipeline) Rebuild(ctx context.Context, docID, labels string) (res Rebui
 		err := p.store.ResetExtraction(ctx, id, labels)
 		lock.Unlock()
 		if err != nil {
-			// Another rebuild/admission may have queued this document since
-			// the all-done snapshot. It must not stop the remaining targets.
-			if docID == "" && errors.Is(err, graph.ErrNotDone) {
-				res.Busy = append(res.Busy, id)
-				continue
-			}
-			// Deleted since the snapshot: nothing to rebuild.
-			if docID == "" && errors.Is(err, graph.ErrNotFound) {
-				continue
+			if errors.Is(err, graph.ErrNotDone) || errors.Is(err, graph.ErrNotFound) {
+				// In a bulk run the document stopped being done (re-ingested,
+				// superseded, failed or deleted) after the snapshot: skip it
+				// without stopping the remaining targets. It is not busy, so a
+				// retry would not help. A single target reports it (409/404).
+				if docID == "" {
+					continue
+				}
+				return res, err // a client error, not a store failure
 			}
 			return res, fmt.Errorf("%w: %w", ErrStore, err)
 		}

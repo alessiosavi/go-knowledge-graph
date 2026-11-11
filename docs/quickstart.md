@@ -179,8 +179,10 @@ existing preset, or choose an installed preset. An unknown or invalid preset (th
 target's stored preset when `labels` is omitted) returns 400 before any
 document changes; an unknown document returns 404; a selected
 document that is not done returns 409. A 202 reports the queued count and
-busy IDs; poll document status until `done` or `failed` and retry skipped IDs
-when idle. Bulk resets commit per document: a later store error can leave
+busy IDs (documents being processed at that moment); poll document status
+until `done` or `failed` and retry the busy IDs when idle. In a bulk run,
+documents that stop being done meanwhile (re-ingested, superseded, deleted)
+are skipped and not listed. Bulk resets commit per document: a later store error can leave
 earlier documents reset and queued; inspect statuses before retrying.
 
 ## 4. Connect an agent (MCP)
