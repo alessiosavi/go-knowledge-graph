@@ -20,7 +20,7 @@ in CI, maintainers verify it by hand during review.
 ## Development setup
 
 - Go 1.27+ (the module declares the toolchain; no cgo).
-- Python 3.12+ only for the sidecar (`sidecar/`).
+- Python 3.15+ only for the sidecar (`sidecar/`); dependencies come from the hashed `sidecar/requirements.lock`.
 - Docker (optional) for the full stack and the acceptance run.
 - A live Memgraph for the integration tests (the quickstart's compose
   Memgraph works; point the tests at it):

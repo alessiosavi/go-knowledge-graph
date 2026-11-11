@@ -31,7 +31,7 @@ new_tmp="$(mktemp "${file}.new.XXXXXX")"
 trap 'rm -f "$hash_tmp" "$new_tmp"' EXIT
 trap 'exit 1' HUP INT TERM
 printf '%s\n' "$password" | "$docker_cmd" run --rm -i \
- httpd:2.4.69-alpine@sha256:698a0f59374eeb59c2c3ae6385c5f346edd2c70c2b63f7b552fb3d64dbc3cf66 \
+ httpd:2.4.70-alpine@sha256:c465cf5b4c131dad59ea43de34036cab81e1c0517340c4f3159acbf91f0c68f0 \
  htpasswd -niB "$login" > "$hash_tmp"
 [[ -s "$hash_tmp" ]] || fail 'bcrypt helper returned no hash'
 if [[ -f "$file" ]]; then

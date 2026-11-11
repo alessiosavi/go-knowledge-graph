@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/alessiosavi/GoGPUtils/minhash"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/chunk"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"

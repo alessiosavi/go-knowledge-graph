@@ -298,3 +298,44 @@ def test_inference_lock_released_after_error(monkeypatch):
     assert sidecar._inference_lock.acquire(timeout=1), "inference error leaked the lock"
     sidecar._inference_lock.release()
     assert client.post("/v1/extract", json=payload).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "name,repository,revision",
+    [
+        ("314m", "VAGOsolutions/SauerkrautLM-GLiNEREL-314m", "9424e1eb432625b356ec73ea701c5d2b31cbc162"),
+        ("72m", "VAGOsolutions/SauerkrautLM-GLiNEREL-72m", "34c024bb2ea85326526f6c5d150b9afe8bbe4808"),
+    ],
+)
+def test_model_revision_pinned_at_download_and_load(monkeypatch, name, repository, revision):
+    import sys
+    from types import SimpleNamespace
+
+    calls = []
+    fake = SimpleNamespace(from_pretrained=lambda model, **kwargs: calls.append((model, kwargs)))
+    monkeypatch.setitem(sys.modules, "glinerel_fast", SimpleNamespace(GLiNERel=fake))
+    monkeypatch.delenv("GLINEREL_MODEL_REVISION", raising=False)
+    sidecar.prefetch(name)
+    sidecar.load_model(name)
+    assert calls == [(repository, {"revision": revision})] * 2
+
+
+def test_custom_model_requires_an_immutable_revision(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    calls = []
+    fake = SimpleNamespace(from_pretrained=lambda model, **kwargs: calls.append((model, kwargs)))
+    monkeypatch.setitem(sys.modules, "glinerel_fast", SimpleNamespace(GLiNERel=fake))
+    monkeypatch.delenv("GLINEREL_MODEL_REVISION", raising=False)
+    with pytest.raises(ValueError, match="revision"):
+        sidecar.load_model("org/custom")
+    monkeypatch.setenv("GLINEREL_MODEL_REVISION", "main")
+    with pytest.raises(ValueError, match="revision"):
+        sidecar.prefetch("org/custom")
+    assert calls == []
+    revision = "a" * 40
+    monkeypatch.setenv("GLINEREL_MODEL_REVISION", revision)
+    sidecar.prefetch("org/custom")
+    sidecar.load_model("org/custom")
+    assert calls == [("org/custom", {"revision": revision})] * 2

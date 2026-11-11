@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 // DocumentID returns the node id of one content version of a source:

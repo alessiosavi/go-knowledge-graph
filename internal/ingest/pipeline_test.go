@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/dedup"
@@ -1009,7 +1009,7 @@ func testFloat(r *neo4j.Record, key string) float64 {
 
 func rawRecords(t *testing.T, uri, query string) []*neo4j.Record {
 	t.Helper()
-	drv, err := neo4j.NewDriverWithContext(uri, neo4j.NoAuth())
+	drv, err := neo4j.NewDriver(uri, neo4j.NoAuth())
 	if err != nil {
 		t.Fatalf("raw driver: %v", err)
 	}

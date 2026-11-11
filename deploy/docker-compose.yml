@@ -106,6 +106,7 @@ services:
         # Select the baked checkpoint (314m default, 72m, or any full
         # repository id); rebuild after changing it with `up --build`.
         GLINEREL_MODEL: ${GLINEREL_MODEL:-314m}
+        GLINEREL_MODEL_REVISION: ${GLINEREL_MODEL_REVISION:-}
     ports:
       - "127.0.0.1:${SIDECAR_PORT:-8090}:8090"
     environment:
@@ -130,14 +131,13 @@ services:
     restart: unless-stopped
     logging: *logging
     mem_limit: 6656m
-    image: ghcr.io/docling-project/docling-serve-cpu:v1.1.0@sha256:739f4e08e3164e242ec64f76f22a1864b82c5648c775ce6fa77fb25e66f1150e
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.38.2@sha256:7a480a1604fa3b42efeddc7db9527690d9f9bc903226136013e2bfe6b1a4dfb0
     ports:
       - "127.0.0.1:${DOCLING_PORT:-5001}:5001"
     environment:
       DOCLING_SERVE_API_KEY: ${DOCLING_API_KEY:-}
       # Just below gkg's 300s client budget: a slow conversion fails server-side
-      # within the client budget (the task keeps running; v1.1.0 surfaces a
-      # generic 500 instead of the documented 504).
+      # within the client budget (the task keeps running after the 504).
       DOCLING_SERVE_MAX_SYNC_WAIT: "280"
       DOCLING_SERVE_ENG_LOC_NUM_WORKERS: ${DOCLING_ENG_WORKERS:-2}
       DOCLING_NUM_THREADS: ${DOCLING_NUM_THREADS:-4}
@@ -154,7 +154,7 @@ services:
       start_period: 60s
 
   edge-init:
-    image: owasp/modsecurity-crs:4.30.0-nginx-202610180210@sha256:7698c48a41a43138ae317feeec964d1515b861cc1d9e50617bc1cdfe9f314e1d
+    image: owasp/modsecurity-crs:4.30.0-nginx-202611090911@sha256:9a386aa4a9eeec9a46c61a1eaba101c846dd83b1ec125e9126e710dd61d84422
     user: "0:0"
     entrypoint: ["/bin/sh", "/edge-init.sh"]
     restart: "no"
@@ -175,7 +175,7 @@ services:
           create_host_path: false
 
   edge:
-    image: owasp/modsecurity-crs:4.30.0-nginx-202610180210@sha256:7698c48a41a43138ae317feeec964d1515b861cc1d9e50617bc1cdfe9f314e1d
+    image: owasp/modsecurity-crs:4.30.0-nginx-202611090911@sha256:9a386aa4a9eeec9a46c61a1eaba101c846dd83b1ec125e9126e710dd61d84422
     restart: unless-stopped
     logging: *logging
     # Measured (2 workers): 4 near-cap JSON + 4 near-20 MiB uploads + 4 streamed
@@ -233,7 +233,7 @@ services:
 
   # One-shot certificate commands; never started with the default stack.
   certbot:
-    image: certbot/certbot:v5.8.0@sha256:f70ad0adbb7e117f0fe42a63c553f28ea451edabc0148757b6efcd9735acaa20
+    image: certbot/certbot:v5.10.0@sha256:c5698da859429ccee0fcc299a8000368198222d1f9e789ab6e388b491e8ce06d
     profiles: [cert]
     mem_limit: 256m
     logging: *logging
