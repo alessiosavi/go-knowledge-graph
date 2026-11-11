@@ -1,0 +1,18 @@
+<p><em><strong>deep <strong>nested</strong> emphasis</strong></em> and <strong>outer <em>inner</em> text</strong> and <del>gone <em>inside</em></del></p>
+<ul>
+<li><input checked="" disabled="" type="checkbox"> <strong>done</strong></li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>a</th>
+<th>b</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>one</em></td>
+<td><strong>two</strong></td>
+</tr>
+</tbody>
+</table>

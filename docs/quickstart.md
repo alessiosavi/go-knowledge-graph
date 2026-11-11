@@ -184,7 +184,10 @@ service is built or pulled. Set `GKG_LIGHT_EXTRACTOR_MODE=openai` and the
 OpenAI-compatible extractor settings to use an LLM instead. Include
 `LIGHT=1` with subsequent stack commands for that setup.
 
-Any other Hugging Face repository id is passed through verbatim; the
+Any other Hugging Face repository id is passed through verbatim, pinned to
+a commit: set `GLINEREL_MODEL_REVISION` to its full 40-hex commit SHA (the
+two built-in checkpoints carry their own pins; without a SHA the build stops
+with an error naming the variable). The
 checkpoint must be loadable by the bundled `glinerel-fast` runtime (the
 GLiNEREL config contract). The gliner2.5 family (Apache-2.0) is the planned
 fully-free local alternative but **cannot be loaded by the pinned runtime
@@ -281,10 +284,11 @@ the default `GKG_CONVERTER_URL` (`http://localhost:5001`) (compose defaults to
 with the converter's reason — there is no silent fallback.
 `GKG_CONVERTER_TIMEOUT_S` (default 300) bounds a conversion; the server's
 sync wait is pinned just below it, so a slow document fails within the
-client budget (the conversion task keeps running server-side). With the
-pinned `v1.1.0`, exceeding the sync wait surfaces a generic HTTP 500 rather
-than the documented explanatory 504; gkg reports either as a load-stage
-failure.
+client budget (the conversion task keeps running server-side). The pinned
+docling-serve `v1.38.2` answers an exceeded sync wait with HTTP 504; gkg
+reports it as a load-stage failure. OCR uses the `ocr_preset` field
+(`GKG_CONVERTER_OCR_ENGINE`, default `tesseract`); conversion errors are
+reported with docling's error messages.
 
 ## 8. Evaluation
 

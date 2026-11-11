@@ -71,8 +71,10 @@ func TestDoclingConvertShape(t *testing.T) {
 				gotBody = data
 			case "to_formats":
 				gotToFormats = string(data)
-			case "ocr_engine":
+			case "ocr_preset":
 				gotOCR = string(data)
+			case "ocr_engine":
+				t.Error("deprecated ocr_engine form field was sent")
 			case "image_export_mode":
 				gotExport = string(data)
 			}
@@ -99,7 +101,7 @@ func TestDoclingConvertShape(t *testing.T) {
 		t.Errorf("to_formats = %q, want md", gotToFormats)
 	}
 	if gotOCR != "tesseract" || gotExport != "placeholder" {
-		t.Errorf("ocr_engine=%q image_export_mode=%q, want tesseract and placeholder", gotOCR, gotExport)
+		t.Errorf("ocr_preset=%q image_export_mode=%q, want tesseract and placeholder", gotOCR, gotExport)
 	}
 	if gotKey != "dk" {
 		t.Errorf("X-Api-Key = %q, want the configured key", gotKey)
@@ -169,6 +171,53 @@ func TestDoclingPartialSuccessAccepted(t *testing.T) {
 	}
 	if md != "partial md" {
 		t.Errorf("markdown = %q, want the partial content", md)
+	}
+}
+
+func TestDoclingResponseErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, response, wantMD, wantError string
+	}{
+		{
+			name:     "success",
+			response: `{"status":"success","document":{"md_content":"complete md"},"errors":[]}`,
+			wantMD:   "complete md",
+		},
+		{
+			name:     "partial_success_object_errors",
+			response: `{"status":"partial_success","document":{"md_content":"partial md"},"errors":[{"component_type":"model","module_name":"ocr","message":"page 3 skipped"}]}`,
+			wantMD:   "partial md",
+		},
+		{
+			name:      "failure_object_errors",
+			response:  `{"status":"failure","document":{"md_content":"incomplete md"},"errors":[{"component_type":"model","module_name":"ocr","message":"conversion failed at page 3"}]}`,
+			wantError: "conversion failed: conversion failed at page 3",
+		},
+		{
+			name:      "string_errors",
+			response:  `{"status":"failure","document":{},"errors":["unsupported format: 7z"]}`,
+			wantError: "conversion failed: unsupported format: 7z",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, tc.response)
+			}))
+			defer ts.Close()
+			md, err := New(doclingConfig(ts.URL)).Convert(context.Background(), []byte("%PDF-1.4"), "a.pdf", "application/pdf")
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("err = %v, want %q", err, tc.wantError)
+				}
+				if md != "" {
+					t.Fatalf("failed conversion returned markdown %q", md)
+				}
+				return
+			}
+			if err != nil || md != tc.wantMD {
+				t.Fatalf("Convert = (%q, %v), want (%q, nil)", md, err, tc.wantMD)
+			}
+		})
 	}
 }
 
@@ -249,7 +298,7 @@ func TestDoclingConfiguredOCR(t *testing.T) {
 			return
 		}
 		defer r.MultipartForm.RemoveAll()
-		if r.FormValue("ocr_engine") != "easyocr" || r.FormValue("image_export_mode") != "placeholder" || r.FormValue("to_formats") != "md" {
+		if r.FormValue("ocr_preset") != "easyocr" || r.FormValue("ocr_engine") != "" || r.FormValue("image_export_mode") != "placeholder" || r.FormValue("to_formats") != "md" {
 			t.Error("configured OCR and safe export fields missing")
 		}
 		fmt.Fprint(w, `{"status":"success","document":{"md_content":"converted"}}`)

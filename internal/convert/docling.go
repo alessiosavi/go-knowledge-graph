@@ -20,6 +20,25 @@ import (
 // doclingErrorBodyCap mirrors the other HTTP clients' hygiene.
 const doclingErrorBodyCap = 4 << 10 // 4KB
 
+// doclingConversionError accepts current ErrorItem objects and legacy strings.
+type doclingConversionError string
+
+func (e *doclingConversionError) UnmarshalJSON(data []byte) error {
+	var message string
+	if err := json.Unmarshal(data, &message); err == nil {
+		*e = doclingConversionError(message)
+		return nil
+	}
+	var item struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(data, &item); err != nil {
+		return err
+	}
+	*e = doclingConversionError(item.Message)
+	return nil
+}
+
 // Docling is the docling-serve client (stable v1 sync endpoint). Safe for
 // concurrent use.
 type Docling struct {
@@ -75,7 +94,9 @@ func (d *Docling) Convert(ctx context.Context, body []byte, filename, contentTyp
 	if _, err := part.Write(body); err != nil {
 		return "", fmt.Errorf("convert: docling: encode request: %w", err)
 	}
-	for _, field := range [][2]string{{"to_formats", "md"}, {"ocr_engine", d.ocrEngine}, {"image_export_mode", "placeholder"}} {
+	// v1.38.2 uses OCR preset IDs (including tesseract and easyocr); keep
+	// accepting the existing converter.ocr_engine configuration name.
+	for _, field := range [][2]string{{"to_formats", "md"}, {"ocr_preset", d.ocrEngine}, {"image_export_mode", "placeholder"}} {
 		if err := mw.WriteField(field[0], field[1]); err != nil {
 			return "", fmt.Errorf("convert: docling: encode request: %w", err)
 		}
@@ -112,8 +133,8 @@ func (d *Docling) Convert(ctx context.Context, body []byte, filename, contentTyp
 		Document struct {
 			MDContent string `json:"md_content"`
 		} `json:"document"`
-		Status string   `json:"status"`
-		Errors []string `json:"errors"`
+		Status string                   `json:"status"`
+		Errors []doclingConversionError `json:"errors"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, d.maxBytes)).Decode(&parsed); err != nil {
 		return "", fmt.Errorf("convert: docling: decode response: %w", err)
@@ -122,7 +143,7 @@ func (d *Docling) Convert(ctx context.Context, body []byte, filename, contentTyp
 	if parsed.Status == "failure" || strings.TrimSpace(md) == "" {
 		reason := parsed.Status
 		if len(parsed.Errors) > 0 {
-			reason = parsed.Errors[0]
+			reason = string(parsed.Errors[0])
 		}
 		if reason == "" {
 			reason = "empty markdown"

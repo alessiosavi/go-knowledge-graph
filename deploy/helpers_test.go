@@ -44,6 +44,9 @@ type composeModel struct {
 }
 
 type composeService struct {
+	Build struct {
+		Args map[string]string `json:"args"`
+	} `json:"build"`
 	User    string `json:"user"`
 	Volumes []struct {
 		Type     string `json:"type"`

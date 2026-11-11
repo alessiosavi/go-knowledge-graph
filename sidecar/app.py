@@ -19,6 +19,7 @@ baked into the image at build time, so the container runs fully offline.
 """
 
 import os
+import re
 import threading
 from typing import Union
 
@@ -34,6 +35,10 @@ BATCH_SIZE = int(os.environ.get("GLINEREL_BATCH", "8"))
 MODEL_ALIASES = {
     "314m": "VAGOsolutions/SauerkrautLM-GLiNEREL-314m",
     "72m": "VAGOsolutions/SauerkrautLM-GLiNEREL-72m",
+}
+MODEL_REVISIONS = {
+    MODEL_ALIASES["314m"]: "9424e1eb432625b356ec73ea701c5d2b31cbc162",
+    MODEL_ALIASES["72m"]: "34c024bb2ea85326526f6c5d150b9afe8bbe4808",
 }
 MODEL_NAME = os.environ.get("GLINEREL_MODEL", "314m")
 
@@ -51,7 +56,11 @@ def load_model(name: str):
     """Loads the pinned GLiNEREL runtime for ``name`` (weights cached)."""
     from glinerel_fast import GLiNERel
 
-    return GLiNERel.from_pretrained(resolve_model(name))
+    repository = resolve_model(name)
+    revision = os.environ.get("GLINEREL_MODEL_REVISION") or MODEL_REVISIONS.get(repository, "")
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", revision):
+        raise ValueError("model revision must be a full commit SHA; set GLINEREL_MODEL_REVISION")
+    return GLiNERel.from_pretrained(repository, revision=revision)
 
 
 def prefetch(name: str) -> None:

@@ -1,0 +1,1 @@
+<p><a href="https://example.com/a?x=1&amp;y=2">https://example.com/a?x=1&amp;y=2</a> <a href="mailto:ada@example.com">ada@example.com</a> <a href="">javascript:alert(1)</a> <a href="">vbscript:msgbox(1)</a> <a href="">data:text/html,hello</a></p>
