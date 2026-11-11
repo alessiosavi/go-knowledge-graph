@@ -49,8 +49,8 @@ func newAgentFixture(t *testing.T) agentFixture {
 	if err != nil {
 		t.Fatalf("UpsertDocument: %v", err)
 	}
-	key := graph.EntityKey("person", "Ada "+token)
-	other := graph.EntityKey("technology", "Engine "+token)
+	key := graph.EntityKey("Ada " + token)
+	other := graph.EntityKey("Engine " + token)
 	text := "Ada " + token + " uses Engine " + token + " daily."
 	if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)

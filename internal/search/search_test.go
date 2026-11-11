@@ -56,7 +56,7 @@ func newSearchFixture(t *testing.T) searchFixture {
 	if err := st.PutChunks(ctx, docID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
 	}
-	key := graph.EntityKey("technology", token)
+	key := graph.EntityKey(token)
 	if err := st.UpsertExtraction(ctx, docID, docID+"-c0", "mock:1",
 		[]graph.EntityUpsert{{Key: key, Name: token, Type: "technology"}},
 		nil); err != nil {

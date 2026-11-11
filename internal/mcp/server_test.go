@@ -230,7 +230,7 @@ func TestSearchShapedHits(t *testing.T) {
 	if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
 	}
-	key := graph.EntityKey("technology", tok)
+	key := graph.EntityKey(tok)
 	if err := st.UpsertExtraction(ctx, doc.ID, doc.ID+"-c0", "mock:1",
 		[]graph.EntityUpsert{{Key: key, Name: tok, Type: "technology"}}, nil); err != nil {
 		t.Fatalf("UpsertExtraction: %v", err)
@@ -289,9 +289,9 @@ func TestGetEntityLowConfidenceGating(t *testing.T) {
 		t.Fatalf("UpsertDocument: %v", err)
 	}
 	tok := mcpToken(t)
-	a := graph.EntityKey("person", "Ada "+tok)
-	b := graph.EntityKey("organization", "Org "+tok)
-	c := graph.EntityKey("technology", "Tech "+tok)
+	a := graph.EntityKey("Ada " + tok)
+	b := graph.EntityKey("Org " + tok)
+	c := graph.EntityKey("Tech " + tok)
 	text := "Ada " + tok + " works at Org " + tok + " and uses Tech " + tok + "."
 	if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
@@ -358,9 +358,9 @@ func TestTraverseToolDepthCap(t *testing.T) {
 		t.Fatalf("UpsertDocument: %v", err)
 	}
 	tok := mcpToken(t)
-	a := graph.EntityKey("person", "Ada "+tok)
-	b := graph.EntityKey("organization", "Org "+tok)
-	c := graph.EntityKey("technology", "Tech "+tok)
+	a := graph.EntityKey("Ada " + tok)
+	b := graph.EntityKey("Org " + tok)
+	c := graph.EntityKey("Tech " + tok)
 	text := "Ada " + tok + " wrote at Org " + tok + " and uses Tech " + tok + "."
 	if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
@@ -501,7 +501,7 @@ func TestSearchToolUsesEmbedderWhenEnabled(t *testing.T) {
 	if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
 	}
-	key := graph.EntityKey("technology", tok)
+	key := graph.EntityKey(tok)
 	if err := st.UpsertExtraction(ctx, doc.ID, doc.ID+"-c0", "mock:1",
 		[]graph.EntityUpsert{{Key: key, Name: tok, Type: "technology"}}, nil); err != nil {
 		t.Fatalf("UpsertExtraction: %v", err)

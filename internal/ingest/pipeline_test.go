@@ -140,9 +140,9 @@ func TestPipelineEndToEndWithMock(t *testing.T) {
 	}
 
 	// EntityView works on the mock's entities (first and last word).
-	view, err := env.st.EntityView(ctx, graph.EntityKey("person", "Ada"), false)
+	view, err := env.st.EntityView(ctx, graph.EntityKey("Ada"), false)
 	if err != nil {
-		t.Fatalf("EntityView(person:ada): %v", err)
+		t.Fatalf("EntityView(ada): %v", err)
 	}
 	if len(view.Facts) == 0 {
 		t.Fatalf("entity %q has no facts", view.Key)
@@ -667,7 +667,7 @@ func TestAssertFloorMarksLowConfidence(t *testing.T) {
 		t.Errorf("confidence = %v, want 0.3", got)
 	}
 
-	view, err := env.st.EntityView(ctx, graph.EntityKey("person", "Ada"), false)
+	view, err := env.st.EntityView(ctx, graph.EntityKey("Ada"), false)
 	if err != nil {
 		t.Fatalf("EntityView: %v", err)
 	}
@@ -676,7 +676,7 @@ func TestAssertFloorMarksLowConfidence(t *testing.T) {
 			t.Error("low-confidence fact visible in default EntityView")
 		}
 	}
-	view, err = env.st.EntityView(ctx, graph.EntityKey("person", "Ada"), true)
+	view, err = env.st.EntityView(ctx, graph.EntityKey("Ada"), true)
 	if err != nil {
 		t.Fatalf("EntityView(include): %v", err)
 	}
@@ -952,9 +952,9 @@ func TestLabelPresetSurvivesRestart(t *testing.T) {
 	if n := rawCount(t, uri, fmt.Sprintf("MATCH (:Entity)-[r:powers]->(:Entity) WHERE r.doc_id = '%s' RETURN count(r) AS n", res.DocumentID)); n != 1 {
 		t.Errorf("fact edges with preset relation = %d, want 1 (preset must survive restart)", n)
 	}
-	view, err := st.EntityView(ctx, graph.EntityKey("widget", "Ada"), false)
+	view, err := st.EntityView(ctx, graph.EntityKey("Ada"), false)
 	if err != nil {
-		t.Fatalf("EntityView(widget:ada): %v", err)
+		t.Fatalf("EntityView(ada): %v", err)
 	}
 	if view.Type != "widget" {
 		t.Errorf("entity type = %q, want widget (preset label)", view.Type)

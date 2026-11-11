@@ -18,35 +18,72 @@ import (
 )
 
 func TestEntityKeyNormalization(t *testing.T) {
-	cases := []struct{ typ, a, b string }{
-		{"person", "Città", "città"},
-		{"person", "Città", "Citta\u0300"}, // NFC vs NFD
-		{"person", "  New   York  ", "new york"},
-		{"thing", "«Città».", "città"}, // edge punctuation stripped
-		{"person", "ADA  LOVELACE", "ada lovelace"},
+	same := [][2]string{
+		{"Città", "città"}, {"Città", "Città"}, {"  New   York  ", "new york"},
+		{"«Città».", "città"}, {"`recsvc`", "recsvc"}, {"**PostgreSQL 18**", "postgresql 18"},
+		{"shopify-scraper's", "shopify-scraper"}, {"Shopify’s", "shopify"}, {"`shopify-scraper`", "shopify-scraper"},
 	}
-	for _, c := range cases {
-		ka := graph.EntityKey(c.typ, c.a)
-		kb := graph.EntityKey(c.typ, c.b)
-		if ka != kb {
-			t.Errorf("EntityKey(%s, %q) = %q, EntityKey(%s, %q) = %q; want equal", c.typ, c.a, ka, c.typ, c.b, kb)
+	for _, c := range same {
+		if graph.EntityKey(c[0]) != graph.EntityKey(c[1]) {
+			t.Errorf("EntityKey(%q) != EntityKey(%q)", c[0], c[1])
 		}
 	}
-	if got := graph.EntityKey("person", "Città"); got != "person:città" {
-		t.Errorf("EntityKey(person, Città) = %q, want person:città", got)
+	if graph.EntityKey("C++") != "c++" || graph.EntityKey("C++") == graph.EntityKey("C") {
+		t.Error("edge symbols are part of the surface form")
 	}
-	if graph.EntityKey("person", "paris") == graph.EntityKey("place", "paris") {
-		t.Error("type must discriminate keys")
+	if graph.EntityKey("api/mock_merchant.py") != "api/mock_merchant.py" {
+		t.Error("inner punctuation must stay")
 	}
-	// Edge symbols are part of the surface form (C++ is not C).
-	if got := graph.EntityKey("lang", "C++"); got != "lang:c++" {
-		t.Errorf("EntityKey(lang, C++) = %q, want lang:c++", got)
+	if graph.EntityKey("Bob's Burgers") != "bob's burgers" {
+		t.Error("only a trailing possessive is stripped")
 	}
-	if graph.EntityKey("lang", "C++") == graph.EntityKey("lang", "C") {
-		t.Error("edge symbols must not conflate C++ with C")
+	for _, empty := range []string{"``", "**", "'s", " ’s ", "..."} {
+		if graph.EntityKey(empty) != "" {
+			t.Errorf("EntityKey(%q) = %q, want empty", empty, graph.EntityKey(empty))
+		}
 	}
-	id1 := graph.EntityID(graph.EntityKey("person", "Ada"))
-	id2 := graph.EntityID(graph.EntityKey("person", "Ada"))
+}
+
+func TestScopedEntityKey(t *testing.T) {
+	a, b := graph.ScopedEntityKey("doc1", "€500"), graph.ScopedEntityKey("doc2", "€500")
+	if a == b || a == graph.EntityKey("€500") || !strings.HasPrefix(a, "#doc1:") {
+		t.Errorf("scoped keys must differ per document and from unscoped: %q %q", a, b)
+	}
+}
+
+func TestDisplayName(t *testing.T) {
+	cases := map[string]string{"`recsvc`": "recsvc", "**Shopify Product Search**": "Shopify Product Search", "shopify-scraper's": "shopify-scraper", "C++": "C++"}
+	for in, want := range cases {
+		if got := graph.DisplayName(in); got != want {
+			t.Errorf("DisplayName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestEntitySurfaceCleanup(t *testing.T) {
+	cases := []struct{ raw, key, display string }{
+		{"  __`Widget’s`__  ", "widget", "Widget"},
+		{"`'s`", "", ""},
+		{"’s", "", ""},
+		{"Widget's's", "widget's", "Widget's"},
+		{"api/mock_merchant.py", "api/mock_merchant.py", "api/mock_merchant.py"},
+		{"Bob's Burgers", "bob's burgers", "Bob's Burgers"},
+		{"Ｃ＋＋", "c++", "Ｃ＋＋"},
+		{"Straße", "strasse", "Straße"},
+	}
+	for _, c := range cases {
+		if got := graph.NormalizeSurface(c.raw); got != c.key {
+			t.Errorf("NormalizeSurface(%q) = %q, want %q", c.raw, got, c.key)
+		}
+		if got := graph.DisplayName(c.raw); got != c.display {
+			t.Errorf("DisplayName(%q) = %q, want %q", c.raw, got, c.display)
+		}
+	}
+}
+
+func TestEntityID(t *testing.T) {
+	id1 := graph.EntityID(graph.EntityKey("Ada"))
+	id2 := graph.EntityID(graph.EntityKey("Ada"))
 	if id1 != id2 || len(id1) != 32 {
 		t.Errorf("EntityID not deterministic or wrong length: %q vs %q", id1, id2)
 	}
@@ -69,8 +106,8 @@ func newFixture(t *testing.T) entityFixture {
 	headName := "Ada Lovelace " + tag
 	tailName := "algorithm " + tag
 	ents := []graph.EntityUpsert{
-		{Key: graph.EntityKey("person", headName), Name: headName, Type: "person"},
-		{Key: graph.EntityKey("work", tailName), Name: tailName, Type: "work"},
+		{Key: graph.EntityKey(headName), Name: headName, Type: "person"},
+		{Key: graph.EntityKey(tailName), Name: tailName, Type: "work"},
 	}
 	return entityFixture{
 		ents: ents,
@@ -152,7 +189,7 @@ func TestReupsertChunkReplacesItsFactsOnly(t *testing.T) {
 	}
 	tag := strconv.FormatInt(time.Now().UnixNano(), 36)
 	parisFact := graph.FactUpsert{
-		HeadKey: graph.EntityKey("place", "Paris "+tag), TailKey: graph.EntityKey("thing", "notebook "+tag),
+		HeadKey: graph.EntityKey("Paris " + tag), TailKey: graph.EntityKey("notebook " + tag),
 		Rel: "in", Confidence: 0.8,
 		HeadMention: graph.Span{Start: 0, End: 5, Text: "notes"},
 		TailMention: graph.Span{Start: 6, End: 14, Text: "notebook"},
@@ -278,9 +315,9 @@ func TestEntityViewGroupsFactsWithExcerpt(t *testing.T) {
 	rootName := "Ada Lovelace " + tag
 	workName := "algorithm " + tag
 	placeName := "Paris " + tag
-	root := graph.EntityKey("person", rootName)
-	other := graph.EntityKey("work", workName)
-	paris := graph.EntityKey("place", placeName)
+	root := graph.EntityKey(rootName)
+	other := graph.EntityKey(workName)
+	paris := graph.EntityKey(placeName)
 	ents := []graph.EntityUpsert{
 		{Key: root, Name: rootName, Type: "person"},
 		{Key: other, Name: workName, Type: "work"},
@@ -444,9 +481,9 @@ func TestReupsertDroppedEntityRefreshesMentionCount(t *testing.T) {
 	}
 
 	tag := strconv.FormatInt(time.Now().UnixNano(), 36)
-	e := graph.EntityKey("person", "E "+tag)
-	x := graph.EntityKey("work", "X "+tag)
-	y := graph.EntityKey("work", "Y "+tag)
+	e := graph.EntityKey("E " + tag)
+	x := graph.EntityKey("X " + tag)
+	y := graph.EntityKey("Y " + tag)
 	ents := []graph.EntityUpsert{
 		{Key: e, Name: "E " + tag, Type: "person"},
 		{Key: x, Name: "X " + tag, Type: "work"},
@@ -464,8 +501,8 @@ func TestReupsertDroppedEntityRefreshesMentionCount(t *testing.T) {
 	}
 
 	// Re-extract c0 with unrelated entities: E and X lose their c0 mentions.
-	p := graph.EntityKey("thing", "P "+tag)
-	q := graph.EntityKey("thing", "Q "+tag)
+	p := graph.EntityKey("P " + tag)
+	q := graph.EntityKey("Q " + tag)
 	newEnts := []graph.EntityUpsert{
 		{Key: p, Name: "P " + tag, Type: "thing"},
 		{Key: q, Name: "Q " + tag, Type: "thing"},
@@ -522,7 +559,7 @@ func TestUpsertExtractionRejectsInvalidFacts(t *testing.T) {
 		{"empty head key", func(f graph.FactUpsert) graph.FactUpsert { f.HeadKey = ""; return f }},
 		{"empty tail key", func(f graph.FactUpsert) graph.FactUpsert { f.TailKey = ""; return f }},
 		{"endpoint not among this chunk's entities", func(f graph.FactUpsert) graph.FactUpsert {
-			f.TailKey = graph.EntityKey("work", "never-upserted")
+			f.TailKey = graph.EntityKey("never-upserted")
 			return f
 		}},
 	}
@@ -553,8 +590,8 @@ func TestEntityAliasesUnionAcrossChunks(t *testing.T) {
 	}
 
 	tag := strconv.FormatInt(time.Now().UnixNano(), 36)
-	e := graph.EntityKey("person", "Alias "+tag)
-	x := graph.EntityKey("work", "Works "+tag)
+	e := graph.EntityKey("Alias " + tag)
+	x := graph.EntityKey("Works " + tag)
 	mkEnts := func(aliases ...string) []graph.EntityUpsert {
 		return []graph.EntityUpsert{
 			{Key: e, Name: "Alias " + tag, Type: "person", Aliases: aliases},
@@ -596,7 +633,7 @@ func TestEntityAliasesUnionWithinOneCall(t *testing.T) {
 	ctx := context.Background()
 	docID, chunkID := entitiesTestDoc(t, st, "text")
 	tag := strconv.FormatInt(time.Now().UnixNano(), 36)
-	k := graph.EntityKey("person", "Dup "+tag)
+	k := graph.EntityKey("Dup " + tag)
 	ents := []graph.EntityUpsert{
 		{Key: k, Name: "Dup " + tag, Type: "person", Aliases: []string{"A"}},
 		{Key: k, Name: "Dup " + tag, Type: "person", Aliases: []string{"B"}},
@@ -652,10 +689,10 @@ func TestEntityByNameIsExactNotRanked(t *testing.T) {
 	docID, chunkID := entitiesTestDoc(t, st, "placeholder "+name)
 
 	// The exact target plus more than ten fuzzy decoys containing it.
-	ents := []graph.EntityUpsert{{Key: graph.EntityKey("thing", name), Name: name, Type: "thing"}}
+	ents := []graph.EntityUpsert{{Key: graph.EntityKey(name), Name: name, Type: "thing"}}
 	for i := 0; i < 12; i++ {
 		n := fmt.Sprintf("%s decoy %02d", name, i)
-		ents = append(ents, graph.EntityUpsert{Key: graph.EntityKey("thing", n), Name: n, Type: "thing"})
+		ents = append(ents, graph.EntityUpsert{Key: graph.EntityKey(n), Name: n, Type: "thing"})
 	}
 	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", ents, nil); err != nil {
 		t.Fatalf("UpsertExtraction: %v", err)

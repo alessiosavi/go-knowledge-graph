@@ -307,7 +307,7 @@ func TestSearchEndpoint(t *testing.T) {
 	if err := st.PutChunks(ctx, res.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
 	}
-	key := graph.EntityKey("technology", tok)
+	key := graph.EntityKey(tok)
 	if err := st.UpsertExtraction(ctx, res.ID, res.ID+"-c0", "mock:1",
 		[]graph.EntityUpsert{{Key: key, Name: tok, Type: "technology"}}, nil); err != nil {
 		t.Fatalf("UpsertExtraction: %v", err)
@@ -347,9 +347,9 @@ func TestEntityEndpointExcludesLowConfidenceByDefault(t *testing.T) {
 		t.Fatalf("UpsertDocument: %v", err)
 	}
 	tok := apiToken(t)
-	a := graph.EntityKey("person", "Ada "+tok)
-	b := graph.EntityKey("organization", "Org "+tok)
-	c := graph.EntityKey("technology", "Tech "+tok)
+	a := graph.EntityKey("Ada " + tok)
+	b := graph.EntityKey("Org " + tok)
+	c := graph.EntityKey("Tech " + tok)
 	text := "Ada " + tok + " works at Org " + tok + " and uses Tech " + tok + "."
 	if err := st.PutChunks(ctx, res.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
@@ -420,8 +420,8 @@ func TestTraverseEndpointReturnsSubgraph(t *testing.T) {
 		t.Fatalf("UpsertDocument: %v", err)
 	}
 	tok := apiToken(t)
-	a := graph.EntityKey("person", "Ada "+tok)
-	b := graph.EntityKey("organization", "Org "+tok)
+	a := graph.EntityKey("Ada " + tok)
+	b := graph.EntityKey("Org " + tok)
 	text := "Ada " + tok + " wrote at Org " + tok + "."
 	if err := st.PutChunks(ctx, res.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
@@ -748,7 +748,7 @@ func TestSearchEndpointUsesEmbedderWhenEnabled(t *testing.T) {
 	if err := st.PutChunks(ctx, res.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
 	}
-	key := graph.EntityKey("technology", tok)
+	key := graph.EntityKey(tok)
 	if err := st.UpsertExtraction(ctx, res.ID, res.ID+"-c0", "mock:1",
 		[]graph.EntityUpsert{{Key: key, Name: tok, Type: "technology"}}, nil); err != nil {
 		t.Fatalf("UpsertExtraction: %v", err)

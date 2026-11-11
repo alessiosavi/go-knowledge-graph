@@ -40,6 +40,19 @@ func TestScoreStrictVsLenient(t *testing.T) {
 	}
 }
 
+func TestLenientKeys(t *testing.T) {
+	if got := LenientEntityKey("product", "`Widget’s`"); got != "product:widget" {
+		t.Errorf("LenientEntityKey = %q, want product:widget", got)
+	}
+	m := Score([]string{LenientEntityKey("product", "Widget")}, []string{LenientEntityKey("organization", "Widget")})
+	if m.F1 != 0 {
+		t.Errorf("different labels scored %+v, want no match", m)
+	}
+	if got := LenientRelationKey("Works At", "`Ada`", "Lab’s"); got != "works_at|ada|lab" {
+		t.Errorf("LenientRelationKey = %q, want works_at|ada|lab", got)
+	}
+}
+
 func TestJudgeScoredPrecisionCounts(t *testing.T) {
 	verdicts := []ingest.Verdict{
 		{Status: "confirmed"}, {Status: "confirmed"}, {Status: "confirmed"},

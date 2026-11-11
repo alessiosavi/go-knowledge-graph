@@ -107,7 +107,7 @@ func TestEmbeddingBatchesAndDedupesNames(t *testing.T) {
 	ctx := context.Background()
 	ids := make([]string, 0, len(seen))
 	for name := range seen {
-		ids = append(ids, "'"+graph.EntityID(graph.EntityKey("person", name))+"'")
+		ids = append(ids, "'"+graph.EntityID(graph.EntityKey(name))+"'")
 	}
 	qr, err := env.st.RunReadQuery(ctx,
 		fmt.Sprintf("MATCH (e:Entity) WHERE e.id IN [%s] RETURN count(e) AS total, count(e.embedding) AS embedded", strings.Join(ids, ", ")), nil, 0)
@@ -139,7 +139,7 @@ func TestEmbeddingFailureDoesNotFailIngest(t *testing.T) {
 	if doc.Status != graph.StatusDone {
 		t.Errorf("status = %s, want done despite the embedder failure", doc.Status)
 	}
-	key := graph.EntityKey("person", first)
+	key := graph.EntityKey(first)
 	view, err := env.st.EntityView(ctx, key, false)
 	if err != nil {
 		t.Fatalf("EntityView: %v", err)
@@ -180,7 +180,7 @@ func TestEmbeddingSetsEntityVectors(t *testing.T) {
 	if doc.Status != graph.StatusDone {
 		t.Fatalf("status = %s, want done", doc.Status)
 	}
-	key := graph.EntityKey("person", first)
+	key := graph.EntityKey(first)
 	ids, err := env.st.EntityVectorSearch(ctx, vec, 10)
 	if err != nil {
 		t.Fatalf("EntityVectorSearch: %v", err)

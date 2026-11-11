@@ -100,9 +100,9 @@ func StrictEntityKey(label, text string) string {
 	return label + "|" + text
 }
 
-// LenientEntityKey is the normalized-match identity.
+// LenientEntityKey is the typed, normalized-match identity.
 func LenientEntityKey(label, text string) string {
-	return graph.EntityKey(label, text)
+	return label + ":" + graph.NormalizeSurface(text)
 }
 
 // StrictRelationKey is the exact-match relation identity.
@@ -112,7 +112,7 @@ func StrictRelationKey(label, head, tail string) string {
 
 // LenientRelationKey is the normalized-match relation identity.
 func LenientRelationKey(label, head, tail string) string {
-	return graph.SanitizeRel(label) + "|" + graph.EntityKey("", head) + "|" + graph.EntityKey("", tail)
+	return graph.SanitizeRel(label) + "|" + graph.EntityKey(head) + "|" + graph.EntityKey(tail)
 }
 
 // Score computes set-matching P/R/F1 between expected and extracted keys.

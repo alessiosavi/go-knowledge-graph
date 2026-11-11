@@ -106,7 +106,7 @@ func TestSupersedeKeepsEntitiesStillMentionedElsewhere(t *testing.T) {
 
 	// d1 has shared + its own tail; d2 has shared + another tail.
 	for i, res := range []graph.UpsertResult{d1, d2} {
-		tail := graph.EntityKey("work", fmt.Sprintf("work %d %s", i, uniqueSource(t)))
+		tail := graph.EntityKey(fmt.Sprintf("work %d %s", i, uniqueSource(t)))
 		ents := []graph.EntityUpsert{shared, {Key: tail, Name: tail, Type: "work"}}
 		fact := graph.FactUpsert{
 			HeadKey: shared.Key, TailKey: tail, Rel: "wrote", Confidence: 0.9,
@@ -317,7 +317,7 @@ func TestUnfactedEntityLingersUntilGlobalGC(t *testing.T) {
 	old, newer, _, _ := supersedePair(t, st)
 
 	tag := fmt.Sprintf("unfacted-%d", len(uniqueSource(t)))
-	key := graph.EntityKey("thing", tag)
+	key := graph.EntityKey(tag)
 	if err := st.UpsertExtraction(ctx, old.ID, old.ID+"-c0", "mock:1",
 		[]graph.EntityUpsert{{Key: key, Name: tag, Type: "thing"}}, nil); err != nil {
 		t.Fatalf("UpsertExtraction (no facts): %v", err)

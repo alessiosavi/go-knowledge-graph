@@ -124,7 +124,7 @@ Example prompts:
 - "Ingest <url> and tell me when it is done."
 - "Search for 'Widget Pro' and summarise the top chunks with their sources."
 - "Show everything the graph knows about Ada Lovelace, with citations."
-- "Traverse from `person:ada lovelace` two hops and list the evidence."
+- "Traverse from `ada lovelace` two hops and list the evidence."
 
 ## 4. Ask the graph (in-UI agent)
 

@@ -61,7 +61,7 @@ func TestSetEntityEmbeddingAndVectorSearch(t *testing.T) {
 	if err := st.PutChunks(ctx, docRes.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
 	}
-	key := graph.EntityKey("thing", name)
+	key := graph.EntityKey(name)
 	if err := st.UpsertExtraction(ctx, docRes.ID, docRes.ID+"-c0", "mock:1",
 		[]graph.EntityUpsert{{Key: key, Name: name, Type: "thing"}}, nil); err != nil {
 		t.Fatalf("UpsertExtraction: %v", err)
@@ -103,8 +103,8 @@ func TestEntityDeleteClearsEmbedding(t *testing.T) {
 	if err := st.PutChunks(ctx, docRes.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
 	}
-	key := graph.EntityKey("thing", name)
-	otherKey := graph.EntityKey("thing", other)
+	key := graph.EntityKey(name)
+	otherKey := graph.EntityKey(other)
 	// A fact creates the MENTIONS edges that make the entities part of the
 	// document's subtree (a factless entity only global GC can reach).
 	if err := st.UpsertExtraction(ctx, docRes.ID, docRes.ID+"-c0", "mock:1",
@@ -162,7 +162,7 @@ func TestSetEntityEmbeddingsBatch(t *testing.T) {
 	names := []string{"batchA" + tag, "batchB" + tag, "batchC" + tag}
 	ents := make([]graph.EntityUpsert, 0, len(names))
 	for _, name := range names {
-		ents = append(ents, graph.EntityUpsert{Key: graph.EntityKey("thing", name), Name: name, Type: "thing"})
+		ents = append(ents, graph.EntityUpsert{Key: graph.EntityKey(name), Name: name, Type: "thing"})
 	}
 	if err := st.UpsertExtraction(ctx, docRes.ID, docRes.ID+"-c0", "mock:1", ents, nil); err != nil {
 		t.Fatalf("UpsertExtraction: %v", err)
@@ -171,7 +171,7 @@ func TestSetEntityEmbeddingsBatch(t *testing.T) {
 	ids := make([]string, 0, len(names))
 	vecs := make([][]float64, 0, len(names))
 	for _, name := range names {
-		ids = append(ids, graph.EntityID(graph.EntityKey("thing", name)))
+		ids = append(ids, graph.EntityID(graph.EntityKey(name)))
 		vecs = append(vecs, graphtest.Vector(name, testEmbeddingDim))
 	}
 	missing, err := st.SetEntityEmbeddings(ctx, ids, vecs)
