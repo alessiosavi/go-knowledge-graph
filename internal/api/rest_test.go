@@ -403,6 +403,66 @@ func TestEntityEndpointExcludesLowConfidenceByDefault(t *testing.T) {
 	}
 }
 
+func TestEntityTogetherJSON(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	doc, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: apiSource(t), Hash: "hash-api-together"})
+	if err != nil {
+		t.Fatalf("UpsertDocument: %v", err)
+	}
+	tok := apiToken(t)
+	x, a := graph.EntityKey("X "+tok), graph.EntityKey("A "+tok)
+	ents := []graph.EntityUpsert{
+		{Key: x, Name: "X " + tok, Type: "person", Mentions: []graph.MentionSpan{{Start: 0, End: 1, Type: "person"}}},
+		{Key: a, Name: "A " + tok, Type: "technology", Mentions: []graph.MentionSpan{{Start: 2, End: 3, Type: "technology"}}},
+	}
+	for i := 0; i < 3; i++ {
+		if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: i, Text: "X A", End: 3}}); err != nil {
+			t.Fatalf("PutChunks: %v", err)
+		}
+		if err := st.UpsertExtraction(ctx, doc.ID, fmt.Sprintf("%s-c%d", doc.ID, i), "mock:1", ents, nil); err != nil {
+			t.Fatalf("UpsertExtraction: %v", err)
+		}
+	}
+	h := apiHandler(t, config.Config{}, st, nil)
+	rr := do(t, h, http.MethodGet, "/v1/entities/"+graph.EntityID(x), nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d, body %s", rr.Code, rr.Body.String())
+	}
+	var out struct {
+		Together []struct {
+			ID           string `json:"id"`
+			Key          string `json:"key"`
+			Name         string `json:"name"`
+			Type         string `json:"type"`
+			SharedChunks int    `json:"shared_chunks"`
+		} `json:"together"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode %s: %v", rr.Body.String(), err)
+	}
+	if len(out.Together) != 1 {
+		t.Fatalf("together = %+v, want one co-mention", out.Together)
+	}
+	got := out.Together[0]
+	if got.ID != graph.EntityID(a) || got.Key != a || got.Name != "A "+tok || got.Type != "technology" || got.SharedChunks != 3 {
+		t.Errorf("together[0] = %+v, want A's reference and 3 shared chunks", got)
+	}
+	// Re-extract without A so the response has an empty co-mention list.
+	for i := 0; i < 3; i++ {
+		if err := st.UpsertExtraction(ctx, doc.ID, fmt.Sprintf("%s-c%d", doc.ID, i), "mock:1", ents[:1], nil); err != nil {
+			t.Fatalf("UpsertExtraction without A: %v", err)
+		}
+	}
+	rr = do(t, h, http.MethodGet, "/v1/entities/"+graph.EntityID(x), nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("empty together: code = %d, body %s", rr.Code, rr.Body.String())
+	}
+	if raw := decode[map[string]json.RawMessage](t, rr); string(raw["together"]) != "[]" {
+		t.Errorf("empty together = %s, want []", raw["together"])
+	}
+}
+
 func hasRel(view entityDTO, rel string) bool {
 	for _, f := range view.Facts {
 		if f.Rel == rel {

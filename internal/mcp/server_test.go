@@ -326,6 +326,19 @@ func TestGetEntityLowConfidenceGating(t *testing.T) {
 	if hasRel(out, "uses") {
 		t.Errorf("facts = %+v, want the low-confidence uses fact excluded by default", out.Facts)
 	}
+	if len(out.Together) != 2 {
+		t.Fatalf("together = %+v, want Org and Tech regardless of fact confidence", out.Together)
+	}
+	wantTogether := []graph.EntityRef{
+		{ID: graph.EntityID(b), Key: b, Name: "Org " + tok, Type: "organization"},
+		{ID: graph.EntityID(c), Key: c, Name: "Tech " + tok, Type: "technology"},
+	}
+	for i, want := range wantTogether {
+		got := out.Together[i]
+		if got.ID != want.ID || got.Key != want.Key || got.Name != want.Name || got.Type != want.Type || got.SharedChunks != 1 {
+			t.Errorf("together[%d] = %+v, want %+v in one shared chunk", i, got, want)
+		}
+	}
 
 	res = callTool(t, cs, "get_entity", map[string]any{"id": graph.EntityID(a), "include_low_confidence": true})
 	out = structured[entityOut](t, res)

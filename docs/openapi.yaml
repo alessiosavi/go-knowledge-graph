@@ -583,6 +583,16 @@ components:
         key: { type: string }
         name: { type: string }
         type: { type: string }
+    CoMention:
+      allOf:
+        - $ref: "#/components/schemas/EntityRef"
+        - type: object
+          required: [shared_chunks]
+          properties:
+            shared_chunks:
+              type: integer
+              minimum: 1
+              description: number of distinct chunks mentioning both entities
     Fact:
       type: object
       required:
@@ -609,7 +619,7 @@ components:
         excerpt: { type: string }
     Entity:
       type: object
-      required: [id, key, name, type, aliases, mention_count, facts]
+      required: [id, key, name, type, aliases, mention_count, facts, together]
       properties:
         id: { type: string }
         key: { type: string }
@@ -623,6 +633,12 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Fact"
+        together:
+          type: array
+          maxItems: 10
+          description: co-mentioned entities, ordered by shared chunks descending, mention count descending, then key ascending
+          items:
+            $ref: "#/components/schemas/CoMention"
     TraverseRequest:
       type: object
       required: [entity]

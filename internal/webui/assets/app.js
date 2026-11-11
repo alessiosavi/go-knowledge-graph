@@ -179,11 +179,32 @@
     title.append(el("strong", null, view.name || view.id));
     if (view.type) title.append(el("span", "badge", view.type));
     box.append(title);
-    if (view.key) box.append(el("p", "muted", view.key));
+    if (view.key && !view.key.startsWith("#")) {
+      box.append(el("p", "muted", view.key));
+    }
     if (view.aliases && view.aliases.length) {
       box.append(el("p", "muted", "aliases: " + view.aliases.join(", ")));
     }
     box.append(el("p", "muted", (view.mention_count || 0) + " mentions"));
+    if (view.together && view.together.length) {
+      const heading = el("p");
+      heading.append(el("strong", null, "Appears with"));
+      box.append(heading);
+      for (const other of view.together) {
+        const row = el("p");
+        const link = el("a", "node-link", other.name || other.id);
+        link.href = "#";
+        link.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          loadEntity(other.id).catch(() => {});
+        });
+        row.append(link, document.createTextNode(" "));
+        if (other.type) row.append(el("span", "badge", other.type));
+        const count = other.shared_chunks;
+        row.append(el("span", "muted", count + (count === 1 ? " shared chunk" : " shared chunks")));
+        box.append(row);
+      }
+    }
     renderFacts(view.facts || []);
     await renderNeighborhood(view);
   }

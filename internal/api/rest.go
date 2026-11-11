@@ -80,6 +80,11 @@ type entityRefDTO struct {
 	Type string `json:"type"`
 }
 
+type coMentionDTO struct {
+	entityRefDTO
+	SharedChunks int `json:"shared_chunks"`
+}
+
 type factDTO struct {
 	Rel           string       `json:"rel"`
 	Other         entityRefDTO `json:"other"`
@@ -93,13 +98,14 @@ type factDTO struct {
 }
 
 type entityDTO struct {
-	ID           string    `json:"id"`
-	Key          string    `json:"key"`
-	Name         string    `json:"name"`
-	Type         string    `json:"type"`
-	Aliases      []string  `json:"aliases"`
-	MentionCount int       `json:"mention_count"`
-	Facts        []factDTO `json:"facts"`
+	ID           string         `json:"id"`
+	Key          string         `json:"key"`
+	Name         string         `json:"name"`
+	Type         string         `json:"type"`
+	Aliases      []string       `json:"aliases"`
+	MentionCount int            `json:"mention_count"`
+	Facts        []factDTO      `json:"facts"`
+	Together     []coMentionDTO `json:"together"`
 }
 
 type edgeDTO struct {
@@ -544,6 +550,13 @@ func toEntityDTO(v graph.EntityView) entityDTO {
 			Excerpt:       f.Excerpt,
 		})
 	}
+	together := make([]coMentionDTO, 0, len(v.Together))
+	for _, other := range v.Together {
+		together = append(together, coMentionDTO{
+			entityRefDTO: entityRefDTO{ID: other.ID, Key: other.Key, Name: other.Name, Type: other.Type},
+			SharedChunks: other.SharedChunks,
+		})
+	}
 	return entityDTO{
 		ID:           v.ID,
 		Key:          v.Key,
@@ -552,6 +565,7 @@ func toEntityDTO(v graph.EntityView) entityDTO {
 		Aliases:      aliases,
 		MentionCount: v.MentionCount,
 		Facts:        facts,
+		Together:     together,
 	}
 }
 

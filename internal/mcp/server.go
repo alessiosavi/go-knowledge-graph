@@ -160,6 +160,11 @@ type entityRefOut struct {
 	Type string `json:"type"`
 }
 
+type coMentionOut struct {
+	entityRefOut
+	SharedChunks int `json:"shared_chunks"`
+}
+
 type factOut struct {
 	Rel           string       `json:"rel"`
 	Other         entityRefOut `json:"other"`
@@ -173,13 +178,14 @@ type factOut struct {
 }
 
 type entityOut struct {
-	ID           string    `json:"id"`
-	Key          string    `json:"key"`
-	Name         string    `json:"name"`
-	Type         string    `json:"type"`
-	Aliases      []string  `json:"aliases"`
-	MentionCount int       `json:"mention_count"`
-	Facts        []factOut `json:"facts"`
+	ID           string         `json:"id"`
+	Key          string         `json:"key"`
+	Name         string         `json:"name"`
+	Type         string         `json:"type"`
+	Aliases      []string       `json:"aliases"`
+	MentionCount int            `json:"mention_count"`
+	Facts        []factOut      `json:"facts"`
+	Together     []coMentionOut `json:"together"`
 }
 
 type edgeOut struct {
@@ -526,6 +532,13 @@ func toEntityOut(view graph.EntityView) entityOut {
 			Excerpt:       f.Excerpt,
 		})
 	}
+	together := make([]coMentionOut, 0, len(view.Together))
+	for _, other := range view.Together {
+		together = append(together, coMentionOut{
+			entityRefOut: toEntityRefOut(other.EntityRef),
+			SharedChunks: other.SharedChunks,
+		})
+	}
 	return entityOut{
 		ID:           view.ID,
 		Key:          view.Key,
@@ -534,5 +547,6 @@ func toEntityOut(view graph.EntityView) entityOut {
 		Aliases:      aliases,
 		MentionCount: view.MentionCount,
 		Facts:        facts,
+		Together:     together,
 	}
 }
