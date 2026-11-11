@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 // QueryError marks a query-level failure — bad syntax, unknown function,

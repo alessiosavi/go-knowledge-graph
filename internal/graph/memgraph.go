@@ -7,14 +7,15 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
+	driverconfig "github.com/neo4j/neo4j-go-driver/v6/neo4j/config"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 )
 
 // Store is the Memgraph-backed graph store.
 type Store struct {
-	driver neo4j.DriverWithContext
+	driver neo4j.Driver
 	// mu serializes document upserts and extraction merges: their
 	// pre-read/write pairs cannot share one transaction, and concurrent
 	// transactions that MERGE the same entity key abort at commit with a
@@ -31,7 +32,11 @@ func Open(ctx context.Context, cfg config.Config) (*Store, error) {
 	if cfg.Memgraph.User != "" || cfg.Memgraph.Password != "" {
 		auth = neo4j.BasicAuth(cfg.Memgraph.User, cfg.Memgraph.Password, "")
 	}
-	drv, err := neo4j.NewDriverWithContext(cfg.Memgraph.URI, auth)
+	drv, err := neo4j.NewDriver(cfg.Memgraph.URI, auth, func(c *driverconfig.Config) {
+		// v5 never retried Session.Run. Keep that policy for reads and DDL;
+		// managed ExecuteWrite transactions retain the driver retry defaults.
+		c.DisableAutoCommitRetries = true
+	})
 	if err != nil {
 		return nil, fmt.Errorf("graph: open %s: %w", cfg.Memgraph.URI, err)
 	}

@@ -5,12 +5,12 @@ import (
 	"strings"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
-	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/text"
-	"github.com/yuin/goldmark/util"
+	"github.com/yuin/goldmark/v2/ast"
+	"github.com/yuin/goldmark/v2/extension"
+	"github.com/yuin/goldmark/v2/parser"
+	"github.com/yuin/goldmark/v2/renderer/html"
+	"github.com/yuin/goldmark/v2/text"
+	"github.com/yuin/goldmark/v2/util"
 )
 
 // foldChunks reconstructs a document's cleaned text from its stored chunks
@@ -47,12 +47,15 @@ func foldChunks(chunks []graph.Chunk) string {
 // image destinations so an ingested document cannot smuggle unsafe schemes
 // or remote fetches into a reader's browser.
 func markdownHTML(md string) (string, error) {
-	converter := goldmark.New(
-		goldmark.WithExtensions(extension.Table, extension.Strikethrough, extension.TaskList),
-		goldmark.WithParserOptions(parser.WithASTTransformers(util.Prioritized(destinationSanitizer{}, 100))),
+	source := []byte(md)
+	p := parser.New(
+		parser.WithExtensions(extension.NewTableParser(), extension.NewStrikethroughParser(), extension.NewTaskListItemParser()),
+		parser.WithASTTransformers(util.Prioritized[parser.ASTTransformer](destinationSanitizer{}, 100)),
 	)
+	r := html.New(html.WithExtensions(extension.NewTableHTMLRenderer(), extension.NewStrikethroughHTMLRenderer(), extension.NewTaskListItemHTMLRenderer()))
+	doc := p.Parse(source)
 	var buf bytes.Buffer
-	if err := converter.Convert([]byte(md), &buf); err != nil {
+	if err := r.Render(&buf, source, doc); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
@@ -65,35 +68,30 @@ func markdownHTML(md string) (string, error) {
 type destinationSanitizer struct{}
 
 // Transform implements parser.ASTTransformer.
-func (destinationSanitizer) Transform(doc *ast.Document, _ text.Reader, _ parser.Context) {
+func (destinationSanitizer) Transform(doc *ast.Document, reader text.Reader, _ parser.Context) {
 	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
 		}
 		switch v := n.(type) {
 		case *ast.Link:
-			if !linkAllowed(v.Destination) {
-				v.Destination = []byte("#")
+			if !linkAllowed(v.Destination.Bytes(reader.Source())) {
+				v.Destination = text.NewSingleLineValueFromString("#", nil)
 			}
 		case *ast.Image:
-			if !imageAllowed(v.Destination) {
-				v.Destination = nil
+			if !imageAllowed(v.Destination.Bytes(reader.Source())) {
+				v.Destination = text.NewSingleLineValueFromString("", nil)
 			}
 		}
 		return ast.WalkContinue, nil
 	})
 }
 
-// resolveDestination returns the destination as the renderer will emit it:
-// backslash escapes and HTML entity references resolved. goldmark's
-// URLEscape applies exactly these three steps before writing the href/src,
-// so the policy checks must run on the resolved form — checking raw bytes
-// lets "tel&#58;…" or escaped slash forms slip through.
+// resolveDestination decodes backslash escapes and HTML references once,
+// matching the v2 destination decoder used by the HTML renderer. Checking
+// the raw bytes would let escaped schemes or slashes bypass the policy.
 func resolveDestination(dest []byte) []byte {
-	b := util.UnescapePunctuations(dest)
-	b = util.ResolveNumericReferences(b)
-	b = util.ResolveEntityNames(b)
-	return b
+	return text.NewDecoder().Decode(dest)
 }
 
 // destScheme returns the lowercased URL scheme of dest, or "" when dest is

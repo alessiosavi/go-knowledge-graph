@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 // entityVectorIndexName is the vector index over :Entity(embedding).
