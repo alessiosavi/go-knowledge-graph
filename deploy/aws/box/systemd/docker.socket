@@ -1,0 +1,15 @@
+# Source: https://raw.githubusercontent.com/moby/moby/docker-v29.9.3/contrib/init/systemd/docker.socket
+# License: Apache-2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+[Unit]
+Description=Docker Socket for the API
+
+[Socket]
+# If /var/run is not implemented as a symlink to /run, you may need to
+# specify ListenStream=/var/run/docker.sock instead.
+ListenStream=/run/docker.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=docker
+
+[Install]
+WantedBy=sockets.target

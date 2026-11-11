@@ -1,0 +1,19 @@
+[Unit]
+Description=gkg cached stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/gkg
+ExecStart=/usr/bin/flock /run/gkg-ops.lock /usr/bin/make -C /opt/gkg up-cached
+TimeoutStartSec=900
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
