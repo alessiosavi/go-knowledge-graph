@@ -3,10 +3,12 @@ package ingest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +64,9 @@ func rebuildPipeline(t *testing.T) (*Pipeline, *rebuildStore) {
 	t.Helper()
 	cfg := config.Config{}
 	cfg.Labels.PresetsDir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(cfg.Labels.PresetsDir, "general.yaml"), []byte("entities:\n  - name: product\nrelations:\n  - name: uses\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	st := &rebuildStore{spoolStore: &spoolStore{docs: map[string]graph.Document{
 		"a": {ID: "a", Status: graph.StatusDone, Labels: "general"},
 		"b": {ID: "b", Status: graph.StatusDone, Labels: "general"},
@@ -159,5 +164,47 @@ func TestRebuildQueueOutlivesRequest(t *testing.T) {
 	}
 	if queuedID(t, p) != "blocker" || queuedID(t, p) != "a" {
 		t.Fatal("request cancellation lost queued document")
+	}
+}
+
+// With labels omitted each document keeps its stored preset, so a preset that
+// was removed or broken since extraction must refuse the request before any
+// reset (Process would otherwise mark the reset document failed).
+func TestRebuildRejectsInvalidStoredPresetFirst(t *testing.T) {
+	for _, stored := range []string{"gone", "bad name"} {
+		for _, id := range []string{"", "b"} {
+			t.Run(stored+"/"+id, func(t *testing.T) {
+				p, st := rebuildPipeline(t)
+				doc := st.docs["b"]
+				doc.Labels = stored
+				st.docs["b"] = doc
+				res, err := p.Rebuild(t.Context(), id, "")
+				if err == nil || !strings.Contains(err.Error(), "document b") || errors.Is(err, ErrStore) {
+					t.Fatalf("Rebuild = %+v, err=%v, want a preset error naming document b", res, err)
+				}
+				if len(st.resetIDs) != 0 || st.gcCalls != 0 || st.docs["a"].Status != graph.StatusDone || st.docs["b"].Status != graph.StatusDone {
+					t.Fatalf("invalid stored preset mutated store: resets=%v gc=%d", st.resetIDs, st.gcCalls)
+				}
+				// An explicit valid preset replaces the stored one, so it may proceed.
+				res, err = p.Rebuild(t.Context(), id, "general")
+				if err != nil || len(res.Queued) == 0 || st.docs["b"].Labels != "general" {
+					t.Fatalf("explicit preset Rebuild = %+v, err=%v, doc b = %+v", res, err, st.docs["b"])
+				}
+			})
+		}
+	}
+}
+
+// A document deleted between the bulk snapshot and its reset is skipped,
+// not reported as a failure that stops the remaining targets.
+func TestRebuildSkipsDocumentDeletedAfterSnapshot(t *testing.T) {
+	p, st := rebuildPipeline(t)
+	st.resetErr = map[string]error{"a": fmt.Errorf("graph: document a: %w", graph.ErrNotFound)}
+	res, err := p.Rebuild(t.Context(), "", "")
+	if err != nil || !slices.Equal(res.Queued, []string{"b"}) || len(res.Busy) != 0 {
+		t.Fatalf("Rebuild = %+v, err=%v, want only b queued", res, err)
+	}
+	if queuedID(t, p) != "b" {
+		t.Fatal("remaining document not queued")
 	}
 }

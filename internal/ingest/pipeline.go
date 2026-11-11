@@ -734,9 +734,10 @@ func (p *Pipeline) embedEntities(ctx context.Context, candidates map[string]stri
 }
 
 // Rebuild resets one done document, or all done documents, for extraction
-// from stored chunks. Validate the preset before looking up or changing any
-// document; busy documents are left untouched. Successfully committed resets
-// are queued even if a later reset or GC fails.
+// from stored chunks. Every preset the targets will be extracted with (the
+// requested one, or each document's stored preset when labels is empty) is
+// validated before any document changes; busy documents are left untouched.
+// Successfully committed resets are queued even if a later reset or GC fails.
 func (p *Pipeline) Rebuild(ctx context.Context, docID, labels string) (res RebuildResult, err error) {
 	res = RebuildResult{Queued: []string{}, Busy: []string{}}
 	if _, _, err := p.labelsFor(labels); err != nil {
@@ -747,6 +748,23 @@ func (p *Pipeline) Rebuild(ctx context.Context, docID, labels string) (res Rebui
 		ids, err = p.store.DoneDocumentIDs(ctx)
 		if err != nil {
 			return res, fmt.Errorf("%w: %w", ErrStore, err)
+		}
+	}
+	if labels == "" {
+		// A kept preset may have been removed or broken since the document
+		// was extracted: refuse up front rather than reset a document that
+		// Process would then mark failed.
+		for _, id := range ids {
+			doc, err := p.store.Document(ctx, id)
+			if err != nil {
+				if docID == "" && errors.Is(err, graph.ErrNotFound) {
+					continue // deleted since the snapshot; the reset skips it
+				}
+				return res, fmt.Errorf("%w: %w", ErrStore, err)
+			}
+			if _, _, err := p.labelsFor(doc.Labels); err != nil {
+				return res, fmt.Errorf("document %s: %w", id, err)
+			}
 		}
 	}
 	defer func() {
@@ -776,6 +794,10 @@ func (p *Pipeline) Rebuild(ctx context.Context, docID, labels string) (res Rebui
 			// the all-done snapshot. It must not stop the remaining targets.
 			if docID == "" && errors.Is(err, graph.ErrNotDone) {
 				res.Busy = append(res.Busy, id)
+				continue
+			}
+			// Deleted since the snapshot: nothing to rebuild.
+			if docID == "" && errors.Is(err, graph.ErrNotFound) {
 				continue
 			}
 			return res, fmt.Errorf("%w: %w", ErrStore, err)

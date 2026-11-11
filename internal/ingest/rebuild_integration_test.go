@@ -61,7 +61,7 @@ func TestRebuildEndToEnd(t *testing.T) {
 	var ids []string
 	before := map[string][]graph.Chunk{}
 	for i, preset := range []string{"", "technology"} {
-		res, err := p.Submit(ctx, Input{Kind: "text", Source: fmt.Sprintf("%s-%d", name, i), Text: fmt.Sprintf("%s uses service%d.", name, i), Labels: preset})
+		res, err := p.Submit(ctx, Input{Kind: "text", Source: fmt.Sprintf("%s-%d", name, i), Text: fmt.Sprintf("%s uses %s-service%d.", name, name, i), Labels: preset})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -106,14 +106,23 @@ func TestRebuildEndToEnd(t *testing.T) {
 	if loads != 2 || mock.Calls() != 4 || judge.calls != 4 {
 		t.Fatalf("rebuild passes: loads=%d extractions=%d judgments=%d", loads, mock.Calls(), judge.calls)
 	}
+	// Every fixture entity key starts with the run's unique name, so the
+	// invariants ignore rows other tests left in a shared database.
+	prefix := map[string]any{"prefix": graph.EntityKey(name)}
+	fixture, err := st.RunReadQuery(ctx, `MATCH (e:Entity) WHERE e.key STARTS WITH $prefix RETURN count(e) AS n`, prefix, 0)
+	if err != nil || len(fixture.Rows) != 1 || fixture.Rows[0]["n"] != int64(3) {
+		t.Fatalf("fixture entities = %+v err=%v, want the shared name and two services", fixture.Rows, err)
+	}
 	for _, query := range []string{
-		`MATCH (e:Entity) OPTIONAL MATCH (:Chunk)-[m:MENTIONS]->(e)
+		`MATCH (e:Entity) WHERE e.key STARTS WITH $prefix
+OPTIONAL MATCH (:Chunk)-[m:MENTIONS]->(e)
 WITH e, count(m) AS n WHERE n = 0 RETURN e.key AS key`,
-		`MATCH (e:Entity) WITH e.key AS key, count(e) AS n WHERE n > 1 RETURN key, n`,
+		`MATCH (e:Entity) WHERE e.key STARTS WITH $prefix
+WITH e.key AS key, count(e) AS n WHERE n > 1 RETURN key, n`,
 	} {
-		rows, err := st.RunReadQuery(ctx, query, nil, 0)
+		rows, err := st.RunReadQuery(ctx, query, prefix, 0)
 		if err != nil || len(rows.Rows) != 0 {
-			t.Errorf("global invariant failed (including any foreign rows): %s: rows=%+v err=%v", query, rows.Rows, err)
+			t.Errorf("fixture invariant failed: %s: rows=%+v err=%v", query, rows.Rows, err)
 		}
 	}
 	shared, err := st.RunReadQuery(ctx, `

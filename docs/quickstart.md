@@ -175,8 +175,9 @@ curl --fail-with-body -sS http://localhost:8080/v1/admin/rebuild \
 
 Omit `document_id` (or use an empty string) for every done document; add
 `"document_id":"<id>"` to rebuild only one. Omit `labels` to keep each
-existing preset, or choose an installed preset. An unknown preset returns
-400 before any document changes; an unknown document returns 404; a selected
+existing preset, or choose an installed preset. An unknown or invalid preset (the requested one, or a
+target's stored preset when `labels` is omitted) returns 400 before any
+document changes; an unknown document returns 404; a selected
 document that is not done returns 409. A 202 reports the queued count and
 busy IDs; poll document status until `done` or `failed` and retry skipped IDs
 when idle. Bulk resets commit per document: a later store error can leave
