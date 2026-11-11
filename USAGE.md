@@ -91,7 +91,8 @@ MATCH (d:Document) RETURN d.source, d.status, d.title ORDER BY d.created_at DESC
 - **stdio**: run `gkg mcp` with `GKG_MEMGRAPH_URI` (+ credentials) in the
   environment — the agent host starts the process.
 - **streamable HTTP**: `POST /mcp` on the `serve` surface; set
-  `GKG_API_KEY` to require `Authorization: Bearer <key>`.
+  `GKG_API_KEY` to require `Authorization: Bearer <key>`. Through the edge,
+  use `https://<host>/mcp` with `Authorization: Basic <base64 of login:password>`.
 
 Example prompts:
 

@@ -1,0 +1,159 @@
+# The image's separate modsecurity.conf.template enables the WAF at http scope.
+# Match only the original path, before nginx normalizes it for the allowlist.
+map $request_uri $edge_encoded_path {
+    default 0;
+    "~*^[^?]*%(2f|2e|5c)" 1;
+}
+# BACKEND is unused. All upstream access is dispatched by this method/path map.
+map "$request_method:$uri" $edge_route {
+    default @edge_not_found;
+    "~^(GET|HEAD):/ui(/.*)?$" @edge_default;
+    "~^(GET|HEAD):/v1/entities/[^/]+$" @edge_default;
+    "~^(GET|HEAD):/v1/documents$" @edge_default;
+    "~^(GET|HEAD|DELETE):/v1/documents/[^/]+$" @edge_default;
+    "~^(GET|HEAD):/v1/documents/[^/]+/(status|content)$" @edge_default;
+    "~^(GET|HEAD):/v1/agent/status$" @edge_default;
+    "~^POST:/v1/(search|traverse)$" @edge_default;
+    "~^POST:/v1/ingest$" @edge_ingest;
+    "~^POST:/v1/agent/ask$" @edge_ask;
+    "~^POST:/v1/agent/ask/stream$" @edge_stream;
+    # Remove this entry to close access for external AI clients.
+    "~^(GET|POST|DELETE):/mcp$" @edge_mcp;
+    "~^(GET|HEAD):/$" @edge_root;
+}
+map $http_sec_fetch_site $edge_foreign_site {
+    default 0;
+    cross-site 1;
+    same-site 1;
+}
+map $http_origin $edge_has_origin {
+    default 1;
+    "" 0;
+}
+map "$http_origin|$scheme://$http_host" $edge_same_origin {
+    default 0;
+    "~^(?<edge_origin>.+)\|\k<edge_origin>$" 1;
+}
+map "$edge_has_origin:$edge_same_origin" $edge_foreign_origin {
+    default 0;
+    "1:0" 1;
+}
+map "$request_method:$edge_foreign_site:$edge_foreign_origin" $edge_csrf {
+    default 0;
+    "~^(POST|DELETE):(1:[01]|[01]:1)$" 1;
+}
+map "${EDGE_HTTPS_PORT}" $edge_https_suffix {
+    default ":${EDGE_HTTPS_PORT}";
+    "443" "";
+}
+limit_req_zone $binary_remote_addr zone=edge:10m rate=20r/s;
+
+server {
+    listen 8080;
+    server_name ${SERVER_NAME};
+    absolute_redirect off;
+    server_tokens off;
+    if ($edge_encoded_path) { return 400; }
+    location ^~ /.well-known/acme-challenge/ {
+        auth_basic off;
+        root /var/www/acme;
+        limit_except GET { deny all; }
+    }
+    location / { return 301 https://${SERVER_NAME}$edge_https_suffix$request_uri; }
+}
+
+server {
+    listen 8443 ssl;
+    http2 on;
+    server_name ${SERVER_NAME};
+    absolute_redirect off;
+    server_tokens off;
+    if ($edge_encoded_path) { return 400; }
+    ssl_certificate /etc/nginx/edge-certs/current.pem;
+    ssl_certificate_key /etc/nginx/edge-certs/current.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    add_header Strict-Transport-Security "max-age=${EDGE_HSTS_MAX_AGE}" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+    add_header X-Frame-Options DENY always;
+    add_header Content-Security-Policy "frame-ancestors 'none'" always;
+
+    auth_basic "gkg";
+    auth_basic_user_file /etc/nginx/edge-auth/htpasswd;
+    limit_req zone=edge burst=80 nodelay;
+    limit_req_status 429;
+    if ($edge_csrf) { return 403; }
+    resolver 127.0.0.11 valid=1s ipv6=off;
+    set $gkg_upstream http://gkg:8080;
+    # Inherited by every named proxy group. Client Authorization is replaced.
+    proxy_set_header Authorization "Bearer ${GKG_API_KEY}";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Connection "";
+    proxy_http_version 1.1;
+    proxy_read_timeout 60s;
+    client_max_body_size 1m;
+    root /var/www/acme/.edge-empty;
+
+    location = /healthz {
+        auth_basic off;
+        access_log off;
+        if ($request_method !~ ^(GET|HEAD)$) { return 405; }
+        return 200 "ok\n";
+    }
+    # try_files runs after access/auth; even unlisted paths first require login.
+    # The initial locations set caps before nginx checks Content-Length.
+    location / { try_files /__edge_missing $edge_route; }
+    location = /v1/ingest {
+        # gkg's 20 MiB cap includes multipart form overhead.
+        client_max_body_size 21037056;
+        try_files /__edge_missing $edge_route;
+    }
+    location = /mcp {
+        client_max_body_size 4m;
+        try_files /__edge_missing $edge_route;
+    }
+    location @edge_not_found { return 404; }
+    location @edge_root { return 302 /ui/; }
+    location @edge_default {
+        proxy_pass $gkg_upstream;
+    }
+    location @edge_ingest {
+        client_max_body_size 21037056;
+        proxy_read_timeout ${EDGE_INGEST_TIMEOUT_S}s;
+        proxy_pass $gkg_upstream;
+    }
+    location @edge_ask {
+        proxy_read_timeout ${EDGE_ASK_TIMEOUT_S}s;
+        proxy_pass $gkg_upstream;
+    }
+    location @edge_stream {
+        proxy_read_timeout ${EDGE_ASK_TIMEOUT_S}s;
+        proxy_buffering off;
+        # Repeat server headers: nginx add_header inheritance stops here.
+        add_header Strict-Transport-Security "max-age=${EDGE_HSTS_MAX_AGE}" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        add_header X-Frame-Options DENY always;
+        add_header Content-Security-Policy "frame-ancestors 'none'" always;
+        add_header X-Accel-Buffering no always;
+        proxy_pass $gkg_upstream;
+    }
+    location @edge_mcp {
+        client_max_body_size 4m;
+        proxy_read_timeout 3600s;
+        proxy_buffering off;
+        add_header Strict-Transport-Security "max-age=${EDGE_HSTS_MAX_AGE}" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        add_header X-Frame-Options DENY always;
+        add_header Content-Security-Policy "frame-ancestors 'none'" always;
+        add_header X-Accel-Buffering no always;
+        proxy_pass $gkg_upstream;
+    }
+}
+# The pinned image has no main-context include for worker_shutdown_timeout.
+# Stream shutdown across reloads is verified separately before deployment.

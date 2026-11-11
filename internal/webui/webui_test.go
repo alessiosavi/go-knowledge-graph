@@ -4,11 +4,28 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
 )
+
+func TestUIAuthJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		if os.Getenv("GKG_REQUIRE_NODE") == "1" {
+			t.Fatal("node is required by GKG_REQUIRE_NODE=1")
+		}
+		t.Skip("node is not installed")
+	}
+	// Go runs package tests from the package directory, alongside jstest/.
+	cmd := exec.Command(node, "--test", "jstest/")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("UI auth JavaScript tests: %v\n%s", err, out)
+	}
+}
 
 // get performs one GET against the embedded UI handler, as mounted under
 // the /ui/ prefix (internal/api strips the prefix before it gets here).

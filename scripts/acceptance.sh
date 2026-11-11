@@ -102,9 +102,11 @@ if [[ "$MODE" == "compose" ]]; then
 	export DOCLING_PORT="${ACCEPTANCE_DOCLING_PORT:-15001}"
 	command -v docker >/dev/null || fail "docker is required for the compose mode"
 	[[ -f .env ]] || fail "compose mode needs .env (copy .env.example and set the keys)"
+	GKG_API_KEY="${GKG_API_KEY:-$(env_value GKG_API_KEY)}"
+	export GKG_API_KEY="${GKG_API_KEY:-$(openssl rand -hex 32)}"
 	"${COMPOSE[@]}" config -q || fail "docker compose config"
 	ok "compose config"
-	AUTH_KEY="${GKG_API_KEY:-$(env_value GKG_API_KEY)}"
+	AUTH_KEY="$GKG_API_KEY"
 else
 	AUTH_KEY="${GKG_API_KEY:-}"
 fi
@@ -123,7 +125,7 @@ ok "gkg and mcpsmoke built"
 # ---------------------------------------------------------------------------
 step "start the service"
 if [[ "$MODE" == "compose" ]]; then
-	"${COMPOSE[@]}" up -d --build --wait
+	"${COMPOSE[@]}" up -d --build --wait gkg
 	BASE_URL="http://127.0.0.1:${GKG_PORT}"
 	MCP_CMD=("${COMPOSE[@]}" exec -T gkg gkg mcp)
 	PDF_INPUT_URL="${ACCEPTANCE_PDF_URL:-https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf}"

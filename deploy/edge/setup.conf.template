@@ -1,0 +1,17 @@
+# Preserve the pinned image's setup order and plugin activation markers.
+# libmodsecurity 3.0.17 reports the non-file limit as a parse error, which
+# core rule 200002 would otherwise turn into 400. Handle only that size error
+# first; malformed JSON and all other parse errors retain the core 400.
+SecRule REQBODY_ERROR_MSG "@streq Request body excluding files is bigger than the maximum expected." "id:10004,phase:2,t:none,log,deny,status:413,msg:'Request body exceeds non-file limit.'"
+
+Include /etc/modsecurity.d/modsecurity.conf
+Include /etc/modsecurity.d/modsecurity-override.conf
+
+Include /etc/modsecurity.d/owasp-crs/crs-setup.conf
+
+# Include /etc/modsecurity.d/owasp-crs/plugins/*-config.conf
+# Include /etc/modsecurity.d/owasp-crs/plugins/*-before.conf
+
+Include /etc/modsecurity.d/owasp-crs/rules/*.conf
+
+# Include /etc/modsecurity.d/owasp-crs/plugins/*-after.conf

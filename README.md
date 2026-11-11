@@ -48,16 +48,22 @@ for limits and overrides.
 Prerequisites: Docker with Compose ≥ 2.24.4; servers need Engine ≥ 28.
 
 ```sh
-cp .env.example .env    # set MEMGRAPH_PASSWORD; provider keys for agent/embeddings if enabled
+cp .env.example .env    # set MEMGRAPH_PASSWORD and GKG_API_KEY; provider keys for agent/embeddings if enabled
+make passwd LOGIN=alice  # the password people type at the edge (read from a prompt)
 make up
 ```
 
-Open `http://127.0.0.1:8080/ui/` (use `GKG_PORT` if changed).
+Open `https://localhost/ui/` (the edge: nginx + ModSecurity, password,
+self-signed certificate until `make cert`; `EDGE_HTTPS_PORT` if changed). The
+direct loopback port `http://127.0.0.1:8080/ui/` keeps working on the host.
 
 - `make up LIGHT=1` starts Memgraph + gkg with mock extraction and conversion off.
 - `make down` stops the stack and preserves graph data.
 - `make smoke` checks the running project and deletes its temporary document.
 - `make destroy CONFIRM=yes` permanently deletes the graph volume.
+- `make cert` / `make renew` issue and renew the Let's Encrypt certificate
+  on a public box; `make waf-mode MODE=DetectionOnly|On` switches the WAF;
+  `make edge-check` runs the edge acceptance suite on an isolated stack.
 
 Then connect an agent ([docs/agent-setup.md](docs/agent-setup.md)),
 evaluate ([docs/quickstart.md#8-evaluation](docs/quickstart.md)), or run
@@ -92,7 +98,7 @@ product's limits in [docs/known-limitations.md](docs/known-limitations.md).
 Highlights: `GKG_EXTRACTOR_MODE=openai|sidecar|mock`,
 `GKG_JUDGE_MODE=off|low-confidence|sample|all`,
 `GKG_EMBEDDER_ENABLED`, `GKG_EMBEDDER_PROVIDER=openai|furls`,
-`GKG_API_KEY` (optional bearer auth for HTTP), `GKG_LIMITS_CYPHER_ROWS`.
+`GKG_API_KEY` (gkg's bearer; required by the edge, which injects it), `GKG_LIMITS_CYPHER_ROWS`.
 
 ## Development
 

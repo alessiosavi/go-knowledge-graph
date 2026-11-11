@@ -51,14 +51,53 @@ silent fallback. Leave the two URL overrides unset when sharing `.env`
 between Compose and a host-run binary.
 
 **Memory limits:** `deploy/docker-compose.yml` holds each service's
-`mem_limit` and Memgraph's `--memory-limit` (MiB): 2 GiB / 768 MiB / 4.75 GiB /
-6.5 GiB for Memgraph/gkg/sidecar/docling (14 GiB in total), sized from
+`mem_limit` and Memgraph's `--memory-limit` (MiB): 1.3 GiB / 768 MiB / 4.75 GiB /
+6.5 GiB / 704 MiB for Memgraph/gkg/sidecar/docling/edge (14 GiB in total), sized from
 measured peaks under concurrent ingestion, conversion (incl. a 101-page PDF)
 and asks.
 Raise a service's limit there if needed, retain host headroom, keep Memgraph's
 internal budget below its container limit, then run `make up` to apply it.
 `DOCLING_ENG_WORKERS` (default 2) and `DOCLING_NUM_THREADS` (default 4) tune
 conversion concurrency.
+
+### The edge (HTTPS, password, WAF)
+
+`make up` also starts the **edge**: nginx with ModSecurity and the OWASP Core
+Rule Set (paranoia level 1, blocking), the only service published beyond
+loopback (`EDGE_BIND`, default `127.0.0.1`; the EC2 box sets `0.0.0.0`).
+
+- **Password:** `make passwd LOGIN=<name>` reads a password from a prompt (or
+  stdin) and stores its bcrypt hash in `deploy/edge/htpasswd` (untracked);
+  `GENERATE=1` creates and prints a random one. `make up` refuses to start
+  without it. Changing a password needs only `make passwd` + `make up`.
+- **What is exposed:** the UI (`/ui/`, `/` redirects there), the REST routes
+  the UI uses and `/mcp`. `/v1/cypher`, `/metrics`, `/readyz` and every other
+  path or method are a 404 behind the password (use the `cypher` MCP tool or
+  the loopback ports on the host). `/healthz` answers without a password.
+  Paths carrying a percent-encoded `/`, `.` or `\` are refused with 400.
+- **Upstream:** the edge replaces the client's `Authorization` with
+  `GKG_API_KEY` (now required), so users never see gkg's key.
+- **Limits:** files up to 20 MiB (form overhead included); JSON bodies
+  (pasted text, MCP calls) up to 4 MiB at the edge — upload larger documents
+  as files. Cross-site form posts are refused (CSRF guard). Per-IP rate limit
+  20 requests/s with bursts of 80.
+- **WAF:** `make waf-mode MODE=DetectionOnly` logs without blocking (use it
+  first on a new deployment with real documents), `MODE=On` blocks (the
+  default). Exclusions live in
+  `deploy/edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf`, each scoped
+  to one route and named fields.
+- **Certificates:** locally a self-signed placeholder (browsers warn). On a
+  public box with DNS pointing at it and port 80 open, `make cert`
+  (`STAGING=1` for Let's Encrypt staging) issues for `EDGE_SERVER_NAME`;
+  `make renew` (run twice a day by the box's timer) renews, installs only a
+  changed certificate, reloads nginx, verifies the served certificate and
+  exits non-zero below 14 days to expiry.
+- **Acceptance:** `make edge-check` runs routing, auth, CSRF, limits,
+  streaming, MCP, the attack battery (DetectionOnly then On), log hygiene and
+  renewal against an isolated stack (also the CI `edge` job).
+
+**Upgrade:** an existing `.env` needs `GKG_API_KEY` and a `make passwd` before
+`make up`; set `EDGE_HTTP_PORT`/`EDGE_HTTPS_PORT` if 80/443 are taken.
 
 ## 3. Ingest and query
 

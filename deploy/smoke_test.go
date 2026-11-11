@@ -432,7 +432,41 @@ func TestAcceptanceComposeRebuilds(t *testing.T) {
 	}
 	cmd := exec.Command("bash", "-c", "COMPOSE=(printf '%s\\n')\n"+line)
 	out, err := cmd.CombinedOutput()
-	if err != nil || strings.Join(strings.Fields(string(out)), " ") != "up -d --build --wait" {
-		t.Fatal("acceptance compose must use up -d --build --wait")
+	if err != nil || strings.Join(strings.Fields(string(out)), " ") != "up -d --build --wait gkg" {
+		t.Fatal("acceptance compose must use up -d --build --wait gkg")
+	}
+}
+
+func TestAcceptanceComposeKeyPrecedence(t *testing.T) {
+	data := edgeFile(t, "scripts/acceptance.sh")
+	// Execute the real compose setup, redirected to a synthetic fixture. Stop
+	// before builds/startup; neither Docker nor the developer's .env is used.
+	prefix, _, found := strings.Cut(data, "step \"build\"")
+	if !found {
+		t.Fatal("acceptance setup boundary missing")
+	}
+	for _, shellKey := range []string{"", "shell-fixture-key"} {
+		fixture := writeFixture(t, "GKG_API_KEY=fixturekey-for-acceptance\n")
+		prefixFixture := strings.ReplaceAll(prefix, ".env", fixture)
+		stub := `
+docker() { printf '%s' "$GKG_API_KEY" > "$KEY_SEEN"; }
+curl() { while [ "$#" -gt 0 ]; do case "$1" in @*) cat "${1#@}" > "$HEADER_SEEN";; esac; shift; done; }
+`
+		dir := t.TempDir()
+		cmd := exec.Command("bash", "-c", stub+prefixFixture+"\nreq -sS fixture\n", filepath.Join(repoRoot(t), "scripts/acceptance.sh"))
+		cmd.Dir = repoRoot(t)
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "ACCEPTANCE_MODE=compose", "GKG_API_KEY=" + shellKey, "KEY_SEEN=" + filepath.Join(dir, "key"), "HEADER_SEEN=" + filepath.Join(dir, "header")}
+		if _, err := cmd.CombinedOutput(); err != nil {
+			t.Fatal("acceptance fixture setup failed")
+		}
+		want := shellKey
+		if want == "" {
+			want = "fixturekey-for-acceptance"
+		}
+		header, _ := os.ReadFile(filepath.Join(dir, "header"))
+		key, _ := os.ReadFile(filepath.Join(dir, "key"))
+		if string(header) != "Authorization: Bearer "+want+"\n" || string(key) != want {
+			t.Error("compose interpolation and bearer must use shell key, then fixture key")
+		}
 	}
 }

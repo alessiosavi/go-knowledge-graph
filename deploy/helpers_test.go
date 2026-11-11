@@ -40,9 +40,20 @@ func minimalEnv() []string {
 
 type composeModel struct {
 	Services map[string]composeService `json:"services"`
+	Volumes  map[string]any            `json:"volumes"`
 }
 
 type composeService struct {
+	User    string `json:"user"`
+	Volumes []struct {
+		Type     string `json:"type"`
+		Source   string `json:"source"`
+		Target   string `json:"target"`
+		ReadOnly bool   `json:"read_only"`
+		Bind     struct {
+			CreateHostPath bool `json:"create_host_path"`
+		} `json:"bind"`
+	} `json:"volumes"`
 	Image       string             `json:"image"`
 	Profiles    []string           `json:"profiles"`
 	Restart     string             `json:"restart"`
@@ -65,7 +76,7 @@ type composeService struct {
 
 func renderCompose(t *testing.T, envFile string, files ...string) composeModel {
 	t.Helper()
-	env := append(minimalEnv(), "GKG_ENV_FILE="+envFile)
+	env := append(minimalEnv(), "GKG_ENV_FILE="+envFile, "EDGE_WAF_ENV="+filepath.Join(t.TempDir(), "absent.env"))
 	version := exec.Command("docker", "compose", "version")
 	version.Env = env
 	if err := version.Run(); err != nil {
@@ -74,7 +85,7 @@ func renderCompose(t *testing.T, envFile string, files ...string) composeModel {
 	if len(files) == 0 {
 		files = []string{"deploy/docker-compose.yml"}
 	}
-	args := []string{"compose", "--env-file", envFile}
+	args := []string{"compose", "--profile", "cert", "--env-file", envFile}
 	for _, file := range files {
 		data, err := os.ReadFile(filepath.Join(repoRoot(t), file))
 		if err != nil {
