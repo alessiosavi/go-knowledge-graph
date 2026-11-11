@@ -479,6 +479,8 @@ SET e.aliases = $aliases`,
 // EntityView returns an entity with its aliases, mention count and facts,
 // grouped by (relation, other entity) with larger groups first;
 // low-confidence facts are excluded unless includeLowConfidence is set.
+// Together lists up to ten co-mentioned entities ranked by shared chunks,
+// then mention count descending and key ascending, regardless of fact confidence.
 // idOrKey matches the entity id or the entity key.
 func (s *Store) EntityView(ctx context.Context, idOrKey string, includeLowConfidence bool) (EntityView, error) {
 	recs, err := s.runRead(ctx, `
@@ -564,6 +566,29 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
 		return facts[i].ChunkID < facts[j].ChunkID
 	})
 	view.Facts = facts
+
+	recs, err = s.runRead(ctx, `
+MATCH (e:Entity {key: $key})<-[:MENTIONS]-(c:Chunk)-[:MENTIONS]->(o:Entity)
+WHERE o <> e
+WITH o, count(DISTINCT c) AS shared_chunks
+RETURN o.id AS id, o.key AS key, o.name AS name, o.type AS type, shared_chunks
+ORDER BY shared_chunks DESC, coalesce(o.mention_count, 0) DESC, o.key ASC
+LIMIT 10`, map[string]any{"key": view.Key})
+	if err != nil {
+		return EntityView{}, fmt.Errorf("graph: entity co-mentions: %w", err)
+	}
+	view.Together = make([]CoMention, 0, len(recs))
+	for _, r := range recs {
+		view.Together = append(view.Together, CoMention{
+			EntityRef: EntityRef{
+				ID:   getString(r, "id"),
+				Key:  getString(r, "key"),
+				Name: getString(r, "name"),
+				Type: getString(r, "type"),
+			},
+			SharedChunks: getInt(r, "shared_chunks"),
+		})
+	}
 	return view, nil
 }
 

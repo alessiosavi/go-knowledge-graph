@@ -119,6 +119,12 @@ func TestToolGetEntityByIDAndName(t *testing.T) {
 	if out.Name != "Ada "+fx.token || out.Type != "person" {
 		t.Errorf("entity = %+v, want the seeded Ada", out)
 	}
+	if len(out.Together) != 1 {
+		t.Fatalf("together = %+v, want the seeded Engine", out.Together)
+	}
+	if got := out.Together[0]; got.ID != graph.EntityID(fx.otherKey) || got.Key != fx.otherKey || got.Name != "Engine "+fx.token || got.Type != "technology" || got.SharedChunks != 1 {
+		t.Errorf("together[0] = %+v, want Engine in one shared chunk", got)
+	}
 	found := false
 	for _, f := range out.Facts {
 		if f.Rel == "uses" && f.Other.Key == fx.otherKey {

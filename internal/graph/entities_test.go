@@ -604,6 +604,73 @@ func TestEntityViewGroupsFactsWithExcerpt(t *testing.T) {
 	}
 }
 
+func TestEntityViewTogether(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	docID, _ := entitiesTestDoc(t, st, "Synthetic co-mentions.")
+	tag := strconv.FormatInt(time.Now().UnixNano(), 36)
+	entity := func(name string) graph.EntityUpsert {
+		name += " " + tag
+		return graph.EntityUpsert{
+			Key: graph.EntityKey(name), Name: name, Type: "technology",
+			Mentions: []graph.MentionSpan{{Start: 0, End: 1, Type: "technology"}},
+		}
+	}
+	x, a, b, solo := entity("X"), entity("A"), entity("Z B"), entity("Solo")
+	others := make([]graph.EntityUpsert, 12)
+	for i := range others {
+		others[i] = entity(fmt.Sprintf("C%02d", i))
+	}
+	first := append([]graph.EntityUpsert{x, a, b}, others...)
+	// Multiple spans on both sides must still count as one shared chunk.
+	for i := 0; i < 2; i++ {
+		first[i].Mentions = append(first[i].Mentions, graph.MentionSpan{Start: 2, End: 3, Type: "technology"})
+	}
+	groups := [][]graph.EntityUpsert{first, {x, a}, {x, a}, {b}, {solo}}
+	for i, ents := range groups {
+		if err := st.PutChunks(ctx, docID, []graph.Chunk{{Seq: i, Text: "Synthetic co-mentions.", End: 22}}); err != nil {
+			t.Fatalf("PutChunks %d: %v", i, err)
+		}
+		if err := st.UpsertExtraction(ctx, docID, fmt.Sprintf("%s-c%d", docID, i), "mock:1", ents, nil); err != nil {
+			t.Fatalf("UpsertExtraction %d: %v", i, err)
+		}
+	}
+	for _, include := range []bool{false, true} {
+		view, err := st.EntityView(ctx, graph.EntityID(x.Key), include)
+		if err != nil {
+			t.Fatalf("EntityView: %v", err)
+		}
+		if len(view.Together) != 10 {
+			t.Fatalf("Together = %+v, want 10 co-mentions", view.Together)
+		}
+		if got := view.Together[0]; got.Key != a.Key || got.SharedChunks != 3 {
+			t.Errorf("first co-mention = %+v, want A in 3 shared chunks", got)
+		}
+		// B has two mentions but only one shared chunk; its key sorts last.
+		if got := view.Together[1]; got.Key != b.Key || got.SharedChunks != 1 {
+			t.Errorf("second co-mention = %+v, want B before the one-mention entities", got)
+		}
+		if view.Together[2].Key != others[0].Key || view.Together[3].Key != others[1].Key {
+			t.Errorf("tied co-mentions = %+v, %+v, want C00 then C01", view.Together[2], view.Together[3])
+		}
+		for i, other := range view.Together {
+			if other.Key == x.Key || other.Key == solo.Key {
+				t.Errorf("Together contains the viewed entity or a non-co-mentioned entity: %+v", other)
+			}
+			if i > 0 && other.SharedChunks != 1 {
+				t.Errorf("Together[%d].SharedChunks = %d, want 1", i, other.SharedChunks)
+			}
+		}
+	}
+	view, err := st.EntityView(ctx, solo.Key, false)
+	if err != nil {
+		t.Fatalf("EntityView solo: %v", err)
+	}
+	if len(view.Together) != 0 {
+		t.Errorf("solo Together = %+v, want empty", view.Together)
+	}
+}
+
 func TestEntityViewByIDAndMissing(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()

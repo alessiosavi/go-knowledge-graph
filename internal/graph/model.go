@@ -130,6 +130,12 @@ type EntityRef struct {
 	Type string
 }
 
+// CoMention is an entity sharing chunks with the viewed entity.
+type CoMention struct {
+	EntityRef
+	SharedChunks int
+}
+
 // FactView is one fact edge as seen from the queried entity: Outgoing
 // reports whether the queried entity is the edge's head, and the excerpt is
 // anchored on the queried entity's own mention.
@@ -145,10 +151,11 @@ type FactView struct {
 	Excerpt       string
 }
 
-// EntityView is an entity with its aliases, mention count and fact evidence.
+// EntityView is an entity with aliases, mention count, fact evidence and co-mentions.
 type EntityView struct {
 	EntityRef
 	Aliases      []string
 	MentionCount int
 	Facts        []FactView
+	Together     []CoMention
 }
