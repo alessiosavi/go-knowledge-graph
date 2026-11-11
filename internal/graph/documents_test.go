@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -13,6 +15,111 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 )
+
+func TestResetExtraction(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	uri := os.Getenv(graphtest.URIEnv)
+	doc := testUpsert(t, st, "text", uniqueSource(t), "reset")
+	other := testUpsert(t, st, "text", uniqueSource(t), "other")
+	t.Cleanup(func() {
+		_ = st.DeleteDocument(ctx, doc.ID)
+		_ = st.DeleteDocument(ctx, other.ID)
+	})
+	chunks := []graph.Chunk{{Seq: 0, Text: "Shared costs 500."}, {Seq: 1, Text: "Shared is a service."}}
+	if err := st.PutChunks(ctx, doc.ID, chunks); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutChunks(ctx, other.ID, []graph.Chunk{{Seq: 0, Text: "Shared remains."}}); err != nil {
+		t.Fatal(err)
+	}
+	sharedKey := graph.EntityKey("Shared " + doc.ID)
+	privateKey := graph.ScopedEntityKey(doc.ID, "500")
+	shared := graph.EntityUpsert{Key: sharedKey, Name: "Shared", Type: "service", Mentions: []graph.MentionSpan{{Start: 0, End: 6, Type: "service"}}}
+	private := graph.EntityUpsert{Key: privateKey, Name: "500", Type: "amount", Mentions: []graph.MentionSpan{{Start: 13, End: 16, Type: "amount"}}}
+	fact := graph.FactUpsert{HeadKey: sharedKey, TailKey: privateKey, Rel: "costs", Confidence: .9}
+	for i := range chunks {
+		if err := st.UpsertExtraction(ctx, doc.ID, fmt.Sprintf("%s-c%d", doc.ID, i), "mock", []graph.EntityUpsert{shared, private}, []graph.FactUpsert{fact}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shared.Type, shared.Mentions[0].Type = "organization", "organization"
+	if err := st.UpsertExtraction(ctx, other.ID, other.ID+"-c0", "mock", []graph.EntityUpsert{shared}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{doc.ID, other.ID} {
+		if err := st.SetStatus(ctx, id, graph.StatusDone, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.WriteFactAudit(ctx, graph.FactAudit{DocID: id, ChunkID: id + "-c0", HeadKey: sharedKey, TailKey: privateKey, Rel: "costs", Reason: "synthetic rejection"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := st.Document(ctx, doc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeChunks, err := st.Chunks(ctx, doc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ResetExtraction(ctx, doc.ID, "documentation"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := st.Document(ctx, doc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != graph.StatusChunked || after.Labels != "documentation" || after.UpdatedAt.Before(before.UpdatedAt) {
+		t.Fatalf("reset document = %+v", after)
+	}
+	before.Status, before.Labels, before.UpdatedAt = after.Status, after.Labels, after.UpdatedAt
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("reset changed document content/metadata: before=%+v after=%+v", before, after)
+	}
+	afterChunks, err := st.Chunks(ctx, doc.ID)
+	if err != nil || !reflect.DeepEqual(beforeChunks, afterChunks) {
+		t.Fatalf("reset changed chunks: before=%+v after=%+v err=%v", beforeChunks, afterChunks, err)
+	}
+	for _, query := range []string{
+		fmt.Sprintf("MATCH (:Chunk {doc_id: '%s'})-[m:MENTIONS]->() RETURN count(m) AS n", doc.ID),
+		fmt.Sprintf("MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = '%s' RETURN count(r) AS n", doc.ID),
+		fmt.Sprintf("MATCH (r:RejectedFact {doc_id: '%s'}) RETURN count(r) AS n", doc.ID),
+		fmt.Sprintf("MATCH (e:Entity {key: '%s'}) RETURN count(e) AS n", privateKey),
+	} {
+		if n := rawCount(t, uri, query); n != 0 {
+			t.Errorf("reset left %d rows: %s", n, query)
+		}
+	}
+	view, err := st.EntityView(ctx, sharedKey, true)
+	if err != nil || view.MentionCount != 1 || view.Type != "organization" {
+		t.Fatalf("surviving shared entity = %+v, err=%v", view, err)
+	}
+	if n := rawCount(t, uri, fmt.Sprintf("MATCH (r:RejectedFact {doc_id: '%s'}) RETURN count(r) AS n", other.ID)); n != 1 {
+		t.Errorf("other document audits = %d, want 1", n)
+	}
+	if err := st.ResetExtraction(ctx, doc.ID, "news"); !errors.Is(err, graph.ErrNotDone) {
+		t.Fatalf("second reset = %v, want ErrNotDone", err)
+	}
+	unchanged, err := st.Document(ctx, doc.ID)
+	if err != nil || !reflect.DeepEqual(after, unchanged) {
+		t.Fatalf("refused reset changed document: %+v, err=%v", unchanged, err)
+	}
+	if err := st.ResetExtraction(ctx, "missing-"+doc.ID, ""); !errors.Is(err, graph.ErrNotFound) {
+		t.Fatalf("missing reset = %v", err)
+	}
+	ids, err := st.DoneDocumentIDs(ctx)
+	if err != nil || slices.Contains(ids, doc.ID) || !slices.Contains(ids, other.ID) {
+		t.Fatalf("done IDs = %v, err=%v", ids, err)
+	}
+	if err := st.ResetExtraction(ctx, other.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	otherDoc, err := st.Document(ctx, other.ID)
+	if err != nil || otherDoc.Labels != "" {
+		t.Fatalf("empty preset reset = %+v, err=%v", otherDoc, err)
+	}
+}
 
 // uniqueSource returns a source unique to this test run, so reruns against a
 // shared dev database do not collide with earlier rows.

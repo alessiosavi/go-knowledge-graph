@@ -126,7 +126,7 @@ func toolDefs() []toolDef {
 				"required": []string{"query"},
 			}),
 		functionTool("get_entity",
-			"One entity with aliases and evidenced facts (excerpt, confidence, judge status); resolve by id or exact name.",
+			"One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status); resolve by id or exact name.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{

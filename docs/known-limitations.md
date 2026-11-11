@@ -230,7 +230,7 @@ is benign: the newer version completes normally.
 - **JSON bodies are capped at 4 MiB at the edge** (pasted text, MCP calls);
   files keep 20 MiB. In `DetectionOnly` mode the cap is not enforced
   (ModSecurity processes oversized bodies partially) — keep that mode short.
-- **Not exposed through the edge:** `/v1/cypher`, `/metrics`, `/readyz`; use
+- **Not exposed through the edge:** `/v1/admin/rebuild`, `/v1/cypher`, `/metrics`, `/readyz`; use
   the `cypher` MCP tool or the loopback ports on the host.
 - **Free-text fields are not WAF-inspected for attack payloads**: document
   text, search queries and agent questions are data to gkg (parameterized

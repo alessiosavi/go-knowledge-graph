@@ -16,6 +16,41 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
+// handleAdminRebuild is an operator route, excluded from the edge allowlist.
+func (s *Server) handleAdminRebuild(w http.ResponseWriter, r *http.Request) {
+	rebuilder, ok := s.in.(Rebuilder)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "rebuild_disabled", "no rebuild pipeline wired")
+		return
+	}
+	var req struct {
+		Labels     string `json:"labels"`
+		DocumentID string `json:"document_id"`
+	}
+	if !readJSON(w, r, jsonBodyCap, &req) {
+		return
+	}
+	res, err := rebuilder.Rebuild(r.Context(), req.DocumentID, req.Labels)
+	if err != nil {
+		switch {
+		case errors.Is(err, graph.ErrNotDone):
+			writeError(w, http.StatusConflict, "not_done", err.Error())
+		case errors.Is(err, graph.ErrNotFound), errors.Is(err, ingest.ErrStore):
+			writeStoreError(w, err, "rebuild")
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_labels", err.Error())
+		}
+		return
+	}
+	if res.Busy == nil {
+		res.Busy = []string{}
+	}
+	writeJSON(w, http.StatusAccepted, struct {
+		Queued int      `json:"queued"`
+		Busy   []string `json:"busy"`
+	}{Queued: len(res.Queued), Busy: res.Busy})
+}
+
 // ingestRequest is the JSON submission shape.
 type ingestRequest struct {
 	URL    string `json:"url"`

@@ -19,7 +19,7 @@ The tool set is the same on both transports:
 | `ingest`         | submit a URL or inline text; returns the document id                    |
 | `status`         | pipeline status of one document, or the most recent documents           |
 | `search`         | text search over entity names and chunks (vector fusion when enabled)   |
-| `get_entity`     | entity, aliases and evidenced facts (excerpt, confidence, judge status) |
+| `get_entity`     | entity, aliases, `together` co-mentions (with shared chunk counts) and evidenced facts |
 | `traverse`       | walk fact edges up to two hops with direction/relation filters          |
 | `list_documents` | documents with metadata, filterable by status                           |
 | `cypher`         | guarded read-only Cypher with row cap and timeout                       |

@@ -151,6 +151,40 @@ curl -s -F 'file=@article.md' -F 'labels=news' localhost:8080/v1/ingest
 Re-ingesting unchanged content is a no-op (`"noop":true`); changed content
 creates a new version and supersedes the old one.
 
+### Rebuild existing documents (loopback only)
+
+`POST /v1/admin/rebuild` removes extraction results and re-queues completed
+(`done`) documents. It re-extracts and re-judges from **stored chunk text**,
+without fetching, converting or re-chunking the source. Documents and chunk
+text are preserved; old facts, mentions and rejected-fact audits are removed,
+and orphan entities are collected. Busy documents are skipped and reported.
+
+On a shared box, get the **owner's go at that time**, after their ingest is
+finished and the queue is empty. Deploy the extraction fixes and matching
+presets together before running one rebuild. This destructive operator route
+is absent from the edge allowlist; call the host's loopback port using the
+internal `GKG_API_KEY` bearer (not the edge login):
+
+```sh
+curl --fail-with-body -sS http://localhost:8080/v1/admin/rebuild \
+  -H "Authorization: Bearer $GKG_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+# → {"queued":2,"busy":[]}
+```
+
+Omit `document_id` (or use an empty string) for every done document; add
+`"document_id":"<id>"` to rebuild only one. Omit `labels` to keep each
+existing preset, or choose an installed preset. An unknown or invalid preset (the requested one, or a
+target's stored preset when `labels` is omitted) returns 400 before any
+document changes; an unknown document returns 404; a selected
+document that is not done returns 409. A 202 reports the queued count and
+busy IDs (documents being processed at that moment); poll document status
+until `done` or `failed` and retry the busy IDs when idle. In a bulk run,
+documents that stop being done meanwhile (re-ingested, superseded, deleted)
+are skipped and not listed. Bulk resets commit per document: a later store error can leave
+earlier documents reset and queued; inspect statuses before retrying.
+
 ## 4. Connect an agent (MCP)
 
 The service is an MCP server over stdio (`gkg mcp`) and streamable HTTP

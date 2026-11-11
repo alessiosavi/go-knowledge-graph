@@ -199,6 +199,80 @@ DETACH DELETE stale`,
 	})
 }
 
+// DoneDocumentIDs lists the completed documents eligible for rebuilding.
+func (s *Store) DoneDocumentIDs(ctx context.Context) ([]string, error) {
+	recs, err := s.runRead(ctx, `
+MATCH (d:Document {status: $done}) RETURN d.id AS id ORDER BY d.id`,
+		map[string]any{"done": string(StatusDone)})
+	if err != nil {
+		return nil, fmt.Errorf("graph: done document IDs: %w", err)
+	}
+	ids := make([]string, 0, len(recs))
+	for _, r := range recs {
+		ids = append(ids, getString(r, "id"))
+	}
+	return ids, nil
+}
+
+// ResetExtraction removes a done document's derived extraction in one locked
+// transaction, preserving its content and chunks for re-extraction. The caller
+// must also hold the pipeline's document lock to exclude an active worker.
+// Empty labels preserve the document's current preset.
+func (s *Store) ResetExtraction(ctx context.Context, docID, labels string) error {
+	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		status, err := txDocumentStatus(ctx, tx, docID)
+		if err != nil {
+			return err
+		}
+		if status != StatusDone {
+			return fmt.Errorf("graph: reset document %s (%s): %w", docID, status, ErrNotDone)
+		}
+		touched, err := txMentionedKeys(ctx, tx, docID)
+		if err != nil {
+			return err
+		}
+		// Include legacy fact endpoints that may lack MENTIONS edges.
+		params := map[string]any{"doc": docID}
+		res, err := tx.Run(ctx, `
+MATCH (a:Entity)-[r]->(b:Entity) WHERE r.doc_id = $doc
+RETURN a.key AS head, b.key AS tail`, params)
+		if err != nil {
+			return fmt.Errorf("graph: reset fact keys: %w", err)
+		}
+		recs, err := res.Collect(ctx)
+		if err != nil {
+			return err
+		}
+		for _, r := range recs {
+			touched = append(touched, getString(r, "head"), getString(r, "tail"))
+		}
+		slices.Sort(touched)
+		touched = slices.Compact(touched)
+		for _, query := range []string{
+			`MATCH (:Document {id: $doc})-[:HAS_CHUNK]->(:Chunk)-[m:MENTIONS]->(:Entity) DELETE m`,
+			`MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = $doc DELETE r`,
+			`MATCH (r:RejectedFact {doc_id: $doc}) DETACH DELETE r`,
+		} {
+			if err := txRun(ctx, tx, query, params); err != nil {
+				return fmt.Errorf("graph: reset extraction: %w", err)
+			}
+		}
+		if err := txRefreshMentionCounts(ctx, tx, touched); err != nil {
+			return err
+		}
+		if err := txGC(ctx, tx, touched); err != nil {
+			return err
+		}
+		return txRun(ctx, tx, `
+MATCH (d:Document {id: $doc})
+SET d.labels = CASE WHEN $labels = '' THEN coalesce(d.labels, '') ELSE $labels END,
+    d.status = $chunked, d.updated_at = $now`, map[string]any{
+			"doc": docID, "labels": labels, "chunked": string(StatusChunked),
+			"now": time.Now().UTC().Format(timeLayout),
+		})
+	})
+}
+
 // SetStatus updates a document's status, error text and updated_at. A
 // superseded document is terminal: a late status write from a stale worker
 // is dropped instead of reviving it.
