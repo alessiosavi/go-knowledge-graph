@@ -71,7 +71,9 @@ help:
 	  'renew    Renew, install, reload and verify served certificate' \
 	  'edge-check Check an isolated edge stack (Docker required)' \
 	  'check-edge Check that the password file exists' \
-	  'check-env Check that ENV_FILE exists'
+	  'check-env Check that ENV_FILE exists' \
+	  'box-*    Provision, configure and manage the AWS box (docs/deploy-aws.md)' \
+	  'deploy   Deploy REF=<commit> through SSM and check the public edge'
 
 check-env:
 	@test -f "$(ENV_FILE)" || { printf '%s\n' 'stack: $(ENV_FILE) not found — cp .env.example .env and set MEMGRAPH_PASSWORD'; exit 1; }
@@ -138,3 +140,64 @@ smoke:
 	  chmod 600 "$$key" || exit 1; \
 	  $(COMPOSE) exec -T gkg printenv GKG_API_KEY >"$$key" 2>/dev/null || :; \
 	  SMOKE_URL="http://$$binding" SMOKE_KEY_FILE="$$key" bash scripts/smoke.sh
+
+# AWS targets take non-secret switches only from explicit make arguments.
+AWS_REF :=
+ifeq ($(origin REF),command line)
+AWS_REF := $(REF)
+endif
+AWS_YES := 0
+ifeq ($(origin YES),command line)
+AWS_YES := $(YES)
+endif
+AWS_PURGE := 0
+ifeq ($(origin PURGE),command line)
+AWS_PURGE := $(PURGE)
+endif
+AWS_PURGE_SNAPSHOTS := 0
+ifeq ($(origin PURGE_SNAPSHOTS),command line)
+AWS_PURGE_SNAPSHOTS := $(PURGE_SNAPSHOTS)
+endif
+AWS_REPLACE_A := 0
+ifeq ($(origin REPLACE_A),command line)
+AWS_REPLACE_A := $(REPLACE_A)
+endif
+.PHONY: up-cached box-provision box-dns box-dns-check box-docker box-env box-login box-secrets box-bootstrap deploy box-update box-teardown
+
+up-cached: check-env check-edge
+	@$(COMPOSE) up -d --wait --no-build --pull never --remove-orphans
+
+box-provision:
+	@bash deploy/aws/provision.sh
+
+box-dns:
+	@REPLACE_A=$(call quote,$(AWS_REPLACE_A)) bash deploy/aws/dns.sh
+
+box-dns-check:
+	@bash deploy/aws/dns.sh --check
+
+box-docker:
+	@bash deploy/aws/remote.sh --docker
+
+box-env:
+	@SOURCE_ENV=$(call quote,$(abspath $(ENV_FILE))) bash deploy/aws/make-box-env.sh
+
+box-login:
+	@bash deploy/aws/deploy-login.sh
+
+box-secrets:
+	@bash deploy/aws/upload-secrets.sh
+
+box-bootstrap:
+	@test -n $(call quote,$(AWS_REF)) || { printf '%s\n' 'gkg-box: REF required on command line'; exit 1; }
+	@bash deploy/aws/remote.sh bootstrap.sh $(call quote,$(AWS_REF))
+
+deploy:
+	@test -n $(call quote,$(AWS_REF)) || { printf '%s\n' 'gkg-box: REF required on command line'; exit 1; }
+	@bash deploy/aws/remote.sh deploy.sh $(call quote,$(AWS_REF))
+
+box-update:
+	@bash deploy/aws/remote.sh --update
+
+box-teardown:
+	@YES=$(call quote,$(AWS_YES)) PURGE=$(call quote,$(AWS_PURGE)) PURGE_SNAPSHOTS=$(call quote,$(AWS_PURGE_SNAPSHOTS)) bash deploy/aws/teardown.sh

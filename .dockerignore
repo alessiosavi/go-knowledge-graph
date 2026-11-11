@@ -23,3 +23,7 @@ docs/superpowers
 **/.env
 **/.env.*
 !.env.example
+
+# AWS deploy login material
+deploy/aws/box.htpasswd
+deploy/aws/box.netrc

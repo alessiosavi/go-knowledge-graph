@@ -1,0 +1,10 @@
+[Unit]
+Description=gkg certificate renewal and fingerprint convergence
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock /run/gkg-ops.lock /usr/bin/make -C /opt/gkg renew
+TimeoutStartSec=900

@@ -26,6 +26,8 @@ curl -s localhost:8080/readyz         # {"status":"ready"}
 ```
 
 Requires Docker Compose ≥ 2.24.4; servers need Docker Engine ≥ 28.
+The [AWS box workflow](deploy-aws.md) installs checksum-pinned Docker Engine
+29.9.3, Compose 5.7.0 and buildx 0.38.2 on AL2023.
 `make up` starts Memgraph, gkg, GLiNEREL and docling. Open
 `http://127.0.0.1:8080/ui/` (or the configured `GKG_PORT`). All four host
 ports bind to `127.0.0.1`; change `MEMGRAPH_PORT`, `GKG_PORT`, `SIDECAR_PORT`
