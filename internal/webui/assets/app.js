@@ -468,10 +468,27 @@
     return nodes;
   }
 
+  // Only server-sanitized Markdown HTML reaches this insertion point.
+  function insertMarkdown(body, html) {
+    body.innerHTML = html;
+    for (const link of body.querySelectorAll("a[href]")) {
+      if (/^https?:/i.test(link.getAttribute("href") || "")) {
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+      }
+    }
+  }
+
   function renderAnswer(res) {
     const answer = $("ask-answer");
     answer.replaceChildren();
-    if (res.answer) answer.append(el("p", "answer", res.answer));
+    if (res.answer_html) {
+      const body = el("div", "markdown-body");
+      insertMarkdown(body, res.answer_html);
+      answer.append(body);
+    } else if (res.answer) {
+      answer.append(el("p", "answer", res.answer));
+    }
     const list = $("ask-evidence");
     list.replaceChildren();
     const evidence = res.evidence || [];
@@ -590,6 +607,8 @@
           evidence.append(toolEventRow(ev.data));
         } else if (ev.name === "done") {
           done = ev.data;
+          statusNode.textContent = "";
+          renderAnswer(done);
         } else if (ev.name === "error") {
           const detail =
             (ev.data && (ev.data.detail || ev.data.error)) ||
@@ -599,8 +618,6 @@
       }
     }
     if (!done) throw new Error("the answer stream ended early");
-    statusNode.textContent = "";
-    renderAnswer(done);
   }
 
   async function ask() {
@@ -853,13 +870,7 @@
     }
     const html = (data && data.html) || "";
     if (html) {
-      body.innerHTML = html;
-      for (const link of body.querySelectorAll("a[href]")) {
-        if (/^https?:/i.test(link.getAttribute("href") || "")) {
-          link.target = "_blank";
-          link.rel = "noopener noreferrer";
-        }
-      }
+      insertMarkdown(body, html);
     } else {
       body.append(el("p", "muted", "No stored text."));
     }

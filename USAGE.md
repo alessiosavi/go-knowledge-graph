@@ -108,20 +108,24 @@ and `POST /v1/agent/ask` answers natural-language questions server-side: an
 OpenAI-compatible model plans and runs the same read-only tools as MCP —
 search, entity cards, traversal, documents, guarded Cypher — and the
 response carries the raw tool results as `evidence`, so every answer is
-checkable. The browser never sees the provider key.
+checkable. Answers use GitHub-flavoured Markdown: `answer` is the source
+text and `answer_html` is server-sanitized HTML, shared with the document
+reader. Raw HTML and all answer images are omitted; links follow the
+reader’s policy. The UI falls back to plain text if `answer_html` is absent.
+The browser never sees the provider key.
 
 ```sh
 # in .env: GKG_AGENT_ENABLED=true plus GKG_AGENT_BASE_URL/API_KEY/MODEL
 curl -s localhost:8080/v1/agent/ask -H 'Content-Type: application/json' \
      -d '{"question":"What does the graph know about Ada Lovelace?"}'
-# → {"answer":"...","evidence":[{"tool":"search","arguments":{...},"result":{...}}],"steps":2}
+# → {"answer":"...","answer_html":"<p>...</p>\n","evidence":[{"tool":"search","arguments":{...},"result":{...}}],"steps":2}
 ```
 
 **Streaming** (default on) extends the same answer with live progress: the
 panel consumes `POST /v1/agent/ask/stream`, an SSE surface emitting `tool`
 events when a read-only call is about to run, `delta` fragments of the
 answer as the model produces them, and one authoritative `done` event with
-the same `{"answer","evidence","steps"}` payload (`error` events are
+the same `{"answer","answer_html","evidence","steps"}` payload (`error` events are
 classified). It disables proxy buffering (`X-Accel-Buffering: no`) and
 sends a `: ping` heartbeat every ~15s.
 
@@ -139,8 +143,21 @@ answers for the process lifetime).
 
 Each ask is independent (no chat memory) and bounded:
 `GKG_AGENT_MAX_STEPS` model turns that request tools (default 6, hard cap
-12; each turn may run up to 8 tool calls) and `GKG_AGENT_TIMEOUT_S`
-(default 60). While the agent is disabled the endpoint
+30; each turn may run up to 8 tool calls) and `GKG_AGENT_TIMEOUT_S`
+(default 60). Model-facing tool results are capped at 32 KiB each; the
+cumulative transcript budget is `GKG_AGENT_CONTEXT_BUDGET_KB` (default 256
+KiB). Reaching either the step or context budget triggers one final turn
+without tools, using the gathered results within the same timeout. If that
+turn fails or is empty, the response carries a bounded notice and the full
+evidence. `steps` counts tool turns only. These byte limits cover tool
+results, not the question, tool arguments, or other transcript messages.
+
+The edge derives `EDGE_ASK_TIMEOUT_S` from the agent timeout plus 30 seconds
+when unset (90 by default). An explicit value below the agent timeout plus
+15 seconds prevents edge startup. For a 300-second agent timeout, leaving
+the edge timeout unset produces 330 seconds for both JSON and streamed asks.
+
+While the agent is disabled the endpoint
 answers `501` and the panel stays hidden. Answers are LLM-generated — the
 `evidence` array is the source of truth
 ([known limits](docs/known-limitations.md)).

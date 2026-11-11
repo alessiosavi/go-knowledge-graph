@@ -1,5 +1,6 @@
 #!/bin/sh
-# Runs before envsubst: reject values that could become nginx syntax.
+# Sourced as 15-validate-env.envsh before envsubst: validate directive values
+# and export the derived ask timeout into the template renderer’s environment.
 set -eu
 LC_ALL=C
 export LC_ALL
@@ -23,5 +24,19 @@ number() {
 }
 number EDGE_HSTS_MAX_AGE "${EDGE_HSTS_MAX_AGE:-0}"
 number EDGE_INGEST_TIMEOUT_S "${EDGE_INGEST_TIMEOUT_S:-390}"
-number EDGE_ASK_TIMEOUT_S "${EDGE_ASK_TIMEOUT_S:-90}"
+# The image sources executable *.envsh files, but executes *.sh files.
+# Compose mounts this script with the .envsh suffix so exports reach 20-envsubst.
+# Upstream: https://github.com/nginx/docker-nginx-unprivileged/blob/main/entrypoint/docker-entrypoint.sh
+agent_timeout=${GKG_AGENT_TIMEOUT_S:-60}
+number GKG_AGENT_TIMEOUT_S "$agent_timeout"
+# Normalize decimal inputs before shell arithmetic (leading zeros mean octal).
+agent_timeout=$(printf '%s\n' "$agent_timeout" | awk '{printf "%d", $0}')
+[ "$agent_timeout" -gt 0 ] || agent_timeout=60
+if [ -z "${EDGE_ASK_TIMEOUT_S:-}" ]; then
+ EDGE_ASK_TIMEOUT_S=$((agent_timeout + 30))
+fi
+number EDGE_ASK_TIMEOUT_S "$EDGE_ASK_TIMEOUT_S"
+EDGE_ASK_TIMEOUT_S=$(printf '%s\n' "$EDGE_ASK_TIMEOUT_S" | awk '{printf "%d", $0}')
+[ "$EDGE_ASK_TIMEOUT_S" -ge "$((agent_timeout + 15))" ] || fail 'EDGE_ASK_TIMEOUT_S (must be at least GKG_AGENT_TIMEOUT_S + 15 seconds)'
+export EDGE_ASK_TIMEOUT_S
 number EDGE_HTTPS_PORT "${EDGE_HTTPS_PORT:-443}"

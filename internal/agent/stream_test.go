@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -129,7 +130,7 @@ func TestStreamHandlerFramingAndDone(t *testing.T) {
 	if err := json.Unmarshal([]byte(doneEvent.data), &resp); err != nil {
 		t.Fatalf("done payload %q: %v", doneEvent.data, err)
 	}
-	if resp.Answer != "done answer" || resp.Steps != 1 || len(resp.Evidence) != 1 || resp.Evidence[0].Tool != "search" {
+	if resp.AnswerHTML != "<p>done answer</p>\n" || resp.Answer != "done answer" || resp.Steps != 1 || len(resp.Evidence) != 1 || resp.Evidence[0].Tool != "search" {
 		t.Errorf("done payload = %+v, want the authoritative answer with one search evidence", resp)
 	}
 }
@@ -257,35 +258,103 @@ func TestStreamHandlerStreamFlagOff(t *testing.T) {
 }
 
 func TestStreamHandlerMaxTurns(t *testing.T) {
-	fx := newAgentFixture(t)
-	stub := newLLMStub(t)
-	for i := 0; i < 2; i++ {
-		stub.withStream(
-			sseTool(0, fmt.Sprintf("c%d", i), "search", fmt.Sprintf(`{"query":%q}`, fx.token)),
-			sseFinish("tool_calls"),
-			sseDone,
-		)
-	}
-	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) {
-		cfg.Agent.Stream = true
-		cfg.Agent.MaxSteps = 2
-	})
+	for _, tc := range []struct {
+		name         string
+		final        []string
+		wantAnswer   string
+		wantHTML     string
+		wantDeltas   []string
+		wantRequests int
+	}{
+		{
+			name:         "final answer",
+			final:        []string{sseContent("## Budget answer\n\n"), sseContent("**Gathered evidence.**"), sseFinish("stop"), sseDone},
+			wantAnswer:   "## Budget answer\n\n**Gathered evidence.**",
+			wantHTML:     "<h2>Budget answer</h2>\n<p><strong>Gathered evidence.</strong></p>\n",
+			wantDeltas:   []string{"## Budget answer\n\n", "**Gathered evidence.**"},
+			wantRequests: 3,
+		},
+		{
+			name:         "empty final stream",
+			final:        []string{sseFinish("stop"), sseDone},
+			wantAnswer:   noAnswerText,
+			wantHTML:     "<p>I could not reach a final answer within the step budget; the evidence below lists what the tools returned.</p>\n",
+			wantRequests: 4, // The empty stream is retried once non-streamed.
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newAgentFixture(t)
+			// Keep the empty stream's non-streamed retry empty too, rather
+			// than accepting the stub's default "ok" answer.
+			stub := newLLMStub(t, contentReply(""))
+			for i := 0; i < 2; i++ {
+				stub.withStream(
+					sseTool(0, fmt.Sprintf("c%d", i), "search", fmt.Sprintf(`{"query":%q}`, fx.token)),
+					sseFinish("tool_calls"),
+					sseDone,
+				)
+			}
+			stub.withStream(tc.final...)
+			s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) {
+				cfg.Agent.Stream = true
+				cfg.Agent.MaxSteps = 2
+			})
 
-	rr := postStream(t, s.StreamHandler(), "loop forever?")
-	events := parseSSE(t, rr.Body.String())
-	if len(events) == 0 {
-		t.Fatalf("no SSE events in %q", rr.Body.String())
-	}
-	last := events[len(events)-1]
-	if last.name != "done" {
-		t.Fatalf("last event = %+v, want done after the step budget", last)
-	}
-	var resp askResponse
-	if err := json.Unmarshal([]byte(last.data), &resp); err != nil {
-		t.Fatalf("done payload %q: %v", last.data, err)
-	}
-	if resp.Steps != 2 || !strings.Contains(resp.Answer, "step budget") {
-		t.Errorf("done payload = %+v, want the bounded-step notice with steps 2", resp)
+			rr := postStream(t, s.StreamHandler(), "loop forever?")
+			if rr.Code != http.StatusOK {
+				t.Fatalf("code = %d, want 200; body %s", rr.Code, rr.Body.String())
+			}
+			events := parseSSE(t, rr.Body.String())
+			if len(events) == 0 {
+				t.Fatalf("no SSE events in %q", rr.Body.String())
+			}
+			var deltas []string
+			doneCount := 0
+			for _, ev := range events {
+				switch ev.name {
+				case "delta":
+					var payload struct {
+						Text string `json:"text"`
+					}
+					if err := json.Unmarshal([]byte(ev.data), &payload); err != nil {
+						t.Fatalf("delta payload %q: %v", ev.data, err)
+					}
+					deltas = append(deltas, payload.Text)
+				case "done":
+					doneCount++
+				case "error":
+					t.Errorf("unexpected error event: %s", ev.data)
+				}
+			}
+			if !slices.Equal(deltas, tc.wantDeltas) {
+				t.Errorf("deltas = %q, want %q", deltas, tc.wantDeltas)
+			}
+			last := events[len(events)-1]
+			if last.name != "done" || doneCount != 1 {
+				t.Fatalf("last event = %+v, done count = %d, want one terminal done after the step budget", last, doneCount)
+			}
+			var resp askResponse
+			if err := json.Unmarshal([]byte(last.data), &resp); err != nil {
+				t.Fatalf("done payload %q: %v", last.data, err)
+			}
+			if resp.Answer != tc.wantAnswer || resp.AnswerHTML != tc.wantHTML || resp.Steps != 2 || len(resp.Evidence) != 2 {
+				t.Errorf("done payload = %+v, want answer %q, HTML %q, steps 2 and two tool results", resp, tc.wantAnswer, tc.wantHTML)
+			}
+			if len(stub.requests) != tc.wantRequests {
+				t.Fatalf("chat calls = %d, want %d", len(stub.requests), tc.wantRequests)
+			}
+			if stub.requests[2]["stream"] != true {
+				t.Errorf("final request stream = %v, want true", stub.requests[2]["stream"])
+			}
+			for i, req := range stub.requests[2:] {
+				if _, ok := req["tools"]; ok {
+					t.Errorf("final request[%d] must not send tools: %v", i+2, req)
+				}
+				if _, ok := req["tool_choice"]; ok {
+					t.Errorf("final request[%d] must not send tool_choice: %v", i+2, req)
+				}
+			}
+		})
 	}
 }
 

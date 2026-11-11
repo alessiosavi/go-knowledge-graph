@@ -205,7 +205,8 @@ services:
       EDGE_HTTPS_PORT: ${EDGE_HTTPS_PORT:-443}
       EDGE_HSTS_MAX_AGE: ${EDGE_HSTS_MAX_AGE:-0}
       EDGE_INGEST_TIMEOUT_S: ${EDGE_INGEST_TIMEOUT_S:-390}
-      EDGE_ASK_TIMEOUT_S: ${EDGE_ASK_TIMEOUT_S:-90}
+      GKG_AGENT_TIMEOUT_S: ${GKG_AGENT_TIMEOUT_S:-60}
+      EDGE_ASK_TIMEOUT_S: "${EDGE_ASK_TIMEOUT_S:-}"
       MODSEC_RESP_BODY_ACCESS: "Off"
       ALLOWED_METHODS: "GET HEAD POST OPTIONS DELETE"
       MODSEC_REQ_BODY_LIMIT: "22020096"
@@ -227,7 +228,7 @@ services:
     volumes:
       - ./edge/default.conf.template:/etc/nginx/templates/conf.d/default.conf.template:ro
       - ./edge/setup.conf.template:/etc/nginx/templates/modsecurity.d/setup.conf.template:ro
-      - ./edge/15-validate-env.sh:/docker-entrypoint.d/15-validate-env.sh:ro
+      - ./edge/15-validate-env.sh:/docker-entrypoint.d/15-validate-env.envsh:ro
       - ./edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:ro
       - ./edge/modsec/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:ro
       - edge-certs:/etc/nginx/edge-certs:ro

@@ -123,6 +123,7 @@ func TestAskStopsAtMaxSteps(t *testing.T) {
 	stub := newLLMStub(t,
 		toolCallReply("c1", "search", fmt.Sprintf(`{"query":%q}`, fx.token)),
 		toolCallReply("c2", "search", fmt.Sprintf(`{"query":%q}`, fx.token)),
+		contentReply("Answer from the gathered results."),
 	)
 	s := askServer(t, fx, stub.srv.URL, func(cfg *config.Config) { cfg.Agent.MaxSteps = 2 })
 
@@ -133,14 +134,14 @@ func TestAskStopsAtMaxSteps(t *testing.T) {
 	if resp.Steps != 2 {
 		t.Errorf("Steps = %d, want the max-steps budget 2", resp.Steps)
 	}
-	if !strings.Contains(resp.Answer, "step budget") {
-		t.Errorf("Answer = %q, want the bounded-step notice", resp.Answer)
+	if resp.Answer != "Answer from the gathered results." {
+		t.Errorf("Answer = %q, want the final turn’s answer", resp.Answer)
 	}
 	if len(resp.Evidence) != 2 {
 		t.Errorf("evidence = %d, want 2 tool results", len(resp.Evidence))
 	}
-	if len(stub.requests) != 2 {
-		t.Errorf("chat calls = %d, want 2 (no extra call past the budget)", len(stub.requests))
+	if len(stub.requests) != 3 {
+		t.Errorf("chat calls = %d, want 3 (two tool turns and one final turn)", len(stub.requests))
 	}
 }
 
@@ -248,7 +249,7 @@ func TestAskFallsBackToJSONPlan(t *testing.T) {
 }
 
 func TestClampSteps(t *testing.T) {
-	cases := []struct{ in, want int }{{0, 6}, {-3, 6}, {1, 1}, {6, 6}, {12, 12}, {99, 12}}
+	cases := []struct{ in, want int }{{0, 6}, {-3, 6}, {1, 1}, {6, 6}, {12, 12}, {30, 30}, {31, 30}, {99, 30}}
 	for _, tc := range cases {
 		if got := clampSteps(tc.in); got != tc.want {
 			t.Errorf("clampSteps(%d) = %d, want %d", tc.in, got, tc.want)

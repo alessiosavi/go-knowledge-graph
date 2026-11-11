@@ -289,9 +289,11 @@ svg#graph .edge text {
 #reader-body {
   border-top: 1px solid var(--line);
   padding-top: 0.6rem;
+}
+.markdown-body {
   overflow-wrap: anywhere;
 }
-#reader-body pre {
+.markdown-body pre {
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -299,6 +301,6 @@ svg#graph .edge text {
   overflow-x: auto;
   font-size: 0.85rem;
 }
-#reader-body img {
+.markdown-body img {
   max-width: 100%;
 }

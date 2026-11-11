@@ -124,9 +124,26 @@ is benign: the newer version completes normally.
   answers for the process lifetime — answers are unchanged, only the
   progressive rendering stops.
 - Provider cost and latency apply to every ask. Each ask is bounded by
-  `GKG_AGENT_MAX_STEPS` (default 6, hard cap 12 model turns that request
+  `GKG_AGENT_MAX_STEPS` (default 6, hard cap 30 model turns that request
   tools; each turn executes up to 8 tool calls) and `GKG_AGENT_TIMEOUT_S`
-  (default 60), but several model turns happen within that budget.
+  (default 60), including one final tools-less turn when the step or context
+  budget is reached. A failed or empty budget final turn returns a bounded
+  notice with the gathered evidence; cancellation/deadline errors still
+  fail the ask.
+- Tool-result transcript copies are capped at 32 KiB each, with truncation
+  guidance. `GKG_AGENT_CONTEXT_BUDGET_KB` (default 256 KiB) stops further
+  tools once cumulative copies reach the budget. The final result may cross
+  the threshold; skipped calls still get paired budget-error results. This
+  is a tool-result byte budget, not a token or total-context limit: questions,
+  tool arguments, and other messages also consume model context. Evidence
+  retains complete results and may still be large.
+- Answer HTML uses the reader’s sanitized Markdown pipeline, with all images
+  omitted. Raw HTML is omitted and unsafe link destinations become `#`.
+  Progressive deltas remain plain text until the done event replaces them.
+- The edge defaults its ask timeout to `GKG_AGENT_TIMEOUT_S + 30`; explicit
+  `EDGE_ASK_TIMEOUT_S` values below agent timeout + 15 prevent startup.
+  Raising the agent timeout increases the time and provider cost an ask may
+  consume; both JSON and streamed edge routes use the aligned timeout.
 - Read-only by design: the tool set mirrors the MCP read set — no ingest in
   v1. Tool outputs are treated as untrusted data in the prompt, but
   ingested documents can still attempt prompt injection; the read-only

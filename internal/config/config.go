@@ -108,13 +108,14 @@ type JudgeConfig struct {
 // POST /v1/agent/ask. Disabled by default; the endpoint answers 501 while
 // disabled and the web UI hides its ask panel.
 type AgentConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Stream   bool   `yaml:"stream"` // stream the provider response (GKG_AGENT_STREAM; default true)
-	BaseURL  string `yaml:"base_url"`
-	APIKey   string `yaml:"api_key"`
-	Model    string `yaml:"model"`
-	MaxSteps int    `yaml:"max_steps"` // tool-turn budget per ask (clamped 1..12; each turn executes up to 8 calls)
-	TimeoutS int    `yaml:"timeout_s"` // whole-ask budget in seconds
+	Enabled         bool   `yaml:"enabled"`
+	Stream          bool   `yaml:"stream"` // stream the provider response (GKG_AGENT_STREAM; default true)
+	BaseURL         string `yaml:"base_url"`
+	APIKey          string `yaml:"api_key"`
+	Model           string `yaml:"model"`
+	MaxSteps        int    `yaml:"max_steps"`         // tool-turn budget per ask (clamped 1..30; each turn executes up to 8 calls)
+	TimeoutS        int    `yaml:"timeout_s"`         // whole-ask budget in seconds
+	ContextBudgetKB int    `yaml:"context_budget_kb"` // cumulative tool-result transcript budget (default 256 KiB)
 }
 
 // IngestConfig tunes the ingestion pipeline.
@@ -173,12 +174,13 @@ func defaults() Config {
 			BaseURL:     "https://api.openai.com/v1",
 		},
 		Agent: AgentConfig{
-			Enabled:  false,
-			Stream:   true,
-			BaseURL:  "https://api.openai.com/v1",
-			Model:    "deepseek-v4.1-flash",
-			MaxSteps: 6,
-			TimeoutS: 60,
+			Enabled:         false,
+			Stream:          true,
+			BaseURL:         "https://api.openai.com/v1",
+			Model:           "deepseek-v4.1-flash",
+			MaxSteps:        6,
+			TimeoutS:        60,
+			ContextBudgetKB: 256,
 		},
 		Ingest: IngestConfig{
 			MaxUploadMB:      20,
