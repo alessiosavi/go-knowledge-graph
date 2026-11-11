@@ -84,7 +84,7 @@ EOF
 # These generated values must also beat inherited shell settings in Compose.
 while IFS= read -r setting; do export "$setting"; done <"$tmp/edge.env"
 base="https://localhost:$EDGE_HTTPS_PORT"
-go build -o "$tmp/check" ./scripts/edgecheck
+"${EDGECHECK_GO:-go}" build -o "$tmp/check" ./scripts/edgecheck
 "$tmp/check" prepare "$tmp"
 { cat "$tmp/password"; printf '\n'; } | make passwd LOGIN=edgecheck "${make_args[@]}" >"$tmp/passwd.log" 2>&1 || fail 'password helper'
 ok 'private password with dollar, colon and quotes'

@@ -35,3 +35,7 @@ deploy/edge/certs/
 # Planning artifacts live outside the repo
 docs/superpowers/
 *.env
+
+# AWS deploy login material
+deploy/aws/box.htpasswd
+deploy/aws/box.netrc

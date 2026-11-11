@@ -70,6 +70,7 @@ evaluate ([docs/quickstart.md#8-evaluation](docs/quickstart.md)), or run
 the acceptance script (`scripts/acceptance.sh`); day-to-day usage lives in
 [USAGE.md](USAGE.md). The full five-minute tour, configuration reference
 and troubleshooting live in [docs/quickstart.md](docs/quickstart.md).
+For the SSM-managed EC2 deployment, see [AWS box operations](docs/deploy-aws.md).
 
 ## Architecture
 
