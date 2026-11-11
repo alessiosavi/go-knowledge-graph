@@ -184,7 +184,154 @@ func TestUpsertExtractionCreatesMentionsAndFacts(t *testing.T) {
 	}
 }
 
-func TestUpsertExtractionKeepsFirstType(t *testing.T) {
+func TestUpsertExtractionMentionsWithoutFacts(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	uri := os.Getenv(graphtest.URIEnv)
+	docID, chunkID := entitiesTestDoc(t, st, "Ada Lovelace wrote the first algorithm.")
+	fx := newFixture(t)
+	for i := range fx.ents {
+		fx.ents[i].Mentions = []graph.MentionSpan{{Start: i * 23, End: i*23 + 12, Type: fx.ents[i].Type}}
+		fx.ents[i].Type = "seed"
+	}
+	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", fx.ents, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := rawCount(t, uri, fmt.Sprintf("MATCH (:Chunk {id: '%s'})-[m:MENTIONS]->(:Entity) RETURN count(m) AS n", chunkID)); n != 2 {
+		t.Errorf("MENTIONS = %d, want 2", n)
+	}
+	for _, ent := range fx.ents {
+		view, err := st.EntityView(ctx, ent.Key, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.MentionCount != 1 || view.Type != ent.Mentions[0].Type || len(view.Facts) != 0 {
+			t.Errorf("view = %+v, want one mention typed %q and no facts", view, ent.Mentions[0].Type)
+		}
+	}
+}
+
+func TestUpsertExtractionUnionsMentionSpans(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	uri := os.Getenv(graphtest.URIEnv)
+	docID, chunkID := entitiesTestDoc(t, st, "Ada Lovelace wrote the first algorithm. Ada.")
+	fx := newFixture(t)
+	fx.ents[0].Mentions = []graph.MentionSpan{
+		{Start: 0, End: 12, Type: "person"},
+		{Start: 0, End: 12, Type: "person"},
+		{Start: 39, End: 42, Type: "person"},
+	}
+	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", fx.ents, []graph.FactUpsert{fx.fact}); err != nil {
+		t.Fatal(err)
+	}
+	recs := rawRecords(t, uri, fmt.Sprintf(`MATCH (:Chunk {id: '%s'})-[m:MENTIONS]->(e:Entity)
+RETURN e.key AS key, m.start AS start, m.end AS end, m.type AS type ORDER BY key, start`, chunkID))
+	if len(recs) != 3 {
+		t.Fatalf("mentions = %d, want 3 (two entity spans and one fact-only span)", len(recs))
+	}
+	for _, r := range recs {
+		if testString(r, "key") == fx.ents[0].Key {
+			if testString(r, "type") != "person" {
+				t.Errorf("entity span lost its type: %+v", r)
+			}
+		} else if typ, _ := r.Get("type"); typ != nil {
+			t.Errorf("fact-only span type = %v, want null", typ)
+		}
+	}
+	view, err := st.EntityView(ctx, fx.ents[0].Key, false)
+	if err != nil || view.MentionCount != 2 {
+		t.Errorf("view = %+v, %v; want count 2 for two spans in one chunk", view, err)
+	}
+}
+
+func TestEntityTypeVote(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		types []string
+		want  string
+	}{
+		{"majority", []string{"product", "product", "organization"}, "product"},
+		{"tie", []string{"technology", "product"}, "product"},
+		{"unknown", []string{"product", "", ""}, "product"},
+		{"untyped", []string{""}, "seed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := graphtest.Store(t)
+			ctx := context.Background()
+			docID := testUpsert(t, st, "file", uniqueSource(t), "hash-a").ID
+			ent := newFixture(t).ents[0]
+			ent.Type = "seed"
+			for i, typ := range tc.types {
+				if err := st.PutChunks(ctx, docID, []graph.Chunk{{Seq: i, Text: "A widget."}}); err != nil {
+					t.Fatal(err)
+				}
+				ent.Mentions = []graph.MentionSpan{{Start: 0, End: 1, Type: typ}}
+				if err := st.UpsertExtraction(ctx, docID, fmt.Sprintf("%s-c%d", docID, i), "mock:1", []graph.EntityUpsert{ent}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			view, err := st.EntityView(ctx, ent.Key, false)
+			if err != nil || view.Type != tc.want || view.MentionCount != len(tc.types) {
+				t.Fatalf("view = %+v, %v; want type %q and count %d", view, err, tc.want, len(tc.types))
+			}
+			if tc.name == "majority" {
+				for i := 0; i < 2; i++ {
+					if err := st.UpsertExtraction(ctx, docID, fmt.Sprintf("%s-c%d", docID, i), "mock:2", nil, nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				view, err = st.EntityView(ctx, ent.Key, false)
+				if err != nil || view.Type != "organization" || view.MentionCount != 1 {
+					t.Errorf("after re-extraction: view = %+v, %v; want organization, count 1", view, err)
+				}
+				if err := st.UpsertExtraction(ctx, docID, docID+"-c2", "mock:2", nil, nil); err != nil {
+					t.Fatal(err)
+				}
+				view, err = st.EntityView(ctx, ent.Key, false)
+				if err != nil || view.Type != "organization" || view.MentionCount != 0 {
+					t.Errorf("after removing all mentions: view = %+v, %v; want organization, count 0", view, err)
+				}
+			}
+		})
+	}
+}
+
+func TestEntityTypeVoteAfterDocumentRemoval(t *testing.T) {
+	for _, action := range []string{"delete", "supersede"} {
+		t.Run(action, func(t *testing.T) {
+			st := graphtest.Store(t)
+			ctx := context.Background()
+			ent := newFixture(t).ents[0]
+			var docs []string
+			for _, typ := range []string{"product", "product", "organization"} {
+				docID, chunkID := entitiesTestDoc(t, st, "A widget.")
+				docs = append(docs, docID)
+				ent.Mentions = []graph.MentionSpan{{Start: 0, End: 1, Type: typ}}
+				if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", []graph.EntityUpsert{ent}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, id := range docs[:2] {
+				var err error
+				if action == "delete" {
+					err = st.DeleteDocument(ctx, id)
+				} else {
+					err = st.Supersede(ctx, id, docs[2])
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			view, err := st.EntityView(ctx, ent.Key, false)
+			if err != nil || view.Type != "organization" || view.MentionCount != 1 {
+				t.Errorf("after %s: view = %+v, %v; want organization, count 1", action, view, err)
+			}
+		})
+	}
+}
+
+func TestUpsertExtractionWithoutTypedMentionsKeepsType(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()
 	docID, chunkID := entitiesTestDoc(t, st, "A widget.")
@@ -204,7 +351,7 @@ func TestUpsertExtractionKeepsFirstType(t *testing.T) {
 	if view.Type != "product" {
 		t.Errorf("type = %q, want first type product", view.Type)
 	}
-	// A legacy node with no type can still acquire its first type.
+	// Without typed mentions a missing type stays unknown on re-extraction.
 	uri := os.Getenv(graphtest.URIEnv)
 	rawRun(t, uri, fmt.Sprintf("MATCH (e:Entity {key: '%s'}) SET e.type = null", ent.Key))
 	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", []graph.EntityUpsert{ent}, nil); err != nil {
@@ -214,8 +361,8 @@ func TestUpsertExtractionKeepsFirstType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Type != "organization" {
-		t.Errorf("missing type was filled with %q, want organization", view.Type)
+	if view.Type != "" {
+		t.Errorf("missing type was filled with %q without a type vote", view.Type)
 	}
 }
 

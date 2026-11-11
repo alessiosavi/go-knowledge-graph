@@ -227,7 +227,7 @@ SET d.status = $status, d.error = $error, d.updated_at = $now`,
 // version it replaced, and entities left without any relationship are
 // pruned. It refuses to run when the old version is missing or already
 // superseded, or when the new version is missing. Note: entities merged
-// without any fact have no edges and are therefore invisible to the
+// without mentions or facts have no edges and are therefore invisible to the
 // touched-set GC — the periodic global GC sweeps them.
 func (s *Store) Supersede(ctx context.Context, oldID, newID string) error {
 	if oldID == newID {

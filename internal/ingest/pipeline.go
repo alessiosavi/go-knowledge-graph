@@ -938,6 +938,13 @@ func (p *Pipeline) buildChunks(ctx context.Context, doc *graph.Document, text st
 // audited; below assert_floor it is stored as low-confidence.
 func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract.ChunkResult, version string) ([]graph.EntityUpsert, []graph.FactUpsert, []graph.FactAudit) {
 	ents := make(map[string]graph.EntityUpsert, len(r.Mentions))
+	bestScores := make(map[string]float64, len(r.Mentions))
+	type mentionKey struct {
+		key        string
+		start, end int
+	}
+	bestMentions := make(map[mentionKey]extract.Mention, len(r.Mentions))
+	mentionOrder := make([]mentionKey, 0, len(r.Mentions))
 	for _, m := range r.Mentions {
 		if strings.TrimSpace(m.Text) == "" || m.Label == "" {
 			continue
@@ -946,9 +953,28 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract
 		if key == "" {
 			continue
 		}
-		if _, ok := ents[key]; !ok {
-			ents[key] = graph.EntityUpsert{Key: key, Name: graph.DisplayName(m.Text), Type: m.Label}
+		e, ok := ents[key]
+		if !ok {
+			e = graph.EntityUpsert{Key: key, Name: graph.DisplayName(m.Text), Type: m.Label}
 		}
+		if !ok || m.Score > bestScores[key] || (m.Score == bestScores[key] && m.Label < e.Type) {
+			e.Type = m.Label
+			bestScores[key] = m.Score
+		}
+		ents[key] = e
+		mk := mentionKey{key, m.Start, m.End}
+		best, seen := bestMentions[mk]
+		if !seen {
+			mentionOrder = append(mentionOrder, mk)
+		}
+		if !seen || m.Score > best.Score || (m.Score == best.Score && m.Label < best.Label) {
+			bestMentions[mk] = m
+		}
+	}
+	for _, mk := range mentionOrder {
+		e := ents[mk.key]
+		e.Mentions = append(e.Mentions, graph.MentionSpan{Start: mk.start, End: mk.end, Type: bestMentions[mk].Label})
+		ents[mk.key] = e
 	}
 
 	facts := make([]graph.FactUpsert, 0, len(r.Candidates))

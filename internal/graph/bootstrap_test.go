@@ -155,6 +155,40 @@ CREATE (a:Entity {key: 'person:ada lovelace %s'}), (b:Entity {key: 'work:notes %
 	}
 }
 
+func TestMigrateExtractionSchemaV2(t *testing.T) {
+	st := graphtest.MigrationStore(t)
+	ctx := context.Background()
+	uri := os.Getenv(graphtest.URIEnv)
+	docID, chunkID := entitiesTestDoc(t, st, "A widget.")
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, docID); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", newFixture(t).ents, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetStatus(ctx, docID, graph.StatusDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	rawRun(t, uri, `MATCH (m:GkgMeta {id: 'extraction_schema'}) SET m.value = 2`)
+	result, err := st.MigrateExtractionSchema(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Migrated || result.From != 2 || result.To != 3 || result.DocumentsRequeued < 1 || result.EntitiesRemoved < 2 {
+		t.Errorf("v2 migration = %+v, want v2 to v3 with derived data cleared and documents requeued", result)
+	}
+	assertExtractionSchemaMarker(t, uri)
+	doc, err := st.Document(ctx, docID)
+	if err != nil || doc.Status != graph.StatusChunked {
+		t.Errorf("document = %+v, %v; want chunked", doc, err)
+	}
+	if n := rawCount(t, uri, `MATCH (e:Entity) RETURN count(e) AS n`); n != 0 {
+		t.Errorf("entities after v2 migration = %d, want 0", n)
+	}
+}
+
 func TestMigrateFreshStoreSetsMarker(t *testing.T) {
 	st := graphtest.MigrationStore(t)
 	ctx := context.Background()

@@ -147,11 +147,11 @@ func runMigrate(stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg migrate: %v\n", err)
 		return 1
 	}
-	fmt.Fprintln(stdout, "schema ok")
 	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
 		fmt.Fprintf(stderr, "gkg migrate: %v\n", err)
 		return 1
 	}
+	fmt.Fprintln(stdout, "schema ok")
 	pipe, _, err := buildPipeline(ctx, cfg, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg migrate: %v; start \"gkg serve\" with a usable extractor to finish the re-extraction of queued documents\n", err)
