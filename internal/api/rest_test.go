@@ -868,3 +868,74 @@ func TestBodyCaps(t *testing.T) {
 		t.Fatal("submitter called for an oversized upload")
 	}
 }
+
+type fakeRebuilder struct {
+	fakeSubmitter
+	res           ingest.RebuildResult
+	err           error
+	docID, labels string
+	called        bool
+}
+
+func (f *fakeRebuilder) Rebuild(_ context.Context, docID, labels string) (ingest.RebuildResult, error) {
+	f.called, f.docID, f.labels = true, docID, labels
+	return f.res, f.err
+}
+
+func TestAdminRebuild(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		err        error
+		res        ingest.RebuildResult
+		code       int
+	}{
+		{name: "queued and busy", body: `{"document_id":"doc","labels":"news"}`, res: ingest.RebuildResult{Queued: []string{"doc"}, Busy: []string{"busy"}}, code: 202},
+		{name: "all defaults", body: `{}`, code: 202},
+		{name: "unknown preset", body: `{"labels":"nope"}`, err: errors.New("unknown preset"), code: 400},
+		{name: "unknown document", body: `{"document_id":"missing"}`, err: fmt.Errorf("%w: %w", ingest.ErrStore, graph.ErrNotFound), code: 404},
+		{name: "not done", body: `{"document_id":"queued"}`, err: fmt.Errorf("%w: %w", ingest.ErrStore, graph.ErrNotDone), code: 409},
+		{name: "store unavailable", body: `{}`, err: fmt.Errorf("%w: unavailable", ingest.ErrStore), code: 500},
+		{name: "invalid JSON", body: `{`, code: 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{}
+			cfg.Server.APIKey = "internal-test-key"
+			rebuild := &fakeRebuilder{res: tc.res, err: tc.err}
+			h := NewServer(cfg, nil, rebuild).Handler()
+			unauthorized := doJSON(t, h, http.MethodPost, "/v1/admin/rebuild", tc.body)
+			if unauthorized.Code != 401 || rebuild.called {
+				t.Fatalf("unauthenticated rebuild = %d, called=%v", unauthorized.Code, rebuild.called)
+			}
+			rr := do(t, h, http.MethodPost, "/v1/admin/rebuild", strings.NewReader(tc.body), map[string]string{
+				"Content-Type": "application/json", "Authorization": "Bearer internal-test-key",
+			})
+			if rr.Code != tc.code {
+				t.Fatalf("status = %d, want %d; %s", rr.Code, tc.code, rr.Body.String())
+			}
+			if tc.name != "invalid JSON" {
+				var req struct {
+					DocumentID string `json:"document_id"`
+					Labels     string `json:"labels"`
+				}
+				if err := json.Unmarshal([]byte(tc.body), &req); err != nil {
+					t.Fatal(err)
+				}
+				if !rebuild.called || rebuild.docID != req.DocumentID || rebuild.labels != req.Labels {
+					t.Fatalf("request not forwarded: %+v", rebuild)
+				}
+			}
+			if tc.code == 202 {
+				got := decode[struct {
+					Queued int      `json:"queued"`
+					Busy   []string `json:"busy"`
+				}](t, rr)
+				if got.Queued != len(tc.res.Queued) || got.Busy == nil || strings.Contains(rr.Body.String(), "null") {
+					t.Fatalf("response = %s", rr.Body.String())
+				}
+				if len(got.Busy) != len(tc.res.Busy) || (len(got.Busy) > 0 && got.Busy[0] != tc.res.Busy[0]) {
+					t.Fatalf("busy IDs = %v, want %v", got.Busy, tc.res.Busy)
+				}
+			}
+		})
+	}
+}

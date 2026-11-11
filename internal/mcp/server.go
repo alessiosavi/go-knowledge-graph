@@ -237,7 +237,7 @@ func registerTools(s *Server, sdk *mcpgo.Server) {
 	}, s.handleSearch)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "get_entity",
-		Description: "One entity with aliases and evidenced facts (excerpt, confidence, judge status). Low-confidence facts need include_low_confidence.",
+		Description: "One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status). Low-confidence facts need include_low_confidence.",
 	}, s.handleGetEntity)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "traverse",

@@ -59,6 +59,12 @@ type Result struct {
 	Noop       bool
 }
 
+// RebuildResult lists reset documents and those skipped because they are busy.
+type RebuildResult struct {
+	Queued []string
+	Busy   []string
+}
+
 // ErrStore marks a submission failure caused by the graph store (an
 // infrastructure problem) rather than the submitted input, so callers can
 // map it to a 5xx. Wrapped store errors keep their own chain: errors.Is
@@ -109,6 +115,9 @@ type pipelineStore interface {
 	UpsertDocument(context.Context, graph.DocumentInput) (graph.UpsertResult, error)
 	Document(context.Context, string) (*graph.Document, error)
 	InFlight(context.Context) ([]graph.Document, error)
+	DoneDocumentIDs(context.Context) ([]string, error)
+	ResetExtraction(context.Context, string, string) error
+	GC(context.Context) error
 	SetStatus(context.Context, string, graph.Status, string) error
 	DeleteChunksFrom(context.Context, string, int) error
 	PutChunks(context.Context, string, []graph.Chunk) error
@@ -162,8 +171,9 @@ type Pipeline struct {
 
 	jobs chan string
 
-	mu      sync.Mutex
-	pending map[string]submission
+	mu       sync.Mutex
+	pending  map[string]submission
+	queueCtx context.Context // worker/server lifetime, never a request context
 
 	procLocks sync.Map // docID → *sync.Mutex, serializes Process per document
 
@@ -179,14 +189,15 @@ type Pipeline struct {
 // covered by the in-memory cache.
 func NewPipeline(cfg config.Config, st *graph.Store, prov extract.Provider, ix *dedup.Index, load TextLoader) *Pipeline {
 	return &Pipeline{
-		cfg:     cfg,
-		store:   st,
-		prov:    prov,
-		ix:      ix,
-		load:    load,
-		jobs:    make(chan string, jobsBuffer),
-		pending: make(map[string]submission),
-		spool:   &submissionSpool{dir: cfg.Ingest.SpoolDir, maxCount: cfg.Ingest.SpoolMaxCount, maxBytes: int64(cfg.Ingest.SpoolMaxBytes)},
+		cfg:      cfg,
+		store:    st,
+		prov:     prov,
+		ix:       ix,
+		load:     load,
+		jobs:     make(chan string, jobsBuffer),
+		pending:  make(map[string]submission),
+		queueCtx: context.Background(),
+		spool:    &submissionSpool{dir: cfg.Ingest.SpoolDir, maxCount: cfg.Ingest.SpoolMaxCount, maxBytes: int64(cfg.Ingest.SpoolMaxBytes)},
 	}
 }
 
@@ -720,6 +731,61 @@ func (p *Pipeline) embedEntities(ctx context.Context, candidates map[string]stri
 			slog.Warn("ingest: some entities vanished before their embedding write", "missing", missing)
 		}
 	}
+}
+
+// Rebuild resets one done document, or all done documents, for extraction
+// from stored chunks. Validate the preset before looking up or changing any
+// document; busy documents are left untouched. Successfully committed resets
+// are queued even if a later reset or GC fails.
+func (p *Pipeline) Rebuild(ctx context.Context, docID, labels string) (res RebuildResult, err error) {
+	res = RebuildResult{Queued: []string{}, Busy: []string{}}
+	if _, _, err := p.labelsFor(labels); err != nil {
+		return res, err
+	}
+	ids := []string{docID}
+	if docID == "" {
+		ids, err = p.store.DoneDocumentIDs(ctx)
+		if err != nil {
+			return res, fmt.Errorf("%w: %w", ErrStore, err)
+		}
+	}
+	defer func() {
+		if len(res.Queued) == 0 {
+			return
+		}
+		p.mu.Lock()
+		queueCtx := p.queueCtx
+		p.mu.Unlock()
+		queued := append([]string(nil), res.Queued...)
+		go func() {
+			for _, id := range queued {
+				p.enqueue(queueCtx, id)
+			}
+		}()
+	}()
+	for _, id := range ids {
+		lock := p.docLock(id)
+		if !lock.TryLock() {
+			res.Busy = append(res.Busy, id)
+			continue
+		}
+		err := p.store.ResetExtraction(ctx, id, labels)
+		lock.Unlock()
+		if err != nil {
+			// Another rebuild/admission may have queued this document since
+			// the all-done snapshot. It must not stop the remaining targets.
+			if docID == "" && errors.Is(err, graph.ErrNotDone) {
+				res.Busy = append(res.Busy, id)
+				continue
+			}
+			return res, fmt.Errorf("%w: %w", ErrStore, err)
+		}
+		res.Queued = append(res.Queued, id)
+	}
+	if err := p.store.GC(ctx); err != nil {
+		return res, fmt.Errorf("%w: %w", ErrStore, err)
+	}
+	return res, nil
 }
 
 // Recover requeues every in-flight document (restart path). Start the

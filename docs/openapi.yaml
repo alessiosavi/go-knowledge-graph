@@ -19,6 +19,64 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /v1/admin/rebuild:
+    post:
+      summary: Rebuild completed documents (loopback-only operator route)
+      description: |
+        Not exposed through the edge. Requires the internal bearer when configured.
+        On a shared box, requires the owner's go after ingest finishes and the queue
+        is empty. Removes facts, mentions and rejected-fact audits, preserves
+        documents and stored chunk text, and re-queues extraction and judging
+        without fetching or converting again. Busy documents are skipped.
+        Each document reset commits separately; if a later store operation fails,
+        earlier successful resets remain queued. Inspect statuses before retrying.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                labels:
+                  type: string
+                  description: Installed preset; empty or omitted keeps each document's preset.
+                document_id:
+                  type: string
+                  description: One document ID; empty or omitted selects every done document.
+      responses:
+        "202":
+          description: Completed documents reset and queued; busy IDs skipped.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [queued, busy]
+                properties:
+                  queued:
+                    type: integer
+                    minimum: 0
+                  busy:
+                    type: array
+                    items:
+                      type: string
+        "400":
+          description: Invalid JSON or unknown/invalid preset; nothing reset.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Unknown document ID.
+        "409":
+          description: Selected document is not done.
+        "413":
+          description: JSON body exceeds 1 MiB.
+        "500":
+          description: Store failure; earlier successful resets remain queued.
+        "501":
+          description: No rebuild pipeline wired.
   /v1/ingest:
     post:
       summary: Submit a document for ingestion

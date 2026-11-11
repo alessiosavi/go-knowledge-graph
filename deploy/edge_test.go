@@ -79,7 +79,7 @@ func TestEdgeAllowlist(t *testing.T) {
 	if strings.Count(template, "proxy_pass ") != 5 {
 		t.Error("expected exactly five named proxy groups")
 	}
-	if strings.Contains(template, "/v1/cypher") || strings.Contains(template, "/metrics") || strings.Contains(template, "/readyz") {
+	if strings.Contains(template, "/v1/admin") || strings.Contains(template, "/v1/cypher") || strings.Contains(template, "/metrics") || strings.Contains(template, "/readyz") {
 		t.Error("operator routes must not be in template")
 	}
 }

@@ -8,6 +8,9 @@ import (
 // ErrNotFound reports a missing node or document.
 var ErrNotFound = errors.New("graph: not found")
 
+// ErrNotDone reports a rebuild attempt against a document that is not done.
+var ErrNotDone = errors.New("graph: document is not done")
+
 // ErrSuperseded reports a write against a document that has been superseded.
 var ErrSuperseded = errors.New("graph: document is superseded")
 

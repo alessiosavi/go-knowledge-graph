@@ -28,6 +28,11 @@ type Submitter interface {
 	Submit(ctx context.Context, in ingest.Input) (ingest.Result, error)
 }
 
+// Rebuilder schedules extraction from stored chunks in the server process.
+type Rebuilder interface {
+	Rebuild(ctx context.Context, docID, labels string) (ingest.RebuildResult, error)
+}
+
 // jsonBodyCap bounds the JSON endpoints; ingestion submissions have their
 // own config-driven cap (Ingest.MaxUploadMB).
 const jsonBodyCap = 1 << 20
@@ -90,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /metrics", s.metrics.Handler())
 	}
 	mux.HandleFunc("POST /v1/ingest", s.handleIngest)
+	mux.HandleFunc("POST /v1/admin/rebuild", s.handleAdminRebuild)
 	mux.HandleFunc("GET /v1/documents", s.handleDocuments)
 	mux.HandleFunc("GET /v1/documents/{id}", s.handleDocument)
 	mux.HandleFunc("GET /v1/documents/{id}/status", s.handleStatus)

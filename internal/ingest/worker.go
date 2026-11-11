@@ -16,6 +16,9 @@ type Worker struct {
 // Start launches the pool; it returns immediately and runs until ctx is
 // cancelled.
 func (w *Worker) Start(ctx context.Context) {
+	w.Pipeline.mu.Lock()
+	w.Pipeline.queueCtx = ctx
+	w.Pipeline.mu.Unlock()
 	n := w.Workers
 	if n <= 0 {
 		n = 1
