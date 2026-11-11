@@ -240,6 +240,7 @@ func TestRecoveryReloadURLDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.Ingest.SpoolDir = t.TempDir()
 	ctx := context.Background()
 	body := fmt.Sprintf("Stable remote content for the reload test %d.", time.Now().UnixNano())
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -255,7 +256,8 @@ func TestRecoveryReloadURLDocument(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 
-	// Restart: fresh pipeline, no submission cache.
+	// Legacy/missing-spool recovery still re-fetches the URL.
+	cfg.Ingest.SpoolDir = t.TempDir()
 	mock := &extract.Mock{}
 	p2 := NewPipeline(cfg, st, mock, dedup.New(), loader)
 	if err := p2.Process(ctx, res.DocumentID); err != nil {
@@ -273,15 +275,14 @@ func TestRecoveryReloadURLDocument(t *testing.T) {
 	}
 }
 
-// TestRecoveryReloadFileDocumentFailsCleanly pins that file (bytes)
-// submissions cannot be reloaded and fail with the documented resubmit
-// hint instead of a transport error.
+// Missing-spool/legacy file submissions fail with a resubmit hint.
 func TestRecoveryReloadFileDocumentFailsCleanly(t *testing.T) {
 	st := graphtest.Store(t)
 	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.Ingest.SpoolDir = t.TempDir()
 	ctx := context.Background()
 	loader := DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, nil)
 	p1 := NewPipeline(cfg, st, &extract.Mock{}, dedup.New(), loader)
@@ -289,6 +290,7 @@ func TestRecoveryReloadFileDocumentFailsCleanly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
+	cfg.Ingest.SpoolDir = t.TempDir()
 	p2 := NewPipeline(cfg, st, &extract.Mock{}, dedup.New(), loader)
 	if err := p2.Process(ctx, res.DocumentID); err == nil {
 		t.Fatal("Process of a reloaded file document: want error")

@@ -75,6 +75,7 @@ type DocumentInput struct {
 	Title    string
 	Hash     string
 	Labels   string
+	Force    bool // reset an existing live version without changing its version order
 }
 
 // UpsertResult tells the pipeline what the upsert did. Noop means the same

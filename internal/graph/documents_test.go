@@ -401,3 +401,36 @@ func TestChunksMissingDocument(t *testing.T) {
 		t.Fatalf("Chunks(missing) error = %v, want ErrNotFound", err)
 	}
 }
+
+func TestForceDocumentPersistsMetadataAndVersionOrder(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	source := uniqueSource(t)
+	first := testUpsert(t, st, "file", source, "hash-a")
+	if err := st.SetStatus(ctx, first.ID, graph.StatusDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	// A forced retry must not move the older version past this successor.
+	second := testUpsert(t, st, "file", source, "hash-b")
+	res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: source, Hash: "hash-a", Labels: "news", Title: "new title", Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Noop || res.ID != first.ID {
+		t.Fatalf("force result: %+v", res)
+	}
+	doc, err := st.Document(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Status != graph.StatusReceived || doc.Labels != "news" || doc.Title != "new title" {
+		t.Fatalf("forced metadata: %+v", doc)
+	}
+	olds, err := st.OlderLiveVersions(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(olds, first.ID) {
+		t.Fatal("force changed the original version ordering")
+	}
+}

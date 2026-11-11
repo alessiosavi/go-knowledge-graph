@@ -14,6 +14,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -64,8 +65,9 @@ type OpenAIConfig struct {
 
 // SidecarConfig configures the local GLiNEREL sidecar.
 type SidecarConfig struct {
-	URL   string `yaml:"url"`
-	Model string `yaml:"model"`
+	URL      string `yaml:"url"`
+	Model    string `yaml:"model"`
+	TimeoutS int    `yaml:"timeout_s"`
 }
 
 // EmbedderConfig configures the optional embedding provider.
@@ -119,6 +121,9 @@ type AgentConfig struct {
 
 // IngestConfig tunes the ingestion pipeline.
 type IngestConfig struct {
+	SpoolDir         string  `yaml:"spool_dir"`
+	SpoolMaxCount    int     `yaml:"spool_max_count"`
+	SpoolMaxBytes    int     `yaml:"spool_max_bytes"`
 	MaxUploadMB      int     `yaml:"max_upload_mb"`
 	MaxURLMB         int     `yaml:"max_url_mb"`
 	MaxChunks        int     `yaml:"max_chunks"`
@@ -150,7 +155,7 @@ func defaults() Config {
 		Extractor: ExtractorConfig{
 			Mode:    "sidecar",
 			OpenAI:  OpenAIConfig{BaseURL: "https://api.openai.com/v1", Model: "deepseek-v4.1-flash"},
-			Sidecar: SidecarConfig{URL: "http://localhost:8090", Model: "glinerel-314m"},
+			Sidecar: SidecarConfig{URL: "http://localhost:8090", Model: "glinerel-314m", TimeoutS: 300},
 		},
 		Embedder: EmbedderConfig{
 			Enabled: false,
@@ -181,6 +186,8 @@ func defaults() Config {
 			TimeoutS: 60,
 		},
 		Ingest: IngestConfig{
+			SpoolMaxCount:    1024,
+			SpoolMaxBytes:    1 << 30,
 			MaxUploadMB:      20,
 			MaxURLMB:         10,
 			MaxChunks:        2000,
@@ -216,6 +223,19 @@ func Load(path string) (Config, error) {
 	}
 	if err := applyEnv(&cfg, os.LookupEnv); err != nil {
 		return Config{}, err
+	}
+	if cfg.Ingest.SpoolDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Config{}, fmt.Errorf("config: set GKG_INGEST_SPOOL_DIR: %w", err)
+		}
+		cfg.Ingest.SpoolDir = filepath.Join(home, ".local", "share", "gkg", "ingest-spool")
+	}
+	if cfg.Ingest.SpoolMaxCount <= 0 || cfg.Ingest.SpoolMaxBytes <= 0 {
+		return Config{}, errors.New("config: GKG_INGEST_SPOOL_MAX_COUNT and GKG_INGEST_SPOOL_MAX_BYTES must be positive")
+	}
+	if cfg.Extractor.Sidecar.TimeoutS <= 0 || int64(cfg.Extractor.Sidecar.TimeoutS) > math.MaxInt64/1_000_000_000 {
+		return Config{}, errors.New("config: GKG_EXTRACTOR_SIDECAR_TIMEOUT_S must be positive and fit a duration")
 	}
 	// Documented exception: the HTTP API key is set with GKG_API_KEY.
 	if v, ok := os.LookupEnv("GKG_API_KEY"); ok {

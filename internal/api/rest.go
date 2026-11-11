@@ -142,6 +142,15 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.in.Submit(r.Context(), in)
 	if err != nil {
+		if errors.Is(err, ingest.ErrSpoolFull) {
+			w.Header().Set("Retry-After", "30")
+			writeError(w, http.StatusServiceUnavailable, "ingest_busy", "ingest spool is full; retry later")
+			return
+		}
+		if errors.Is(err, ingest.ErrSpool) {
+			writeError(w, http.StatusInternalServerError, "ingest_unavailable", "could not persist submission")
+			return
+		}
 		if errors.Is(err, ingest.ErrStore) {
 			writeStoreError(w, err, "ingest")
 			return

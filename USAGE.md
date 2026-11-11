@@ -37,6 +37,26 @@ Submissions are queued: poll the returned id until it reaches `done`:
 curl -s localhost:8080/v1/documents/<id>/status
 ```
 
+Before returning `202`, gkg saves the converted text and submission metadata
+to a private spool. Queued files, text and URLs survive a gkg restart without
+re-uploading or converting again. Once chunks are persisted, recovery uses
+them and removes the spool entry. Failed documents still need a re-push.
+
+Compose stores the spool in the `gkg-data` named volume; keep that volume
+alongside Memgraph's data. For standalone `gkg serve`, the default is
+`$HOME/.local/share/gkg/ingest-spool` (created automatically); set
+`GKG_INGEST_SPOOL_DIR` to another writable persistent directory if needed.
+Use one gkg process per spool directory. `GKG_INGEST_SPOOL_MAX_COUNT` (1024)
+and `GKG_INGEST_SPOOL_MAX_BYTES` (1073741824, 1 GiB of serialized payloads)
+bound queued storage. When full, REST returns `503` with `Retry-After: 30`;
+retry after capacity is freed. A spool write failure returns `500`.
+
+Sidecar inference runs one request at a time per process, using the available
+CPU threads. `GKG_EXTRACTOR_SIDECAR_TIMEOUT_S` defaults to 300 seconds per
+batch of up to eight chunks, including time queued behind other workers
+(four by default). Tune it for slower machines or larger worker pools;
+serialization avoids CPU oversubscription but cannot guarantee a deadline.
+
 **From the UI**: the ingest box also takes one file — pick Kind → File,
 choose it, and the Source field prefills with the filename (it stays
 editable). Keep the same source string when re-uploading a changed or

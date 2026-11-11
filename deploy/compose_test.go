@@ -62,6 +62,32 @@ func TestComposeDefaultStackRunsModelServices(t *testing.T) {
 	wantEnv(t, gkg, "GKG_CONVERTER_MODE", "docling")
 	wantEnv(t, gkg, "GKG_EXTRACTOR_SIDECAR_URL", "http://sidecar:8090")
 	wantEnv(t, gkg, "GKG_CONVERTER_URL", "http://docling:5001")
+	wantEnv(t, gkg, "GKG_INGEST_SPOOL_DIR", "/var/lib/gkg/ingest-spool")
+	wantEnv(t, gkg, "GKG_EXTRACTOR_SIDECAR_TIMEOUT_S", "300")
+	if _, ok := model.Volumes["gkg-data"]; !ok {
+		t.Error("gkg-data volume missing")
+	}
+	found := false
+	for _, v := range gkg.Volumes {
+		if v.Type == "volume" && strings.HasSuffix(v.Source, "gkg-data") && v.Target == "/var/lib/gkg" && !v.ReadOnly {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("writable gkg-data mount missing")
+	}
+}
+
+func TestGKGVolumeOwnership(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy/Dockerfile.gkg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := string(data)
+	ownership := strings.Index(dockerfile, "mkdir -p /var/lib/gkg/ingest-spool && chown -R gkg:gkg /var/lib/gkg")
+	if ownership < 0 || ownership > strings.Index(dockerfile, "USER gkg") {
+		t.Error("data volume must inherit gkg ownership before switching user")
+	}
 }
 
 func TestComposeEnvFileFollowsGKGEnvFile(t *testing.T) {

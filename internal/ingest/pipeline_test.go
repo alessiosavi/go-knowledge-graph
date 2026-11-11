@@ -39,6 +39,7 @@ func testConfig(t *testing.T) config.Config {
 		t.Fatalf("config: %v", err)
 	}
 	cfg.Ingest.ChunkWords = 12
+	cfg.Ingest.SpoolDir = t.TempDir()
 	cfg.Ingest.OverlapSentences = 0
 	return cfg
 }
@@ -858,6 +859,8 @@ func TestRecoveryReloadHashMismatch(t *testing.T) {
 
 	// Restart: the loader now returns changed content for the same source.
 	contents[source] = text1 + " Completely different ending."
+	// Missing-spool/legacy fallback still verifies the reloaded content.
+	cfg.Ingest.SpoolDir = t.TempDir()
 	p2 := ingest.NewPipeline(cfg, st, &extract.Mock{}, dedup.New(), reloadableLoader(contents))
 	err = p2.Process(ctx, res.DocumentID)
 	if err == nil {

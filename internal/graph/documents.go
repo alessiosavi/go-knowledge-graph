@@ -44,6 +44,18 @@ func (s *Store) UpsertDocument(ctx context.Context, in DocumentInput) (UpsertRes
 
 	for _, d := range live {
 		if d.Hash == in.Hash && d.Status != StatusFailed {
+			if in.Force {
+				// Preserve version ordering, but durably retain the new preset
+				// and metadata before the pipeline can discard its payload.
+				err := s.runWrite(ctx, `
+MATCH (d:Document {id: $id})
+SET d.status = $status, d.error = '', d.labels = $labels, d.title = $title,
+    d.final_url = $final, d.updated_at = $now`, map[string]any{
+					"id": d.ID, "status": string(StatusReceived), "labels": in.Labels,
+					"title": in.Title, "final": in.FinalURL, "now": time.Now().UTC().Format(timeLayout),
+				})
+				return UpsertResult{ID: d.ID}, err
+			}
 			return UpsertResult{ID: d.ID, Noop: true}, nil
 		}
 	}

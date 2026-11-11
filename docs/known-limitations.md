@@ -50,16 +50,25 @@ When conversion is off (including light mode), PDF text extraction uses
 
 ## Restart behaviour of in-flight documents
 
-- **URL** submissions are re-fetched on restart and verified against the
-  stored content hash — a source that changed fails with a resubmit hint
-  instead of ingesting under a stale identity.
-- **File and text** submissions **cannot** be reloaded after a restart
-  (bytes and raw text are not stored); they fail cleanly with a
-  "resubmit the content" error and are retried by resubmitting.
-- **docling mode**: URL documents re-fetch and re-convert on restart and
-  are hash-checked like any source — a conversion that is not byte-stable
-  across runs fails with the existing resubmit hint. File/text reload rules
-  are unchanged (bytes are not stored).
+- Accepted **file, text and URL** submissions persist their converted text
+  before `202`; queued uploads survive restarts without re-conversion.
+  Recovery checks the payload against the graph's content hash. Corrupt
+  payloads fail rather than ingesting under a stale identity.
+- The private spool is removed once chunks are durable, or the document
+  fails or is superseded. Startup sweeps orphan payloads and abandoned
+  temporary files after requeueing in-flight documents. Retain Compose's
+  `gkg-data` volume as well as Memgraph's volume across redeploys.
+- Legacy or missing-spool **URLs** re-fetch and re-convert, then hash-check;
+  changed content fails with a resubmit hint. Missing-spool **files/text**
+  cannot reload; re-push them. **Failed** documents are not automatically
+  retried: re-push the content, including after an extraction timeout.
+- The spool supports one gkg process per directory and defaults to 1024
+  entries / 1 GiB of serialized payloads. Full spools return `503` and
+  `Retry-After: 30`; write failures return `500` before acceptance. See
+  [USAGE](../USAGE.md) for standalone paths and configuration.
+- Sidecar inference is serialized per process. The 300-second default
+  `GKG_EXTRACTOR_SIDECAR_TIMEOUT_S` includes queueing behind other workers,
+  so slow batches or a larger pool can still require a higher timeout.
 
 ## Deleting documents
 

@@ -12,6 +12,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/gkg ./cmd/gkg
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates && adduser -D -u 10001 gkg
+# A fresh named volume inherits this ownership before USER takes effect.
+RUN mkdir -p /var/lib/gkg/ingest-spool && chown -R gkg:gkg /var/lib/gkg
 COPY --from=build /out/gkg /usr/local/bin/gkg
 USER gkg
 EXPOSE 8080

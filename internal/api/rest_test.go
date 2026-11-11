@@ -504,6 +504,19 @@ func TestIngestErrorClassification(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("input failure: code = %d, want 400; body %s", rr.Code, rr.Body.String())
 	}
+	for _, tc := range []struct {
+		err   error
+		code  int
+		retry string
+	}{
+		{fmt.Errorf("%w: disk unavailable", ingest.ErrSpool), http.StatusInternalServerError, ""},
+		{fmt.Errorf("%w: %w", ingest.ErrSpool, ingest.ErrSpoolFull), http.StatusServiceUnavailable, "30"},
+	} {
+		rr := doJSON(t, apiHandler(t, config.Config{}, nil, &fakeSubmitter{err: tc.err}), http.MethodPost, "/v1/ingest", `{"text":"hello"}`)
+		if rr.Code != tc.code || rr.Header().Get("Retry-After") != tc.retry {
+			t.Errorf("spool failure: code %d, Retry-After %q; want %d, %q", rr.Code, rr.Header().Get("Retry-After"), tc.code, tc.retry)
+		}
+	}
 }
 
 // TestCypherEndpointRejectsExplicitLimitAboveCap pins that the configured
