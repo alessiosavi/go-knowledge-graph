@@ -157,6 +157,28 @@ func TestBuildExtractionDocumentScope(t *testing.T) {
 	}
 }
 
+func TestLabelsForRejectsScopedRelation(t *testing.T) {
+	p := &Pipeline{cfg: config.Config{}}
+	p.cfg.Labels.PresetsDir = t.TempDir()
+	preset := "entities:\n  - name: amount\n    scope: document\nrelations:\n  - name: amount_of\n    scope: document\n"
+	if err := os.WriteFile(filepath.Join(p.cfg.Labels.PresetsDir, "custom.yaml"), []byte(preset), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := p.labelsFor("custom")
+	if err == nil || !strings.Contains(err.Error(), "amount_of") || !strings.Contains(err.Error(), "entity labels") {
+		t.Fatalf("labelsFor = %v, want error naming relation amount_of", err)
+	}
+}
+
+func TestJudgeNameUsesMentionText(t *testing.T) {
+	if got := judgeName("€500", "#doc1:€500"); got != "€500" {
+		t.Errorf("judgeName = %q, want the mention text", got)
+	}
+	if got := judgeName("  ", "ada lovelace"); got != "ada lovelace" {
+		t.Errorf("judgeName without text = %q, want the key", got)
+	}
+}
+
 func TestLabelsForRejectsUnknownScope(t *testing.T) {
 	for _, section := range []string{"entities", "relations"} {
 		t.Run(section, func(t *testing.T) {

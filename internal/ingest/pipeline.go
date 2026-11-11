@@ -604,6 +604,15 @@ func dedupeFactCandidates(facts []graph.FactUpsert) []graph.FactUpsert {
 	return out
 }
 
+// judgeName is the entity name shown to the judge: the mention text as it
+// appears in the evidence, falling back to the key when no text is known.
+func judgeName(text, key string) string {
+	if t := strings.TrimSpace(text); t != "" {
+		return t
+	}
+	return key
+}
+
 // verifyFacts runs the judge over selected facts. Failures never fail the
 // document: unverified facts simply keep judge=”.
 func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candidates []judgeCandidate, version string) {
@@ -616,8 +625,11 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 		}
 		evidence := EvidenceSentence(cand.chunkText, f.HeadMention.Start, f.HeadMention.End)
 		start := time.Now()
+		// The judge compares names with the evidence sentence: send the
+		// mention text, never the key (a scoped key is "#<doc>:<name>").
 		verdict, err := p.judge.VerifyFact(ctx, FactInput{
-			Head: f.HeadKey, Rel: f.Rel, Tail: f.TailKey,
+			Head: judgeName(f.HeadMention.Text, f.HeadKey), Rel: f.Rel,
+			Tail:     judgeName(f.TailMention.Text, f.TailKey),
 			Evidence: evidence, DocContext: doc.Title, Confidence: f.Confidence,
 		})
 		if p.metrics != nil {
@@ -1056,6 +1068,13 @@ func (p *Pipeline) labelsFor(name string) ([]extract.Label, []extract.Label, err
 		}
 		if l.Scope != "" && l.Scope != "document" {
 			return nil, nil, fmt.Errorf("label preset %q: label %q has unknown scope %q", name, l.Name, l.Scope)
+		}
+	}
+	// Scope decides entity identity, so it is meaningful on entity labels
+	// only; on a relation it would silently scope nothing.
+	for _, l := range preset.Relations {
+		if l.Scope != "" {
+			return nil, nil, fmt.Errorf("label preset %q: relation label %q cannot have a scope (scope applies to entity labels)", name, l.Name)
 		}
 	}
 	return preset.Entities, preset.Relations, nil
