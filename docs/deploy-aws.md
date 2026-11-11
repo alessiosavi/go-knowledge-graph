@@ -73,8 +73,12 @@ Secrets stay in ignored mode-0600 files: `box.secrets.env`, `box.htpasswd` and
 `box.netrc`. The last contains only the generated deploy login for curl. The
 source provider settings are copied as single-line dotenv assignments, including
 quotes and dollar signs; they are never sourced as shell code. The allowlist is
-`GKG_AGENT_*`, `GKG_EMBEDDER_*`, `GKG_EXTRACTOR_*`, `GKG_JUDGE_*`, `GKG_FURLS_*`
-and the repo's `EMBED_QUERY_FURL`, `EMBED_PRODUCT_FURL`, `EMBED_API_KEY` and
+`GKG_AGENT_*`, `GKG_EMBEDDER_*`, `GKG_EXTRACTOR_*`, `GKG_JUDGE_*`, `GKG_FURLS_*`,
+the converter limits `GKG_CONVERTER_TIMEOUT_S`, `GKG_CONVERTER_OCR_ENGINE`,
+`GKG_CONVERTER_OCR_LANG`, `GKG_CONVERTER_IMAGES`, `GKG_CONVERTER_MAX_IMAGE_MP`,
+`GKG_CONVERTER_MAX_RESPONSE_MB` and `DOCLING_MAX_SYNC_WAIT` (never the converter
+URL, mode or key, which Compose wires for the box), and the repo's
+`EMBED_QUERY_FURL`, `EMBED_PRODUCT_FURL`, `EMBED_API_KEY` and
 `EMBED_BATCH_SIZE` settings. Agent and embedder are enabled; use the same
 providers as the local installation. Multiline dotenv values are unsupported.
 `MEMGRAPH_PASSWORD` and `GKG_API_KEY` are generated only when missing, and remain

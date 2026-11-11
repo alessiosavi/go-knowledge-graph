@@ -147,7 +147,8 @@ services:
           budget=$${GKG_CONVERTER_TIMEOUT_S:-300}
           case "$$budget" in ''|*[!0-9]*) budget=300 ;; esac
           budget=$${budget#"$${budget%%[!0]*}"}
-          wait=$$(($${budget:-0} - 20))
+          # Zero means the default budget, as in gkg and the edge.
+          wait=$$(($${budget:-300} - 20))
           [ "$$wait" -ge 10 ] || wait=10
           DOCLING_SERVE_MAX_SYNC_WAIT=$$wait
           export DOCLING_SERVE_MAX_SYNC_WAIT

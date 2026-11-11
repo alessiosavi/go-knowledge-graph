@@ -929,18 +929,23 @@ func TestAWSACMEProbe(t *testing.T) {
 }
 func TestAWSSecretEnvPreservation(t *testing.T) {
 	h := newAWS(t)
-	source := "GKG_AGENT_API_KEY='" + awsMarker + " $ a # = \"'\nGKG_EMBEDDER_BASE_URL=https://example.com/$literal\nEMBED_API_KEY='" + awsMarker + "'\nGKG_AGENT_ENABLED=false\nIGNORED_KEY=unused\n"
+	source := "GKG_AGENT_API_KEY='" + awsMarker + " $ a # = \"'\nGKG_EMBEDDER_BASE_URL=https://example.com/$literal\nEMBED_API_KEY='" + awsMarker + "'\nGKG_CONVERTER_TIMEOUT_S=1800\nGKG_CONVERTER_OCR_LANG=eng\nDOCLING_MAX_SYNC_WAIT=1700\nGKG_AGENT_ENABLED=false\nIGNORED_KEY=unused\nGKG_CONVERTER_URL=http://localhost:5001\nGKG_CONVERTER_MODE=off\nGKG_CONVERTER_API_KEY=local-only\n"
 	h.write("source.env", source)
 	h.ok("make-box-env.sh")
 	h.private("secrets.env")
 	b := h.read("secrets.env")
-	for _, l := range strings.Split(source, "\n")[:3] {
+	for _, l := range strings.Split(source, "\n")[:6] {
 		if !strings.Contains(b, l+"\n") {
-			t.Fatal("provider line changed")
+			t.Fatal("provider or converter-limit line changed")
 		}
 	}
 	if strings.Contains(b, "IGNORED_KEY") || !strings.Contains(b, "GKG_AGENT_ENABLED=true") {
 		t.Fatal("allowlist or enabled override wrong")
+	}
+	for _, key := range []string{"GKG_CONVERTER_URL", "GKG_CONVERTER_MODE", "GKG_CONVERTER_API_KEY"} {
+		if strings.Contains(b, key+"=") {
+			t.Fatalf("%s is wired by Compose and must not travel to the box", key)
+		}
 	}
 	h.write("secrets.env", strings.Replace(b, "EDGE_HSTS_MAX_AGE=0", "EDGE_HSTS_MAX_AGE=31536000", 1))
 	h.ok("make-box-env.sh")

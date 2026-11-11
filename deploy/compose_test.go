@@ -453,6 +453,7 @@ func TestDoclingEntrypointSyncWait(t *testing.T) {
 		{name: "explicit wait kept", budget: "1800", wait: "500", want: "500"},
 		{name: "leading zeros are decimal", budget: "0600", want: "580"},
 		{name: "non-numeric budget", budget: "30m", want: "280"},
+		{name: "zero budget uses default", budget: "000", want: "280"},
 		{name: "tiny budget floors", budget: "15", want: "10"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
