@@ -57,7 +57,9 @@ func TestSidecarParsesContract(t *testing.T) {
 					Threshold float64 `json:"threshold"`
 				} `json:"relations"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			decoder := json.NewDecoder(r.Body)
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil {
 				t.Errorf("decode request: %v", err)
 			}
 			if len(body.Chunks) != 1 || body.Chunks[0].ID != "c1" {
@@ -82,8 +84,8 @@ func TestSidecarParsesContract(t *testing.T) {
 	}
 	res, err := s.Extract(context.Background(), Request{
 		Chunks:    []RequestChunk{{ID: "c1", Text: "Ada"}},
-		Entities:  []Label{{Name: "person", Threshold: 0.4}},
-		Relations: []Label{{Name: "wrote", Threshold: 0.25}},
+		Entities:  []Label{{Name: "person", Threshold: 0.4, Scope: "document"}},
+		Relations: []Label{{Name: "wrote", Threshold: 0.25, Scope: "document"}},
 	})
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
