@@ -261,9 +261,12 @@ to clean markdown for the ingestion pipeline. Use `LIGHT=1` to run without
 it.
 
 Images are converted by default (`GKG_CONVERTER_IMAGES=true`). Every request
-uses Tesseract OCR (`GKG_CONVERTER_OCR_ENGINE=tesseract`); the docling image
-ships English OCR data only, so Italian accents can be misread. The engine is
-configurable for a docling image that ships another supported engine.
+uses Tesseract OCR (`GKG_CONVERTER_OCR_ENGINE=tesseract`) in English
+(`GKG_CONVERTER_OCR_LANG=eng`); the docling image ships English OCR data only,
+so Italian accents can be misread. Keep the language explicit: the tesseract
+preset's own default list includes models the image lacks, and docling then
+fails every OCR conversion. The engine and languages are configurable for a
+docling image that ships other engines or language data.
 
 Images larger than 12.5 megapixels are refused from their headers before they
 reach docling. Downscale them, or raise `GKG_CONVERTER_MAX_IMAGE_MP` only on a
@@ -287,7 +290,8 @@ sync wait is pinned just below it, so a slow document fails within the
 client budget (the conversion task keeps running server-side). The pinned
 docling-serve `v1.38.2` answers an exceeded sync wait with HTTP 504; gkg
 reports it as a load-stage failure. OCR uses the `ocr_preset` field
-(`GKG_CONVERTER_OCR_ENGINE`, default `tesseract`); conversion errors are
+(`GKG_CONVERTER_OCR_ENGINE`, default `tesseract`) and one `ocr_lang` field per
+language (`GKG_CONVERTER_OCR_LANG`, default `eng`); conversion errors are
 reported with docling's error messages.
 
 ## 8. Evaluation

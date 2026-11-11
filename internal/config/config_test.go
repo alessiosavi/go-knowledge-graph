@@ -68,7 +68,7 @@ func TestDurabilityConfigValidation(t *testing.T) {
 }
 
 func TestConverterImagesConfig(t *testing.T) {
-	for _, key := range []string{"GKG_CONVERTER_IMAGES", "GKG_CONVERTER_OCR_ENGINE", "GKG_CONVERTER_MAX_IMAGE_MP"} {
+	for _, key := range []string{"GKG_CONVERTER_IMAGES", "GKG_CONVERTER_OCR_ENGINE", "GKG_CONVERTER_OCR_LANG", "GKG_CONVERTER_MAX_IMAGE_MP"} {
 		t.Setenv(key, "")
 		if err := os.Unsetenv(key); err != nil {
 			t.Fatal(err)
@@ -76,8 +76,8 @@ func TestConverterImagesConfig(t *testing.T) {
 	}
 	t.Run("default", func(t *testing.T) {
 		cfg, err := config.Load("")
-		if err != nil || !cfg.Converter.Images || cfg.Converter.OCREngine != "tesseract" || cfg.Converter.MaxImageMP != 12.5 {
-			t.Fatalf("want images enabled, tesseract, 12.5 MP: %+v, %v", cfg.Converter, err)
+		if err != nil || !cfg.Converter.Images || cfg.Converter.OCREngine != "tesseract" || cfg.Converter.OCRLang != "eng" || cfg.Converter.MaxImageMP != 12.5 {
+			t.Fatalf("want images enabled, tesseract, eng, 12.5 MP: %+v, %v", cfg.Converter, err)
 		}
 	})
 	t.Run("env overrides yaml", func(t *testing.T) {
@@ -87,9 +87,10 @@ func TestConverterImagesConfig(t *testing.T) {
 		}
 		t.Setenv("GKG_CONVERTER_IMAGES", "false")
 		t.Setenv("GKG_CONVERTER_OCR_ENGINE", "easyocr")
+		t.Setenv("GKG_CONVERTER_OCR_LANG", "eng,ita")
 		t.Setenv("GKG_CONVERTER_MAX_IMAGE_MP", "20.25")
 		cfg, err := config.Load(p)
-		if err != nil || cfg.Converter.Images || cfg.Converter.OCREngine != "easyocr" || cfg.Converter.MaxImageMP != 20.25 {
+		if err != nil || cfg.Converter.Images || cfg.Converter.OCREngine != "easyocr" || cfg.Converter.OCRLang != "eng,ita" || cfg.Converter.MaxImageMP != 20.25 {
 			t.Fatalf("env overrides not applied: %+v, %v", cfg.Converter, err)
 		}
 	})

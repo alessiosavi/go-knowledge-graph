@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -308,5 +309,37 @@ func TestDoclingConfiguredOCR(t *testing.T) {
 	cfg.Converter.OCREngine = "easyocr"
 	if _, err := New(cfg).Convert(context.Background(), []byte("%PDF-1.7"), "report.pdf", "application/pdf"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDoclingOCRLang(t *testing.T) {
+	for _, tc := range []struct {
+		name, config string
+		want         []string
+	}{
+		{"single", "eng", []string{"eng"}},
+		{"list", "eng, ita", []string{"eng", "ita"}},
+		{"empty sends none", "", nil},
+		{"blank entries dropped", " , eng ,", []string{"eng"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseMultipartForm(1 << 20); err != nil {
+					t.Errorf("parse form: %v", err)
+				}
+				got = r.MultipartForm.Value["ocr_lang"]
+				fmt.Fprint(w, `{"document":{"md_content":"ok"},"status":"success"}`)
+			}))
+			defer ts.Close()
+			cfg := doclingConfig(ts.URL)
+			cfg.Converter.OCRLang = tc.config
+			if _, err := New(cfg).Convert(context.Background(), []byte("%PDF-1.4 body"), "a.pdf", "application/pdf"); err != nil {
+				t.Fatalf("Convert: %v", err)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("ocr_lang fields = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
