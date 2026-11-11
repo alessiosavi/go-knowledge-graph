@@ -54,12 +54,25 @@ func NormalizeSurface(s string) string {
 // DisplayName removes edge whitespace, wrapping markdown and one trailing
 // possessive from a name, preserving case and other punctuation.
 func DisplayName(s string) string {
-	trimEdge := func(r rune) bool {
-		return unicode.IsSpace(r) || r == '`' || r == '*' || r == '_'
-	}
-	s = strings.TrimFunc(s, trimEdge)
+	s = trimNameWrappers(s)
 	s = stripPossessive(s)
-	return strings.TrimFunc(s, trimEdge)
+	return trimNameWrappers(s)
+}
+
+// trimNameWrappers peels balanced code/emphasis wrappers only. Underscores
+// and unmatched markers can be part of identifiers (__init__, *args).
+func trimNameWrappers(s string) string {
+	s = strings.TrimSpace(s)
+	for len(s) > 0 && (s[0] == '`' || s[0] == '*') {
+		marker := string(s[0])
+		left := len(s) - len(strings.TrimLeft(s, marker))
+		right := len(s) - len(strings.TrimRight(s, marker))
+		if left != right || len(s) < 2*left || (s[0] == '*' && left > 2) {
+			break
+		}
+		s = strings.TrimSpace(s[left : len(s)-right])
+	}
+	return s
 }
 
 func stripPossessive(s string) string {
@@ -311,8 +324,9 @@ func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorV
 			if err := txRun(ctx, tx, `
 UNWIND $ents AS ent
 MERGE (e:Entity {key: ent.key})
-ON CREATE SET e.id = ent.id, e.mention_count = 0
-SET e.name = ent.name, e.type = ent.type,
+ON CREATE SET e.id = ent.id, e.mention_count = 0, e.type = ent.type
+ON MATCH SET e.type = coalesce(e.type, ent.type)
+SET e.name = ent.name,
     e.aliases = CASE WHEN size(ent.aliases) > 0 THEN ent.aliases ELSE coalesce(e.aliases, []) END`,
 				map[string]any{"ents": entRows}); err != nil {
 				return fmt.Errorf("graph: merge entities: %w", err)

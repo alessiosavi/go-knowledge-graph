@@ -935,7 +935,8 @@ func TestLabelPresetSurvivesRestart(t *testing.T) {
 	}
 	cfg.Labels.PresetsDir = dir
 	source := fmt.Sprintf("text/%s-%d", t.Name(), time.Now().UnixNano())
-	text := fmt.Sprintf("Ada Lovelace wrote the preset note %d today.", time.Now().UnixNano())
+	name := fmt.Sprintf("PresetWidget%d", time.Now().UnixNano())
+	text := fmt.Sprintf("%s wrote the preset note today.", name)
 	contents := map[string]string{source: text}
 
 	p1 := ingest.NewPipeline(cfg, st, &extract.Mock{}, dedup.New(), reloadableLoader(contents))
@@ -952,9 +953,9 @@ func TestLabelPresetSurvivesRestart(t *testing.T) {
 	if n := rawCount(t, uri, fmt.Sprintf("MATCH (:Entity)-[r:powers]->(:Entity) WHERE r.doc_id = '%s' RETURN count(r) AS n", res.DocumentID)); n != 1 {
 		t.Errorf("fact edges with preset relation = %d, want 1 (preset must survive restart)", n)
 	}
-	view, err := st.EntityView(ctx, graph.EntityKey("Ada"), false)
+	view, err := st.EntityView(ctx, graph.EntityKey(name), false)
 	if err != nil {
-		t.Fatalf("EntityView(ada): %v", err)
+		t.Fatalf("EntityView(%s): %v", name, err)
 	}
 	if view.Type != "widget" {
 		t.Errorf("entity type = %q, want widget (preset label)", view.Type)

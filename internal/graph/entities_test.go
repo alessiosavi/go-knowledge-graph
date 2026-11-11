@@ -52,7 +52,16 @@ func TestScopedEntityKey(t *testing.T) {
 }
 
 func TestDisplayName(t *testing.T) {
-	cases := map[string]string{"`recsvc`": "recsvc", "**Shopify Product Search**": "Shopify Product Search", "shopify-scraper's": "shopify-scraper", "C++": "C++"}
+	cases := map[string]string{
+		"__init__": "__init__", "_id": "_id", "*args": "*args", "**kwargs": "**kwargs",
+		"**Shopify**": "Shopify", "`recsvc`": "recsvc", "*x*": "x",
+		"`shopify-scraper`'s": "shopify-scraper", "shopify-scraper's": "shopify-scraper", "C++": "C++",
+		"**Shopify Product Search**": "Shopify Product Search",
+		" **`Shopify’s`** ":          "Shopify",
+		"``recsvc``":                 "recsvc",
+		"*x**":                       "*x**",
+		"`recsvc``":                  "`recsvc``",
+	}
 	for in, want := range cases {
 		if got := graph.DisplayName(in); got != want {
 			t.Errorf("DisplayName(%q) = %q, want %q", in, got, want)
@@ -62,7 +71,7 @@ func TestDisplayName(t *testing.T) {
 
 func TestEntitySurfaceCleanup(t *testing.T) {
 	cases := []struct{ raw, key, display string }{
-		{"  __`Widget’s`__  ", "widget", "Widget"},
+		{"  __`Widget’s`__  ", "widget", "__`Widget’s`__"},
 		{"`'s`", "", ""},
 		{"’s", "", ""},
 		{"Widget's's", "widget's", "Widget's"},
@@ -172,6 +181,41 @@ func TestUpsertExtractionCreatesMentionsAndFacts(t *testing.T) {
 	recs := rawRecords(t, uri, fmt.Sprintf("MATCH (c:Chunk {id: '%s'})-[m:MENTIONS]->(:Entity) RETURN count(m) AS n", chunkID))
 	if got := testInt64(recs[0], "n"); got != 2 {
 		t.Errorf("MENTIONS edges = %d, want 2", got)
+	}
+}
+
+func TestUpsertExtractionKeepsFirstType(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	docID, chunkID := entitiesTestDoc(t, st, "A widget.")
+	fx := newFixture(t)
+	ent := fx.ents[0]
+	ent.Type = "product"
+	for _, typ := range []string{"product", "organization"} {
+		ent.Type = typ
+		if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", []graph.EntityUpsert{ent}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	view, err := st.EntityView(ctx, ent.Key, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Type != "product" {
+		t.Errorf("type = %q, want first type product", view.Type)
+	}
+	// A legacy node with no type can still acquire its first type.
+	uri := os.Getenv(graphtest.URIEnv)
+	rawRun(t, uri, fmt.Sprintf("MATCH (e:Entity {key: '%s'}) SET e.type = null", ent.Key))
+	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", []graph.EntityUpsert{ent}, nil); err != nil {
+		t.Fatal(err)
+	}
+	view, err = st.EntityView(ctx, ent.Key, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Type != "organization" {
+		t.Errorf("missing type was filled with %q, want organization", view.Type)
 	}
 }
 
