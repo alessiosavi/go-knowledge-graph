@@ -17,8 +17,10 @@ awk '
   !/^[A-Za-z_][A-Za-z0-9_]*=/ {exit 1}
   { k=substr($0,1,index($0,"=")-1); if(seen[k]++) exit 1 }
 ' "$src" || fail 'source must contain unique single-line dotenv assignments'
+# Converter URL, mode and key are wired by Compose for the box; a host-run
+# URL (localhost) must never travel, so only operational converter limits do.
 awk -F= '
-  /^(GKG_(AGENT|EMBEDDER|EXTRACTOR|JUDGE|FURLS)_[A-Za-z0-9_]+|EMBED_(QUERY_FURL|PRODUCT_FURL|API_KEY|BATCH_SIZE))=/ && $1!="GKG_AGENT_ENABLED" && $1!="GKG_EMBEDDER_ENABLED" {print}
+  /^(GKG_(AGENT|EMBEDDER|EXTRACTOR|JUDGE|FURLS)_[A-Za-z0-9_]+|GKG_CONVERTER_(TIMEOUT_S|OCR_ENGINE|OCR_LANG|IMAGES|MAX_IMAGE_MP|MAX_RESPONSE_MB)|DOCLING_MAX_SYNC_WAIT|EMBED_(QUERY_FURL|PRODUCT_FURL|API_KEY|BATCH_SIZE))=/ && $1!="GKG_AGENT_ENABLED" && $1!="GKG_EMBEDDER_ENABLED" {print}
 ' "$src" >"$tmp"
 for key in MEMGRAPH_PASSWORD GKG_API_KEY; do
   line=

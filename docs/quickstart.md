@@ -285,9 +285,13 @@ the default `GKG_CONVERTER_URL` (`http://localhost:5001`) (compose defaults to
 `http://docling:5001`). Set `DOCLING_API_KEY` in `.env` to require the
 `X-Api-Key` header on the sidecar. A conversion failure fails the document
 with the converter's reason — there is no silent fallback.
-`GKG_CONVERTER_TIMEOUT_S` (default 300) bounds a conversion; the server's
-sync wait is pinned just below it, so a slow document fails within the
-client budget (the conversion task keeps running server-side). The pinned
+`GKG_CONVERTER_TIMEOUT_S` (default 300) bounds a conversion. docling's sync
+wait defaults to 20 s below it (`DOCLING_MAX_SYNC_WAIT` overrides), so a slow
+document fails within the client budget (the conversion task keeps running
+server-side), and the edge's ingest timeout defaults to it plus 90 s. Long PDFs
+on a small CPU box can need many minutes (a 100-page text PDF took more than
+10 minutes on 4 vCPUs); raise `GKG_CONVERTER_TIMEOUT_S` (for example to 1800)
+and the other two follow. The pinned
 docling-serve `v1.38.2` answers an exceeded sync wait with HTTP 504; gkg
 reports it as a load-stage failure. OCR uses the `ocr_preset` field
 (`GKG_CONVERTER_OCR_ENGINE`, default `tesseract`) and one `ocr_lang` field per

@@ -23,7 +23,18 @@ number() {
  [ "${#2}" -le 9 ] || fail "$1"
 }
 number EDGE_HSTS_MAX_AGE "${EDGE_HSTS_MAX_AGE:-0}"
-number EDGE_INGEST_TIMEOUT_S "${EDGE_INGEST_TIMEOUT_S:-390}"
+# Ingest converts inside the request: fetch 30 s + converter budget + 60 s margin.
+converter_timeout=${GKG_CONVERTER_TIMEOUT_S:-300}
+number GKG_CONVERTER_TIMEOUT_S "$converter_timeout"
+converter_timeout=$(printf '%s\n' "$converter_timeout" | awk '{printf "%d", $0}')
+[ "$converter_timeout" -gt 0 ] || converter_timeout=300
+if [ -z "${EDGE_INGEST_TIMEOUT_S:-}" ]; then
+ EDGE_INGEST_TIMEOUT_S=$((converter_timeout + 90))
+fi
+number EDGE_INGEST_TIMEOUT_S "$EDGE_INGEST_TIMEOUT_S"
+EDGE_INGEST_TIMEOUT_S=$(printf '%s\n' "$EDGE_INGEST_TIMEOUT_S" | awk '{printf "%d", $0}')
+[ "$EDGE_INGEST_TIMEOUT_S" -ge "$((converter_timeout + 30))" ] || fail 'EDGE_INGEST_TIMEOUT_S (must be at least GKG_CONVERTER_TIMEOUT_S + 30 seconds)'
+export EDGE_INGEST_TIMEOUT_S
 # The image sources executable *.envsh files, but executes *.sh files.
 # Compose mounts this script with the .envsh suffix so exports reach 20-envsubst.
 # Upstream: https://github.com/nginx/docker-nginx-unprivileged/blob/main/entrypoint/docker-entrypoint.sh
