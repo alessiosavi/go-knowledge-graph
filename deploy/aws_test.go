@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -314,6 +315,10 @@ func awsStub() {
 			}
 			os.WriteFile(filepath.Join(dir, "dlm-role-created"), nil, 0600)
 		case "dlm create-lifecycle-policy":
+			description := val("--description")
+			if len(description) > 500 || !regexp.MustCompile(`^[0-9A-Za-z _-]+$`).MatchString(description) {
+				die(fmt.Sprintf("InvalidRequestException: The following parameter(s) are invalid: Description {%s}", description))
+			}
 			if mode == "dlm-role-missing" || mode == "dlm-role-unusable" || mode == "dlm-other-error" {
 				n, _ := os.ReadFile(filepath.Join(dir, "dlm-attempts"))
 				attempts, _ := strconv.Atoi(string(n))

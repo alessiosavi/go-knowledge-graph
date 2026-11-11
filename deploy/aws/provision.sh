@@ -117,7 +117,7 @@ if [ -z "$policy" ]; then
   fi
   # IAM propagation can temporarily prevent DLM from assuming the new role.
   for ((attempt=1;attempt<=12;attempt++)); do
-    if aws dlm create-lifecycle-policy --execution-role-arn "$execution_role_arn" --description 'gkg daily EBS snapshots; retain seven' --state ENABLED --tags "project=$NAME,Name=$NAME" --policy-details "file://$work/dlm" --output json >"$work/dlm-result" 2>"$work/dlm-error"; then
+    if aws dlm create-lifecycle-policy --execution-role-arn "$execution_role_arn" --description 'gkg daily EBS snapshots retain seven' --state ENABLED --tags "project=$NAME,Name=$NAME" --policy-details "file://$work/dlm" --output json >"$work/dlm-result" 2>"$work/dlm-error"; then
       policy=$(jq -er '.PolicyId' "$work/dlm-result")
       break
     fi
