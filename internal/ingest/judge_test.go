@@ -145,8 +145,18 @@ func TestRefutedFactMovedToAudit(t *testing.T) {
 	if len(stub.calls) == 0 {
 		t.Fatal("judge was not called")
 	}
-	// The first fact (first-built extraction) is refuted by the stub.
+	// The first fact (first-built extraction) is refuted by the stub. The
+	// judge sees mention text; the store keys are the normalized names.
 	first := stub.calls[0]
+	headKey, tailKey := graph.EntityKey(first.Head), graph.EntityKey(first.Tail)
+	edgeQuery := fmt.Sprintf(
+		"MATCH (:Entity {key: '%s'})-[r]->(:Entity {key: '%s'}) WHERE r.chunk_id CONTAINS '%s' RETURN count(r) AS n",
+		headKey, tailKey, res.DocumentID)
+	// Positive control: the edge exists before the refutation, so the
+	// final absence check cannot pass vacuously.
+	if n := rawCount(t, uri, edgeQuery); n == 0 {
+		t.Fatalf("edge %s -> %s missing before the refutation", headKey, tailKey)
+	}
 	stub.verdicts = map[string]ingest.Verdict{
 		first.Head + "|" + first.Rel + "|" + first.Tail: {Status: "refuted", Confidence: 0.9, Reason: "contradicted by the source"},
 	}
@@ -179,7 +189,7 @@ func TestRefutedFactMovedToAudit(t *testing.T) {
 	// query: a lingering unjudged edge must fail this too).
 	edges := rawCount(t, uri, fmt.Sprintf(
 		"MATCH (:Entity {key: '%s'})-[r]->(:Entity {key: '%s'}) WHERE r.chunk_id CONTAINS '%s' RETURN count(r) AS n",
-		first.Head, first.Tail, res2.DocumentID))
+		headKey, tailKey, res2.DocumentID))
 	if edges != 0 {
 		t.Errorf("refuted edges still present: %d", edges)
 	}
