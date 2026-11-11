@@ -47,6 +47,7 @@ type Docling struct {
 	apiKey    string
 	maxBytes  int64
 	ocrEngine string
+	ocrLangs  []string
 }
 
 // newDocling builds the client from Converter config; config.Load defaults
@@ -64,11 +65,18 @@ func newDocling(c config.ConverterConfig) *Docling {
 	if ocrEngine == "" {
 		ocrEngine = "tesseract"
 	}
+	var ocrLangs []string
+	for _, lang := range strings.Split(c.OCRLang, ",") {
+		if lang = strings.TrimSpace(lang); lang != "" {
+			ocrLangs = append(ocrLangs, lang)
+		}
+	}
 	return &Docling{
 		client:    &http.Client{Timeout: time.Duration(timeoutS) * time.Second},
 		url:       strings.TrimRight(c.URL, "/") + "/v1/convert/file",
 		apiKey:    c.APIKey,
 		ocrEngine: ocrEngine,
+		ocrLangs:  ocrLangs,
 		maxBytes:  int64(maxMB) << 20,
 	}
 }
@@ -96,7 +104,14 @@ func (d *Docling) Convert(ctx context.Context, body []byte, filename, contentTyp
 	}
 	// v1.38.2 uses OCR preset IDs (including tesseract and easyocr); keep
 	// accepting the existing converter.ocr_engine configuration name.
-	for _, field := range [][2]string{{"to_formats", "md"}, {"ocr_preset", d.ocrEngine}, {"image_export_mode", "placeholder"}} {
+	fields := [][2]string{{"to_formats", "md"}, {"ocr_preset", d.ocrEngine}, {"image_export_mode", "placeholder"}}
+	// The tesseract preset's default language list includes models the
+	// image does not ship (spa), which fails every OCR conversion; send the
+	// configured languages explicitly, one field per language.
+	for _, lang := range d.ocrLangs {
+		fields = append(fields, [2]string{"ocr_lang", lang})
+	}
+	for _, field := range fields {
 		if err := mw.WriteField(field[0], field[1]); err != nil {
 			return "", fmt.Errorf("convert: docling: encode request: %w", err)
 		}

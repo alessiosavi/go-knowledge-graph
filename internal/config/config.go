@@ -93,6 +93,7 @@ type ConverterConfig struct {
 	MaxResponseMB int     `yaml:"max_response_mb"`
 	Images        bool    `yaml:"images"`
 	OCREngine     string  `yaml:"ocr_engine"`
+	OCRLang       string  `yaml:"ocr_lang"` // comma-separated, engine codes (Tesseract: eng,ita); empty sends none
 	MaxImageMP    float64 `yaml:"max_image_mp"`
 }
 
@@ -170,6 +171,7 @@ func defaults() Config {
 			MaxResponseMB: 32,
 			Images:        true,
 			OCREngine:     "tesseract",
+			OCRLang:       "eng",
 			MaxImageMP:    12.5,
 		},
 		Judge: JudgeConfig{
