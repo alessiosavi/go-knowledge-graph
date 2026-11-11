@@ -38,8 +38,29 @@ command_start=$(date -u +%s)
 id=$(aws ssm send-command --document-name AWS-RunShellScript --instance-ids "$instance" --timeout-seconds 600 --parameters "file://$work/parameters" --output json | jq -r '.Command.CommandId')
 [ -n "$id" ] && [ "$id" != null ] || fail 'SSM command id missing'
 start=$SECONDS
+lookup_errors=0
+lookup_failed() {
+  local error first=''
+  # AWS service errors have a safe identifier in parentheses. Never echo the
+  # full diagnostic: CLI transport/credential errors may contain private URLs.
+  error=$(sed -n 's/.*(\([A-Za-z0-9_.-]*\)) when calling.*/\1/p' "$work/error" | head -n 1)
+  if [ -z "$error" ]; then
+    IFS= read -r first <"$work/error" || :
+    case "$first" in
+      *'Could not connect to the endpoint URL'*) error='Could not connect to the endpoint URL (details withheld)' ;;
+      *'Connection was closed'*) error='Connection was closed (details withheld)' ;;
+      *'SSL validation failed'*) error='SSL validation failed (details withheld)' ;;
+      *'SSO'*|*'sso'*|*'credential'*|*'token'*) error='AWS credential or token refresh failed (details withheld)' ;;
+      *) error="AWS CLI exit code $1 (details withheld)" ;;
+    esac
+  fi
+  printf 'gkg-box: %s\n' "$error" >&2
+  fail 'SSM invocation lookup failed'
+}
 while :; do
+  poll_delay=2
   if aws ssm get-command-invocation --command-id "$id" --instance-id "$instance" --output json >"$work/result" 2>"$work/error"; then
+    lookup_errors=0
     status=$(jq -r '.Status' "$work/result")
     case "$status" in
       Pending|InProgress|Delayed|Cancelling) ;;
@@ -54,10 +75,18 @@ while :; do
       *) fail 'unknown SSM invocation status' ;;
     esac
   else
-    grep -q InvocationDoesNotExist "$work/error" && [ "$((SECONDS-start))" -lt 60 ] || fail 'SSM invocation lookup failed'
+    lookup_exit=$?
+    if grep -q InvocationDoesNotExist "$work/error"; then
+      [ "$((SECONDS-start))" -lt 60 ] || lookup_failed "$lookup_exit"
+    else
+      lookup_errors=$((lookup_errors+1))
+      [ "$lookup_errors" -lt 10 ] || lookup_failed "$lookup_exit"
+      poll_delay=$((2 << (lookup_errors-1)))
+      [ "$poll_delay" -le 30 ] || poll_delay=30
+    fi
   fi
   [ "$((SECONDS-start))" -lt "$((seconds+660))" ] || fail 'SSM polling deadline exceeded'
-  sleep 2
+  sleep "$poll_delay"
 done
 if [ "$script" = --update ]; then
   timeout=900

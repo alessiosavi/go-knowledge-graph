@@ -15,6 +15,7 @@ type stubOpts struct {
 	CertName, InstallOut, DiskFP, ServedOut string
 	RenewFail, ReloadFail, VerifyFail       bool
 	EnvFile                                 string
+	RepoDir, ModeProbe                      string
 	NoEdge                                  bool
 	Input                                   string
 	EdgeEnvLog                              *[]string
@@ -32,6 +33,10 @@ func runMake(t *testing.T, opts stubOpts, args ...string) (string, []string, int
 	edgeEnvLog := filepath.Join(dir, "edge-env-calls")
 	stdinLog := filepath.Join(dir, "stdin")
 	script := `#!/bin/bash
+if [ -n "${STUB_MODE_PROBE:-}" ]; then
+  mode=$(stat -c %a "$STUB_MODE_PROBE" 2>/dev/null) || mode=$(stat -f %Lp "$STUB_MODE_PROBE")
+  [ "$mode" = 644 ] || { echo 'compose ran before mode repair' >&2; exit 74; }
+fi
 printf '%s\n' "${*//$'\n'/ }" >> "$STUB_CALLS"
 printf '%s\n' "${GKG_ENV_FILE:-}" >> "$STUB_ENV_LOG"
 printf '%s|%s\n' "${EDGE_HTPASSWD:-}" "${EDGE_WAF_ENV:-}" >> "$STUB_EDGE_ENV_LOG"
@@ -61,7 +66,10 @@ exit 0
 			t.Fatal(err)
 		}
 	}
-	makeArgs := []string{"-C", repoRoot(t), "DOCKER=" + stub, "ENV_FILE=" + opts.EnvFile}
+	if opts.RepoDir == "" {
+		opts.RepoDir = repoRoot(t)
+	}
+	makeArgs := []string{"-C", opts.RepoDir, "DOCKER=" + stub, "ENV_FILE=" + opts.EnvFile}
 	if !opts.NoEdge {
 		makeArgs = append(makeArgs, "EDGE_HTPASSWD="+edgeFile)
 	}
@@ -74,6 +82,7 @@ exit 0
 		"HOME=" + curlConfigHome(t), "DOCKER_HOST=unix:///nonexistent/docker.sock",
 		"STUB_CALLS=" + log, "STUB_ENV_LOG=" + envLog, "STUB_EDGE_ENV_LOG=" + edgeEnvLog, "STUB_STDIN=" + stdinLog,
 		"STUB_PORT=" + opts.PortOut, "STUB_EXEC=" + opts.ExecOut, "STUB_IDS=" + opts.IDsOut,
+		"STUB_MODE_PROBE=" + opts.ModeProbe,
 		"SMOKE_TIMEOUT_S=5", "SMOKE_POLL_S=0.1", "SMOKE_REQ_TIMEOUT_S=1",
 	}
 	cmd.Env = append(cmd.Env, "STUB_CERT_NAME="+opts.CertName, "STUB_INSTALL="+opts.InstallOut, "STUB_DISK_FP="+opts.DiskFP, "STUB_SERVED="+opts.ServedOut,
@@ -154,6 +163,32 @@ func TestMakeUp(t *testing.T) {
 	}
 	if strings.Contains(out, "s3cr3t-fixture-value") {
 		t.Error("make output exposes fixture secret")
+	}
+}
+
+func TestMakeRepairsModesBeforeCompose(t *testing.T) {
+	files := map[string]modeFixture{"labels/template": {"public", 0644}}
+	for _, path := range []string{"Makefile", "scripts/repo-modes.sh", "scripts/edge-renew.sh"} {
+		data, err := os.ReadFile(filepath.Join(repoRoot(t), path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[path] = modeFixture{string(data), 0644}
+	}
+	for _, target := range []string{"up", "up-cached", "cert", "renew", "restart"} {
+		t.Run(target, func(t *testing.T) {
+			dir := privateCheckout(t, files)
+			probe := filepath.Join(dir, "labels/template")
+			wantMode(t, probe, 0600)
+			out, calls, code := runMake(t, stubOpts{
+				RepoDir: dir, ModeProbe: probe, CertName: "fixture.example.com",
+				InstallOut: "unchanged", DiskFP: "fixture-fingerprint", ServedOut: "fixture-fingerprint\n30",
+			}, target)
+			if code != 0 || len(calls) == 0 {
+				t.Fatalf("%s exit=%d, compose calls=%d: %s", target, code, len(calls), out)
+			}
+			wantMode(t, filepath.Join(dir, "labels"), 0755)
+		})
 	}
 }
 

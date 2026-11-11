@@ -112,6 +112,15 @@ func TestComposeDoclingEntrypoint(t *testing.T) {
 		if len(docling.Entrypoint) != 4 || !slices.Equal(docling.Entrypoint[:2], []string{"/bin/sh", "-c"}) || docling.Entrypoint[3] != "--" {
 			t.Fatal("docling must wrap the image entrypoint with a shell and an explicit $0")
 		}
+		// `compose config` re-escapes a literal $ as $$ in its output. A source
+		// without $$ would be interpolated at config time (to the host value,
+		// normally empty), so these escaped forms only survive when the
+		// container shell — not Compose — expands them.
+		for _, literal := range []string{`"$${DOCLING_SERVE_API_KEY:-}"`, `"$$@"`} {
+			if !strings.Contains(docling.Entrypoint[2], literal) {
+				t.Errorf("rendered docling entrypoint must keep %q for the container shell", literal)
+			}
+		}
 		if !slices.Equal(docling.Command, []string{"docling-serve", "run"}) {
 			t.Fatal("docling must explicitly restore the image command")
 		}
