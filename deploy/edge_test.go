@@ -531,6 +531,35 @@ func TestEdgeAskTimeouts(t *testing.T) {
 	}
 }
 
+func TestEdgeIngestTimeouts(t *testing.T) {
+	script := filepath.Join(repoRoot(t), "deploy/edge/15-validate-env.sh")
+	for _, tc := range []struct{ name, converter, ingest, want, rejected string }{
+		{name: "defaults", want: "390"},
+		{name: "long conversions", converter: "1800", want: "1890"},
+		{name: "explicit margin", converter: "1800", ingest: "1830", want: "1830"},
+		{name: "explicit higher", converter: "300", ingest: "900", want: "900"},
+		{name: "undercuts converter", converter: "1800", ingest: "390", rejected: "EDGE_INGEST_TIMEOUT_S"},
+		{name: "below margin", converter: "300", ingest: "329", rejected: "EDGE_INGEST_TIMEOUT_S"},
+		{name: "zero converter uses default", converter: "0", want: "390"},
+		{name: "decimal leading zero", converter: "0600", want: "690"},
+		{name: "bad converter", converter: "30m", rejected: "GKG_CONVERTER_TIMEOUT_S"},
+		{name: "ingest injection", ingest: "390;bad", rejected: "EDGE_INGEST_TIMEOUT_S"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("sh", "-c", `. "$1"; sh -c 'printf "%s" "$EDGE_INGEST_TIMEOUT_S"'`, "sh", script)
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GKG_API_KEY=synthetic-test-key", "SERVER_NAME=localhost", "GKG_CONVERTER_TIMEOUT_S=" + tc.converter, "EDGE_INGEST_TIMEOUT_S=" + tc.ingest}
+			out, err := cmd.CombinedOutput()
+			if tc.rejected != "" {
+				if err == nil || !strings.Contains(string(out), tc.rejected) {
+					t.Fatalf("wanted rejection of %s; err=%v output=%s", tc.rejected, err, out)
+				}
+			} else if err != nil || string(out) != tc.want {
+				t.Fatalf("timeout=%q err=%v, want %s", out, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestEdgeDerivedTimeoutReachesEnvsubst(t *testing.T) {
 	envsubst, err := exec.LookPath("envsubst")
 	if err != nil {
@@ -540,6 +569,8 @@ func TestEdgeDerivedTimeoutReachesEnvsubst(t *testing.T) {
 	for _, want := range []string{
 		`GKG_AGENT_TIMEOUT_S: ${GKG_AGENT_TIMEOUT_S:-60}`,
 		`EDGE_ASK_TIMEOUT_S: "${EDGE_ASK_TIMEOUT_S:-}"`,
+		`GKG_CONVERTER_TIMEOUT_S: ${GKG_CONVERTER_TIMEOUT_S:-300}`,
+		`EDGE_INGEST_TIMEOUT_S: "${EDGE_INGEST_TIMEOUT_S:-}"`,
 		`./edge/15-validate-env.sh:/docker-entrypoint.d/15-validate-env.envsh:ro`,
 	} {
 		if !strings.Contains(compose, want) {
@@ -557,7 +588,7 @@ func TestEdgeDerivedTimeoutReachesEnvsubst(t *testing.T) {
 		t.Fatal(err)
 	}
 	renderer := filepath.Join(dir, "20-envsubst-on-templates.sh")
-	if err := os.WriteFile(renderer, []byte("#!/bin/sh\nexec \"$ENVSUBST\" '${EDGE_ASK_TIMEOUT_S}' < \"$TEMPLATE\"\n"), 0700); err != nil {
+	if err := os.WriteFile(renderer, []byte("#!/bin/sh\nexec \"$ENVSUBST\" '${EDGE_ASK_TIMEOUT_S} ${EDGE_INGEST_TIMEOUT_S}' < \"$TEMPLATE\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	// The published entrypoint sources *.envsh and executes *.sh in the
@@ -569,12 +600,15 @@ printf '%s\n' "$1" "$2" | while read -r f; do
   *.sh) [ -x "$f" ] && "$f" ;;
  esac
 done`, "sh", validator, renderer)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GKG_API_KEY=synthetic-test-key", "SERVER_NAME=localhost", "GKG_AGENT_TIMEOUT_S=100", "ENVSUBST=" + envsubst, "TEMPLATE=" + filepath.Join(repoRoot(t), "deploy/edge/default.conf.template")}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GKG_API_KEY=synthetic-test-key", "SERVER_NAME=localhost", "GKG_AGENT_TIMEOUT_S=100", "GKG_CONVERTER_TIMEOUT_S=1800", "ENVSUBST=" + envsubst, "TEMPLATE=" + filepath.Join(repoRoot(t), "deploy/edge/default.conf.template")}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("entrypoint: %v\n%s", err, out)
 	}
 	if strings.Count(string(out), "proxy_read_timeout 130s;") != 2 || strings.Contains(string(out), "${EDGE_ASK_TIMEOUT_S}") {
 		t.Fatalf("derived timeout missing from ask/stream locations:\n%s", out)
+	}
+	if strings.Count(string(out), "proxy_read_timeout 1890s;") != 1 || strings.Contains(string(out), "${EDGE_INGEST_TIMEOUT_S}") {
+		t.Fatalf("derived ingest timeout missing from the ingest location:\n%s", out)
 	}
 }

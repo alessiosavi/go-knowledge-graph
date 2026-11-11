@@ -416,3 +416,55 @@ func TestComposeCertInstaller(t *testing.T) {
 		t.Error("certbot installer must be mounted read-only")
 	}
 }
+
+func TestDoclingEntrypointSyncWait(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy/docker-compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Services map[string]struct {
+			Entrypoint  []string          `yaml:"entrypoint"`
+			Command     []string          `yaml:"command"`
+			Environment map[string]string `yaml:"environment"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	docling := config.Services["docling"]
+	for key, want := range map[string]string{
+		"GKG_CONVERTER_TIMEOUT_S":     "${GKG_CONVERTER_TIMEOUT_S:-300}",
+		"DOCLING_SERVE_MAX_SYNC_WAIT": "${DOCLING_MAX_SYNC_WAIT:-}",
+	} {
+		if docling.Environment[key] != want {
+			t.Fatalf("docling %s = %q, want %q", key, docling.Environment[key], want)
+		}
+	}
+	script := strings.ReplaceAll(docling.Entrypoint[2], "$$", "$")
+	bin := t.TempDir()
+	stub := "#!/bin/sh\nprintf '%s' \"${DOCLING_SERVE_MAX_SYNC_WAIT-unset}\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "container-entrypoint"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, budget, wait, want string }{
+		{name: "default budget", want: "280"},
+		{name: "long budget", budget: "1800", want: "1780"},
+		{name: "explicit wait kept", budget: "1800", wait: "500", want: "500"},
+		{name: "leading zeros are decimal", budget: "0600", want: "580"},
+		{name: "non-numeric budget", budget: "30m", want: "280"},
+		{name: "tiny budget floors", budget: "15", want: "10"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("/bin/sh", "-c", script, "--", "docling-serve", "run")
+			cmd.Env = []string{"PATH=" + bin, "DOCLING_SERVE_MAX_SYNC_WAIT=" + tc.wait}
+			if tc.budget != "" {
+				cmd.Env = append(cmd.Env, "GKG_CONVERTER_TIMEOUT_S="+tc.budget)
+			}
+			out, err := cmd.CombinedOutput()
+			if err != nil || string(out) != tc.want {
+				t.Fatalf("sync wait = %q (err %v), want %s", out, err, tc.want)
+			}
+		})
+	}
+}
