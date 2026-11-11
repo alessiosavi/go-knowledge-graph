@@ -388,6 +388,12 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		if err != nil {
 			return fail("labels", err)
 		}
+		docScoped := make(map[string]bool)
+		for _, l := range ents {
+			if l.Scope == "document" {
+				docScoped[l.Name] = true
+			}
+		}
 		req := extract.Request{Chunks: make([]extract.RequestChunk, 0, len(chunks)), Entities: ents, Relations: rels}
 		for _, c := range chunks {
 			if c.DuplicateOf == "" {
@@ -429,7 +435,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 				continue
 			}
 			r := byChunk[c.ID]
-			ents, facts, audits := p.buildExtraction(doc, c, r, version)
+			ents, facts, audits := p.buildExtraction(doc, c, r, version, docScoped)
 			if err := p.store.UpsertExtraction(ctx, docID, c.ID, version, ents, facts); err != nil {
 				return fail("merge", err)
 			}
@@ -598,6 +604,15 @@ func dedupeFactCandidates(facts []graph.FactUpsert) []graph.FactUpsert {
 	return out
 }
 
+// judgeName is the entity name shown to the judge: the mention text as it
+// appears in the evidence, falling back to the key when no text is known.
+func judgeName(text, key string) string {
+	if t := strings.TrimSpace(text); t != "" {
+		return t
+	}
+	return key
+}
+
 // verifyFacts runs the judge over selected facts. Failures never fail the
 // document: unverified facts simply keep judge=”.
 func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candidates []judgeCandidate, version string) {
@@ -610,8 +625,11 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 		}
 		evidence := EvidenceSentence(cand.chunkText, f.HeadMention.Start, f.HeadMention.End)
 		start := time.Now()
+		// The judge compares names with the evidence sentence: send the
+		// mention text, never the key (a scoped key is "#<doc>:<name>").
 		verdict, err := p.judge.VerifyFact(ctx, FactInput{
-			Head: f.HeadKey, Rel: f.Rel, Tail: f.TailKey,
+			Head: judgeName(f.HeadMention.Text, f.HeadKey), Rel: f.Rel,
+			Tail:     judgeName(f.TailMention.Text, f.TailKey),
 			Evidence: evidence, DocContext: doc.Title, Confidence: f.Confidence,
 		})
 		if p.metrics != nil {
@@ -936,8 +954,9 @@ func (p *Pipeline) buildChunks(ctx context.Context, doc *graph.Document, text st
 // buildExtraction turns one provider chunk result into store upserts,
 // applying the confidence floors: below store_floor the fact is dropped and
 // audited; below assert_floor it is stored as low-confidence.
-func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract.ChunkResult, version string) ([]graph.EntityUpsert, []graph.FactUpsert, []graph.FactAudit) {
+func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract.ChunkResult, version string, docScoped map[string]bool) ([]graph.EntityUpsert, []graph.FactUpsert, []graph.FactAudit) {
 	ents := make(map[string]graph.EntityUpsert, len(r.Mentions))
+	keys := make([]string, len(r.Mentions))
 	bestScores := make(map[string]float64, len(r.Mentions))
 	type mentionKey struct {
 		key        string
@@ -945,7 +964,7 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract
 	}
 	bestMentions := make(map[mentionKey]extract.Mention, len(r.Mentions))
 	mentionOrder := make([]mentionKey, 0, len(r.Mentions))
-	for _, m := range r.Mentions {
+	for i, m := range r.Mentions {
 		if strings.TrimSpace(m.Text) == "" || m.Label == "" {
 			continue
 		}
@@ -953,6 +972,10 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract
 		if key == "" {
 			continue
 		}
+		if docScoped[m.Label] {
+			key = graph.ScopedEntityKey(doc.ID, m.Text)
+		}
+		keys[i] = key
 		e, ok := ents[key]
 		if !ok {
 			e = graph.EntityUpsert{Key: key, Name: graph.DisplayName(m.Text), Type: m.Label}
@@ -988,8 +1011,7 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract
 			cand.Label == "" || hm.Label == "" || tm.Label == "" {
 			continue
 		}
-		headKey := graph.EntityKey(hm.Text)
-		tailKey := graph.EntityKey(tm.Text)
+		headKey, tailKey := keys[cand.Head], keys[cand.Tail]
 		if headKey == "" || tailKey == "" {
 			continue
 		}
@@ -1043,6 +1065,16 @@ func (p *Pipeline) labelsFor(name string) ([]extract.Label, []extract.Label, err
 	for _, l := range append(append([]extract.Label{}, preset.Entities...), preset.Relations...) {
 		if !labelNameRe.MatchString(l.Name) {
 			return nil, nil, fmt.Errorf("label preset %q: label %q has no alphanumeric content", name, l.Name)
+		}
+		if l.Scope != "" && l.Scope != "document" {
+			return nil, nil, fmt.Errorf("label preset %q: label %q has unknown scope %q", name, l.Name, l.Scope)
+		}
+	}
+	// Scope decides entity identity, so it is meaningful on entity labels
+	// only; on a relation it would silently scope nothing.
+	for _, l := range preset.Relations {
+		if l.Scope != "" {
+			return nil, nil, fmt.Errorf("label preset %q: relation label %q cannot have a scope (scope applies to entity labels)", name, l.Name)
 		}
 	}
 	return preset.Entities, preset.Relations, nil

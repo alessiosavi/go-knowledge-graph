@@ -33,6 +33,30 @@ func chatBody(content string) string {
 	return string(b)
 }
 
+func TestOpenAIPayloadOmitsScope(t *testing.T) {
+	payload := buildUserPayload(
+		[]RequestChunk{{ID: "c1", Text: "€500"}},
+		[]Label{{Name: "amount", Threshold: 0.4, Scope: "document"}},
+		[]Label{{Name: "amount_of", Threshold: 0.25, Scope: "document"}},
+	)
+	var body struct {
+		Entities  []map[string]any `json:"entities"`
+		Relations []map[string]any `json:"relations"`
+	}
+	if err := json.Unmarshal([]byte(payload), &body); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(payload, `"scope"`) || strings.Contains(payload, `"Scope"`) {
+		t.Errorf("scope leaked into OpenAI payload: %s", payload)
+	}
+	if len(body.Entities) != 1 || body.Entities[0]["name"] != "amount" || body.Entities[0]["threshold"] != 0.4 || len(body.Entities[0]) != 2 {
+		t.Errorf("entity labels = %+v, want name and threshold only", body.Entities)
+	}
+	if len(body.Relations) != 1 || body.Relations[0]["name"] != "amount_of" || body.Relations[0]["threshold"] != 0.25 || len(body.Relations[0]) != 2 {
+		t.Errorf("relation labels = %+v, want name and threshold only", body.Relations)
+	}
+}
+
 func chunkTextOf(t *testing.T, r *http.Request) map[string]string {
 	t.Helper()
 	var body struct {

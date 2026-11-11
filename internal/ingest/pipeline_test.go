@@ -929,7 +929,7 @@ func TestLabelPresetSurvivesRestart(t *testing.T) {
 	uri := os.Getenv(graphtest.URIEnv)
 	ctx := context.Background()
 	dir := t.TempDir()
-	preset := "entities:\n  - name: widget\n    threshold: 0.4\nrelations:\n  - name: powers\n    threshold: 0.25\n"
+	preset := "entities:\n  - name: widget\n    threshold: 0.4\n    scope: document\nrelations:\n  - name: powers\n    threshold: 0.25\n"
 	if err := os.WriteFile(filepath.Join(dir, "custom.yaml"), []byte(preset), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -953,7 +953,7 @@ func TestLabelPresetSurvivesRestart(t *testing.T) {
 	if n := rawCount(t, uri, fmt.Sprintf("MATCH (:Entity)-[r:powers]->(:Entity) WHERE r.doc_id = '%s' RETURN count(r) AS n", res.DocumentID)); n != 1 {
 		t.Errorf("fact edges with preset relation = %d, want 1 (preset must survive restart)", n)
 	}
-	view, err := st.EntityView(ctx, graph.EntityKey(name), false)
+	view, err := st.EntityView(ctx, graph.ScopedEntityKey(res.DocumentID, name), false)
 	if err != nil {
 		t.Fatalf("EntityView(%s): %v", name, err)
 	}

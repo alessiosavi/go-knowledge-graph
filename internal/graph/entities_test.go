@@ -297,6 +297,33 @@ func TestEntityTypeVote(t *testing.T) {
 	}
 }
 
+func TestEntityTypeVoteIgnoresUntyped(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	docID, chunkID := entitiesTestDoc(t, st, "A B C")
+	ent := newFixture(t).ents[0]
+	ent.Type = "organization"
+	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", []graph.EntityUpsert{ent}, nil); err != nil {
+		t.Fatal(err)
+	}
+	view, err := st.EntityView(ctx, ent.Key, false)
+	if err != nil || view.Type != "organization" || view.MentionCount != 0 {
+		t.Fatalf("seed view = %+v, %v; want organization without mentions", view, err)
+	}
+	ent.Mentions = []graph.MentionSpan{
+		{Start: 0, End: 1, Type: "product"},
+		{Start: 2, End: 3, Type: ""},
+		{Start: 4, End: 5, Type: ""},
+	}
+	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:2", []graph.EntityUpsert{ent}, nil); err != nil {
+		t.Fatal(err)
+	}
+	view, err = st.EntityView(ctx, ent.Key, false)
+	if err != nil || view.Type != "product" || view.MentionCount != 3 {
+		t.Fatalf("view = %+v, %v; want product and all three mentions counted", view, err)
+	}
+}
+
 func TestEntityTypeVoteAfterDocumentRemoval(t *testing.T) {
 	for _, action := range []string{"delete", "supersede"} {
 		t.Run(action, func(t *testing.T) {

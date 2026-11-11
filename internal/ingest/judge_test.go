@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -144,8 +145,18 @@ func TestRefutedFactMovedToAudit(t *testing.T) {
 	if len(stub.calls) == 0 {
 		t.Fatal("judge was not called")
 	}
-	// The first fact (first-built extraction) is refuted by the stub.
+	// The first fact (first-built extraction) is refuted by the stub. The
+	// judge sees mention text; the store keys are the normalized names.
 	first := stub.calls[0]
+	headKey, tailKey := graph.EntityKey(first.Head), graph.EntityKey(first.Tail)
+	edgeQuery := fmt.Sprintf(
+		"MATCH (:Entity {key: '%s'})-[r]->(:Entity {key: '%s'}) WHERE r.chunk_id CONTAINS '%s' RETURN count(r) AS n",
+		headKey, tailKey, res.DocumentID)
+	// Positive control: the edge exists before the refutation, so the
+	// final absence check cannot pass vacuously.
+	if n := rawCount(t, uri, edgeQuery); n == 0 {
+		t.Fatalf("edge %s -> %s missing before the refutation", headKey, tailKey)
+	}
 	stub.verdicts = map[string]ingest.Verdict{
 		first.Head + "|" + first.Rel + "|" + first.Tail: {Status: "refuted", Confidence: 0.9, Reason: "contradicted by the source"},
 	}
@@ -178,7 +189,7 @@ func TestRefutedFactMovedToAudit(t *testing.T) {
 	// query: a lingering unjudged edge must fail this too).
 	edges := rawCount(t, uri, fmt.Sprintf(
 		"MATCH (:Entity {key: '%s'})-[r]->(:Entity {key: '%s'}) WHERE r.chunk_id CONTAINS '%s' RETURN count(r) AS n",
-		first.Head, first.Tail, res2.DocumentID))
+		headKey, tailKey, res2.DocumentID))
 	if edges != 0 {
 		t.Errorf("refuted edges still present: %d", edges)
 	}
@@ -235,6 +246,51 @@ func TestJudgeOffByDefault(t *testing.T) {
 		t.Error("judge off: facts must stay unverified")
 	}
 	_ = ctx
+}
+
+// scopedValueProvider links a person to a document-scoped amount.
+type scopedValueProvider struct{}
+
+func (scopedValueProvider) Name() string    { return "scoped" }
+func (scopedValueProvider) Version() string { return "scoped:1" }
+func (scopedValueProvider) Extract(_ context.Context, req extract.Request) ([]extract.ChunkResult, error) {
+	out := make([]extract.ChunkResult, 0, len(req.Chunks))
+	for _, c := range req.Chunks {
+		out = append(out, extract.ChunkResult{
+			ChunkID: c.ID,
+			Mentions: []extract.Mention{
+				{Label: "person", Text: "Ada", Start: 0, End: 3, Score: 0.9},
+				{Label: "amount", Text: "€500", Start: 9, End: 15, Score: 0.9},
+			},
+			Candidates: []extract.Candidate{{Label: "paid", Head: 0, Tail: 1, Score: 0.9}},
+		})
+	}
+	return out, nil
+}
+
+// TestJudgeSeesMentionTextForScopedValues: the judge gets names as they
+// appear in the evidence, never the opaque "#<doc>:<name>" scoped key.
+func TestJudgeSeesMentionTextForScopedValues(t *testing.T) {
+	stub := &stubJudge{}
+	env := newPipelineEnv(t)
+	env.cfg.Judge.Mode = "all"
+	env.cfg.Labels.PresetsDir = t.TempDir()
+	preset := "entities:\n  - name: person\n    threshold: 0.4\n  - name: amount\n    threshold: 0.4\n    scope: document\nrelations:\n  - name: paid\n    threshold: 0.25\n"
+	if err := os.WriteFile(filepath.Join(env.cfg.Labels.PresetsDir, "scoped.yaml"), []byte(preset), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env.p = ingest.NewPipeline(env.cfg, env.st, scopedValueProvider{}, env.ix, textLoader)
+	env.p.SetJudge(stub)
+	source, _ := uniqueText(t)
+	text := fmt.Sprintf("Ada paid €500 for run %d.", time.Now().UnixNano())
+
+	_ = mustProcess(t, env, ingest.Input{Kind: "text", Source: source, Text: text, Labels: "scoped"})
+	if len(stub.calls) != 1 {
+		t.Fatalf("judge calls = %d, want 1", len(stub.calls))
+	}
+	if c := stub.calls[0]; c.Head != "Ada" || c.Tail != "€500" {
+		t.Errorf("judge saw head %q tail %q, want the mention texts Ada and €500", c.Head, c.Tail)
+	}
 }
 
 // dupProvider returns the same triple twice in one chunk (different

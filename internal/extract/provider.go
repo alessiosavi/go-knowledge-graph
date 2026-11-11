@@ -6,10 +6,11 @@ package extract
 
 import "context"
 
-// Label is an extraction label with its per-call threshold.
+// Label is an extraction label with its per-call threshold and local identity scope.
 type Label struct {
 	Name      string  `yaml:"name" json:"name"`
 	Threshold float64 `yaml:"threshold" json:"threshold"`
+	Scope     string  `yaml:"scope" json:"-"`
 }
 
 // RequestChunk is one chunk submitted for extraction. The JSON tags are
