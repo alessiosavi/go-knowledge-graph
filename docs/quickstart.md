@@ -184,7 +184,10 @@ service is built or pulled. Set `GKG_LIGHT_EXTRACTOR_MODE=openai` and the
 OpenAI-compatible extractor settings to use an LLM instead. Include
 `LIGHT=1` with subsequent stack commands for that setup.
 
-Any other Hugging Face repository id is passed through verbatim; the
+Any other Hugging Face repository id is passed through verbatim, pinned to
+a commit: set `GLINEREL_MODEL_REVISION` to its full 40-hex commit SHA (the
+two built-in checkpoints carry their own pins; without a SHA the build stops
+with an error naming the variable). The
 checkpoint must be loadable by the bundled `glinerel-fast` runtime (the
 GLiNEREL config contract). The gliner2.5 family (Apache-2.0) is the planned
 fully-free local alternative but **cannot be loaded by the pinned runtime
