@@ -51,15 +51,21 @@ func TestPipelineRecoversExtractionSchemaMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Stable version ordering independent of clock precision. A typed
-		// legacy entity proves Bootstrap takes the migration path.
+		// legacy entity proves the explicit upgrade takes the migration path.
 		rawRecords(t, uri, fmt.Sprintf(`MATCH (d:Document {id: '%s'}) SET d.version_at = '2000-01-01T00:00:00.000000000Z' RETURN d.id`, old.ID))
 		rawRecords(t, uri, fmt.Sprintf(`MATCH (d:Document {id: '%s'}) SET d.version_at = '2001-01-01T00:00:00.000000000Z' RETURN d.id`, fresh.ID))
 		rawRecords(t, uri, fmt.Sprintf(`CREATE (e:Entity {key: 'person:%s'}) RETURN e.key`, graph.EntityKey(name)))
 		fixtures = append(fixtures, fixture{old.ID, fresh.ID, name, text})
 	}
 	rawRecords(t, uri, `MATCH (m:GkgMeta {id: 'extraction_schema'}) DELETE m RETURN count(*)`)
-	if err := st.Bootstrap(ctx); err != nil {
+	wantDocs := int(rawCount(t, uri, `MATCH (d:Document) WHERE d.status IN ['done', 'extracted', 'merged', 'verifying'] RETURN count(*) AS n`))
+	wantEntities := int(rawCount(t, uri, `MATCH (e:Entity) RETURN count(e) AS n`))
+	result, err := st.MigrateExtractionSchema(ctx)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if want := (graph.MigrationResult{From: 1, To: graph.ExtractionSchemaVersion, DocumentsRequeued: wantDocs, EntitiesRemoved: wantEntities, Migrated: true}); result != want {
+		t.Errorf("migration result = %+v, want %+v", result, want)
 	}
 	// This is the exact persisted set Recover uses to enqueue work.
 	inflight, err := st.InFlight(ctx)

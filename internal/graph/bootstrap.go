@@ -72,7 +72,7 @@ func (s *Store) Bootstrap(ctx context.Context) error {
 	if err := s.EnsureTextIndexes(ctx); err != nil {
 		return err
 	}
-	return s.migrateExtractionSchema(ctx)
+	return s.markEmptyExtractionSchema(ctx)
 }
 
 // dedupeGkgMeta removes duplicate :GkgMeta nodes (same id) so the unique

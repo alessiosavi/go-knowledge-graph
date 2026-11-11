@@ -19,7 +19,7 @@ func MigrationStore(t *testing.T) *graph.Store {
 	t.Helper()
 	st := Store(t)
 	ctx := context.Background()
-	docs, err := st.RunReadQuery(ctx, `MATCH (d:Document) RETURN d.id AS id, d.status AS status, d.updated_at AS updated_at`, nil, 0)
+	docs, err := st.RunReadQuery(ctx, `MATCH (d:Document) RETURN d.id AS id, d.status AS status, d.error AS error, d.updated_at AS updated_at`, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func MigrationStore(t *testing.T) *graph.Store {
 			query  string
 			params map[string]any
 		}{
-			{`UNWIND $docs AS row MATCH (d:Document {id: row.id}) SET d.status = row.status, d.updated_at = row.updated_at`, map[string]any{"docs": docs.Rows}},
+			{`UNWIND $docs AS row MATCH (d:Document {id: row.id}) SET d.status = row.status, d.error = row.error, d.updated_at = row.updated_at`, map[string]any{"docs": docs.Rows}},
 			{`MERGE (m:GkgMeta {id: 'extraction_schema'}) SET m.value = $version`, map[string]any{"version": graph.ExtractionSchemaVersion}},
 		} {
 			res, err := sess.Run(ctx, q.query, q.params)
