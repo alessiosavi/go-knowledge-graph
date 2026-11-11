@@ -64,9 +64,10 @@ type composeService struct {
 	DependsOn   map[string]struct {
 		Condition string `json:"condition"`
 	} `json:"depends_on"`
-	Command  []string `json:"command"`
-	MemLimit int64    `json:"mem_limit,string"`
-	Logging  struct {
+	Entrypoint []string `json:"entrypoint"`
+	Command    []string `json:"command"`
+	MemLimit   int64    `json:"mem_limit,string"`
+	Logging    struct {
 		Driver  string            `json:"driver"`
 		Options map[string]string `json:"options"`
 	} `json:"logging"`

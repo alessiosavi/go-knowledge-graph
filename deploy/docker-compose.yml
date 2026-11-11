@@ -129,6 +129,18 @@ services:
     logging: *logging
     mem_limit: 6656m
     image: ghcr.io/docling-project/docling-serve-cpu:v1.38.2@sha256:7a480a1604fa3b42efeddc7db9527690d9f9bc903226136013e2bfe6b1a4dfb0
+    # docling-serve v1.38.2 parses an empty API key as None, which fails
+    # validation; leave it unset to use the upstream empty-string default.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -z "$${DOCLING_SERVE_API_KEY:-}" ]; then
+          unset DOCLING_SERVE_API_KEY
+        fi
+        exec container-entrypoint "$$@"
+      - --
+    command: ["docling-serve", "run"]
     ports:
       - "127.0.0.1:${DOCLING_PORT:-5001}:5001"
     environment:
