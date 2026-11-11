@@ -123,7 +123,7 @@ func TestEdgePolicy(t *testing.T) {
 		"absolute_redirect off;", "auth_basic_user_file /etc/nginx/edge-auth/htpasswd;",
 		"ssl_protocols TLSv1.2 TLSv1.3;", "server_tokens off;", "max-age=${EDGE_HSTS_MAX_AGE}",
 		"X-Content-Type-Options nosniff always;", "Referrer-Policy no-referrer always;", "X-Frame-Options DENY always;", "frame-ancestors 'none'",
-		"resolver 127.0.0.11 valid=10s;", "set $gkg_upstream http://gkg:8080;",
+		"resolver 127.0.0.11 valid=1s ipv6=off;", "set $gkg_upstream http://gkg:8080;",
 		`proxy_set_header Authorization "Bearer ${GKG_API_KEY}";`,
 		"client_max_body_size 1m;", "client_max_body_size 21037056;", "client_max_body_size 4m;",
 		"proxy_read_timeout ${EDGE_INGEST_TIMEOUT_S}s;", "proxy_read_timeout ${EDGE_ASK_TIMEOUT_S}s;", "proxy_read_timeout 3600s;",

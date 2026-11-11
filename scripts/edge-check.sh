@@ -150,6 +150,24 @@ for mode in DetectionOnly On; do
   capture "$tmp/before-legit"
   for section in routing limits stream mcp; do
     ok "section $section ($mode)"
+    if [ "$section" = routing ]; then
+      # Recreate (not restart) so gkg gets a new container and normally a new
+      # IP: the edge must re-resolve it within its 1 s resolver TTL.
+      old_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$("${compose[@]}" ps -q gkg)")"
+      "${compose[@]}" up -d --force-recreate --no-deps gkg >"$tmp/restart-$mode.log" 2>&1 || fail 'recreate isolated gkg'
+      gkg_id="$("${compose[@]}" ps -q gkg)"
+      new_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$gkg_id")"
+      printf 'OK: gkg recreated for routing check (%s): ip %s -> %s\n' "$mode" "$old_ip" "$new_ip"
+      healthy=0
+      for ((attempt=0; attempt<60; attempt++)); do
+        if [ "$(docker inspect --format '{{.State.Health.Status}}' "$gkg_id")" = healthy ]; then healthy=1; break; fi
+        sleep 1
+      done
+      [ "$healthy" = 1 ] || fail 'bounded gkg health after restart'
+      # Start immediately after health: the edge must reach the new
+      # container within 3 s (resolver TTL 1 s).
+      "$tmp/check" restart-routing "$tmp" "$base" | tee "$tmp/routing-restart-$mode.log"
+    fi
     "$tmp/check" "$section" "$tmp" "$base" long
   done
   sleep 1
@@ -276,6 +294,7 @@ refresh_ca
 "$tmp/check" stream "$tmp" "$base"
 ok 'section password rotation (running stack, plain make up)'
 before_edge="$("${compose[@]}" ps -q edge)"
+before_gkg="$("${compose[@]}" ps -q gkg)"
 [ -n "$before_edge" ] || fail 'running edge before password rotation'
 cp "$tmp/auth.curl" "$tmp/old.curl"
 cp "$tmp/password" "$tmp/old-password"
@@ -285,8 +304,12 @@ printf 'rotated$:\047"%s' "$(openssl rand -hex 12)" >"$tmp/password"
 # nginx reload or restart. The completed one-shot must copy the new password.
 make up "${make_args[@]}" >"$tmp/up-rotation.log" 2>&1 || fail 'plain make up after password rotation'
 after_edge="$("${compose[@]}" ps -q edge)"
+after_gkg="$("${compose[@]}" ps -q gkg)"
 [ "$before_edge" = "$after_edge" ] || fail 'password rotation recreated the edge'
 printf 'OK: password rotation edge container unchanged: %s\n' "$after_edge" | tee "$tmp/rotation.log"
+gkg_recreated=no
+[ "$before_gkg" = "$after_gkg" ] || gkg_recreated=yes
+printf 'OK: password rotation gkg recreated=%s before=%s after=%s (diagnostic only)\n' "$gkg_recreated" "$before_gkg" "$after_gkg" | tee -a "$tmp/rotation.log"
 "$tmp/check" prepare "$tmp"
 "$tmp/check" rotation "$tmp" "$base" | tee -a "$tmp/rotation.log"
 "${compose[@]}" logs --no-color --no-log-prefix >"$tmp/all-renewal.log" 2>&1

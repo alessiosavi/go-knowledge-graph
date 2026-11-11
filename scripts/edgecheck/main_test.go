@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestProbeCommandCA(t *testing.T) {
@@ -61,13 +63,19 @@ func TestPasswordRotationProbe(t *testing.T) {
 		t.Fatalf("build probe: %v: %s", err, out)
 	}
 	for _, tc := range []struct {
-		name             string
-		oldCode, newCode int
-		wantOK           bool
+		name        string
+		oldCode     int
+		newCodes    []int
+		wantOK      bool
+		newAttempts int64
+		message     string
 	}{
-		{"rotated", 401, 200, true},
-		{"old password still accepted", 200, 200, false},
-		{"new password rejected", 401, 401, false},
+		{"rotated", 401, []int{200}, true, 1, "after 1 attempt(s)"},
+		{"old password still accepted", 200, []int{200}, false, 0, "old password rejected"},
+		{"new password rejected", 401, []int{401, 200}, false, 1, "HTTP 401"},
+		{"upstream recovers", 401, []int{502, 200}, true, 2, "after 2 attempt(s)"},
+		{"auth regression after upstream failure", 401, []int{502, 401, 200}, false, 2, "HTTP 401"},
+		{"upstream never recovers", 401, []int{502}, false, -1, "within 30s"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var oldSeen, newSeen atomic.Int64
@@ -83,8 +91,11 @@ func TestPasswordRotationProbe(t *testing.T) {
 					oldSeen.Add(1)
 					w.WriteHeader(tc.oldCode)
 				case "new-password":
-					newSeen.Add(1)
-					w.WriteHeader(tc.newCode)
+					attempt := int(newSeen.Add(1)) - 1
+					if attempt >= len(tc.newCodes) {
+						attempt = len(tc.newCodes) - 1
+					}
+					w.WriteHeader(tc.newCodes[attempt])
 				default:
 					t.Error("unexpected rotation credential")
 					w.WriteHeader(400)
@@ -94,12 +105,66 @@ func TestPasswordRotationProbe(t *testing.T) {
 			dir := t.TempDir()
 			write(filepath.Join(dir, "old.curl"), []byte("user = \"edgecheck:old-password\"\n"))
 			write(filepath.Join(dir, "auth.curl"), []byte("user = \"edgecheck:new-password\"\n"))
-			out, err := exec.Command(bin, "rotation", dir, server.URL).CombinedOutput()
+			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+			defer cancel()
+			started := time.Now()
+			out, err := exec.CommandContext(ctx, bin, "rotation", dir, server.URL).CombinedOutput()
+			elapsed := time.Since(started)
 			if (err == nil) != tc.wantOK {
 				t.Fatalf("rotation success=%t, want %t: %s", err == nil, tc.wantOK, out)
 			}
-			if oldSeen.Load() != 1 || tc.oldCode == 401 && newSeen.Load() != 1 {
-				t.Fatalf("rotation did not check both credential generations: old=%d new=%d", oldSeen.Load(), newSeen.Load())
+			if ctx.Err() != nil || !strings.Contains(string(out), tc.message) {
+				t.Fatalf("missing bounded polling outcome %q: %s", tc.message, out)
+			}
+			if oldSeen.Load() != 1 || tc.newAttempts >= 0 && newSeen.Load() != tc.newAttempts {
+				t.Fatalf("wrong credential attempts: old=%d new=%d, want new=%d", oldSeen.Load(), newSeen.Load(), tc.newAttempts)
+			}
+			if tc.newAttempts == -1 {
+				if newSeen.Load() < 2 || elapsed < 30*time.Second || elapsed > 33*time.Second {
+					t.Fatalf("must poll until the 30s deadline: attempts=%d elapsed=%s", newSeen.Load(), elapsed)
+				}
+			} else if elapsed > 3*time.Second || tc.newAttempts == 2 && elapsed < time.Second {
+				t.Fatalf("polling must wait 1s between attempts and fail fast on 401: %s", elapsed)
+			}
+		})
+	}
+}
+
+func TestRestartRoutingProbe(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "edgecheck")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build probe: %v: %s", err, out)
+	}
+	for _, recoverUpstream := range []bool{true, false} {
+		t.Run(fmt.Sprintf("recovers=%t", recoverUpstream), func(t *testing.T) {
+			var attempts atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "GET" || r.URL.Path != "/v1/documents" {
+					t.Error("restart must probe an upstream route")
+				}
+				if attempts.Add(1) > 1 && recoverUpstream {
+					w.WriteHeader(200)
+				} else {
+					w.WriteHeader(502)
+				}
+			}))
+			defer server.Close()
+			dir := t.TempDir()
+			write(filepath.Join(dir, "auth.curl"), nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			started := time.Now()
+			out, err := exec.CommandContext(ctx, bin, "restart-routing", dir, server.URL).CombinedOutput()
+			elapsed := time.Since(started)
+			if (err == nil) != recoverUpstream || ctx.Err() != nil || attempts.Load() < 2 {
+				t.Fatalf("wrong restart outcome: attempts=%d elapsed=%s: %s", attempts.Load(), elapsed, out)
+			}
+			if recoverUpstream {
+				if elapsed < time.Second || elapsed >= 3*time.Second || !strings.Contains(string(out), "after 2 attempt(s)") {
+					t.Fatalf("recovery must succeed within 3s and report attempts: %s: %s", elapsed, out)
+				}
+			} else if elapsed < 3*time.Second || elapsed > 4*time.Second || !strings.Contains(string(out), "within 3s") {
+				t.Fatalf("restart deadline must be 3s: %s: %s", elapsed, out)
 			}
 		})
 	}

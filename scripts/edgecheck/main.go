@@ -564,7 +564,41 @@ func prepare(dir string) {
 func (p *probe) rotation() {
 	r := p.request("GET", "/v1/documents", "old.curl", nil)
 	expect(r.code == 401, fmt.Sprintf("old password rejected after rotation (HTTP %d)", r.code))
-	p.check("new password accepted after rotation", "GET", "/v1/documents", nil, 200)
+	p.waitForDocuments("new password accepted after rotation", 30*time.Second)
+}
+
+// Bound each request as well as the overall wait: a stalled upstream must not
+// turn a short recovery check into the ordinary request's 120-second timeout.
+func (p *probe) waitForDocuments(name string, budget time.Duration) {
+	deadline := time.Now().Add(budget)
+	attempts, lastCode := 0, 0
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			panic(fmt.Sprintf("%s within %s (last HTTP %d, %d attempt(s))", name, budget, lastCode, attempts))
+		}
+		requestBudget := min(time.Second, remaining)
+		cmd, _, _ := p.command("GET", "/v1/documents", "auth.curl", 1,
+			"--max-time", strconv.FormatFloat(requestBudget.Seconds(), 'f', 3, 64))
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		attempts++
+		out, err := cmd.Output()
+		lastCode, _ = strconv.Atoi(string(out))
+		if lastCode == 401 {
+			panic(fmt.Sprintf("%s (HTTP 401 after %d attempt(s))", name, attempts))
+		}
+		if err == nil && lastCode == 200 && time.Now().Before(deadline) {
+			fmt.Printf("OK: %s (HTTP 200 after %d attempt(s))\n", name, attempts)
+			return
+		}
+		if err != nil {
+			write(filepath.Join(p.dir, "curl-failure.log"), stderr.Bytes())
+		}
+		if remaining = time.Until(deadline); remaining > 0 {
+			time.Sleep(min(time.Second, remaining))
+		}
+	}
 }
 
 func hygiene(dir, logs, edgeLogs string) {
@@ -637,6 +671,8 @@ func main() {
 			p.routing()
 		case "rotation":
 			p.rotation()
+		case "restart-routing":
+			p.waitForDocuments("upstream routing after healthy gkg restart", 3*time.Second)
 		case "auth":
 			p.auth(args[3])
 		case "encoded-paths":
