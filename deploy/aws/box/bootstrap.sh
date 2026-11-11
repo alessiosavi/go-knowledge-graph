@@ -10,6 +10,7 @@ swap=${GKG_SWAP_FILE:-/swapfile}
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 trap 'exit 1' HUP INT TERM
 failed() { echo 'gkg-box: bootstrap failed (private diagnostics withheld)' >&2; exit 1; }
+repo_git() ( umask 022; git "$@"; )
 bash "$root/deploy/aws/box/install-docker.sh" >"$work/docker" 2>&1 || failed
 mkdir -p "$units"
 if [ ! -f "$swap" ]; then
@@ -21,9 +22,9 @@ if ! swapon --show=NAME --noheadings | grep -Fxq "$swap"; then
 fi
 # Avoid changing the host fstab in test installations with an alternate root.
 if [ "$swap" = /swapfile ] && ! grep -q '^/swapfile ' /etc/fstab; then printf '/swapfile none swap defaults 0 0\n' >>/etc/fstab; fi
-if [ ! -d "$root/.git" ]; then git clone "${REPO_URL:?REPO_URL required}" "$root" >"$work/git" 2>&1 || failed; fi
+if [ ! -d "$root/.git" ]; then repo_git clone "${REPO_URL:?REPO_URL required}" "$root" >"$work/git" 2>&1 || failed; fi
 cd "$root"
-git checkout --detach "$1" >"$work/git" 2>&1 || failed
+repo_git checkout --detach "$1" >"$work/git" 2>&1 || failed
 bash "$root/deploy/aws/box/fetch-secrets.sh" || failed
 make up >"$work/up" 2>&1 || failed
 sha=$(git rev-parse --verify HEAD)

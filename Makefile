@@ -50,7 +50,7 @@ CERT_STAGING := --test-cert
 endif
 endif
 
-.PHONY: help up down destroy ps logs build pull restart prune status smoke check-env check-edge passwd waf-mode edge-check cert renew
+.PHONY: help up down destroy ps logs build pull restart prune status smoke check-env check-edge repo-modes passwd waf-mode edge-check cert renew
 
 help:
 	@printf '%s\n' \
@@ -81,24 +81,27 @@ check-env:
 check-edge:
 	@test -s $(call quote,$(abspath $(EDGE_AUTH_PATH))) || { printf '%s\n' 'stack: password file missing or empty — run make passwd LOGIN=<name>'; exit 1; }
 
+repo-modes:
+	@bash scripts/repo-modes.sh
+
 passwd:
 	@bash scripts/edge-passwd.sh $(call quote,$(DOCKER)) $(call quote,$(abspath $(EDGE_AUTH_PATH))) $(call quote,$(PASSWD_LOGIN)) $(call quote,$(PASSWD_GENERATE))
 
-waf-mode:
+waf-mode: repo-modes
 	@bash scripts/edge-waf-mode.sh $(call quote,$(WAF_MODE)) $(call quote,$(abspath $(EDGE_WAF_PATH)))
 	@$(COMPOSE) up -d --force-recreate --no-deps edge
 
-cert:
+cert: repo-modes
 	@$(COMPOSE_ENV) bash scripts/edge-renew.sh --issue $(CERT_STAGING) $(COMPOSE_CMD)
 
-renew:
+renew: repo-modes
 	@$(COMPOSE) --profile cert run --rm certbot renew
 	@$(COMPOSE_ENV) bash scripts/edge-renew.sh $(COMPOSE_CMD)
 
 edge-check:
 	@bash scripts/edge-check.sh
 
-up: check-env check-edge
+up: check-env check-edge repo-modes
 	@$(COMPOSE) up -d --build --wait --remove-orphans
 
 down:
@@ -120,7 +123,7 @@ build:
 pull:
 	@$(COMPOSE) pull --ignore-buildable
 
-restart:
+restart: repo-modes
 	@$(COMPOSE) restart $(S)
 
 prune:
@@ -164,7 +167,7 @@ AWS_REPLACE_A := $(REPLACE_A)
 endif
 .PHONY: up-cached box-provision box-dns box-dns-check box-docker box-env box-login box-secrets box-bootstrap deploy box-update box-teardown
 
-up-cached: check-env check-edge
+up-cached: check-env check-edge repo-modes
 	@$(COMPOSE) up -d --wait --no-build --pull never --remove-orphans
 
 box-provision:

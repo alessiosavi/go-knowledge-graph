@@ -284,6 +284,27 @@ func awsStub() {
 			if val("--command-id") != "cmd-example" || val("--instance-id") != "i-example" {
 				unexpected()
 			}
+			if results := os.Getenv("STUB_INVOCATION_RESULTS"); results != "" {
+				n, _ := os.ReadFile(filepath.Join(dir, "lookup-attempts"))
+				attempt, _ := strconv.Atoi(string(n))
+				os.WriteFile(filepath.Join(dir, "lookup-attempts"), []byte(strconv.Itoa(attempt+1)), 0600)
+				sequence := strings.Split(results, ",")
+				if attempt >= len(sequence) {
+					attempt = len(sequence) - 1
+				}
+				switch result := sequence[attempt]; result {
+				case "Success":
+				case "Pending":
+					emit(`{"Status":"Pending","ResponseCode":-1}`)
+					return
+				case "network":
+					die(`Could not connect to the endpoint URL: "https://` + awsMarker + `.invalid/"`)
+				case "credentials":
+					die("Error when retrieving token from sso: " + awsMarker)
+				default:
+					die("An error occurred (" + result + ") when calling the GetCommandInvocation operation: " + awsMarker + "\n" + awsMarker)
+				}
+			}
 			if mode == "remote-fail" {
 				emit(`{"Status":"Failed","ResponseCode":42,"StandardOutputContent":"","StandardErrorContent":"remote failure"}`)
 			} else if mode == "invocation-delay" {
@@ -648,7 +669,7 @@ func newAWS(t *testing.T) *awsHarness {
 	if e != nil {
 		t.Fatal(e)
 	}
-	stub := "#!/bin/bash\nexport GKG_AWS_STUB=1\nexec \"$AWS_TEST_BINARY\" -- \"$0\" \"$@\"\n"
+	stub := "#!/bin/bash\nprintf '%s|%s|%s\\n' \"${0##*/}\" \"${1:-}\" \"$(umask)\" >>\"$STUB_DIR/masks\"\nexport GKG_AWS_STUB=1\nexec \"$AWS_TEST_BINARY\" -- \"$0\" \"$@\"\n"
 	for _, n := range []string{"aws", "docker", "dig", "curl", "make", "openssl", "git", "sleep", "dnf", "systemctl", "install", "swapon", "mkswap", "fallocate", "sha256sum", "reboot", "go", "rpm", "tar", "groupadd", "modprobe", "sysctl", "systemd-run"} {
 		os.WriteFile(filepath.Join(h.bin, n), []byte(stub), 0700)
 	}
@@ -1095,6 +1116,95 @@ func TestAWSRemoteProtocol(t *testing.T) {
 	_, code = h.run("remote.sh", "deploy.sh", "bad;echo")
 	if code == 0 || h.count("send-command") != 0 {
 		t.Fatal("unsafe remote argument accepted")
+	}
+}
+
+func TestAWSRemoteLookupRetries(t *testing.T) {
+	for _, tc := range []struct {
+		name, results, diagnostic string
+		attempts                  int
+		wantSleeps                []string
+	}{
+		{name: "transient", results: "ThrottlingException,network,credentials,ExpiredTokenException,Success", attempts: 5, wantSleeps: []string{"2", "4", "8", "16"}},
+		{name: "reset", results: strings.Repeat("ThrottlingException,", 9) + "Pending," + strings.Repeat("ExpiredTokenException,", 9) + "Success", attempts: 20},
+		{name: "bounded", results: "ThrottlingException", diagnostic: "ThrottlingException", attempts: 10, wantSleeps: []string{"2", "4", "8", "16", "30", "30", "30", "30", "30"}},
+		{name: "network-bounded", results: "network", diagnostic: "Could not connect to the endpoint URL", attempts: 10},
+		{name: "credentials-bounded", results: "credentials", diagnostic: "AWS credential or token refresh failed", attempts: 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newAWS(t)
+			h.ids()
+			h.env = append(h.env, "STUB_INVOCATION_RESULTS="+tc.results)
+			out, code := h.run("remote.sh", "--docker")
+			if tc.diagnostic == "" {
+				if code != 0 || !strings.Contains(out, "abc123") {
+					t.Fatalf("retry exit=%d: %s", code, out)
+				}
+			} else {
+				message := "SSM invocation lookup failed"
+				if code != 1 || !strings.Contains(out, tc.diagnostic) || strings.Index(out, tc.diagnostic) >= strings.Index(out, message) {
+					t.Fatalf("bounded retry must print sanitized diagnostic before failure, exit=%d: %s", code, out)
+				}
+			}
+			if got := h.count("ssm get-command-invocation"); got != tc.attempts {
+				t.Fatalf("lookup calls=%d, want %d", got, tc.attempts)
+			}
+			var sleeps []string
+			for _, call := range h.calls() {
+				if call[0] == "sleep" {
+					sleeps = append(sleeps, call[1])
+				}
+			}
+			if tc.wantSleeps != nil && !reflect.DeepEqual(sleeps, tc.wantSleeps) {
+				t.Errorf("backoff sleeps=%v, want %v", sleeps, tc.wantSleeps)
+			}
+		})
+	}
+}
+
+func TestAWSGitUmask(t *testing.T) {
+	for _, mode := range []string{"", "fetch-fail", "unknown-ref", "checkout-fail", "auth-fail", "build-fail", "up-fail", "health-fail"} {
+		t.Run("deploy/"+mode, func(t *testing.T) {
+			h := newAWS(t)
+			h.mode(mode)
+			if err := os.WriteFile(filepath.Join(h.root, ".deployed-sha"), []byte("prev123\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			out, code := h.run("box/deploy.sh", "next123")
+			if (code != 0) != (mode != "") {
+				t.Fatalf("deploy mode=%s exit=%d: %s", mode, code, out)
+			}
+			if mode != "" && h.count("checkout --detach prev123") == 0 {
+				t.Fatal("failure must exercise a rollback checkout")
+			}
+			assertAWSUmasks(t, h)
+		})
+	}
+	t.Run("bootstrap", func(t *testing.T) {
+		h := newAWS(t)
+		h.ok("box/bootstrap.sh", "abc123")
+		if h.count("git clone") != 1 || h.count("git checkout") != 1 {
+			t.Fatal("bootstrap must exercise clone and checkout")
+		}
+		assertAWSUmasks(t, h)
+		h.private("runtime.env")
+	})
+}
+
+func assertAWSUmasks(t *testing.T, h *awsHarness) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(h.read("masks")), "\n") {
+		parts := strings.Split(line, "|")
+		if len(parts) != 3 {
+			t.Fatalf("invalid umask evidence: %q", line)
+		}
+		want := "0077"
+		if parts[0] == "git" && parts[1] != "rev-parse" {
+			want = "0022"
+		}
+		if parts[2] != want {
+			t.Errorf("%s %s umask=%s, want %s", parts[0], parts[1], parts[2], want)
+		}
 	}
 }
 func TestAWSRemoteEdgeTimeout(t *testing.T) {

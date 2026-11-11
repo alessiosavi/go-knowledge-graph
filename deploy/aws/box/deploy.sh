@@ -10,12 +10,14 @@ prev=$(cat .deployed-sha)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 trap 'exit 1' HUP INT TERM
 failed() { echo "gkg-box: $1 (private diagnostics withheld)" >&2; exit 1; }
-restore_revision() { git checkout --detach "$prev" >"$work/rollback" 2>&1 || failed 'revision rollback failed'; }
+# Only Git may create public repository files; diagnostics and secrets stay private.
+repo_git() ( umask 022; git "$@"; )
+restore_revision() { repo_git checkout --detach "$prev" >"$work/rollback" 2>&1 || failed 'revision rollback failed'; }
 # Once startup begins, recover the selected files and the running stack.
 # Continue to make up after a failed rebuild so recovery is best effort.
 rollback_stack() {
   local reason=$1 recovered=1
-  if git checkout --detach "$prev" >"$work/rollback-checkout" 2>&1; then
+  if repo_git checkout --detach "$prev" >"$work/rollback-checkout" 2>&1; then
     make build >"$work/rollback-build" 2>&1 || recovered=0
     make up >"$work/rollback-up" 2>&1 || recovered=0
   else
@@ -26,20 +28,20 @@ rollback_stack() {
   fi
   failed "$reason; recovery required"
 }
-git fetch --tags origin >"$work/git" 2>&1 || { restore_revision; failed 'fetch failed; previous revision restored'; }
+repo_git fetch --tags origin >"$work/git" 2>&1 || { restore_revision; failed 'fetch failed; previous revision restored'; }
 sha=$(git rev-parse --verify "$1^{commit}" 2>"$work/git") || { restore_revision; failed 'REF is not a commit; previous revision restored'; }
-if ! git checkout --detach "$sha" >"$work/git" 2>&1; then
-  git checkout --detach "$prev" >"$work/rollback" 2>&1 || failed 'checkout and rollback failed'
+if ! repo_git checkout --detach "$sha" >"$work/git" 2>&1; then
+  repo_git checkout --detach "$prev" >"$work/rollback" 2>&1 || failed 'checkout and rollback failed'
   failed 'checkout failed; previous revision restored'
 fi
 # Invoke from the selected checkout so secret rotation applies to every deploy.
 if ! bash "$root/deploy/aws/box/fetch-secrets.sh"; then
-  git checkout --detach "$prev" >"$work/rollback" 2>&1 || failed 'secret fetch and rollback failed'
+  repo_git checkout --detach "$prev" >"$work/rollback" 2>&1 || failed 'secret fetch and rollback failed'
   failed 'secret fetch failed; previous revision restored'
 fi
 # make build uses the same compose file and substitutions as make up.
 if ! make build >"$work/build" 2>&1; then
-  git checkout --detach "$prev" >"$work/rollback" 2>&1 || failed 'build and checkout rollback failed'
+  repo_git checkout --detach "$prev" >"$work/rollback" 2>&1 || failed 'build and checkout rollback failed'
   make build >"$work/rebuild" 2>&1 || failed 'previous image rebuild failed; recovery required'
   failed 'build failed; previous revision and image tags restored'
 fi
