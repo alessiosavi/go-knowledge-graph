@@ -7,6 +7,9 @@ exercised: byte-offset conversion, relation span -> entity-index mapping,
 strict batching and honest health.
 """
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -214,6 +217,87 @@ def test_model_aliases_resolve():
     assert sidecar.resolve_model("72m") == "VAGOsolutions/SauerkrautLM-GLiNEREL-72m"
     # Anything else is a full repository id, passed through unchanged.
     assert sidecar.resolve_model("org/model") == "org/model"
+
+
+def test_concurrent_extracts_are_serialized_and_healthz_is_available(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    second_waiting = threading.Event()
+
+    class ObservedLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.attempts = 0
+            self.guard = threading.Lock()
+
+        def __enter__(self):
+            with self.guard:
+                self.attempts += 1
+                if self.attempts == 2:
+                    second_waiting.set()
+            self.lock.acquire()
+
+        def __exit__(self, *args):
+            self.lock.release()
+
+    class BlockingModel(FakeModel):
+        def __init__(self):
+            super().__init__()
+            self.active = 0
+            self.peak = 0
+            self.guard = threading.Lock()
+
+        def extract(self, *args):
+            with self.guard:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                entered.set()
+                assert release.wait(5), "test did not release inference"
+                return super().extract(*args)
+            finally:
+                with self.guard:
+                    self.active -= 1
+
+    fake = BlockingModel()
+    monkeypatch.setattr(sidecar, "_model", fake)
+    monkeypatch.setattr(sidecar, "_inference_lock", ObservedLock())
+    with TestClient(sidecar.app) as client, ThreadPoolExecutor(max_workers=3) as pool:
+        def post():
+            return client.post("/v1/extract", json={"chunks": [{"id": "c1", "text": "Ada"}]})
+
+        first = pool.submit(post)
+        try:
+            assert entered.wait(5)
+            second = pool.submit(post)
+            assert second_waiting.wait(5), "second request did not reach the lock"
+            assert not second.done()
+            health = pool.submit(client.get, "/healthz").result(timeout=5)
+            assert health.status_code == 200
+            assert fake.peak == 1
+        finally:
+            release.set()
+        assert first.result(timeout=5).status_code == 200
+        assert second.result(timeout=5).status_code == 200
+    assert fake.calls == [1, 1]
+    assert fake.peak == 1
+
+
+def test_inference_lock_released_after_error(monkeypatch):
+    class FailingOnce(FakeModel):
+        def extract(self, *args):
+            if not self.calls:
+                self.calls.append(0)
+                raise RuntimeError("inference failed")
+            return super().extract(*args)
+
+    monkeypatch.setattr(sidecar, "_model", FailingOnce())
+    client = TestClient(sidecar.app, raise_server_exceptions=False)
+    payload = {"chunks": [{"id": "c1", "text": "Ada"}]}
+    assert client.post("/v1/extract", json=payload).status_code == 500
+    assert sidecar._inference_lock.acquire(timeout=1), "inference error leaked the lock"
+    sidecar._inference_lock.release()
+    assert client.post("/v1/extract", json=payload).status_code == 200
 
 
 @pytest.mark.parametrize(

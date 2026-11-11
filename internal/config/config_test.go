@@ -45,6 +45,26 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Ingest.MaxRedirects != 5 {
 		t.Errorf("Ingest.MaxRedirects = %d, want 5", cfg.Ingest.MaxRedirects)
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Ingest.SpoolDir != filepath.Join(home, ".local", "share", "gkg", "ingest-spool") || cfg.Ingest.SpoolMaxCount != 1024 || cfg.Ingest.SpoolMaxBytes != 1<<30 || cfg.Extractor.Sidecar.TimeoutS != 300 {
+		t.Fatal("spool/sidecar defaults differ")
+	}
+}
+
+func TestDurabilityConfigValidation(t *testing.T) {
+	for _, key := range []string{"GKG_INGEST_SPOOL_MAX_COUNT", "GKG_INGEST_SPOOL_MAX_BYTES", "GKG_EXTRACTOR_SIDECAR_TIMEOUT_S"} {
+		for _, value := range []string{"0", "-1", "invalid"} {
+			t.Run(key+"/"+value, func(t *testing.T) {
+				t.Setenv(key, value)
+				if _, err := config.Load(""); err == nil || !strings.Contains(err.Error(), key) {
+					t.Fatalf("want error naming %s: %v", key, err)
+				}
+			})
+		}
+	}
 }
 
 func TestConverterImagesConfig(t *testing.T) {
@@ -167,6 +187,10 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_EXTRACTOR_OPENAI_MODEL", "om", "om", func(c config.Config) any { return c.Extractor.OpenAI.Model }},
 		{"GKG_EXTRACTOR_SIDECAR_URL", "http://localhost:9999", "http://localhost:9999", func(c config.Config) any { return c.Extractor.Sidecar.URL }},
 		{"GKG_EXTRACTOR_SIDECAR_MODEL", "glinerel-314m", "glinerel-314m", func(c config.Config) any { return c.Extractor.Sidecar.Model }},
+		{"GKG_EXTRACTOR_SIDECAR_TIMEOUT_S", "42", 42, func(c config.Config) any { return c.Extractor.Sidecar.TimeoutS }},
+		{"GKG_INGEST_SPOOL_DIR", "custom-spool", "custom-spool", func(c config.Config) any { return c.Ingest.SpoolDir }},
+		{"GKG_INGEST_SPOOL_MAX_COUNT", "12", 12, func(c config.Config) any { return c.Ingest.SpoolMaxCount }},
+		{"GKG_INGEST_SPOOL_MAX_BYTES", "2048", 2048, func(c config.Config) any { return c.Ingest.SpoolMaxBytes }},
 		{"GKG_EMBEDDER_ENABLED", "true", true, func(c config.Config) any { return c.Embedder.Enabled }},
 		{"GKG_EMBEDDER_BASE_URL", "https://example/v1", "https://example/v1", func(c config.Config) any { return c.Embedder.BaseURL }},
 		{"GKG_EMBEDDER_API_KEY", "ek", "ek", func(c config.Config) any { return c.Embedder.APIKey }},

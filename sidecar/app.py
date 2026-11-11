@@ -46,6 +46,7 @@ app = FastAPI(title="gkg-sidecar")
 
 _model = None
 _model_lock = threading.Lock()
+_inference_lock = threading.Lock()
 
 
 def resolve_model(name: str) -> str:
@@ -166,14 +167,17 @@ def extract(req: ExtractRequest):
     relations = _thresholds(req.relations, DEFAULT_RELATION_THRESHOLD)
     model = get_model()
     results = []
-    for start in range(0, len(req.chunks), BATCH_SIZE):
-        batch = req.chunks[start : start + BATCH_SIZE]
-        raw = model.extract([c.text for c in batch], entities, relations)
-        if len(raw) != len(batch):
-            raise HTTPException(
-                status_code=500,
-                detail=f"model returned {len(raw)} results for {len(batch)} chunks",
-            )
-        for chunk, res in zip(batch, raw, strict=True):
-            results.append({"chunk_id": chunk.id, **_adapt(chunk.text, res)})
+    # Each inference uses the available CPU threads. Concurrent sync handlers
+    # queue here instead of oversubscribing them; healthz does not take this lock.
+    with _inference_lock:
+        for start in range(0, len(req.chunks), BATCH_SIZE):
+            batch = req.chunks[start : start + BATCH_SIZE]
+            raw = model.extract([c.text for c in batch], entities, relations)
+            if len(raw) != len(batch):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"model returned {len(raw)} results for {len(batch)} chunks",
+                )
+            for chunk, res in zip(batch, raw, strict=True):
+                results.append({"chunk_id": chunk.id, **_adapt(chunk.text, res)})
     return {"results": results}

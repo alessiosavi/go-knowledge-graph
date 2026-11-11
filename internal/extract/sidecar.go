@@ -38,10 +38,14 @@ func NewSidecar(cfg config.Config) *Sidecar {
 	if model == "" {
 		model = "glinerel-314m"
 	}
+	timeout := cfg.Extractor.Sidecar.TimeoutS
+	if timeout <= 0 {
+		timeout = 300
+	}
 	return &Sidecar{
 		baseURL: base,
 		model:   model,
-		client:  &http.Client{Timeout: 120 * time.Second},
+		client:  &http.Client{Timeout: time.Duration(timeout) * time.Second},
 	}
 }
 

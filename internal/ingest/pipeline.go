@@ -65,6 +65,10 @@ type Result struct {
 // finds both this sentinel and the underlying error.
 var ErrStore = errors.New("ingest: store failure")
 
+// ErrBusy marks a document whose processing lock is held. Admissions that
+// need to replace its payload must retry after the worker releases it.
+var ErrBusy = errors.New("ingest: document is busy; retry later")
+
 // Default label sets (sidecar starting points per the design: entity 0.4,
 // relation 0.25). Named presets from Labels.PresetsDir override them.
 var (
@@ -99,6 +103,30 @@ type submission struct {
 	labels string
 }
 
+// pipelineStore is the graph surface used by the pipeline. Production uses
+// graph.Store; tests can exercise durable admission/recovery without a server.
+type pipelineStore interface {
+	UpsertDocument(context.Context, graph.DocumentInput) (graph.UpsertResult, error)
+	Document(context.Context, string) (*graph.Document, error)
+	InFlight(context.Context) ([]graph.Document, error)
+	SetStatus(context.Context, string, graph.Status, string) error
+	DeleteChunksFrom(context.Context, string, int) error
+	PutChunks(context.Context, string, []graph.Chunk) error
+	Chunks(context.Context, string) ([]graph.Chunk, error)
+	PutFingerprint(context.Context, string, dedup.FP) error
+	UpsertExtraction(context.Context, string, string, string, []graph.EntityUpsert, []graph.FactUpsert) error
+	WriteFactAudit(context.Context, graph.FactAudit) error
+	SetFactJudge(context.Context, string, string, string, string, string) error
+	RejectFact(context.Context, string, string, string, string, graph.FactAudit) error
+	EnsureVectorIndex(context.Context, int) error
+	SetEntityEmbeddings(context.Context, []string, [][]float64) (int, error)
+	OlderLiveVersions(context.Context, string) ([]string, error)
+	Supersede(context.Context, string, string) error
+	SameIdentityDocumentIDs(context.Context, string, string) (map[string]bool, error)
+	ChunkRefsByExactKey(context.Context, string, []string, string) ([]graph.ChunkRef, error)
+	ChunkByID(context.Context, string) (graph.Chunk, error)
+}
+
 // Metrics receives the pipeline counters and latencies; nil means
 // disabled. It is structurally implemented by obs.Metrics.
 type Metrics interface {
@@ -126,10 +154,11 @@ const embedBatch = 64
 // Pipeline runs one document submission end to end.
 type Pipeline struct {
 	cfg   config.Config
-	store *graph.Store
+	store pipelineStore
 	prov  extract.Provider
 	ix    *dedup.Index
 	load  TextLoader
+	spool *submissionSpool
 
 	jobs chan string
 
@@ -157,6 +186,7 @@ func NewPipeline(cfg config.Config, st *graph.Store, prov extract.Provider, ix *
 		load:    load,
 		jobs:    make(chan string, jobsBuffer),
 		pending: make(map[string]submission),
+		spool:   &submissionSpool{dir: cfg.Ingest.SpoolDir, maxCount: cfg.Ingest.SpoolMaxCount, maxBytes: int64(cfg.Ingest.SpoolMaxBytes)},
 	}
 }
 
@@ -185,28 +215,64 @@ func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 	if kind == "url" {
 		finalURL = in.URL
 	}
-	res, err := p.store.UpsertDocument(ctx, graph.DocumentInput{
+	loaded.Hash = hash
+	loaded.Title = title
+	res, err := p.admit(ctx, graph.DocumentInput{
 		Kind: kind, Source: source, FinalURL: finalURL, Title: title, Hash: hash, Labels: in.Labels,
-	})
+	}, submission{loaded: loaded, labels: in.Labels}, in.Force)
+	if err != nil || res.Noop {
+		return res, err
+	}
+	// Release admission's locks before applying queue backpressure.
+	p.enqueue(ctx, res.DocumentID)
+	return res, nil
+}
+
+func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submission, force bool) (Result, error) {
+	id := graph.DocumentID(in.Kind, in.Source, in.Hash)
+	// A duplicate is only a read: do not wait on processing or touch the
+	// spool, which may be full or unavailable while this version is live.
+	doc, err := p.store.Document(ctx, id)
+	if err != nil && !errors.Is(err, graph.ErrNotFound) {
+		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
+	}
+	if err == nil && doc.Status != graph.StatusFailed && doc.Status != graph.StatusSuperseded && !force {
+		return Result{DocumentID: id, Noop: true}, nil
+	}
+	lock := p.docLock(id)
+	if !lock.TryLock() {
+		return Result{}, ErrBusy
+	}
+	defer lock.Unlock()
+	p.spool.mu.Lock()
+	defer p.spool.mu.Unlock()
+	// Recheck after acquiring the locks: another admission may have
+	// published this version since our first read. Keep payload writes and
+	// publication serialized with Process's forget and the spool sweep.
+	doc, err = p.store.Document(ctx, id)
+	if err != nil && !errors.Is(err, graph.ErrNotFound) {
+		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
+	}
+	if err == nil && doc.Status != graph.StatusFailed && doc.Status != graph.StatusSuperseded && !force {
+		return Result{DocumentID: id, Noop: true}, nil
+	}
+	if err := p.spool.putLocked(id, sub); err != nil {
+		return Result{}, fmt.Errorf("%w: %w", ErrSpool, err)
+	}
+	in.Force = force
+	res, err := p.store.UpsertDocument(ctx, in)
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
-	if res.Noop && !in.Force {
+	if res.Noop && !force {
 		return Result{DocumentID: res.ID, Noop: true}, nil
 	}
-	loaded.Hash = hash
 	p.mu.Lock()
-	p.pending[res.ID] = submission{loaded: loaded, labels: in.Labels}
+	p.pending[res.ID] = sub
 	p.mu.Unlock()
-	if res.Noop && in.Force {
-		// Explicit re-run of an already-known document.
-		if err := p.setStatus(ctx, res.ID, graph.StatusReceived, ""); err != nil {
-			return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
-		}
-	} else if p.metrics != nil {
+	if p.metrics != nil {
 		p.metrics.DocumentStatus(string(graph.StatusReceived))
 	}
-	p.enqueue(ctx, res.ID)
 	return Result{DocumentID: res.ID}, nil
 }
 
@@ -223,7 +289,9 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 
 	doc, err := p.store.Document(ctx, docID)
 	if err != nil {
-		p.forget(docID)
+		if errors.Is(err, graph.ErrNotFound) {
+			p.forget(docID)
+		}
 		return err
 	}
 	switch doc.Status {
@@ -240,8 +308,9 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		msg := stage + ": " + err.Error()
 		if serr := p.setStatus(ctx, docID, graph.StatusFailed, msg); serr != nil {
 			slog.Warn("ingest: could not record failure", "doc", docID, "err", serr)
+		} else {
+			p.forget(docID)
 		}
-		p.forget(docID)
 		return fmt.Errorf("ingest: %s: %w", stage, err)
 	}
 
@@ -286,6 +355,9 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		}
 		st = graph.StatusChunked
 	}
+	// Chunks now contain everything recovery needs, including the text.
+	// Release spool capacity before slow extraction starts.
+	p.forget(docID)
 
 	if st == graph.StatusChunked || st == graph.StatusExtracted {
 		chunks, err := p.store.Chunks(ctx, docID)
@@ -424,6 +496,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		if err != nil && !errors.Is(err, graph.ErrSuperseded) {
 			return fail("supersede", err)
 		}
+		p.forgetSuperseded(ctx, oldID)
 		if err == nil && p.metrics != nil {
 			p.metrics.DocumentStatus(string(graph.StatusSuperseded))
 		}
@@ -435,11 +508,31 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 	return nil
 }
 
-// forget drops the in-memory submission cache for a finished document.
+// forget drops the payload once chunks are durable or the document is terminal.
 func (p *Pipeline) forget(docID string) {
 	p.mu.Lock()
 	delete(p.pending, docID)
 	p.mu.Unlock()
+	if err := p.spool.remove(docID); err != nil {
+		slog.Warn("ingest: spool cleanup failed", "doc", docID, "err", err)
+	}
+}
+
+// A superseded id may already have been submitted again by another worker.
+// Check under the admission lock before discarding that version's payload.
+func (p *Pipeline) forgetSuperseded(ctx context.Context, docID string) {
+	p.spool.mu.Lock()
+	defer p.spool.mu.Unlock()
+	doc, err := p.store.Document(ctx, docID)
+	if err != nil || doc.Status != graph.StatusSuperseded {
+		return
+	}
+	p.mu.Lock()
+	delete(p.pending, docID)
+	p.mu.Unlock()
+	if err := p.spool.removeLocked(docID); err != nil {
+		slog.Warn("ingest: spool cleanup failed", "doc", docID, "err", err)
+	}
 }
 
 // SetJudge attaches the online fact-verification judge; nil means off.
@@ -622,6 +715,9 @@ func (p *Pipeline) Recover(ctx context.Context) error {
 	for _, d := range docs {
 		p.enqueue(ctx, d.ID)
 	}
+	if err := p.spool.sweep(ctx, p.store); err != nil {
+		slog.Warn("ingest: spool recovery cleanup failed", "err", err)
+	}
 	return nil
 }
 
@@ -650,16 +746,21 @@ func (p *Pipeline) loadInput(ctx context.Context, in Input) (Loaded, error) {
 	return p.load(ctx, in)
 }
 
-// loadFor returns the cached submission content or re-decodes from the
-// document's stored identity: URL documents re-fetch their FinalURL (the
-// submitted string may be a caller-supplied identity override), file and
-// text documents cannot be reloaded and fail with a resubmit hint.
+// loadFor tries the cache, then the durable converted payload, then the
+// original source. Only legacy URL documents can be loaded without a spool.
 func (p *Pipeline) loadFor(ctx context.Context, doc *graph.Document) (Loaded, error) {
 	p.mu.Lock()
 	sub, ok := p.pending[doc.ID]
 	p.mu.Unlock()
 	if ok {
 		return sub.loaded, nil
+	}
+	sub, err := p.spool.load(doc)
+	if err == nil {
+		return sub.loaded, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return Loaded{}, fmt.Errorf("spool: %w", err)
 	}
 	target := doc.Source
 	if doc.SourceKind == "url" && doc.FinalURL != "" {

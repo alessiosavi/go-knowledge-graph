@@ -23,6 +23,20 @@ func newTestSidecar(t *testing.T, handler http.HandlerFunc) *Sidecar {
 	return NewSidecar(cfg)
 }
 
+func TestSidecarTimeout(t *testing.T) {
+	for _, seconds := range []int{0, 300, 42} {
+		cfg := config.Config{}
+		cfg.Extractor.Sidecar.TimeoutS = seconds
+		want := seconds
+		if want == 0 {
+			want = 300
+		}
+		if got := NewSidecar(cfg).client.Timeout; got != time.Duration(want)*time.Second {
+			t.Errorf("timeout %d: got %v, want %ds", seconds, got, want)
+		}
+	}
+}
+
 func TestSidecarParsesContract(t *testing.T) {
 	s := newTestSidecar(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

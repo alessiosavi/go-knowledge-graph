@@ -67,6 +67,8 @@ services:
       GKG_EXTRACTOR_OPENAI_MODEL: ${GKG_EXTRACTOR_OPENAI_MODEL:-deepseek-v4.1-flash}
       GKG_EXTRACTOR_SIDECAR_URL: ${GKG_EXTRACTOR_SIDECAR_URL:-http://sidecar:8090}
       GKG_EXTRACTOR_SIDECAR_MODEL: ${GKG_EXTRACTOR_SIDECAR_MODEL:-glinerel-314m}
+      GKG_EXTRACTOR_SIDECAR_TIMEOUT_S: ${GKG_EXTRACTOR_SIDECAR_TIMEOUT_S:-300}
+      GKG_INGEST_SPOOL_DIR: /var/lib/gkg/ingest-spool
       # Provider "" (openai default) or furls; with furls the endpoints and
       # the shared secret arrive from .env via env_file (never committed).
       GKG_EMBEDDER_ENABLED: ${GKG_EMBEDDER_ENABLED:-false}
@@ -90,6 +92,7 @@ services:
       - "127.0.0.1:${GKG_PORT:-8080}:8080"
     volumes:
       - ../labels:/labels:ro
+      - gkg-data:/var/lib/gkg
 
   # Local, fully-offline extraction: GLiNEREL sidecar with the
   # weights baked into the image (runtime HF_HUB_OFFLINE=1).
@@ -254,6 +257,7 @@ services:
       - edge-certs:/etc/nginx/edge-certs
 
 volumes:
+  gkg-data:
   memgraph-data:
   edge-certs:
   edge-auth:

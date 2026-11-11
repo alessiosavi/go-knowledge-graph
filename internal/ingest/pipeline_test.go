@@ -39,6 +39,7 @@ func testConfig(t *testing.T) config.Config {
 		t.Fatalf("config: %v", err)
 	}
 	cfg.Ingest.ChunkWords = 12
+	cfg.Ingest.SpoolDir = t.TempDir()
 	cfg.Ingest.OverlapSentences = 0
 	return cfg
 }
@@ -858,6 +859,8 @@ func TestRecoveryReloadHashMismatch(t *testing.T) {
 
 	// Restart: the loader now returns changed content for the same source.
 	contents[source] = text1 + " Completely different ending."
+	// Missing-spool/legacy fallback still verifies the reloaded content.
+	cfg.Ingest.SpoolDir = t.TempDir()
 	p2 := ingest.NewPipeline(cfg, st, &extract.Mock{}, dedup.New(), reloadableLoader(contents))
 	err = p2.Process(ctx, res.DocumentID)
 	if err == nil {
@@ -890,11 +893,20 @@ func TestRecoveryReloadHashMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	// Fresh pipeline (no cache): the reload path alone must complete it.
+	// Fresh pipeline without a cache or spool: only the loader can supply text.
+	cfg.Ingest.SpoolDir = t.TempDir()
 	mock := &extract.Mock{}
-	p2 := ingest.NewPipeline(cfg, st, mock, dedup.New(), reloadableLoader(contents))
+	load := reloadableLoader(contents)
+	reloads := 0
+	p2 := ingest.NewPipeline(cfg, st, mock, dedup.New(), func(ctx context.Context, in ingest.Input) (ingest.Loaded, error) {
+		reloads++
+		return load(ctx, in)
+	})
 	if err := p2.Process(ctx, res.DocumentID); err != nil {
 		t.Fatalf("Process on reload path: %v", err)
+	}
+	if reloads != 1 {
+		t.Errorf("loader calls = %d, want 1", reloads)
 	}
 	doc, err := st.Document(ctx, res.DocumentID)
 	if err != nil {
