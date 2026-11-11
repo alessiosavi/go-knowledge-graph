@@ -224,7 +224,7 @@ func TestConverterFromConfigImages(t *testing.T) {
 					return
 				}
 				defer r.MultipartForm.RemoveAll()
-				if r.FormValue("to_formats") != "md" || r.FormValue("ocr_engine") != "tesseract" || r.FormValue("image_export_mode") != "placeholder" {
+				if r.FormValue("to_formats") != "md" || r.FormValue("ocr_preset") != "tesseract" || r.FormValue("ocr_engine") != "" || r.FormValue("image_export_mode") != "placeholder" {
 					t.Error("missing safe docling fields")
 				}
 				io.WriteString(w, `{"status":"success","document":{"md_content":"converted"}}`)

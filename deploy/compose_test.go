@@ -64,6 +64,18 @@ func TestComposeDefaultStackRunsModelServices(t *testing.T) {
 	wantEnv(t, gkg, "GKG_CONVERTER_URL", "http://docling:5001")
 }
 
+func TestComposeSidecarCustomModelRevision(t *testing.T) {
+	revision := strings.Repeat("a", 40)
+	model := renderCompose(t, writeFixture(t,
+		"MEMGRAPH_PASSWORD=test-only", "GKG_API_KEY=synthetic-test-key",
+		"GLINEREL_MODEL=org/custom", "GLINEREL_MODEL_REVISION="+revision))
+	sidecar := model.Services["sidecar"]
+	if sidecar.Build.Args["GLINEREL_MODEL"] != "org/custom" || sidecar.Build.Args["GLINEREL_MODEL_REVISION"] != revision {
+		t.Fatal("sidecar build must receive the custom repository and its immutable revision")
+	}
+	wantEnv(t, sidecar, "GLINEREL_MODEL", "org/custom")
+}
+
 func TestComposeEnvFileFollowsGKGEnvFile(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy/docker-compose.yml"))
 	if err != nil {

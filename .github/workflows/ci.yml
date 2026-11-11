@@ -7,15 +7,18 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       GKG_REQUIRE_NODE: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "26.13.0"
       - name: Build
         run: go build ./...
       - name: Vet
@@ -24,17 +27,17 @@ jobs:
         run: go test ./...
 
   integration:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     services:
       memgraph:
-        image: memgraph/memgraph:3.14.0
+        image: memgraph/memgraph:3.14.0@sha256:a732421217951066e42f5749111bc3d0c7b51b12c756be04850d4dafa84cc05e
         ports:
           - 7687:7687
     env:
       GKG_TEST_MEMGRAPH_URI: bolt://localhost:7687
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -42,11 +45,11 @@ jobs:
         run: go test -p 1 ./... -count=1
 
   edge:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -54,22 +57,85 @@ jobs:
         run: bash scripts/edge-check.sh
 
   sidecar:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.15.2"
       - name: Install contract-test dependencies
-        run: pip install "fastapi>=0.115,<1" "pydantic>=2.7,<3" "pytest>=8" "httpx>=0.27" "uvicorn[standard]>=0.30,<1"
+        run: pip install --require-hashes -r sidecar/requirements.lock
       - name: Sidecar contract tests
         run: pytest sidecar/
+      - name: Build sidecar and smoke test the real model offline
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          cleanup() {
+            result=$?
+            trap - EXIT
+            if [ "$result" -ne 0 ]; then docker logs gkg-sidecar-offline-ci || true; fi
+            if docker container inspect gkg-sidecar-offline-ci >/dev/null 2>&1; then
+              docker rm --force --volumes gkg-sidecar-offline-ci || result=1
+            fi
+            exit "$result"
+          }
+          trap cleanup EXIT
+          docker build --file sidecar/Dockerfile --tag gkg-sidecar-ci sidecar
+          docker run --detach --name gkg-sidecar-offline-ci --network none --memory 4864m gkg-sidecar-ci
+          docker exec --interactive gkg-sidecar-offline-ci python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+
+          import torch
+
+          assert os.environ.get("HF_HUB_OFFLINE") == "1"
+          assert torch.version.cuda is None, "CPU-only torch is required"
+          base = "http://127.0.0.1:8090"
+          deadline = time.monotonic() + 180
+          while time.monotonic() < deadline:
+              try:
+                  with urllib.request.urlopen(base + "/healthz", timeout=5) as response:
+                      assert response.status == 200
+                  break
+              except OSError:
+                  time.sleep(1)
+          else:
+              raise RuntimeError("sidecar was not ready within 180 seconds")
+
+          payload = {
+              "chunks": [{"id": "smoke", "text": "Ada Lovelace worked in London."}],
+              "entities": ["person", "location"],
+              "relations": [],
+          }
+          request = urllib.request.Request(
+              base + "/v1/extract",
+              data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(request, timeout=60) as response:
+              assert response.status == 200
+              body = json.load(response)
+          assert len(body["results"]) == 1, body
+          assert body["results"][0]["chunk_id"] == "smoke", body
+          assert body["results"][0]["entities"], body
+          print("PASS: real-model offline extraction", json.dumps(body))
+          PY
+      - name: Remove offline smoke container
+        if: always()
+        run: |
+          if docker container inspect gkg-sidecar-offline-ci >/dev/null 2>&1; then
+            docker rm --force --volumes gkg-sidecar-offline-ci
+          fi
 
   acceptance:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     services:
       memgraph:
-        image: memgraph/memgraph:3.14.0
+        image: memgraph/memgraph:3.14.0@sha256:a732421217951066e42f5749111bc3d0c7b51b12c756be04850d4dafa84cc05e
         ports:
           - 7687:7687
     env:
@@ -77,8 +143,8 @@ jobs:
       GKG_MEMGRAPH_URI: bolt://localhost:7687
       GKG_EXTRACTOR_MODE: mock
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true

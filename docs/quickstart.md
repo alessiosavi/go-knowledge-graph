@@ -279,10 +279,11 @@ the default `GKG_CONVERTER_URL` (`http://localhost:5001`) (compose defaults to
 with the converter's reason — there is no silent fallback.
 `GKG_CONVERTER_TIMEOUT_S` (default 300) bounds a conversion; the server's
 sync wait is pinned just below it, so a slow document fails within the
-client budget (the conversion task keeps running server-side). With the
-pinned `v1.1.0`, exceeding the sync wait surfaces a generic HTTP 500 rather
-than the documented explanatory 504; gkg reports either as a load-stage
-failure.
+client budget (the conversion task keeps running server-side). The pinned
+docling-serve `v1.38.2` answers an exceeded sync wait with HTTP 504; gkg
+reports it as a load-stage failure. OCR uses the `ocr_preset` field
+(`GKG_CONVERTER_OCR_ENGINE`, default `tesseract`); conversion errors are
+reported with docling's error messages.
 
 ## 8. Evaluation
 
