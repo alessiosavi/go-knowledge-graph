@@ -164,8 +164,9 @@ Leaving Labels empty uses `general`; the picker also accepts custom preset
 names from `labels.presets_dir` (`GKG_LABELS_PRESETS_DIR`). Stored types use
 each label's snake name; its optional `text` provides wording for the sidecar.
 Mail amounts and dates, and meeting dates, are scoped to each document.
-Presets affect future extractions and ship starting thresholds; synthetic
-golden sets live in `eval/golden/` (`sample.jsonl` for `general`).
+Presets affect future extractions. Each use-case preset's thresholds are tuned
+on its synthetic golden set in `eval/golden/<preset>.jsonl` (`general` keeps
+the starting values and uses `sample.jsonl`); see USAGE.md for re-tuning.
 
 Re-ingesting unchanged content is a no-op (`"noop":true`); changed content
 creates a new version and supersedes the old one.

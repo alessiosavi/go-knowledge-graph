@@ -236,8 +236,19 @@ gkg eval --provider mock --labels mail --golden eval/golden/mail.jsonl --out mai
 
 The JSON report records `preset` (empty for built-in defaults), plus each
 label's `name`, `text` and `threshold`. Mock runs check the harness; their
-scores do not measure extraction quality. The presets ship starting thresholds,
-with tuning deferred to a separate evaluation.
+scores do not measure extraction quality.
+
+The documentation, code, mail, meeting and demo thresholds are tuned on their
+golden sets against the GLiNER sidecar: the highest values on the best F1
+plateau of a sweep (`general` and `news` keep the starting values; the
+`general` sample set does not discriminate between thresholds). To reproduce or
+re-tune a preset after editing it or its golden set:
+
+```sh
+gkg eval --provider sidecar --labels documentation \
+  --golden eval/golden/documentation.jsonl \
+  --sweep 'entity=0.2:0.7:0.05 relation=0.1:0.5:0.05' --out documentation-sweep
+```
 
 ## 6. Operations
 

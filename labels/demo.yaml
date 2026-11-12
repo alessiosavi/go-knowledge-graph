@@ -1,23 +1,23 @@
 # Demo scripts, recordings and product feedback.
-# Starting thresholds; select with labels=demo.
+# Thresholds tuned on eval/golden/demo.jsonl (GLiNER sidecar); select with labels=demo.
 entities:
-  - { name: product, threshold: 0.4 }
-  - { name: feature, threshold: 0.4 }
-  - { name: organization, threshold: 0.4 }
-  - { name: persona, threshold: 0.4 }
-  - { name: scenario, threshold: 0.4 }
-  - { name: feedback, threshold: 0.4 }
-  - { name: issue, threshold: 0.4 }
-  - { name: metric, threshold: 0.4 }
-  - { name: competitor, threshold: 0.4 }
-  - { name: person, threshold: 0.4 }
+  - { name: product, threshold: 0.45 }
+  - { name: feature, threshold: 0.45 }
+  - { name: organization, threshold: 0.45 }
+  - { name: persona, threshold: 0.45 }
+  - { name: scenario, threshold: 0.45 }
+  - { name: feedback, threshold: 0.45 }
+  - { name: issue, threshold: 0.45 }
+  - { name: metric, threshold: 0.45 }
+  - { name: competitor, threshold: 0.45 }
+  - { name: person, threshold: 0.45 }
 relations:
-  - { name: demonstrates, threshold: 0.25 }
-  - { name: part_of, text: part of, threshold: 0.25 }
-  - { name: requested_by, text: requested by, threshold: 0.25 }
-  - { name: feedback_on, text: feedback on, threshold: 0.25 }
-  - { name: reported_by, text: reported by, threshold: 0.25 }
-  - { name: blocks, threshold: 0.25 }
-  - { name: competes_with, text: competes with, threshold: 0.25 }
-  - { name: measured_by, text: measured by, threshold: 0.25 }
-  - { name: uses, threshold: 0.25 }
+  - { name: demonstrates, threshold: 0.3 }
+  - { name: part_of, text: part of, threshold: 0.3 }
+  - { name: requested_by, text: requested by, threshold: 0.3 }
+  - { name: feedback_on, text: feedback on, threshold: 0.3 }
+  - { name: reported_by, text: reported by, threshold: 0.3 }
+  - { name: blocks, threshold: 0.3 }
+  - { name: competes_with, text: competes with, threshold: 0.3 }
+  - { name: measured_by, text: measured by, threshold: 0.3 }
+  - { name: uses, threshold: 0.3 }
