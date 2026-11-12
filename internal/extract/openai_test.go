@@ -46,6 +46,9 @@ func TestOpenAIPayloadOmitsScope(t *testing.T) {
 	if err := json.Unmarshal([]byte(payload), &body); err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(payload, "monetary amount") || strings.Contains(payload, `"amount of"`) {
+		t.Errorf("label text leaked into OpenAI payload: %s", payload)
+	}
 	if strings.Contains(payload, `"scope"`) || strings.Contains(payload, `"Scope"`) {
 		t.Errorf("scope leaked into OpenAI payload: %s", payload)
 	}
