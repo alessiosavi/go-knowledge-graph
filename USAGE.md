@@ -191,6 +191,7 @@ answers `501` and the panel stays hidden. Answers are LLM-generated — the
 
 ```sh
 gkg eval --golden eval/golden/sample.jsonl --provider mock      # offline smoke
+gkg eval --golden eval/golden/sample.jsonl --provider mock --labels general
 gkg eval --golden eval/golden/sample.jsonl --provider openai    # real provider
 gkg eval --golden eval/golden/sample.jsonl --provider openai \
   --sweep 'entity=0.2:0.8:0.1 relation=0.1:0.6:0.1' --out report
@@ -198,6 +199,10 @@ gkg eval --golden eval/golden/sample.jsonl --provider openai \
 
 The harness prints lenient entity/relation F1, judge-scored precision and
 reference-fact coverage; `--out` writes a Markdown + JSON report.
+`--labels <preset>` loads `<preset>.yaml` from `labels.presets_dir` (default:
+`labels/`). Without `--labels`, evaluation uses the built-in labels. Unknown
+or invalid presets fail before extraction. An optional label `text` supplies
+natural-language wording to the sidecar; extracted types keep the label `name`.
 
 ## 6. Operations
 

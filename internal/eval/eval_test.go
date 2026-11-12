@@ -138,7 +138,7 @@ func TestSweepSendsAxisThresholds(t *testing.T) {
 	}
 	golden := writeGolden(t, sampleDocs())
 	prov := &recordingProvider{}
-	if _, err := Run(context.Background(), cfg, prov, nil, golden, "entity=0.7:0.7:0.1 relation=0.3:0.3:0.1", ""); err != nil {
+	if _, err := Run(context.Background(), cfg, prov, nil, golden, "", "entity=0.7:0.7:0.1 relation=0.3:0.3:0.1", ""); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	var sawDefault, sawSweep bool
@@ -155,6 +155,77 @@ func TestSweepSendsAxisThresholds(t *testing.T) {
 	}
 	if !sawDefault || !sawSweep {
 		t.Errorf("thresholds per axis not observed: default=%v sweep=%v", sawDefault, sawSweep)
+	}
+}
+
+func TestEvalUsesPreset(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Labels.PresetsDir = t.TempDir()
+	preset := "entities:\n  - name: service\n    text: software service\n    threshold: 0.35\nrelations:\n  - name: calls\n    text: calls service\n    threshold: 0.2\n"
+	if err := os.WriteFile(filepath.Join(cfg.Labels.PresetsDir, "custom.yaml"), []byte(preset), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	golden := writeGolden(t, []map[string]any{{
+		"doc": "Gateway calls Catalog",
+		"expected_entities": []map[string]string{
+			{"label": "service", "text": "Gateway"}, {"label": "service", "text": "Catalog"},
+		},
+		"expected_relations": []map[string]string{{"label": "calls", "head": "Gateway", "tail": "Catalog"}},
+	}})
+	prov := &extract.Mock{}
+	report, err := Run(context.Background(), cfg, prov, nil, golden, "custom", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prov.Calls() != 1 || len(report.Docs) != 1 || report.AggregateEntitiesStrict.F1 != 1 || report.AggregateRelationsStrict.F1 != 1 {
+		t.Fatalf("preset extraction: calls=%d report=%+v, want service/calls perfect match", prov.Calls(), report)
+	}
+	if len(report.EntitiesThresholds) != 1 || report.EntitiesThresholds[0].Name != "service" ||
+		len(report.RelationsThresholds) != 1 || report.RelationsThresholds[0].Name != "calls" {
+		t.Fatalf("report labels = %+v / %+v", report.EntitiesThresholds, report.RelationsThresholds)
+	}
+
+	for _, tc := range []struct{ name, content string }{
+		{"nope", ""},
+		{"broken", "entities: ["},
+		{"invalid", "entities:\n  - name: service\n    scope: global\n"},
+		{"ambiguous", "relations:\n  - name: calls\n    text: uses\n  - name: uses\n"},
+		{"../escape", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.content != "" {
+				if err := os.WriteFile(filepath.Join(cfg.Labels.PresetsDir, tc.name+".yaml"), []byte(tc.content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			prov := &extract.Mock{}
+			_, err := Run(context.Background(), cfg, prov, nil, golden, tc.name, "", "")
+			if err == nil || !strings.Contains(err.Error(), tc.name) || prov.Calls() != 0 {
+				t.Fatalf("invalid preset: error=%v calls=%d, want preset error before extraction", err, prov.Calls())
+			}
+		})
+	}
+
+	// Sweeps must keep the preset's text and identity metadata.
+	provRequests := &recordingProvider{}
+	_, err = Run(context.Background(), cfg, provRequests, nil, golden, "custom", "entity=0.7:0.7:0.1 relation=0.3:0.3:0.1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provRequests.calls) != 2 {
+		t.Fatalf("calls = %d, want baseline and sweep", len(provRequests.calls))
+	}
+	for _, req := range provRequests.calls {
+		if len(req.Entities) != 1 || req.Entities[0].Text != "software service" ||
+			len(req.Relations) != 1 || req.Relations[0].Text != "calls service" {
+			t.Errorf("preset metadata lost: %+v", req)
+		}
+	}
+	if req := provRequests.calls[1]; req.Entities[0].Threshold != 0.7 || req.Relations[0].Threshold != 0.3 {
+		t.Errorf("sweep thresholds = %+v / %+v", req.Entities, req.Relations)
 	}
 }
 
@@ -181,7 +252,7 @@ func TestRunJudgeMetadataAndAccounting(t *testing.T) {
 	golden := writeGolden(t, sampleDocs())
 
 	j := &modelJudge{}
-	report, err := Run(context.Background(), cfg, &extract.Mock{}, j, golden, "", "")
+	report, err := Run(context.Background(), cfg, &extract.Mock{}, j, golden, "", "", "")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -194,7 +265,7 @@ func TestRunJudgeMetadataAndAccounting(t *testing.T) {
 
 	// Deterministic judge call order across runs.
 	first := append([]ingest.FactInput(nil), j.calls...)
-	if _, err := Run(context.Background(), cfg, &extract.Mock{}, j, golden, "", ""); err != nil {
+	if _, err := Run(context.Background(), cfg, &extract.Mock{}, j, golden, "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	for i := range first {
@@ -205,7 +276,7 @@ func TestRunJudgeMetadataAndAccounting(t *testing.T) {
 
 	// A failing judge is accounted, never scored as genuine zeros.
 	failing := &modelJudge{err: errors.New("down")}
-	report, err = Run(context.Background(), cfg, &extract.Mock{}, failing, golden, "", "")
+	report, err = Run(context.Background(), cfg, &extract.Mock{}, failing, golden, "", "", "")
 	if err != nil {
 		t.Fatalf("Run with failing judge: %v", err)
 	}
@@ -311,7 +382,7 @@ func TestSweepTableIsStrict(t *testing.T) {
 			"optional_reference_facts": []map[string]string{},
 		},
 	})
-	report, err := Run(context.Background(), cfg, &extract.Mock{}, nil, golden, "entity=0.5:0.5:0.1 relation=0.5:0.5:0.1", "")
+	report, err := Run(context.Background(), cfg, &extract.Mock{}, nil, golden, "", "entity=0.5:0.5:0.1 relation=0.5:0.5:0.1", "")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -388,7 +459,7 @@ func TestRunProducesStructuredReportWithMock(t *testing.T) {
 	golden := writeGolden(t, sampleDocs())
 	out := filepath.Join(t.TempDir(), "report")
 
-	report, err := Run(context.Background(), cfg, &extract.Mock{}, nil, golden, "", out)
+	report, err := Run(context.Background(), cfg, &extract.Mock{}, nil, golden, "", "", out)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -406,7 +477,7 @@ func TestRunProducesStructuredReportWithMock(t *testing.T) {
 	}
 
 	// Deterministic: a second run reproduces the metrics.
-	again, err := Run(context.Background(), cfg, &extract.Mock{}, nil, golden, "", "")
+	again, err := Run(context.Background(), cfg, &extract.Mock{}, nil, golden, "", "", "")
 	if err != nil {
 		t.Fatalf("Run again: %v", err)
 	}
@@ -438,7 +509,7 @@ func TestSweepProducesTable(t *testing.T) {
 	}
 	golden := writeGolden(t, sampleDocs())
 
-	report, err := Run(context.Background(), cfg, &extract.Mock{}, nil, golden,
+	report, err := Run(context.Background(), cfg, &extract.Mock{}, nil, golden, "",
 		"entity=0.2:0.6:0.2 relation=0.1:0.3:0.2", "")
 	if err != nil {
 		t.Fatalf("Run with sweep: %v", err)
@@ -466,10 +537,10 @@ func TestEmptyGoldenErrors(t *testing.T) {
 	if err := os.WriteFile(empty, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(context.Background(), cfg, &extract.Mock{}, nil, empty, "", ""); err == nil {
+	if _, err := Run(context.Background(), cfg, &extract.Mock{}, nil, empty, "", "", ""); err == nil {
 		t.Fatal("empty golden file: want error")
 	}
-	if _, err := Run(context.Background(), cfg, &extract.Mock{}, nil, filepath.Join(t.TempDir(), "missing.jsonl"), "", ""); err == nil {
+	if _, err := Run(context.Background(), cfg, &extract.Mock{}, nil, filepath.Join(t.TempDir(), "missing.jsonl"), "", "", ""); err == nil {
 		t.Fatal("missing golden file: want error")
 	}
 }

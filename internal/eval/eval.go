@@ -294,14 +294,18 @@ func round3(v float64) float64 {
 }
 
 // Run evaluates the golden set with the given provider and optional judge.
+// preset selects a label preset from cfg.Labels.PresetsDir; empty uses defaults.
 // sweepSpec enables the threshold sweep table; out, when non-empty, writes
 // "<out>.md" and "<out>.json".
-func Run(ctx context.Context, cfg config.Config, prov extract.Provider, j ingest.FactJudge, goldenPath, sweepSpec, out string) (Report, error) {
+func Run(ctx context.Context, cfg config.Config, prov extract.Provider, j ingest.FactJudge, goldenPath, preset, sweepSpec, out string) (Report, error) {
+	entities, relations, err := ingest.LoadPreset(cfg.Labels.PresetsDir, preset)
+	if err != nil {
+		return Report{}, err
+	}
 	golden, err := loadGolden(goldenPath)
 	if err != nil {
 		return Report{}, err
 	}
-	entities, relations := ingest.DefaultLabels()
 
 	report := Report{
 		Provider:            prov.Name(),
@@ -557,7 +561,8 @@ func runSweep(ctx context.Context, cfg config.Config, prov extract.Provider, ent
 func withThreshold(labels []extract.Label, threshold float64) []extract.Label {
 	out := make([]extract.Label, len(labels))
 	for i, l := range labels {
-		out[i] = extract.Label{Name: l.Name, Threshold: threshold}
+		out[i] = l
+		out[i].Threshold = threshold
 	}
 	return out
 }

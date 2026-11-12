@@ -117,6 +117,20 @@ func TestRunDispatch(t *testing.T) {
 	}
 }
 
+func TestEvalCommandUnknownPreset(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("GKG_CONFIG", "")
+	t.Setenv("GKG_LABELS_PRESETS_DIR", t.TempDir())
+	var out, errb bytes.Buffer
+	code := run([]string{"eval", "--provider", "mock", "--labels", "nope"}, &out, &errb)
+	if code == 0 || !strings.Contains(errb.String(), `label preset "nope"`) {
+		t.Fatalf("exit=%d stderr=%q, want nonzero exit naming preset nope", code, errb.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want no report", out.String())
+	}
+}
+
 func TestEmbedderFromConfigOpenAIDefault(t *testing.T) {
 	cfg := config.Config{}
 	cfg.Embedder.Dim = 768

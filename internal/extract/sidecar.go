@@ -126,6 +126,8 @@ func (s *Sidecar) extractBatch(ctx context.Context, req Request, chunks []Reques
 		return nil, fmt.Errorf("extract sidecar: decode response: %w (content preview: %q)", err, previewContent(string(data)))
 	}
 
+	entityNames := labelNames(req.Entities)
+	relationNames := labelNames(req.Relations)
 	entitySet := make(map[string]bool, len(req.Entities))
 	for _, l := range req.Entities {
 		entitySet[l.Name] = true
@@ -143,6 +145,19 @@ func (s *Sidecar) extractBatch(ctx context.Context, req Request, chunks []Reques
 		wc, ok := byID[c.ID]
 		if !ok {
 			wc = wireChunk{ChunkID: c.ID}
+		}
+		// Map the sidecar's answer (label text or name, any case) back to the
+		// stored name, then validate against the requested names: a label
+		// that was never requested is dropped, as before label text existed.
+		for i, e := range wc.Entities {
+			if name, ok := entityNames[strings.ToLower(strings.TrimSpace(e.Label))]; ok {
+				wc.Entities[i].Label = name
+			}
+		}
+		for i, r := range wc.Relations {
+			if name, ok := relationNames[strings.ToLower(strings.TrimSpace(r.Label))]; ok {
+				wc.Relations[i].Label = name
+			}
 		}
 		out = append(out, validateChunkResult(c.Text, wc, entitySet, relationSet))
 	}
@@ -171,7 +186,24 @@ func (s *Sidecar) healthy(ctx context.Context) error {
 func wireLabels(labels []Label) []sidecarLabel {
 	out := make([]sidecarLabel, 0, len(labels))
 	for _, l := range labels {
-		out = append(out, sidecarLabel{Label: l.Name, Threshold: l.Threshold})
+		text := l.Text
+		if text == "" {
+			text = l.Name
+		}
+		out = append(out, sidecarLabel{Label: text, Threshold: l.Threshold})
 	}
 	return out
+}
+
+// labelNames accepts both the sidecar's text and the stored name as answers.
+// Entity and relation maps stay separate because their vocabularies may overlap.
+func labelNames(labels []Label) map[string]string {
+	names := make(map[string]string, len(labels)*2)
+	for _, l := range labels {
+		names[strings.ToLower(strings.TrimSpace(l.Name))] = l.Name
+		if l.Text != "" {
+			names[strings.ToLower(strings.TrimSpace(l.Text))] = l.Name
+		}
+	}
+	return names
 }
