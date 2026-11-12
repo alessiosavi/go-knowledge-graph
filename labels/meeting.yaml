@@ -1,24 +1,24 @@
 # Meeting notes and transcripts: decisions, actions and risks.
-# Starting thresholds; select with labels=meeting.
+# Thresholds tuned on eval/golden/meeting.jsonl (GLiNER sidecar); select with labels=meeting.
 entities:
-  - { name: person, threshold: 0.4 }
-  - { name: team, threshold: 0.4 }
-  - { name: organization, threshold: 0.4 }
-  - { name: project, threshold: 0.35 }
-  - { name: topic, threshold: 0.4 }
-  - { name: decision, threshold: 0.4 }
-  - { name: action_item, text: action item, threshold: 0.4 }
-  - { name: risk, threshold: 0.4 }
-  - { name: date, threshold: 0.4, scope: document }
-  - { name: product, threshold: 0.4 }
+  - { name: person, threshold: 0.25 }
+  - { name: team, threshold: 0.25 }
+  - { name: organization, threshold: 0.25 }
+  - { name: project, threshold: 0.25 }
+  - { name: topic, threshold: 0.25 }
+  - { name: decision, threshold: 0.25 }
+  - { name: action_item, text: action item, threshold: 0.25 }
+  - { name: risk, threshold: 0.25 }
+  - { name: date, threshold: 0.25, scope: document }
+  - { name: product, threshold: 0.25 }
 relations:
-  - { name: attends, threshold: 0.25 }
-  - { name: decided, threshold: 0.25 }
-  - { name: assigned_to, text: assigned to, threshold: 0.25 }
-  - { name: due_on, text: due on, threshold: 0.25 }
-  - { name: about, threshold: 0.25 }
-  - { name: raised, threshold: 0.25 }
-  - { name: blocks, threshold: 0.25 }
-  - { name: depends_on, text: depends on, threshold: 0.25 }
-  - { name: follows_up, text: follows up, threshold: 0.25 }
-  - { name: owned_by, text: owned by, threshold: 0.25 }
+  - { name: attends, threshold: 0.2 }
+  - { name: decided, threshold: 0.2 }
+  - { name: assigned_to, text: assigned to, threshold: 0.2 }
+  - { name: due_on, text: due on, threshold: 0.2 }
+  - { name: about, threshold: 0.2 }
+  - { name: raised, threshold: 0.2 }
+  - { name: blocks, threshold: 0.2 }
+  - { name: depends_on, text: depends on, threshold: 0.2 }
+  - { name: follows_up, text: follows up, threshold: 0.2 }
+  - { name: owned_by, text: owned by, threshold: 0.2 }

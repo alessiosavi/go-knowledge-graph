@@ -1,17 +1,17 @@
 # Source code, pull requests and diffs.
-# Starting thresholds; select with labels=code.
+# Thresholds tuned on eval/golden/code.jsonl (GLiNER sidecar); select with labels=code.
 entities:
-  - { name: repository, threshold: 0.35 }
-  - { name: service, threshold: 0.35 }
-  - { name: module, threshold: 0.35 }
-  - { name: function, threshold: 0.35 }
-  - { name: api, threshold: 0.35 }
-  - { name: data_store, text: data store, threshold: 0.35 }
-  - { name: library, threshold: 0.35 }
-  - { name: config_setting, text: config setting, threshold: 0.35 }
-  - { name: test, threshold: 0.35 }
-  - { name: issue, threshold: 0.4 }
-  - { name: person, threshold: 0.4 }
+  - { name: repository, threshold: 0.5 }
+  - { name: service, threshold: 0.5 }
+  - { name: module, threshold: 0.5 }
+  - { name: function, threshold: 0.5 }
+  - { name: api, threshold: 0.5 }
+  - { name: data_store, text: data store, threshold: 0.5 }
+  - { name: library, threshold: 0.5 }
+  - { name: config_setting, text: config setting, threshold: 0.5 }
+  - { name: test, threshold: 0.5 }
+  - { name: issue, threshold: 0.5 }
+  - { name: person, threshold: 0.5 }
 relations:
   - { name: part_of, text: part of, threshold: 0.25 }
   - { name: depends_on, text: depends on, threshold: 0.25 }
