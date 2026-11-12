@@ -1,0 +1,33 @@
+# Administrative and marketing mail, including document-local amounts and dates.
+# Starting thresholds; select with labels=mail.
+entities:
+  - { name: person, threshold: 0.4 }
+  - { name: organization, threshold: 0.4 }
+  - { name: product, threshold: 0.4 }
+  - { name: service_offering, text: service offering, threshold: 0.4 }
+  - { name: invoice, threshold: 0.4 }
+  - { name: order, threshold: 0.4 }
+  - { name: contract, threshold: 0.4 }
+  - { name: amount, threshold: 0.4, scope: document }
+  - { name: date, threshold: 0.4, scope: document }
+  - { name: event, threshold: 0.4 }
+  - { name: campaign, threshold: 0.4 }
+  - { name: request, threshold: 0.4 }
+  - { name: project, threshold: 0.35 }
+  - { name: location, threshold: 0.4 }
+relations:
+  - { name: works_for, text: works for, threshold: 0.25 }
+  - { name: customer_of, text: customer of, threshold: 0.25 }
+  - { name: supplier_of, text: supplier of, threshold: 0.25 }
+  - { name: partner_of, text: partner of, threshold: 0.25 }
+  - { name: issued_by, text: issued by, threshold: 0.25 }
+  - { name: billed_to, text: billed to, threshold: 0.25 }
+  - { name: amount_of, text: amount of, threshold: 0.25 }
+  - { name: due_on, text: due on, threshold: 0.25 }
+  - { name: requests, threshold: 0.25 }
+  - { name: assigned_to, text: assigned to, threshold: 0.25 }
+  - { name: attends, threshold: 0.25 }
+  - { name: held_at, text: held at, threshold: 0.25 }
+  - { name: held_on, text: held on, threshold: 0.25 }
+  - { name: promotes, threshold: 0.25 }
+  - { name: about, threshold: 0.25 }

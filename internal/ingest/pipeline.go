@@ -83,13 +83,20 @@ var (
 		{Name: "technology", Threshold: 0.35},
 		{Name: "work", Threshold: 0.35},
 		{Name: "event", Threshold: 0.4},
+		{Name: "service", Threshold: 0.35},
+		{Name: "project", Threshold: 0.35},
+		{Name: "document", Threshold: 0.35},
 	}
 	defaultRelationLabels = []extract.Label{
-		{Name: "works_at", Threshold: 0.25},
-		{Name: "located_in", Threshold: 0.25},
-		{Name: "part_of", Threshold: 0.25},
+		{Name: "works_at", Text: "works at", Threshold: 0.25},
+		{Name: "located_in", Text: "located in", Threshold: 0.25},
+		{Name: "part_of", Text: "part of", Threshold: 0.25},
 		{Name: "uses", Threshold: 0.25},
 		{Name: "wrote", Threshold: 0.25},
+		{Name: "depends_on", Text: "depends on", Threshold: 0.25},
+		{Name: "owned_by", Text: "owned by", Threshold: 0.25},
+		{Name: "member_of", Text: "member of", Threshold: 0.25},
+		{Name: "about", Threshold: 0.25},
 	}
 )
 

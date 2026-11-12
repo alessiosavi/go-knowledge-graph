@@ -1,5 +1,5 @@
-# The built-in default label set as a shipped preset (entities ~0.4,
-# relations ~0.25). Serve it with {"labels":"general"} or -F labels=general.
+# Broad default for mixed content.
+# Starting thresholds; select with labels=general.
 entities:
   - { name: person, threshold: 0.4 }
   - { name: organization, threshold: 0.4 }
@@ -8,9 +8,16 @@ entities:
   - { name: technology, threshold: 0.35 }
   - { name: work, threshold: 0.35 }
   - { name: event, threshold: 0.4 }
+  - { name: service, threshold: 0.35 }
+  - { name: project, threshold: 0.35 }
+  - { name: document, threshold: 0.35 }
 relations:
-  - { name: works_at, threshold: 0.25 }
-  - { name: located_in, threshold: 0.25 }
-  - { name: part_of, threshold: 0.25 }
+  - { name: works_at, text: works at, threshold: 0.25 }
+  - { name: located_in, text: located in, threshold: 0.25 }
+  - { name: part_of, text: part of, threshold: 0.25 }
   - { name: uses, threshold: 0.25 }
   - { name: wrote, threshold: 0.25 }
+  - { name: depends_on, text: depends on, threshold: 0.25 }
+  - { name: owned_by, text: owned by, threshold: 0.25 }
+  - { name: member_of, text: member of, threshold: 0.25 }
+  - { name: about, threshold: 0.25 }

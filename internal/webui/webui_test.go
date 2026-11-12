@@ -6,11 +6,82 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
 )
+
+func TestPresetPickerMatchesShippedPresets(t *testing.T) {
+	rr := get(t, "/")
+	doc, err := html.Parse(strings.NewReader(rr.Body.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attr := func(n *html.Node, key string) string {
+		for _, a := range n.Attr {
+			if a.Key == key {
+				return a.Val
+			}
+		}
+		return ""
+	}
+	var picker *html.Node
+	var foundInput bool
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			switch attr(n, "id") {
+			case "ingest-labels":
+				foundInput = true
+				if n.Data != "input" || attr(n, "type") != "text" || attr(n, "list") != "ingest-presets" {
+					t.Error("labels must remain a text input linked to ingest-presets")
+				}
+				if got := attr(n, "placeholder"); got != "preset (default: general)" {
+					t.Errorf("placeholder = %q", got)
+				}
+			case "ingest-presets":
+				if n.Data == "datalist" {
+					picker = n
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	if !foundInput {
+		t.Error("ingest-labels input missing")
+	}
+	if picker == nil {
+		t.Fatal("ingest-presets datalist missing")
+	}
+	var got []string
+	for c := picker.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.ElementNode && c.Data == "option" {
+			got = append(got, attr(c, "value"))
+		}
+	}
+	if len(got) == 0 || got[0] != "general" {
+		t.Fatalf("picker options = %v, want general first", got)
+	}
+	files, err := filepath.Glob("../../labels/*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, file := range files {
+		want = append(want, strings.TrimSuffix(filepath.Base(file), ".yaml"))
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("picker options = %v, shipped presets = %v", got, want)
+	}
+}
 
 func TestUIAuthJS(t *testing.T) {
 	node, err := exec.LookPath("node")

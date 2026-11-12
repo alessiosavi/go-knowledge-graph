@@ -176,7 +176,8 @@ func TestEvalUsesPreset(t *testing.T) {
 		"expected_relations": []map[string]string{{"label": "calls", "head": "Gateway", "tail": "Catalog"}},
 	}})
 	prov := &extract.Mock{}
-	report, err := Run(context.Background(), cfg, prov, nil, golden, "custom", "", "")
+	out := filepath.Join(t.TempDir(), "report")
+	report, err := Run(context.Background(), cfg, prov, nil, golden, "custom", "", out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,6 +187,25 @@ func TestEvalUsesPreset(t *testing.T) {
 	if len(report.EntitiesThresholds) != 1 || report.EntitiesThresholds[0].Name != "service" ||
 		len(report.RelationsThresholds) != 1 || report.RelationsThresholds[0].Name != "calls" {
 		t.Fatalf("report labels = %+v / %+v", report.EntitiesThresholds, report.RelationsThresholds)
+	}
+	data, err := os.ReadFile(out + ".json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved struct {
+		Preset    string                        `json:"preset"`
+		Entities  []struct{ Name, Text string } `json:"entities_thresholds"`
+		Relations []struct{ Name, Text string } `json:"relations_thresholds"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Preset != "custom" || len(saved.Entities) != 1 || len(saved.Relations) != 1 {
+		t.Fatalf("report preset/thresholds missing: %s", data)
+	}
+	if saved.Entities[0].Name != "service" || saved.Entities[0].Text != "software service" ||
+		saved.Relations[0].Name != "calls" || saved.Relations[0].Text != "calls service" {
+		t.Errorf("report label names/text missing: %s", data)
 	}
 
 	for _, tc := range []struct{ name, content string }{
@@ -494,6 +514,15 @@ func TestRunProducesStructuredReportWithMock(t *testing.T) {
 		}
 		if len(data) == 0 {
 			t.Errorf("report %s is empty", suffix)
+		}
+		if suffix == ".json" {
+			var saved map[string]json.RawMessage
+			if err := json.Unmarshal(data, &saved); err != nil {
+				t.Fatal(err)
+			}
+			if string(saved["preset"]) != `""` {
+				t.Errorf("default preset = %s, want explicit empty string", saved["preset"])
+			}
 		}
 	}
 }

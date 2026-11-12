@@ -73,26 +73,43 @@ type DocResult struct {
 	ReferenceCoverage float64 `json:"reference_coverage"`
 }
 
+// LabelThreshold records the model hint alongside the stored label name.
+// It is report-only; extract.Label keeps Text out of the OpenAI payload.
+type LabelThreshold struct {
+	Name      string  `json:"name"`
+	Text      string  `json:"text"`
+	Threshold float64 `json:"threshold"`
+}
+
+func labelThresholds(labels []extract.Label) []LabelThreshold {
+	out := make([]LabelThreshold, len(labels))
+	for i, label := range labels {
+		out[i] = LabelThreshold{Name: label.Name, Text: label.Text, Threshold: label.Threshold}
+	}
+	return out
+}
+
 // Report is the full evaluation output.
 type Report struct {
-	Provider                 string          `json:"provider"`
-	ProviderVersion          string          `json:"provider_version"`
-	JudgeModel               string          `json:"judge_model,omitempty"`
-	EntitiesThresholds       []extract.Label `json:"entities_thresholds"`
-	RelationsThresholds      []extract.Label `json:"relations_thresholds"`
-	Samples                  int             `json:"samples"`
-	GeneratedAt              string          `json:"generated_at"`
-	Docs                     []DocResult     `json:"docs"`
-	AggregateEntities        Metrics         `json:"aggregate_entities_lenient"`
-	AggregateRelations       Metrics         `json:"aggregate_relations_lenient"`
-	AggregateEntitiesStrict  Metrics         `json:"aggregate_entities_strict"`
-	AggregateRelationsStrict Metrics         `json:"aggregate_relations_strict"`
-	JudgeEnabled             bool            `json:"judge_enabled"`
-	JudgedFacts              int             `json:"judged_facts"`
-	JudgeErrors              int             `json:"judge_errors"`
-	JudgePrecision           float64         `json:"judge_precision"`
-	ReferenceCoverage        float64         `json:"reference_coverage"`
-	SweepTable               string          `json:"sweep_table,omitempty"`
+	Provider                 string           `json:"provider"`
+	ProviderVersion          string           `json:"provider_version"`
+	Preset                   string           `json:"preset"`
+	JudgeModel               string           `json:"judge_model,omitempty"`
+	EntitiesThresholds       []LabelThreshold `json:"entities_thresholds"`
+	RelationsThresholds      []LabelThreshold `json:"relations_thresholds"`
+	Samples                  int              `json:"samples"`
+	GeneratedAt              string           `json:"generated_at"`
+	Docs                     []DocResult      `json:"docs"`
+	AggregateEntities        Metrics          `json:"aggregate_entities_lenient"`
+	AggregateRelations       Metrics          `json:"aggregate_relations_lenient"`
+	AggregateEntitiesStrict  Metrics          `json:"aggregate_entities_strict"`
+	AggregateRelationsStrict Metrics          `json:"aggregate_relations_strict"`
+	JudgeEnabled             bool             `json:"judge_enabled"`
+	JudgedFacts              int              `json:"judged_facts"`
+	JudgeErrors              int              `json:"judge_errors"`
+	JudgePrecision           float64          `json:"judge_precision"`
+	ReferenceCoverage        float64          `json:"reference_coverage"`
+	SweepTable               string           `json:"sweep_table,omitempty"`
 }
 
 // StrictEntityKey is the exact-match identity (raw label + raw text).
@@ -310,8 +327,9 @@ func Run(ctx context.Context, cfg config.Config, prov extract.Provider, j ingest
 	report := Report{
 		Provider:            prov.Name(),
 		ProviderVersion:     prov.Version(),
-		EntitiesThresholds:  entities,
-		RelationsThresholds: relations,
+		Preset:              preset,
+		EntitiesThresholds:  labelThresholds(entities),
+		RelationsThresholds: labelThresholds(relations),
 		Samples:             len(golden),
 		GeneratedAt:         time.Now().UTC().Format(time.RFC3339),
 	}
