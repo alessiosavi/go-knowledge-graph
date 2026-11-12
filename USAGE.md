@@ -67,9 +67,33 @@ choose it, and the Source field prefills with the filename (it stays
 editable). Keep the same source string when re-uploading a changed or
 renamed file and it supersedes its previous version (`gkg ingest -source
 notes/ada renamed.md` is the CLI equivalent). The optional Labels field
-takes a preset name (`general`, `news`). Rich formats (pdf, docx, …)
+suggests the shipped presets listed below and accepts custom preset names.
+Leave it empty for `general`. Rich formats (pdf, docx, …)
 convert through docling by default. Extraction uses the GLiNEREL sidecar
 by default; both services start with `make up`.
+
+Presets in `labels/` choose the vocabulary for future extractions:
+
+- `general`: broad default for mixed content.
+- `documentation`: integration guides, runbooks, READMEs and design documents.
+- `code`: source code, pull requests and diffs.
+- `mail`: administrative and marketing mail, including invoices and orders.
+- `meeting`: meeting notes and transcripts, with decisions, actions and risks.
+- `demo`: demo scripts, recordings and product feedback.
+- `news`: people, organizations, places and events in news articles.
+
+Choose one in the UI's Labels field, or send `labels` in a REST submission:
+
+```sh
+curl -s -F 'file=@runbook.md' -F 'labels=documentation' localhost:8080/v1/ingest
+curl -s -H 'Content-Type: application/json' \
+     -d '{"text":"...","labels":"meeting"}' localhost:8080/v1/ingest
+```
+
+Custom presets are YAML files under `labels.presets_dir`
+(`GKG_LABELS_PRESETS_DIR`). The built-in defaults match `general`.
+Mail amounts and dates, and meeting dates, use document-local identity so
+unrelated documents do not merge their value entities.
 
 **From an agent**: the MCP `ingest` tool takes `url` or `text`, plus an
 optional `source` label and `force` to re-run an unchanged document.
@@ -203,6 +227,17 @@ reference-fact coverage; `--out` writes a Markdown + JSON report.
 `labels/`). Without `--labels`, evaluation uses the built-in labels. Unknown
 or invalid presets fail before extraction. An optional label `text` supplies
 natural-language wording to the sidecar; extracted types keep the label `name`.
+Each new preset has a synthetic golden set at `eval/golden/<preset>.jsonl`;
+`general` uses `eval/golden/sample.jsonl`. For example:
+
+```sh
+gkg eval --provider mock --labels mail --golden eval/golden/mail.jsonl --out mail-report
+```
+
+The JSON report records `preset` (empty for built-in defaults), plus each
+label's `name`, `text` and `threshold`. Mock runs check the harness; their
+scores do not measure extraction quality. The presets ship starting thresholds,
+with tuning deferred to a separate evaluation.
 
 ## 6. Operations
 

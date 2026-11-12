@@ -1,0 +1,32 @@
+# Integration guides, runbooks, READMEs and design documents.
+# Starting thresholds; select with labels=documentation.
+entities:
+  - { name: person, threshold: 0.4 }
+  - { name: team, threshold: 0.4 }
+  - { name: organization, threshold: 0.4 }
+  - { name: project, threshold: 0.35 }
+  - { name: service, threshold: 0.35 }
+  - { name: component, threshold: 0.35 }
+  - { name: technology, threshold: 0.35 }
+  - { name: data_store, text: data store, threshold: 0.35 }
+  - { name: api, threshold: 0.35 }
+  - { name: environment, threshold: 0.4 }
+  - { name: config_setting, text: config setting, threshold: 0.35 }
+  - { name: document, threshold: 0.35 }
+  - { name: decision, threshold: 0.4 }
+  - { name: requirement, threshold: 0.4 }
+relations:
+  - { name: part_of, text: part of, threshold: 0.25 }
+  - { name: depends_on, text: depends on, threshold: 0.25 }
+  - { name: calls, threshold: 0.25 }
+  - { name: exposes, threshold: 0.25 }
+  - { name: reads_from, text: reads from, threshold: 0.25 }
+  - { name: writes_to, text: writes to, threshold: 0.25 }
+  - { name: deployed_to, text: deployed to, threshold: 0.25 }
+  - { name: configured_by, text: configured by, threshold: 0.25 }
+  - { name: uses, threshold: 0.25 }
+  - { name: owned_by, text: owned by, threshold: 0.25 }
+  - { name: replaces, threshold: 0.25 }
+  - { name: documented_in, text: documented in, threshold: 0.25 }
+  - { name: decided, threshold: 0.25 }
+  - { name: requires, threshold: 0.25 }

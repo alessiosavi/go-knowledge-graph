@@ -5,9 +5,80 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 )
+
+func TestShippedPresetsLoad(t *testing.T) {
+	files, err := filepath.Glob("../../labels/*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][2]string{
+		"general":       {"person organization location product technology work event service project document", "works_at located_in part_of uses wrote depends_on owned_by member_of about"},
+		"documentation": {"person team organization project service component technology data_store api environment config_setting document decision requirement", "part_of depends_on calls exposes reads_from writes_to deployed_to configured_by uses owned_by replaces documented_in decided requires"},
+		"code":          {"repository service module function api data_store library config_setting test issue person", "part_of depends_on calls implements defines exposes reads_from writes_to tested_by configured_by fixes authored_by"},
+		"mail":          {"person organization product service_offering invoice order contract amount date event campaign request project location", "works_for customer_of supplier_of partner_of issued_by billed_to amount_of due_on requests assigned_to attends held_at held_on promotes about"},
+		"meeting":       {"person team organization project topic decision action_item risk date product", "attends decided assigned_to due_on about raised blocks depends_on follows_up owned_by"},
+		"demo":          {"product feature organization persona scenario feedback issue metric competitor person", "demonstrates part_of requested_by feedback_on reported_by blocks competes_with measured_by uses"},
+		"news":          {"person organization location event product", "works_at member_of located_in acquired announced"},
+	}
+	if len(files) != len(want) {
+		t.Errorf("shipped presets = %d, want %d", len(files), len(want))
+	}
+	lowerSnake := regexp.MustCompile(`^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`)
+	for _, file := range files {
+		name := strings.TrimSuffix(filepath.Base(file), ".yaml")
+		t.Run(name, func(t *testing.T) {
+			entities, relations, err := LoadPreset("../../labels", name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seen := map[string]bool{}
+			for kind, labels := range [][]extract.Label{entities, relations} {
+				var names []string
+				for _, label := range labels {
+					names = append(names, label.Name)
+					if seen[label.Name] || !lowerSnake.MatchString(label.Name) {
+						t.Errorf("duplicate or non-snake label %q", label.Name)
+					}
+					seen[label.Name] = true
+					wantScope := ""
+					if kind == 0 && (label.Name == "amount" || label.Name == "date") {
+						wantScope = "document"
+					}
+					if label.Scope != wantScope {
+						t.Errorf("%s scope = %q, want %q", label.Name, label.Scope, wantScope)
+					}
+					wantText := ""
+					if strings.Contains(label.Name, "_") {
+						wantText = strings.ReplaceAll(label.Name, "_", " ")
+					}
+					if label.Text != wantText {
+						t.Errorf("%s text = %q, want %q", label.Name, label.Text, wantText)
+					}
+				}
+				if got := strings.Join(names, " "); got != want[name][kind] {
+					t.Errorf("kind %d vocabulary = %q, want %q", kind, got, want[name][kind])
+				}
+			}
+		})
+	}
+}
+
+func TestGeneralPresetMatchesDefaults(t *testing.T) {
+	entities, relations, err := LoadPreset("../../labels", "general")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEntities, wantRelations := DefaultLabels()
+	if !reflect.DeepEqual(entities, wantEntities) || !reflect.DeepEqual(relations, wantRelations) {
+		t.Fatalf("general preset differs from defaults: %+v / %+v, want %+v / %+v", entities, relations, wantEntities, wantRelations)
+	}
+}
 
 func TestLoadPresetRejectsAmbiguousText(t *testing.T) {
 	for _, kind := range []string{"entities", "relations"} {

@@ -8,8 +8,8 @@ entities:
   - { name: event, threshold: 0.4 }
   - { name: product, threshold: 0.35 }
 relations:
-  - { name: works_at, threshold: 0.25 }
-  - { name: member_of, threshold: 0.25 }
-  - { name: located_in, threshold: 0.25 }
+  - { name: works_at, text: works at, threshold: 0.25 }
+  - { name: member_of, text: member of, threshold: 0.25 }
+  - { name: located_in, text: located in, threshold: 0.25 }
   - { name: acquired, threshold: 0.3 }
   - { name: announced, threshold: 0.3 }

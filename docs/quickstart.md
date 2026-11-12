@@ -141,12 +141,31 @@ Ada Lovelace wrote the first algorithm.
 EOF
 ```
 
-Label presets (`labels/general.yaml`, `labels/news.yaml`) are mounted at
-`/labels` in compose; select one per submission:
+Label presets in `labels/` are mounted at `/labels` in compose:
+
+- `general`: broad default for mixed content.
+- `documentation`: integration guides, runbooks, READMEs and design documents.
+- `code`: source code, pull requests and diffs.
+- `mail`: administrative and marketing mail, including invoices and orders.
+- `meeting`: meeting notes and transcripts, with decisions, actions and risks.
+- `demo`: demo scripts, recordings and product feedback.
+- `news`: people, organizations, places and events in news articles.
+
+Select one per submission in the UI's Labels field or send `labels` in JSON
+or multipart form data:
 
 ```sh
-curl -s -F 'file=@article.md' -F 'labels=news' localhost:8080/v1/ingest
+curl -s -F 'file=@runbook.md' -F 'labels=documentation' localhost:8080/v1/ingest
+curl -s -H 'Content-Type: application/json' \
+  -d '{"text":"...","labels":"mail"}' localhost:8080/v1/ingest
 ```
+
+Leaving Labels empty uses `general`; the picker also accepts custom preset
+names from `labels.presets_dir` (`GKG_LABELS_PRESETS_DIR`). Stored types use
+each label's snake name; its optional `text` provides wording for the sidecar.
+Mail amounts and dates, and meeting dates, are scoped to each document.
+Presets affect future extractions and ship starting thresholds; synthetic
+golden sets live in `eval/golden/` (`sample.jsonl` for `general`).
 
 Re-ingesting unchanged content is a no-op (`"noop":true`); changed content
 creates a new version and supersedes the old one.

@@ -67,8 +67,18 @@
               <input
                 id="ingest-labels"
                 type="text"
-                placeholder="preset name (general, news)"
+                list="ingest-presets"
+                placeholder="preset (default: general)"
               />
+              <datalist id="ingest-presets">
+                <option value="general"></option>
+                <option value="documentation"></option>
+                <option value="code"></option>
+                <option value="mail"></option>
+                <option value="meeting"></option>
+                <option value="demo"></option>
+                <option value="news"></option>
+              </datalist>
             </div>
             <div class="row" id="ingest-file-row" hidden>
               <label for="ingest-file">File</label>
