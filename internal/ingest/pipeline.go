@@ -12,8 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,7 +19,6 @@ import (
 	"time"
 
 	"github.com/alessiosavi/GoGPUtils/minhash"
-	"go.yaml.in/yaml/v4"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/chunk"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
@@ -97,12 +94,6 @@ var (
 )
 
 const jobsBuffer = 1024
-
-// presetNameRe restricts label preset names (they reach the filesystem).
-var presetNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-
-// labelNameRe requires alphanumeric content in every label name.
-var labelNameRe = regexp.MustCompile(`[a-zA-Z0-9]`)
 
 type submission struct {
 	loaded Loaded
@@ -1130,45 +1121,9 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract
 	return list, facts, audits
 }
 
-// labelsFor resolves the label set: built-in defaults or a named preset
-// from Labels.PresetsDir. Preset names are restricted to a safe charset
-// because they reach the filesystem, and every label must contain at least
-// one alphanumeric character (the store rejects relations without one).
+// labelsFor resolves built-in defaults or a named preset from Labels.PresetsDir.
 func (p *Pipeline) labelsFor(name string) ([]extract.Label, []extract.Label, error) {
-	if name == "" {
-		return defaultEntityLabels, defaultRelationLabels, nil
-	}
-	if !presetNameRe.MatchString(name) {
-		return nil, nil, fmt.Errorf("label preset %q: invalid name", name)
-	}
-	path := filepath.Join(p.cfg.Labels.PresetsDir, name+".yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("label preset %q: %w", name, err)
-	}
-	var preset struct {
-		Entities  []extract.Label `yaml:"entities"`
-		Relations []extract.Label `yaml:"relations"`
-	}
-	if err := yaml.Unmarshal(data, &preset); err != nil {
-		return nil, nil, fmt.Errorf("label preset %q: %w", name, err)
-	}
-	for _, l := range append(append([]extract.Label{}, preset.Entities...), preset.Relations...) {
-		if !labelNameRe.MatchString(l.Name) {
-			return nil, nil, fmt.Errorf("label preset %q: label %q has no alphanumeric content", name, l.Name)
-		}
-		if l.Scope != "" && l.Scope != "document" {
-			return nil, nil, fmt.Errorf("label preset %q: label %q has unknown scope %q", name, l.Name, l.Scope)
-		}
-	}
-	// Scope decides entity identity, so it is meaningful on entity labels
-	// only; on a relation it would silently scope nothing.
-	for _, l := range preset.Relations {
-		if l.Scope != "" {
-			return nil, nil, fmt.Errorf("label preset %q: relation label %q cannot have a scope (scope applies to entity labels)", name, l.Name)
-		}
-	}
-	return preset.Entities, preset.Relations, nil
+	return LoadPreset(p.cfg.Labels.PresetsDir, name)
 }
 
 // resolveIdentity derives (source_kind, source) per the design: url uses

@@ -82,6 +82,7 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	golden := fs.String("golden", "eval/golden/sample.jsonl", "golden JSONL path")
 	providerName := fs.String("provider", "", "extractor provider: mock|openai|sidecar (default: config extractor mode)")
+	labels := fs.String("labels", "", "label preset from config labels.presets_dir (default: built-in labels)")
 	out := fs.String("out", "", "write the report to <out>.md and <out>.json")
 	sweep := fs.String("sweep", "", "threshold sweep, e.g. entity=0.2:0.8:0.1 relation=0.1:0.6:0.1")
 	if err := fs.Parse(args); err != nil {
@@ -115,7 +116,7 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 		factJudge = judge.NewClient(cfg)
 	}
 
-	report, err := eval.Run(ctx, cfg, prov, factJudge, *golden, *sweep, *out)
+	report, err := eval.Run(ctx, cfg, prov, factJudge, *golden, *labels, *sweep, *out)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg eval: %v\n", err)
 		return 1

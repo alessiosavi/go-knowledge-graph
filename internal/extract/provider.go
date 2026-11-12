@@ -6,9 +6,11 @@ package extract
 
 import "context"
 
-// Label is an extraction label with its per-call threshold and local identity scope.
+// Label is an extraction label with optional sidecar text, a per-call threshold
+// and a local identity scope. Name is the stored type; Text is only a model hint.
 type Label struct {
 	Name      string  `yaml:"name" json:"name"`
+	Text      string  `yaml:"text" json:"-"`
 	Threshold float64 `yaml:"threshold" json:"threshold"`
 	Scope     string  `yaml:"scope" json:"-"`
 }

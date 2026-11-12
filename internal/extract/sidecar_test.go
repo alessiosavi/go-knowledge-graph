@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -92,6 +93,86 @@ func TestSidecarParsesContract(t *testing.T) {
 	}
 	if len(res) != 1 || res[0].ChunkID != "c1" || len(res[0].Mentions) != 1 || res[0].Mentions[0].Text != "Ada" {
 		t.Errorf("results = %+v", res)
+	}
+}
+
+func TestSidecarSendsLabelText(t *testing.T) {
+	s := newTestSidecar(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		var body sidecarRequest
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if want := []sidecarLabel{{Label: "data store", Threshold: 0.4}}; !reflect.DeepEqual(body.Entities, want) {
+			t.Errorf("entities = %+v, want %+v", body.Entities, want)
+		}
+		want := []sidecarLabel{{Label: "depends on", Threshold: 0.25}, {Label: "uses", Threshold: 0.3}}
+		if !reflect.DeepEqual(body.Relations, want) {
+			t.Errorf("relations = %+v, want %+v", body.Relations, want)
+		}
+		w.Write([]byte(`{"results":[]}`))
+	})
+	_, err := s.Extract(context.Background(), Request{
+		Chunks:    []RequestChunk{{ID: "c1", Text: "Cache uses Store"}},
+		Entities:  []Label{{Name: "data_store", Text: "data store", Threshold: 0.4, Scope: "document"}},
+		Relations: []Label{{Name: "depends_on", Text: "depends on", Threshold: 0.25}, {Name: "uses", Threshold: 0.3}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSidecarMapsAnswersBackToName(t *testing.T) {
+	for _, label := range []string{"depends on", "Depends On", "depends_on", "  DEPENDS ON  ", " DEPENDS_ON ", " Unknown Label "} {
+		t.Run(label, func(t *testing.T) {
+			s := newTestSidecar(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/healthz" {
+					w.Write([]byte(`{"status":"ok"}`))
+					return
+				}
+				score := 0.9
+				json.NewEncoder(w).Encode(wireResponse{Results: []wireChunk{{
+					ChunkID: "c1",
+					Entities: []wireEntity{
+						{Label: label, Text: "Cache", Start: 0, End: 5, Score: &score},
+						{Label: label, Text: "Store", Start: 11, End: 16, Score: &score},
+					},
+					Relations: []wireRelation{{Label: label, Head: 0, Tail: 1, Score: &score}},
+				}}})
+			})
+			labels := []Label{{Name: "depends_on", Text: "depends on"}}
+			res, err := s.Extract(context.Background(), Request{
+				Chunks: []RequestChunk{{ID: "c1", Text: "Cache uses Store"}}, Entities: labels, Relations: labels,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if label == " Unknown Label " {
+				// Never requested: dropped (with the relation between the
+				// dropped mentions), never stored as a new type.
+				if len(res) != 1 || len(res[0].Mentions) != 0 || len(res[0].Candidates) != 0 {
+					t.Fatalf("results = %+v, want unknown labels dropped", res)
+				}
+				return
+			}
+			if len(res) != 1 || len(res[0].Mentions) != 2 || len(res[0].Candidates) != 1 {
+				t.Fatalf("results = %+v, want two mentions and one candidate", res)
+			}
+			want := "depends_on"
+			for _, m := range res[0].Mentions {
+				if m.Label != want {
+					t.Errorf("mention label = %q, want %q", m.Label, want)
+				}
+			}
+			if got := res[0].Candidates[0].Label; got != want {
+				t.Errorf("candidate label = %q, want %q", got, want)
+			}
+		})
 	}
 }
 

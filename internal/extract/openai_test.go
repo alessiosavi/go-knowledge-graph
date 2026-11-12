@@ -36,8 +36,8 @@ func chatBody(content string) string {
 func TestOpenAIPayloadOmitsScope(t *testing.T) {
 	payload := buildUserPayload(
 		[]RequestChunk{{ID: "c1", Text: "€500"}},
-		[]Label{{Name: "amount", Threshold: 0.4, Scope: "document"}},
-		[]Label{{Name: "amount_of", Threshold: 0.25, Scope: "document"}},
+		[]Label{{Name: "amount", Text: "monetary amount", Threshold: 0.4, Scope: "document"}},
+		[]Label{{Name: "amount_of", Text: "amount of", Threshold: 0.25, Scope: "document"}},
 	)
 	var body struct {
 		Entities  []map[string]any `json:"entities"`
@@ -45,6 +45,9 @@ func TestOpenAIPayloadOmitsScope(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(payload), &body); err != nil {
 		t.Fatal(err)
+	}
+	if strings.Contains(payload, "monetary amount") || strings.Contains(payload, `"amount of"`) {
+		t.Errorf("label text leaked into OpenAI payload: %s", payload)
 	}
 	if strings.Contains(payload, `"scope"`) || strings.Contains(payload, `"Scope"`) {
 		t.Errorf("scope leaked into OpenAI payload: %s", payload)
