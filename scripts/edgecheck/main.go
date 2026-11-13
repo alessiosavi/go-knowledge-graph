@@ -146,6 +146,17 @@ func (p *probe) waitIngest(name, id string) string {
 	panic(name + " ingestion timed out")
 }
 
+// docs verifies that the public static shell still requires the edge login.
+func (p *probe) docs() {
+	r := p.request("GET", "/docs/", "", nil)
+	expect(r.code == 401 && strings.HasPrefix(r.headers.Get("WWW-Authenticate"), "Basic"), "docs require Basic login")
+	r = p.check("authenticated Swagger UI", "GET", "/docs/", nil, 200)
+	expect(strings.HasPrefix(r.headers.Get("Content-Type"), "text/html") && bytes.Contains(r.body, []byte(`id="swagger-ui"`)), "Swagger UI shell content")
+	expect(strings.Contains(r.headers.Get("Content-Security-Policy"), "default-src 'none'"), "docs CSP survives edge proxy")
+	r = p.check("authenticated OpenAPI specification", "GET", "/docs/openapi.yaml", nil, 200)
+	expect(bytes.Equal(r.body, read("docs/openapi.yaml")), "edge serves canonical OpenAPI bytes")
+}
+
 func (p *probe) routing() {
 	root := p.check("root relative redirect", "GET", "/", nil, 302)
 	expect(root.headers.Get("Location") == "/ui/", "root preserves the external port with a relative Location")
@@ -667,6 +678,8 @@ func main() {
 	default:
 		p := &probe{dir: args[1], base: args[2]}
 		switch args[0] {
+		case "docs":
+			p.docs()
 		case "routing":
 			p.routing()
 		case "rotation":

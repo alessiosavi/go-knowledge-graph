@@ -33,6 +33,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
 	mcpserver "github.com/alessiosavi/go-knowledge-graph/internal/mcp"
 	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
+	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
 const version = "v0.0.0-dev"
@@ -405,17 +406,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	rest := api.NewServer(cfg, st, pipe)
-	mcpSrv := mcpserver.NewServer(cfg, st, pipe)
-	agentSrv := agent.NewServer(cfg, st, emb)
-	rest.SetEmbedder(emb)
-	mcpSrv.SetEmbedder(emb)
-	rest.SetMetrics(metrics)
-	rest.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
-	rest.Mount("/mcp", mcpSrv.HTTPHandler())
-	rest.Mount("POST /v1/agent/ask", agentSrv.AskHandler())
-	rest.Mount("POST /v1/agent/ask/stream", agentSrv.StreamHandler())
-	rest.Mount("GET /v1/agent/status", agentSrv.StatusHandler())
+	rest := newAPIServer(cfg, st, pipe, emb, metrics)
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
 		Handler:           rest.Handler(),
@@ -437,6 +428,24 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 	return 0
+}
+
+// newAPIServer is the HTTP wiring used by serve and the OpenAPI drift guard.
+// Keeping every extra mount here lets the guard inspect the real route table
+// without opening Memgraph or starting the ingestion workers.
+func newAPIServer(cfg config.Config, st *graph.Store, pipe api.Submitter, emb search.QueryEmbedder, metrics *obs.Metrics) *api.Server {
+	rest := api.NewServer(cfg, st, pipe)
+	mcpSrv := mcpserver.NewServer(cfg, st, pipe)
+	agentSrv := agent.NewServer(cfg, st, emb)
+	rest.SetEmbedder(emb)
+	mcpSrv.SetEmbedder(emb)
+	rest.SetMetrics(metrics)
+	rest.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
+	rest.Mount("/mcp", mcpSrv.HTTPHandler())
+	rest.Mount("POST /v1/agent/ask", agentSrv.AskHandler())
+	rest.Mount("POST /v1/agent/ask/stream", agentSrv.StreamHandler())
+	rest.Mount("GET /v1/agent/status", agentSrv.StatusHandler())
+	return rest
 }
 
 // runIngest ingests one file, URL or stdin payload synchronously and

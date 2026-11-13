@@ -211,7 +211,52 @@ answers `501` and the panel stays hidden. Answers are LLM-generated — the
 `evidence` array is the source of truth
 ([known limits](docs/known-limitations.md)).
 
-## 5. Evaluate extraction quality
+## 5. API reference and third-party access
+
+**Interactive reference.** `GET /docs/` serves Swagger UI over
+[docs/openapi.yaml](docs/openapi.yaml), bundled in the binary (no CDN, no
+external requests). Through the edge, open `https://<host>/docs/` with the
+usual login: "Try it out" reuses that browser login, so leave the Authorize
+dialog empty. Against gkg directly with `GKG_API_KEY` set, use Authorize →
+`bearerAuth`. Routes tagged `operator` (guarded Cypher, rebuild, metrics,
+readiness) are loopback-only; the edge answers 404 for them.
+
+**One login per caller.** Give every caller (a colleague, a script, another
+team's agent) its own edge login, so one can be revoked without touching the
+others. Every login currently has the same rights: read, ask, ingest and
+delete. There are no read-only logins yet.
+
+```sh
+make passwd LOGIN=commerce-agent GENERATE=1   # prints the new password once
+make up                                        # copies the password file into the edge
+```
+
+On the EC2 box, add `EDGE_HTPASSWD=deploy/aws/box.htpasswd` and follow
+[docs/deploy-aws.md](docs/deploy-aws.md) (`make box-secrets`, then deploy).
+To revoke a login, delete its line from the password file and repeat the
+same steps.
+
+**REST from a server.** Send the login as HTTP Basic; the edge swaps it for
+gkg's internal key, which callers never see:
+
+```sh
+curl -s -u "commerce-agent:$GKG_PASSWORD" https://<host>/v1/agent/ask \
+     -H 'Content-Type: application/json' \
+     -d '{"question":"What does the graph know about Ada Lovelace?"}'
+curl -s -u "commerce-agent:$GKG_PASSWORD" https://<host>/v1/search \
+     -H 'Content-Type: application/json' -d '{"query":"Ada Lovelace","limit":5}'
+```
+
+Server-side callers (scripts, cURL, an agent's backend) send no browser
+`Origin`, so the edge's cross-site guard does not affect them. A web page
+served from another domain cannot call gkg from the browser: the edge sends
+no CORS headers and rejects cross-site `POST` and `DELETE`.
+
+**MCP from an agent.** The same login works on `https://<host>/mcp`
+(streamable HTTP). [docs/agent-setup.md](docs/agent-setup.md) has client
+configurations and a Python example for an agent that calls gkg as a tool.
+
+## 6. Evaluate extraction quality
 
 ```sh
 gkg eval --golden eval/golden/sample.jsonl --provider mock      # offline smoke
@@ -250,7 +295,7 @@ gkg eval --provider sidecar --labels documentation \
   --sweep 'entity=0.2:0.7:0.05 relation=0.1:0.5:0.05' --out documentation-sweep
 ```
 
-## 6. Operations
+## 7. Operations
 
 - Health: `GET /healthz`, `GET /readyz`; metrics: `GET /metrics`
   (auth-exempt).

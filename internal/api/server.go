@@ -1,7 +1,7 @@
 // Package api implements the gkg HTTP surface: ingestion, documents,
 // search, entities, traversal, the guarded read-only cypher endpoint, the
-// embedded web UI (/ui/), the health probes (/healthz, /readyz) and the
-// Prometheus scrape (/metrics).
+// embedded web UI (/ui/), interactive API docs (/docs/), health probes
+// (/healthz, /readyz) and the Prometheus scrape (/metrics).
 package api
 
 import (
@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/apidocs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
@@ -89,28 +90,56 @@ func (s *Server) SetReady(fn func(context.Context) error) {
 // and one request log record per call.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	mux.HandleFunc("GET /readyz", s.handleReadyz)
+	for _, route := range s.routes() {
+		mux.Handle(route.pattern, route.handler)
+	}
+	guarded := s.withAuth(mux)
+	return obs.RequestLogger(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Apply the docs policy before auth and routing, including redirects,
+		// errors and requests for unknown, non-exempt documentation assets.
+		if r.URL.Path == "/docs" || strings.HasPrefix(r.URL.Path, "/docs/") {
+			w.Header().Set("Content-Security-Policy", apidocs.ContentSecurityPolicy)
+		}
+		guarded.ServeHTTP(w, r)
+	}))
+}
+
+// RoutePatterns returns the registered method/path patterns, including extra
+// mounts. The OpenAPI drift guard uses the same table as Handler. GET patterns
+// also serve HEAD implicitly via net/http; the spec lists the explicit methods.
+func (s *Server) RoutePatterns() []string {
+	routes := s.routes()
+	patterns := make([]string, 0, len(routes))
+	for _, route := range routes {
+		patterns = append(patterns, route.pattern)
+	}
+	return patterns
+}
+
+func (s *Server) routes() []mount {
+	routes := []mount{
+		{"GET /healthz", http.HandlerFunc(s.handleHealthz)},
+		{"GET /readyz", http.HandlerFunc(s.handleReadyz)},
+		{"POST /v1/ingest", http.HandlerFunc(s.handleIngest)},
+		{"POST /v1/admin/rebuild", http.HandlerFunc(s.handleAdminRebuild)},
+		{"GET /v1/documents", http.HandlerFunc(s.handleDocuments)},
+		{"GET /v1/documents/{id}", http.HandlerFunc(s.handleDocument)},
+		{"GET /v1/documents/{id}/status", http.HandlerFunc(s.handleStatus)},
+		{"DELETE /v1/documents/{id}", http.HandlerFunc(s.handleDocumentDelete)},
+		{"GET /v1/documents/{id}/content", http.HandlerFunc(s.handleDocumentContent)},
+		{"POST /v1/search", http.HandlerFunc(s.handleSearch)},
+		{"GET /v1/entities/{id}", http.HandlerFunc(s.handleEntity)},
+		{"POST /v1/traverse", http.HandlerFunc(s.handleTraverse)},
+		{"POST /v1/cypher", http.HandlerFunc(s.handleCypher)},
+		{"GET /ui", http.RedirectHandler("/ui/", http.StatusMovedPermanently)},
+		{"GET /ui/", http.StripPrefix("/ui/", webui.Handler())},
+		{"GET /docs", http.RedirectHandler("/docs/", http.StatusMovedPermanently)},
+		{"GET /docs/", http.StripPrefix("/docs", apidocs.Handler())},
+	}
 	if s.metrics != nil {
-		mux.Handle("GET /metrics", s.metrics.Handler())
+		routes = append(routes, mount{"GET /metrics", s.metrics.Handler()})
 	}
-	mux.HandleFunc("POST /v1/ingest", s.handleIngest)
-	mux.HandleFunc("POST /v1/admin/rebuild", s.handleAdminRebuild)
-	mux.HandleFunc("GET /v1/documents", s.handleDocuments)
-	mux.HandleFunc("GET /v1/documents/{id}", s.handleDocument)
-	mux.HandleFunc("GET /v1/documents/{id}/status", s.handleStatus)
-	mux.HandleFunc("DELETE /v1/documents/{id}", s.handleDocumentDelete)
-	mux.HandleFunc("GET /v1/documents/{id}/content", s.handleDocumentContent)
-	mux.HandleFunc("POST /v1/search", s.handleSearch)
-	mux.HandleFunc("GET /v1/entities/{id}", s.handleEntity)
-	mux.HandleFunc("POST /v1/traverse", s.handleTraverse)
-	mux.HandleFunc("POST /v1/cypher", s.handleCypher)
-	mux.Handle("GET /ui", http.RedirectHandler("/ui/", http.StatusMovedPermanently))
-	mux.Handle("GET /ui/", http.StripPrefix("/ui/", webui.Handler()))
-	for _, m := range s.extra {
-		mux.Handle(m.pattern, m.handler)
-	}
-	return obs.RequestLogger(nil)(s.withAuth(mux))
+	return append(routes, s.extra...)
 }
 
 // handleHealthz is the process liveness probe.
@@ -137,17 +166,20 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 // authExempt lists the paths that never require the bearer token: the
-// health probes, the metrics scrape, and the embedded UI shell. The shell
+// health probes, metrics, the UI shell, and API documentation. The UI shell
 // must load in a browser without the key — a top-level navigation cannot
 // attach an Authorization header — so the page can ask for the key it then
 // sends on its fetches. Everything with data behind it (/v1/*, /mcp) stays
 // guarded. Keep the shell list in sync with internal/webui/assets (pinned
-// by TestAssetsFileSet and TestUIBearerPolicy).
+// by TestAssetsFileSet and TestUIBearerPolicy). Docs assets are pinned by
+// internal/apidocs TestAssetsFileSet and TestDocsBearerPolicy.
 func authExempt(path string) bool {
 	switch path {
 	case "/healthz", "/readyz", "/metrics":
 		return true
 	case "/ui", "/ui/", "/ui/index.html", "/ui/app.css", "/ui/app.js":
+		return true
+	case "/docs", "/docs/", "/docs/index.html", "/docs/swagger-ui.css", "/docs/swagger-ui-bundle.js", "/docs/swagger-initializer.js", "/docs/openapi.yaml":
 		return true
 	}
 	return false
