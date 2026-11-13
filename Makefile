@@ -33,7 +33,15 @@ WAF_MODE := $(MODE)
 endif
 # Quote literal values before passing them to the shell (Make 3.81 compatible).
 quote = '$(subst ','"'"',$(1))'
-COMPOSE_ENV = GKG_ENV_FILE=$(call quote,$(abspath $(ENV_FILE))) EDGE_HTPASSWD=$(call quote,$(abspath $(EDGE_AUTH_PATH))) EDGE_WAF_ENV=$(call quote,$(abspath $(EDGE_WAF_PATH)))
+# The edge renders these bind-mounted files only when its container starts, and
+# compose never compares mounted file contents. Their digest labels the edge
+# service, so `compose up` recreates the edge exactly when one of them changes.
+# Keep the list equal to the edge's bind mounts (TestComposeEdgeConfigDigest).
+EDGE_CONFIG_FILES := deploy/edge/default.conf.template deploy/edge/setup.conf.template deploy/edge/15-validate-env.sh deploy/edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf deploy/edge/modsec/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf
+# Per-file checksums (CRC, size, name) keep file boundaries: moving text from
+# one file to the next changes both sizes, unlike a hash of the concatenation.
+EDGE_CONFIG_DIGEST := $(shell cksum $(wildcard $(EDGE_CONFIG_FILES)) /dev/null | cksum | tr -s ' ' '-')
+COMPOSE_ENV = GKG_ENV_FILE=$(call quote,$(abspath $(ENV_FILE))) EDGE_HTPASSWD=$(call quote,$(abspath $(EDGE_AUTH_PATH))) EDGE_WAF_ENV=$(call quote,$(abspath $(EDGE_WAF_PATH))) EDGE_CONFIG_DIGEST=$(call quote,$(EDGE_CONFIG_DIGEST))
 COMPOSE_CMD = $(DOCKER) compose $(COMPOSE_PROJECT) --env-file "$(ENV_FILE)" -f deploy/docker-compose.yml
 ifeq ($(LIGHT),1)
 COMPOSE_CMD += -f deploy/compose.light.yml

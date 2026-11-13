@@ -207,6 +207,10 @@ services:
     # asks at once peaked at 455 MiB anon -> limit 1.5x; taken from Memgraph's
     # headroom, so the long-running sum stays 14 GiB.
     mem_limit: 704m
+    labels:
+      # The Makefile's digest of the bind-mounted config below: a change
+      # recreates the edge, which renders its templates only at start.
+      gkg.edge-config: "${EDGE_CONFIG_DIGEST:-}"
     depends_on:
       gkg:
         condition: service_healthy

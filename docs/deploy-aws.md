@@ -116,7 +116,10 @@ readiness. `.deployed-sha` records the last passing box-side revision. The Mac
 prints it only after anonymous `/healthz` and authenticated `/v1/agent/status`
 and `/v1/documents` all return 200 through HTTPS within 60 seconds. `/readyz`
 is intentionally closed at the edge. A recreate can produce a short 502
-window; measure it during live acceptance. Startup and loopback-readiness
+window; measure it during live acceptance. The edge renders its nginx and
+ModSecurity files from `deploy/edge/` only at container start, so `make up`
+labels it with a digest of those files and recreates it whenever one changes;
+open streams (ask, MCP) drop once and clients reconnect. Startup and loopback-readiness
 failures restore the previous checkout,
 rebuild its images and run `make up` again. Recovery attempts use private logs;
 the script exits nonzero with "previous revision restored", or "recovery
