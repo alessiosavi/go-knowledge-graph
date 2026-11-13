@@ -2,6 +2,7 @@ package apidocs
 
 import (
 	"io/fs"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -74,6 +75,9 @@ func TestPageLoadsOnlyLocalAssetsWithoutInlineScripts(t *testing.T) {
 func TestInitializerDisablesRemoteValidator(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
+		if os.Getenv("GKG_REQUIRE_NODE") == "1" {
+			t.Fatal("node is required by GKG_REQUIRE_NODE=1")
+		}
 		t.Skip("node required for Swagger initializer check")
 	}
 	data, err := assets.ReadFile("assets/swagger-initializer.js")
