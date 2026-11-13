@@ -115,6 +115,66 @@ The `GKG_EXTRACTOR_MODE=openai` setting below overrides the sidecar default:
 }
 ```
 
+## A remote agent over HTTPS (your own code)
+
+An agent you build (for example a Python service with its own model loop)
+reaches gkg through the edge with its own login
+([USAGE.md §5](../USAGE.md) shows how to create one). There are two ways to
+plug it in:
+
+- **One "ask" tool.** Your tool calls `POST https://<host>/v1/agent/ask`
+  with `{"question": ...}`; gkg's own agent does the retrieval and returns an
+  answer plus its `evidence`. Simplest, but needs `GKG_AGENT_ENABLED=true`
+  on gkg and spends gkg's model budget.
+- **gkg's tools over MCP.** Connect to `https://<host>/mcp` and hand gkg's
+  read tools (`search`, `get_entity`, `traverse`, `list_documents`,
+  `status`, `cypher`) to your model, which then does the retrieval itself.
+  Every login can also `ingest`; leave that tool out if the agent should
+  only read.
+
+Python, with the official MCP SDK (`mcp` 2.x; on 1.x use
+`streamablehttp_client(url, headers=...)` instead of the httpx2 client):
+
+```python
+import base64
+import os
+
+import anyio
+import httpx2
+from mcp import Client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.types import TextContent
+
+GKG_MCP = "https://<host>/mcp"
+basic = base64.b64encode(f"{os.environ['GKG_LOGIN']}:{os.environ['GKG_PASSWORD']}".encode()).decode()
+
+
+async def main() -> None:
+    async with httpx2.AsyncClient(
+        headers={"Authorization": f"Basic {basic}"},
+        timeout=httpx2.Timeout(30.0, read=300.0),
+    ) as http:
+        async with Client(streamable_http_client(GKG_MCP, http_client=http)) as gkg:
+            tools = await gkg.list_tools()  # pass these to your model, minus `ingest`
+            result = await gkg.call_tool("search", {"query": "Ada Lovelace", "limit": 5})
+            for block in result.content:
+                if isinstance(block, TextContent):
+                    print(block.text)
+
+
+anyio.run(main)
+```
+
+Clients that accept a header connect the same way, e.g. Claude Code:
+
+```sh
+claude mcp add --transport http gkg https://<host>/mcp \
+  --header "Authorization: Basic $(printf '%s:%s' "$GKG_LOGIN" "$GKG_PASSWORD" | base64)"
+```
+
+Hosted connectors that only support OAuth (no fixed header) cannot log in
+to the edge today.
+
 ## Example prompts
 
 - "Ingest `https://en.wikipedia.org/wiki/Knowledge_graph` and tell me when

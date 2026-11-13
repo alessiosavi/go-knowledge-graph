@@ -8,6 +8,7 @@ map $request_uri $edge_encoded_path {
 map "$request_method:$uri" $edge_route {
     default @edge_not_found;
     "~^(GET|HEAD):/ui(/.*)?$" @edge_default;
+    "~^(GET|HEAD):/docs(/.*)?$" @edge_default;
     "~^(GET|HEAD):/v1/entities/[^/]+$" @edge_default;
     "~^(GET|HEAD):/v1/documents$" @edge_default;
     "~^(GET|HEAD|DELETE):/v1/documents/[^/]+$" @edge_default;

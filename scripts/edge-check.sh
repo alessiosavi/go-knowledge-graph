@@ -148,7 +148,7 @@ for mode in DetectionOnly On; do
     "$tmp/check" nofiles-upstream "$tmp/before-nofiles" "$tmp/after-nofiles"
   fi
   capture "$tmp/before-legit"
-  for section in routing limits stream mcp; do
+  for section in docs routing limits stream mcp; do
     ok "section $section ($mode)"
     if [ "$section" = routing ]; then
       # Recreate (not restart) so gkg gets a new container and normally a new

@@ -89,8 +89,10 @@ For the SSM-managed EC2 deployment, see [AWS box operations](docs/deploy-aws.md)
 | `internal/obs`     | Prometheus metrics, JSON logs, request middleware                                  |
 | `sidecar/`         | FastAPI GLiNEREL service (weights baked into the image, runtime offline)           |
 
-Read paths are documented in [docs/openapi.yaml](docs/openapi.yaml) and the
-product's limits in [docs/known-limitations.md](docs/known-limitations.md).
+The REST API is described in [docs/openapi.yaml](docs/openapi.yaml), browsable
+as Swagger UI at `/docs/` (behind the edge login), and the product's limits
+are in [docs/known-limitations.md](docs/known-limitations.md). Third-party
+access (per-caller logins, REST, MCP): [USAGE.md §5](USAGE.md).
 
 ## Configuration
 
@@ -126,6 +128,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) (DCO sign-off, checks, PR flow).
 | gliner2.5 (alternative model family)            | Apache-2.0     | fully free alternative; **not loadable by the pinned glinerel-fast v0.1 runtime — the local swap is a v0.1 item** (use an OpenAI-compatible endpoint today) |
 | prometheus/client_golang                        | Apache-2.0     | metrics                                                                                                                                                     |
 | modelcontextprotocol/go-sdk                     | MIT→Apache-2.0 | MCP server/client (license transition)                                                                                                                      |
+| swagger-ui-dist                                 | Apache-2.0     | API reference page at `/docs/`, vendored in `internal/apidocs` (license and pinned version alongside)                                                       |
 
 Model weights are **not** redistributed in this repository; the sidecar
 image downloads them at build time and runs offline afterwards. Choose the

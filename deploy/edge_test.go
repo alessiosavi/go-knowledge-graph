@@ -24,6 +24,7 @@ func TestEdgeAllowlist(t *testing.T) {
 	// These expressions are the complete public method/path contract. Named
 	// locations can only be reached through try_files, after Basic auth.
 	want := map[string]string{
+		"^(GET|HEAD):/docs(/.*)?$":                          "@edge_default",
 		"^(GET|HEAD):/ui(/.*)?$":                            "@edge_default",
 		"^(GET|HEAD):/v1/entities/[^/]+$":                   "@edge_default",
 		"^(GET|HEAD):/v1/documents$":                        "@edge_default",

@@ -3,27 +3,48 @@ info:
   title: gkg — Go Knowledge Graph API
   version: v0.1.0
   description: |
-    REST surface of the gkg service: document ingestion, document status,
-    search, entity views, traversal and a guarded read-only Cypher
-    endpoint. When `GKG_API_KEY` is set every endpoint requires
-    `Authorization: Bearer <key>` (health probes and metrics are exempt).
-    Body sizes are capped by configuration (`Ingest.MaxUploadMB` for
-    ingestion, 1 MiB for JSON endpoints); the Cypher row count and timeout
+    REST surface of gkg: ingestion, documents, search, entity views, traversal,
+    a guarded read-only Cypher endpoint, and the bounded read-only ask agent.
+    The relative server URL uses the same origin through the nginx edge or
+    directly to gkg. Through the edge, "Try it out" reuses the browser's Basic
+    login; do not authorize a bearer there (the edge would reject it). The edge
+    replaces the Basic Authorization header with its internal bearer token.
+    Direct requests require `Authorization: Bearer <key>` when `GKG_API_KEY`
+    is set; health probes, metrics and the static UI/docs shells are exempt.
+    Operator routes are not exposed through the edge (404 there).
+    `/mcp` is MCP streamable HTTP, not REST, and uses the same authentication;
+    see docs/agent-setup.md for client setup.
+    Body sizes are capped by configuration (`Ingest.MaxUploadMB` for ingestion,
+    1 MiB for other JSON endpoints, including ask); Cypher row count and timeout
     are capped by `Limits.CypherRows` / `Limits.CypherTimeoutMS`.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
 servers:
-  - url: http://localhost:8080
-    description: default local address (Server.Addr)
+  - url: /
+    description: Same origin, through the nginx edge or directly to gkg
 security:
   - bearerAuth: []
+  - basicAuth: []
+tags:
+  - name: documents
+    description: Ingest, read and remove document versions
+  - name: graph
+    description: Search entities and chunks, inspect evidence and traverse facts
+  - name: agent
+    description: Bounded read-only question answering and streaming
+  - name: health
+    description: Process liveness
+  - name: operator
+    description: Direct gkg access only; not exposed through the edge (404 there)
 paths:
   /v1/admin/rebuild:
     post:
-      summary: Rebuild completed documents (loopback-only operator route)
+      tags: [operator]
+      operationId: rebuildDocuments
+      summary: Rebuild completed documents (operator route)
       description: |
-        Not exposed through the edge. Requires the internal bearer when configured.
+        Operator route; not exposed through the edge (404 there). Requires the internal bearer when configured.
         On a shared box, requires the owner's go after ingest finishes and the queue
         is empty. Removes facts, mentions and rejected-fact audits, preserves
         documents and stored chunk text, and re-queues extraction and judging
@@ -40,6 +61,7 @@ paths:
                 labels:
                   type: string
                   description: Installed preset; empty or omitted keeps each document's preset.
+                  pattern: '^[a-zA-Z0-9_-]*$'
                 document_id:
                   type: string
                   description: One document ID; empty or omitted selects every done document.
@@ -97,14 +119,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
   /v1/ingest:
     post:
+      tags: [documents]
+      operationId: ingestDocument
       summary: Submit a document for ingestion
       description: |
         Accepts JSON (`url` or `text`), or a multipart form with a `file`
         field. The submission is queued for the worker pool; poll
         `/v1/documents/{id}/status` until `done` or `failed`. Re-submitting
         unchanged content is a no-op (`noop: true`) unless `force` is set.
+        `labels` selects an installed YAML preset under `labels.presets_dir`;
+        omitted/empty uses built-in defaults. Shipped presets are general,
+        meeting, documentation, mail, news, code and demo; custom names are
+        accepted. Invalid or unknown presets fail before ingestion. The preset
+        is stored with the document and reused after restart.
       requestBody:
         required: true
         content:
@@ -124,10 +155,11 @@ paths:
                   description: identity override; defaults to the filename
                 labels:
                   type: string
-                  description: label preset name
+                  description: Installed label preset name; empty uses built-in defaults
+                  pattern: '^[a-zA-Z0-9_-]*$'
                 force:
                   type: string
-                  description: '"true" to re-run unchanged content'
+                  description: '"true" or "1" re-runs unchanged content; all other values are false'
       responses:
         "202":
           description: queued for processing
@@ -186,30 +218,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
   /v1/documents:
     get:
+      tags: [documents]
+      operationId: listDocuments
       summary: List documents
       parameters:
         - name: limit
           in: query
           description: defaults to 100, capped at 1000
-          schema: { type: integer, minimum: 1, maximum: 1000 }
+          schema: { type: integer, minimum: 1, default: 100 }
         - name: status
           in: query
-          schema:
-            type: string
-            enum:
-              [
-                received,
-                fetched,
-                chunked,
-                extracted,
-                merged,
-                verifying,
-                done,
-                failed,
-                superseded,
-              ]
+          description: Exact status filter; an unknown status yields an empty list.
+          schema: { type: string, example: done }
       responses:
         "200":
           description: documents, most recently updated first
@@ -223,8 +247,14 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /v1/documents/{id}:
     get:
+      tags: [documents]
+      operationId: getDocument
       summary: Get one document
       parameters:
         - $ref: "#/components/parameters/DocumentID"
@@ -241,7 +271,13 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
     delete:
+      tags: [documents]
+      operationId: deleteDocument
       summary: Delete a document (or its whole version chain)
       description: Removes the document with its chunks, fact edges and mentions, and prunes the entities left without relationships. Without the chain flag exactly one version is removed; with it, every version of the same source identity goes in one all-or-nothing transaction. There is no undo.
       parameters:
@@ -266,8 +302,14 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
   /v1/documents/{id}/status:
     get:
+      tags: [documents]
+      operationId: getDocumentStatus
       summary: Get one document's pipeline status
       parameters:
         - $ref: "#/components/parameters/DocumentID"
@@ -284,8 +326,14 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
   /v1/documents/{id}/content:
     get:
+      tags: [documents]
+      operationId: getDocumentContent
       summary: Get one document's stored text rendered to HTML
       description: Reconstructs the document's stored chunks server-side (overlapping sentences skipped by offset, inter-chunk gaps normalized to paragraph breaks) and renders the markdown with raw HTML omitted and unsafe link/image destinations neutralized. Superseded versions typically have no stored text left.
       parameters:
@@ -300,11 +348,21 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
-          $ref: "#/components/responses/InternalError"
+          description: Store or value-conversion failure, or markdown render failure (error render_error).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
   /v1/search:
     post:
+      tags: [graph]
+      operationId: search
       summary: Search entities, chunks or both
       description: Entities and chunks are searched through the Memgraph text indexes; when the embedder is enabled, entity hits fuse the text leg with entity-embedding vector hits (text recall is never dropped). Chunks are text-only in v0.
       requestBody:
@@ -326,8 +384,16 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
   /v1/entities/{id}:
     get:
+      tags: [graph]
+      operationId: getEntity
       summary: Get an entity with its aliases and evidenced facts
       parameters:
         - name: id
@@ -337,8 +403,8 @@ paths:
           schema: { type: string }
         - name: include_low_confidence
           in: query
-          description: include facts below the assert floor
-          schema: { type: boolean, default: false }
+          description: '"true" or "1" includes facts below the assert floor; all other values are false'
+          schema: { type: string, default: "false" }
       responses:
         "200":
           description: the entity view
@@ -352,8 +418,14 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
   /v1/traverse:
     post:
+      tags: [graph]
+      operationId: traverse
       summary: Walk fact edges from a start entity
       requestBody:
         required: true
@@ -376,10 +448,19 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
   /v1/cypher:
     post:
+      tags: [operator]
+      operationId: queryCypher
       summary: Run a guarded read-only Cypher query
       description: |
+        Operator route; not exposed through the edge (404 there).
         Exactly one statement; write clauses (`CREATE`, `MERGE`, `SET`,
         `DELETE`, `DETACH`, `REMOVE`, `DROP`, `ALTER`, `LOAD`) are
         rejected, `CALL` is limited to the `vector_search.` and
@@ -419,9 +500,156 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+  /v1/agent/ask:
+    post:
+      tags: [agent]
+      operationId: askAgent
+      summary: Ask a bounded read-only agent
+      description: |
+        Runs the enabled agent within its step, context and time budgets.
+        Returns an answer, optional server-rendered answer_html and raw tool
+        evidence. A step/context budget reached without a final answer still
+        returns 200 with the evidence gathered. A disabled agent returns 501
+        before reading the body. Questions are trimmed and must not be empty.
+      requestBody:
+        $ref: "#/components/requestBodies/AskQuestion"
+      responses:
+        "200":
+          description: Answer and tool evidence
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentAnswer"
+        "400":
+          description: Malformed JSON (invalid_json) or missing/blank question (invalid_request).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "501":
+          $ref: "#/components/responses/AgentDisabled"
+        "502":
+          description: Provider or agent failure (error agent_error); detail is classified and excludes endpoint/key secrets.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: agent_error
+                detail: agent provider request failed
+        "504":
+          description: Agent deadline exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: agent_timeout
+                detail: the agent timed out before answering
+  /v1/agent/ask/stream:
+    post:
+      tags: [agent]
+      operationId: streamAgent
+      summary: Ask the agent with Server-Sent Events
+      description: |
+        Same question and limits as /v1/agent/ask. Disabled-agent and request
+        validation errors are JSON before the SSE response starts. Once the
+        response starts, HTTP status stays 200, including agent/provider errors.
+        Each named event has a JSON data payload: `tool` has name and arguments,
+        `delta` has text, `done` has the authoritative full AgentAnswer (including
+        answer_html when present), and `error` has error and detail. A terminal
+        error is agent_timeout for deadline expiry, otherwise agent_error.
+        The stream sends `: ping` comment heartbeats every 15 seconds and stops
+        on disconnect. With provider streaming off it remains SSE and sends tool
+        and done events only, plus heartbeats or a terminal error. Clients should
+        replace accumulated delta text with the authoritative done answer.
+      requestBody:
+        $ref: "#/components/requestBodies/AskQuestion"
+      responses:
+        "200":
+          description: SSE frames terminated by done or error; heartbeat comments carry no JSON payload.
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-cache] }
+            X-Accel-Buffering:
+              schema: { type: string, enum: ["no"] }
+          content:
+            text/event-stream:
+              schema: { type: string }
+              x-sse-events:
+                tool:
+                  type: object
+                  required: [name, arguments]
+                  properties:
+                    name: { type: string }
+                    arguments:
+                      description: Raw JSON arguments, of any JSON type; invalid JSON is represented as a string. May be null.
+                delta:
+                  type: object
+                  required: [text]
+                  properties:
+                    text: { type: string, description: Progressive answer fragment }
+                done:
+                  $ref: "#/components/schemas/AgentAnswer"
+                error:
+                  $ref: "#/components/schemas/Error"
+              example: |
+                : ping
+
+                event: tool
+                data: {"name":"search","arguments":{"query":"Ada"}}
+
+                event: delta
+                data: {"text":"Ada"}
+
+                event: done
+                data: {"answer":"Ada","answer_html":"<p>Ada</p>\n","evidence":[],"steps":1}
+
+        "400":
+          description: Malformed JSON (invalid_json) or missing/blank question (invalid_request), before SSE starts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "501":
+          $ref: "#/components/responses/AgentDisabled"
+  /v1/agent/status:
+    get:
+      tags: [agent]
+      operationId: getAgentStatus
+      summary: Probe agent capabilities
+      description: |
+        Always registered, including when the agent is disabled. Returns 200
+        with enabled=false and stream=false when disabled. stream is true only
+        when the agent is enabled, provider streaming is configured, and the
+        process has not memoized provider streaming as unsupported.
+      responses:
+        "200":
+          description: Agent and provider-streaming availability
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /healthz:
     get:
+      tags: [health]
+      operationId: healthz
       summary: Process liveness probe
+      description: Direct gkg returns JSON. The nginx edge answers this path itself with plain text, without login.
       security: []
       responses:
         "200":
@@ -432,9 +660,14 @@ paths:
                 type: object
                 properties:
                   status: { type: string }
+            text/plain:
+              schema: { type: string, example: "ok\n" }
   /readyz:
     get:
+      tags: [operator]
+      operationId: readyz
       summary: Readiness probe (Memgraph connectivity)
+      description: Direct gkg probe; not exposed through the edge (404 there).
       security: []
       responses:
         "200":
@@ -453,7 +686,10 @@ paths:
                 $ref: "#/components/schemas/Error"
   /metrics:
     get:
+      tags: [operator]
+      operationId: metrics
       summary: Prometheus metrics
+      description: Direct gkg scrape; not exposed through the edge (404 there). Registered when metrics are wired (always by gkg serve).
       security: []
       responses:
         "200":
@@ -466,7 +702,18 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: required when `GKG_API_KEY` is set
+      description: Direct gkg access when GKG_API_KEY is set. Do not use through the nginx edge.
+    basicAuth:
+      type: http
+      scheme: basic
+      description: Through the nginx edge. Browser login is reused automatically; the edge supplies the internal bearer.
+  requestBodies:
+    AskQuestion:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AgentQuestion"
   parameters:
     DocumentID:
       name: id
@@ -474,8 +721,29 @@ components:
       required: true
       schema: { type: string, pattern: "^[0-9a-f]{32}$" }
   responses:
+    AgentDisabled:
+      description: Agent is disabled; returned before reading the request body.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: agent_disabled
+            detail: the ask agent is not enabled on this server
     Unauthorized:
-      description: missing or invalid bearer token
+      description: Missing or invalid bearer token directly to gkg. The edge instead challenges for Basic login before proxying (its 401 body is not JSON).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BodyTooLarge:
+      description: JSON body exceeds 1 MiB (error body_too_large).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    GatewayTimeout:
+      description: Store operation exceeded its deadline.
       content:
         application/json:
           schema:
@@ -513,16 +781,26 @@ components:
         detail: { type: string }
     IngestRequest:
       type: object
-      description: exactly one of url or text is required
+      description: Exactly one non-empty url (trimmed) or text is required; source, labels and force are optional.
+      oneOf:
+        - required: [url]
+          properties:
+            url: { minLength: 1 }
+            text: { enum: [""] }
+        - required: [text]
+          properties:
+            text: { minLength: 1 }
+            url: { pattern: '^\s*$' }
       properties:
         url: { type: string, format: uri }
         text: { type: string }
         source:
           type: string
-          description: identity override; defaults to the URL (url) or the hash prefix (text)
+          description: Identity override; defaults to the submitted URL (url) or the first 8 hex characters of the cleaned content SHA-256 (text)
         labels:
           type: string
-          description: label preset name
+          description: Installed label preset name; empty uses built-in defaults. Custom presets are allowed.
+          pattern: '^[a-zA-Z0-9_-]*$'
         force:
           type: boolean
           default: false
@@ -600,10 +878,8 @@ components:
           default: auto
         limit:
           type: integer
-          minimum: 0
-          maximum: 100
           default: 20
-          description: 0 selects the default (20); capped at 100
+          description: Non-positive values select the default (20); values above 100 are capped at 100
     SearchResponse:
       type: object
       required: [hits]
@@ -731,15 +1007,15 @@ components:
           default: out
         depth:
           type: integer
-          minimum: 1
+          minimum: 0
           maximum: 2
           default: 1
+          description: 0 selects the default (1); otherwise must be 1 or 2
         limit:
           type: integer
           minimum: 0
-          maximum: 200
           default: 50
-          description: 0 selects the default (50); negative values are rejected
+          description: 0 selects the default (50); values above 200 are capped; negative values are rejected
         include_low_confidence:
           type: boolean
           default: false
@@ -776,8 +1052,7 @@ components:
         query: { type: string }
         limit:
           type: integer
-          minimum: 1
-          description: clamped to Limits.CypherRows
+          description: Positive values tighten the row cap; non-positive or above-cap values use Limits.CypherRows (default 1000)
     CypherResponse:
       type: object
       required: [columns, rows]
@@ -790,3 +1065,43 @@ components:
           items:
             type: object
             additionalProperties: true
+    AgentQuestion:
+      type: object
+      required: [question]
+      properties:
+        question:
+          type: string
+          minLength: 1
+          description: Trimmed before use; whitespace-only questions are rejected.
+          example: What does the graph say about Ada?
+    AgentAnswer:
+      type: object
+      required: [answer, evidence, steps]
+      properties:
+        answer: { type: string }
+        answer_html:
+          type: string
+          description: Optional server-rendered Markdown answer with raw HTML omitted and unsafe destinations neutralized.
+        evidence:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentEvidence"
+        steps:
+          type: integer
+          minimum: 0
+          description: Model turns requesting tools; budget-skipped calls may still appear in evidence.
+    AgentEvidence:
+      type: object
+      required: [tool]
+      properties:
+        tool: { type: string }
+        arguments:
+          description: Raw JSON tool arguments, of any JSON type; invalid JSON is represented as a string. May be null or omitted.
+        result:
+          description: Raw JSON tool result or tool error, of any JSON type; may be null or omitted.
+    AgentStatus:
+      type: object
+      required: [enabled, stream]
+      properties:
+        enabled: { type: boolean }
+        stream: { type: boolean }
