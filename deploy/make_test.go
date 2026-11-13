@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -521,5 +522,63 @@ func TestMakeRenewConvergence(t *testing.T) {
 				t.Error("failed certbot must stop renewal")
 			}
 		})
+	}
+}
+
+// makeVariable prints one Makefile variable as make itself expands it.
+func makeVariable(t *testing.T, name string, dir ...string) string {
+	t.Helper()
+	root := repoRoot(t)
+	if len(dir) == 1 {
+		root = dir[0]
+	}
+	cmd := exec.Command("make", "-s", "-C", root, "--eval", "print-var: ; @printf '%s' '$("+name+")'", "print-var")
+	cmd.Env = minimalEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make print %s: %v\n%s", name, err, out)
+	}
+	return string(out)
+}
+
+func TestMakeEdgeConfigDigest(t *testing.T) {
+	root := repoRoot(t)
+	digest := makeVariable(t, "EDGE_CONFIG_DIGEST")
+	if !regexp.MustCompile(`^[0-9]+-[0-9]+$`).MatchString(digest) {
+		t.Fatalf("EDGE_CONFIG_DIGEST=%q, want cksum CRC-size", digest)
+	}
+	if env := makeVariable(t, "COMPOSE_ENV"); !strings.Contains(env, "EDGE_CONFIG_DIGEST="+digest) {
+		t.Fatal("compose must receive the edge config digest")
+	}
+	// Changing any listed file changes the digest: copy the Makefile and the
+	// listed files, edit one copy, and compare.
+	dir := t.TempDir()
+	files := append([]string{"Makefile"}, strings.Fields(makeVariable(t, "EDGE_CONFIG_FILES"))...)
+	for _, file := range files {
+		data, err := os.ReadFile(filepath.Join(root, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, file)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, file), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := makeVariable(t, "EDGE_CONFIG_DIGEST", dir); got != digest {
+		t.Fatalf("copied tree digest %q, want %q", got, digest)
+	}
+	for _, file := range files[1:] {
+		path := filepath.Join(dir, file)
+		data, _ := os.ReadFile(path)
+		if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		changed := makeVariable(t, "EDGE_CONFIG_DIGEST", dir)
+		if changed == digest {
+			t.Errorf("editing %s left the digest unchanged", file)
+		}
+		digest = changed
 	}
 }

@@ -469,3 +469,37 @@ func TestDoclingEntrypointSyncWait(t *testing.T) {
 		})
 	}
 }
+
+// The edge renders its bind-mounted config only at container start, and
+// compose does not compare mounted file contents. The Makefile's digest of
+// exactly those files labels the service, so a changed file recreates it.
+func TestComposeEdgeConfigDigest(t *testing.T) {
+	model := renderCompose(t, writeFixture(t, "MEMGRAPH_PASSWORD=test-only", "GKG_API_KEY=synthetic-test-key", "EDGE_CONFIG_DIGEST=fixture-digest"))
+	edge := model.Services["edge"]
+	if got := edge.Labels["gkg.edge-config"]; got != "fixture-digest" {
+		t.Fatalf("edge label gkg.edge-config=%q, want the Makefile digest", got)
+	}
+	root := repoRoot(t)
+	var mounted []string
+	for _, v := range edge.Volumes {
+		if v.Type != "bind" {
+			continue
+		}
+		rel, err := filepath.Rel(root, v.Source)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			t.Fatalf("edge bind source outside the repository: %s", v.Source)
+		}
+		mounted = append(mounted, rel)
+	}
+	listed := strings.Fields(makeVariable(t, "EDGE_CONFIG_FILES"))
+	slices.Sort(mounted)
+	slices.Sort(listed)
+	if !slices.Equal(mounted, listed) {
+		t.Fatalf("EDGE_CONFIG_FILES=%v, want every edge bind mount %v", listed, mounted)
+	}
+	for _, file := range listed {
+		if _, err := os.Stat(filepath.Join(root, file)); err != nil {
+			t.Errorf("listed edge config file missing: %s", file)
+		}
+	}
+}
