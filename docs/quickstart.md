@@ -73,7 +73,8 @@ loopback (`EDGE_BIND`, default `127.0.0.1`; the EC2 box sets `0.0.0.0`).
   `GENERATE=1` creates and prints a random one. `make up` refuses to start
   without it. Changing a password needs only `make passwd` + `make up`.
 - **What is exposed:** the UI (`/ui/`, `/` redirects there), the REST routes
-  the UI uses and `/mcp`. `/v1/cypher`, `/metrics`, `/readyz` and every other
+  the UI uses, the API reference (`/docs/`, Swagger UI and its spec) and
+  `/mcp`. `/v1/cypher`, `/metrics`, `/readyz` and every other
   path or method are a 404 behind the password (use the `cypher` MCP tool or
   the loopback ports on the host). `/healthz` answers without a password.
   Paths carrying a percent-encoded `/`, `.` or `\` are refused with 400.
