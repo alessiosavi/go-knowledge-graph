@@ -532,8 +532,10 @@ func makeVariable(t *testing.T, name string, dir ...string) string {
 	if len(dir) == 1 {
 		root = dir[0]
 	}
-	cmd := exec.Command("make", "-s", "-C", root, "--eval", "print-var: ; @printf '%s' '$("+name+")'", "print-var")
+	// A second makefile on stdin, not --eval: make 3.81 (macOS) lacks --eval.
+	cmd := exec.Command("make", "-s", "-C", root, "-f", "Makefile", "-f", "-", "print-var")
 	cmd.Env = minimalEnv()
+	cmd.Stdin = strings.NewReader("print-var: ; @printf '%s' '$(" + name + ")'\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("make print %s: %v\n%s", name, err, out)
@@ -580,5 +582,27 @@ func TestMakeEdgeConfigDigest(t *testing.T) {
 			t.Errorf("editing %s left the digest unchanged", file)
 		}
 		digest = changed
+	}
+	// Moving bytes across a file boundary keeps the concatenation identical;
+	// the digest must still change (e.g. a rule moved from the before-CRS to
+	// the after-CRS exclusions).
+	for i := 1; i+1 < len(files); i++ {
+		a, b := filepath.Join(dir, files[i]), filepath.Join(dir, files[i+1])
+		da, _ := os.ReadFile(a)
+		db, _ := os.ReadFile(b)
+		if len(da) == 0 {
+			continue
+		}
+		if err := os.WriteFile(a, da[:len(da)-1], 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(b, append([]byte{da[len(da)-1]}, db...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		moved := makeVariable(t, "EDGE_CONFIG_DIGEST", dir)
+		if moved == digest {
+			t.Errorf("moving a byte from %s to %s left the digest unchanged", files[i], files[i+1])
+		}
+		digest = moved
 	}
 }
