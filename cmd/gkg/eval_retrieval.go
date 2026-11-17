@@ -75,6 +75,12 @@ func runEvalRetrieval(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer st.Close(ctx)
+	// Like every other graph command: the indexes search needs, and the
+	// newer-schema guard.
+	if err := st.Bootstrap(ctx); err != nil {
+		fmt.Fprintf(stderr, "gkg eval-retrieval: %v\n", err)
+		return 1
+	}
 	var emb search.QueryEmbedder
 	if cfg.Embedder.Enabled {
 		emb, err = embedderFromConfig(cfg)

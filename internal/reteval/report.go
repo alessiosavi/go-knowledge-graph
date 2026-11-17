@@ -23,17 +23,21 @@ type SearchResult struct {
 	ItemRecall map[string]float64 `json:"item_recall,omitempty"`
 }
 type AgentResult struct {
-	Answer           string               `json:"answer"`
-	Evidence         []agent.EvidenceItem `json:"evidence"`
-	Steps            int                  `json:"steps"`
-	LatencyMS        int64                `json:"latency_ms"`
-	AnswerRecall     *float64             `json:"answer_recall,omitempty"`
-	ItemRecall       *float64             `json:"item_recall,omitempty"`
-	ItemPrecision    *float64             `json:"item_precision,omitempty"`
-	UnverifiedExtras []string             `json:"unverified_extras,omitempty"`
-	Abstained        *bool                `json:"abstained,omitempty"`
-	NeedsReview      bool                 `json:"needs_review"`
-	EvidenceCited    *bool                `json:"evidence_cited,omitempty"`
+	Answer        string               `json:"answer"`
+	Evidence      []agent.EvidenceItem `json:"evidence"`
+	Steps         int                  `json:"steps"`
+	LatencyMS     int64                `json:"latency_ms"`
+	AnswerRecall  *float64             `json:"answer_recall,omitempty"`
+	ItemRecall    *float64             `json:"item_recall,omitempty"`
+	ItemPrecision *float64             `json:"item_precision,omitempty"`
+	// UnverifiedExtras are answer names outside the gold list that do occur
+	// in done chunk text: they may be correct, so they are excluded from
+	// ItemPrecision and listed for manual review (spec B4). Extras absent
+	// from every chunk are verifiably wrong and count against precision.
+	UnverifiedExtras []string `json:"unverified_extras,omitempty"`
+	Abstained        *bool    `json:"abstained,omitempty"`
+	NeedsReview      bool     `json:"needs_review"`
+	EvidenceCited    *bool    `json:"evidence_cited,omitempty"`
 }
 type QuestionResult struct {
 	ID          string         `json:"id"`
