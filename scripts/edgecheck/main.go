@@ -252,7 +252,7 @@ func (p *probe) auth(mode string) {
 	}
 	r := p.request("POST", "/v1/ingest", "auth.curl", nil, "-H", "Sec-Fetch-Site: cross-site", "-F", "file=@deploy/edge/testdata/design.md")
 	expect(r.code == 403, "cross-site multipart refused")
-	for _, pair := range [][2]string{{"GET", "/metrics"}, {"GET", "/readyz"}, {"POST", "/v1/cypher"}, {"PUT", "/v1/ingest"}, {"OPTIONS", "/v1/search"}, {"GET", "/v1/unknown"}, {"GET", "/ui/../metrics"}} {
+	for _, pair := range [][2]string{{"GET", "/metrics"}, {"GET", "/readyz"}, {"POST", "/v1/cypher"}, {"POST", "/v1/admin/domains/move"}, {"POST", "/v1/admin/domains/merge"}, {"POST", "/v1/admin/domains/rename"}, {"POST", "/v1/admin/domains/undo"}, {"PUT", "/v1/ingest"}, {"OPTIONS", "/v1/search"}, {"GET", "/v1/unknown"}, {"GET", "/ui/../metrics"}} {
 		r = p.request(pair[0], pair[1], "auth.curl", nil)
 		expect(closedRouteResponse(mode, r), "allowlist "+pair[0]+" "+pair[1])
 	}

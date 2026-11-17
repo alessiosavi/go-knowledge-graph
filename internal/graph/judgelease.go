@@ -2,9 +2,7 @@ package graph
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
@@ -37,8 +35,7 @@ RETURN l.id`, map[string]any{"name": name, "owner": owner, "now": now.UnixMilli(
 	if err != nil {
 		// Concurrent first acquisition can fail the uniqueness constraint
 		// instead of returning an empty conditional match on Memgraph.
-		var dbErr *neo4j.Neo4jError
-		if errors.As(err, &dbErr) && strings.Contains(strings.ToLower(dbErr.Msg), "constraint") {
+		if isConstraintViolation(err) {
 			rows, readErr := s.runRead(ctx, `MATCH (l:JudgeLease {id: $name}) RETURN l.owner AS owner, l.expires_at AS expires`, map[string]any{"name": name})
 			if readErr == nil && len(rows) == 1 && getString(rows[0], "owner") != owner && int64(getInt(rows[0], "expires")) > time.Now().UnixMilli() && !force {
 				return false, nil

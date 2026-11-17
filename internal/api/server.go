@@ -123,6 +123,22 @@ func (s *Server) routes() []mount {
 		{"POST /v1/ingest", http.HandlerFunc(s.handleIngest)},
 		{"POST /v1/admin/rebuild", http.HandlerFunc(s.handleAdminRebuild)},
 		{"GET /v1/domains", http.HandlerFunc(s.handleDomains)},
+		{"POST /v1/admin/domains/move", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("action", "move")
+			s.handleDomainAdmin(w, r)
+		})},
+		{"POST /v1/admin/domains/merge", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("action", "merge")
+			s.handleDomainAdmin(w, r)
+		})},
+		{"POST /v1/admin/domains/rename", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("action", "rename")
+			s.handleDomainAdmin(w, r)
+		})},
+		{"POST /v1/admin/domains/undo", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.SetPathValue("action", "undo")
+			s.handleDomainAdmin(w, r)
+		})},
 		{"GET /v1/documents", http.HandlerFunc(s.handleDocuments)},
 		{"GET /v1/documents/{id}", http.HandlerFunc(s.handleDocument)},
 		{"GET /v1/documents/{id}/status", http.HandlerFunc(s.handleStatus)},

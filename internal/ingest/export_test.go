@@ -40,3 +40,11 @@ func (s domainAssignmentHook) AssignDomain(ctx context.Context, a graph.Assignme
 func SetBeforeDomainAssignment(p *Pipeline, f func(graph.Assignment) error) {
 	p.store = domainAssignmentHook{pipelineStore: p.store, before: f}
 }
+
+// SetDomainOpStore intercepts admin boundaries while keeping a real graph store.
+func SetDomainOpStore(p *Pipeline, st interface {
+	pipelineStore
+	domainOpStore
+}) {
+	p.store = st
+}

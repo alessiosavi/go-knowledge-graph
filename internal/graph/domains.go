@@ -3,7 +3,9 @@ package graph
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
@@ -188,4 +190,288 @@ func (s *Store) ClearDuplicateOf(ctx context.Context, chunkIDs []string) error {
 		return nil
 	}
 	return s.runWrite(ctx, `UNWIND $ids AS id MATCH (c:Chunk {id:id}) SET c.duplicate_of=''`, map[string]any{"ids": chunkIDs})
+}
+
+var (
+	ErrSchemaNotV4     = errors.New("graph: schema_not_v4")
+	ErrInvalidDomainOp = errors.New("graph: invalid domain operation")
+)
+
+// DomainOp records scheduling progress; completed means every live reset was
+// queued and a merge source was removed. Incomplete merges list remaining IDs.
+// Undo additionally checks that live extraction jobs have finished.
+type DomainOp struct {
+	OpID, Action, State string
+	Docs                []string
+	Skipped             []string `json:"skipped,omitempty"`
+	Remaining           []string `json:"remaining,omitempty"`
+	At                  time.Time
+}
+
+// DomainOpPlan persists immutable targets for admitted documents. An incomplete
+// merge can append new source members on retry.
+type DomainOpPlan struct {
+	Op                   DomainOp
+	Targets              map[string]string
+	Target, From, UndoOf string
+}
+
+func txRequireDomains(ctx context.Context, tx neo4j.ManagedTransaction) error {
+	res, err := tx.Run(ctx, `MATCH (m:GkgMeta {id:$id}) RETURN m.value AS version`, map[string]any{"id": extractionSchemaMetaID})
+	if err != nil {
+		return err
+	}
+	rows, err := res.Collect(ctx)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 || getInt(rows[0], "version") < SchemaVersionV4 {
+		return ErrSchemaNotV4
+	}
+	return nil
+}
+
+// MoveDocument publishes a new partition and ledger in one transaction. Live
+// documents reset extraction; superseded versions only update domain properties.
+// The pipeline holds the document lock until this commits.
+func (s *Store) MoveDocument(ctx context.Context, docID, slug, opID, action, by string) error {
+	if !ValidDomain(slug) {
+		return fmt.Errorf("%w: invalid domain slug %q", ErrInvalidDomainOp, slug)
+	}
+	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		if err := txRequireDomains(ctx, tx); err != nil {
+			return err
+		}
+		res, err := tx.Run(ctx, `MATCH (r:DomainDecision {op_id:$op,doc_id:$doc}) RETURN r.domain AS domain`, map[string]any{"op": opID, "doc": docID})
+		if err != nil {
+			return err
+		}
+		rows, err := res.Collect(ctx)
+		if err != nil {
+			return err
+		}
+		if len(rows) > 0 {
+			if getString(rows[0], "domain") != slug {
+				return ErrInvalidDomainOp
+			}
+			return nil
+		}
+		res, err = tx.Run(ctx, `MATCH (d:Document {id:$doc}) RETURN d.domain AS domain,d.status AS status`, map[string]any{"doc": docID})
+		if err != nil {
+			return err
+		}
+		rows, err = res.Collect(ctx)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return ErrNotFound
+		}
+		previous := getString(rows[0], "domain")
+		status := Status(getString(rows[0], "status"))
+		if status == StatusSuperseded {
+			if action == "undo" {
+				return ErrSuperseded
+			}
+		} else if err := txResetExtraction(ctx, tx, docID, ""); err != nil {
+			return err
+		}
+		if !ValidDomain(previous) {
+			return fmt.Errorf("%w: document has no valid previous domain", ErrInvalidDomainOp)
+		}
+		tok := domain.DomainToken(slug)
+		res, err = tx.Run(ctx, `MATCH (n:Domain {tok:$tok}) WHERE n.id<>$domain RETURN n.id`, map[string]any{"tok": tok, "domain": slug})
+		if err != nil {
+			return err
+		}
+		rows, err = res.Collect(ctx)
+		if err != nil {
+			return err
+		}
+		if len(rows) > 0 {
+			return fmt.Errorf("graph: domain token collision for %s", slug)
+		}
+		params := map[string]any{"doc": docID, "domain": slug, "tok": tok, "op": opID, "action": action, "by": by, "previous": previous, "at": time.Now().UTC().Format(timeLayout)}
+		for _, q := range []string{
+			`MERGE (n:Domain {id:$domain}) ON CREATE SET n.name=$domain,n.created_at=$at,n.created_by='admin' SET n.tok=$tok`,
+			`MATCH (d:Document {id:$doc}) SET d.domain=$domain,d.domain_tok=$tok`,
+			`MATCH (:Document {id:$doc})-[:HAS_CHUNK]->(c:Chunk) SET c.domain=$domain,c.domain_tok=$tok`,
+			`CREATE (:DomainDecision {op_id:$op,doc_id:$doc,domain:$domain,previous_domain:$previous,action:$action,by:$by,at:$at,top:[],params:{},note:''})`,
+		} {
+			if err := txRun(ctx, tx, q, params); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// DomainDecisions reads an operation's ledger, or the full ledger for show.
+func (s *Store) DomainDecisions(ctx context.Context, opID string) ([]DecisionRecord, error) {
+	rows, err := s.runRead(ctx, `MATCH (r:DomainDecision) WHERE $op='' OR r.op_id=$op RETURN r.op_id AS op,r.doc_id AS doc,r.domain AS domain,r.previous_domain AS previous,r.action AS action,r.by AS by,r.at AS at,r.note AS note,r.top AS top,r.params AS params ORDER BY at,doc`, map[string]any{"op": opID})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DecisionRecord, 0, len(rows))
+	for _, r := range rows {
+		d := DecisionRecord{OpID: getString(r, "op"), DocID: getString(r, "doc"), Domain: getString(r, "domain"), PreviousDomain: getString(r, "previous"), Action: getString(r, "action"), By: getString(r, "by"), At: parseTime(getString(r, "at")), Note: getString(r, "note")}
+		if v, _ := r.Get("top"); v != nil {
+			if list, ok := v.([]any); ok {
+				for _, v := range list {
+					if pair, ok := v.([]any); ok && len(pair) == 2 {
+						slug, _ := pair[0].(string)
+						score, _ := pair[1].(float64)
+						d.Top = append(d.Top, domain.DomainScore{Domain: slug, Score: score})
+					}
+				}
+			}
+		}
+		if v, _ := r.Get("params"); v != nil {
+			if m, ok := v.(map[string]any); ok {
+				d.Params.Tau, _ = m["tau"].(float64)
+				d.Params.Delta, _ = m["delta"].(float64)
+				d.Params.TauOverride, _ = m["tau_override"].(float64)
+			}
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+func (s *Store) DomainOperation(ctx context.Context, id string) (DomainOpPlan, error) {
+	rows, err := s.runRead(ctx, `MATCH (o:DomainOp {op_id:$id}) RETURN o.action AS action,o.state AS state,o.docs AS docs,o.at AS at,o.targets AS targets,o.target AS target,o.from AS from,o.undo_of AS undo_of,o.skipped AS skipped,o.remaining AS remaining`, map[string]any{"id": id})
+	if err != nil {
+		return DomainOpPlan{}, err
+	}
+	if len(rows) == 0 {
+		return DomainOpPlan{}, ErrNotFound
+	}
+	r := rows[0]
+	plan := DomainOpPlan{Op: DomainOp{OpID: id, Action: getString(r, "action"), State: getString(r, "state"), Docs: getStringSlice(r, "docs"), Skipped: getStringSlice(r, "skipped"), Remaining: getStringSlice(r, "remaining"), At: parseTime(getString(r, "at"))}, Targets: map[string]string{}, Target: getString(r, "target"), From: getString(r, "from"), UndoOf: getString(r, "undo_of")}
+	if v, _ := r.Get("targets"); v != nil {
+		if m, ok := v.(map[string]any); ok {
+			for doc, slug := range m {
+				plan.Targets[doc], _ = slug.(string)
+			}
+		}
+	}
+	return plan, nil
+}
+
+// CreateDomainOp uses MERGE for crash-safe admission; conflicting reuse fails.
+func (s *Store) CreateDomainOp(ctx context.Context, plan DomainOpPlan) (DomainOpPlan, error) {
+	targets := make(map[string]any, len(plan.Targets))
+	for id, slug := range plan.Targets {
+		targets[id] = slug
+	}
+	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		if err := txRequireDomains(ctx, tx); err != nil {
+			return err
+		}
+		return txRun(ctx, tx, `MERGE (o:DomainOp {op_id:$id}) ON CREATE SET o.action=$action,o.state='running',o.docs=$docs,o.at=$at,o.targets=$targets,o.target=$target,o.from=$from,o.undo_of=$undo`, map[string]any{"id": plan.Op.OpID, "action": plan.Op.Action, "docs": plan.Op.Docs, "at": plan.Op.At.UTC().Format(timeLayout), "targets": targets, "target": plan.Target, "from": plan.From, "undo": plan.UndoOf})
+	})
+	if err != nil {
+		return DomainOpPlan{}, err
+	}
+	stored, err := s.DomainOperation(ctx, plan.Op.OpID)
+	if err != nil {
+		return stored, err
+	}
+	if stored.Op.Action != plan.Op.Action || stored.Target != plan.Target || stored.From != plan.From || stored.UndoOf != plan.UndoOf {
+		return stored, fmt.Errorf("%w: op_id reused for different targets", ErrInvalidDomainOp)
+	}
+	if !reflect.DeepEqual(stored.Targets, plan.Targets) {
+		// An incomplete merge may admit new source members on retry. Existing
+		// targets remain immutable, including those already in its ledger.
+		if stored.Op.Action != "merge" || stored.Op.State != "incomplete" {
+			return stored, fmt.Errorf("%w: op_id reused for different targets", ErrInvalidDomainOp)
+		}
+		for id, target := range stored.Targets {
+			if plan.Targets[id] != target {
+				return stored, ErrInvalidDomainOp
+			}
+		}
+		for _, target := range plan.Targets {
+			if target != stored.Target {
+				return stored, ErrInvalidDomainOp
+			}
+		}
+		if err := s.runWrite(ctx, `MATCH (o:DomainOp {op_id:$id}) SET o.docs=$docs,o.targets=$targets`, map[string]any{"id": stored.Op.OpID, "docs": plan.Op.Docs, "targets": targets}); err != nil {
+			return stored, err
+		}
+		stored.Op.Docs, stored.Targets = plan.Op.Docs, plan.Targets
+	}
+	return stored, nil
+}
+func (s *Store) SetDomainOpState(ctx context.Context, id, state string) error {
+	return s.runWrite(ctx, `MATCH (o:DomainOp {op_id:$id}) SET o.state=$state`, map[string]any{"id": id, "state": state})
+}
+
+// SetDomainOpResult persists the state and the document IDs explaining it.
+func (s *Store) SetDomainOpResult(ctx context.Context, op DomainOp) error {
+	return s.runWrite(ctx, `MATCH (o:DomainOp {op_id:$id}) SET o.state=$state,o.skipped=$skipped,o.remaining=$remaining`, map[string]any{"id": op.OpID, "state": op.State, "skipped": op.Skipped, "remaining": op.Remaining})
+}
+
+// DomainDocumentIDs includes busy and superseded members so merge cannot
+// silently drop a partition that still has documents.
+func (s *Store) DomainDocumentIDs(ctx context.Context, slug string) ([]string, error) {
+	rows, err := s.runRead(ctx, `MATCH (n:Domain {id:$domain}) OPTIONAL MATCH (d:Document {domain:n.id}) RETURN d.id AS id ORDER BY id`, map[string]any{"domain": slug})
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, ErrNotFound
+	}
+	out := []string{}
+	for _, r := range rows {
+		if id := getString(r, "id"); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// DeleteEmptyDomain checks all document versions and reports whether it deleted
+// the source. A false result lets the pipeline report a concurrent attachment.
+func (s *Store) DeleteEmptyDomain(ctx context.Context, slug string) (bool, error) {
+	deleted := false
+	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		res, err := tx.Run(ctx, `MATCH (n:Domain {id:$domain}) WHERE NOT EXISTS { MATCH (d:Document {domain:n.id}) } DELETE n RETURN count(*) AS deleted`, map[string]any{"domain": slug})
+		if err != nil {
+			return err
+		}
+		rows, err := res.Collect(ctx)
+		if err != nil {
+			return err
+		}
+		deleted = len(rows) > 0 && getInt(rows[0], "deleted") > 0
+		return nil
+	})
+	return deleted, err
+}
+
+// RenameDomain records the display-name change as a completed admin operation.
+func (s *Store) RenameDomain(ctx context.Context, slug, name string) (DomainOp, error) {
+	op := DomainOp{OpID: rand.Text(), Action: "rename", State: "completed", Docs: []string{}, At: time.Now().UTC()}
+	if !ValidDomain(slug) || name == "" {
+		return op, fmt.Errorf("%w: invalid domain or empty name", ErrInvalidDomainOp)
+	}
+	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		if err := txRequireDomains(ctx, tx); err != nil {
+			return err
+		}
+		res, err := tx.Run(ctx, `MATCH (n:Domain {id:$domain}) RETURN n.id`, map[string]any{"domain": slug})
+		if err != nil {
+			return err
+		}
+		rows, err := res.Collect(ctx)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return ErrNotFound
+		}
+		return txRun(ctx, tx, `MATCH (n:Domain {id:$domain}) SET n.name=$name CREATE (:DomainDecision {op_id:$op,doc_id:'',domain:$domain,previous_domain:$domain,action:'rename',by:'admin',at:$at,note:$name,top:[],params:{}}) CREATE (:DomainOp {op_id:$op,action:'rename',state:'completed',docs:[],targets:{},at:$at})`, map[string]any{"domain": slug, "name": name, "op": op.OpID, "at": op.At.Format(timeLayout)})
+	})
+	return op, err
 }

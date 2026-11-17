@@ -568,7 +568,7 @@ type FactAudit struct {
 
 // FactAuditID identifies an audit row: hex(sha256(head|rel|tail|chunk))[:32].
 func FactAuditID(headKey, rel, tailKey, chunkID string) string {
-	sum := sha256.Sum256([]byte(headKey + "|" + rel + "|" + tailKey + "|" + chunkID))
+	sum := sha256.Sum256([]byte(headKey + "|" + sanitizeRel(rel) + "|" + tailKey + "|" + chunkID))
 	return hex.EncodeToString(sum[:])[:32]
 }
 
@@ -582,6 +582,7 @@ func (s *Store) WriteFactAudit(ctx context.Context, a FactAudit) error {
 
 // txWriteFactAudit merges one audit row inside an existing transaction.
 func txWriteFactAudit(ctx context.Context, tx neo4j.ManagedTransaction, a FactAudit) error {
+	a.Rel = sanitizeRel(a.Rel)
 	// An audit for a document that no longer exists (deleted while its
 	// judge call was in flight) is not written: nothing could delete it.
 	err := txRun(ctx, tx, `

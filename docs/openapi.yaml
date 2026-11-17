@@ -27,6 +27,8 @@ security:
   - bearerAuth: []
   - basicAuth: []
 tags:
+  - name: admin
+    description: Loopback domain administration; never exposed through the edge
   - name: documents
     description: Ingest, read and remove document versions
   - name: graph
@@ -38,6 +40,171 @@ tags:
   - name: operator
     description: Direct gkg access only; not exposed through the edge (404 there)
 paths:
+  /v1/admin/domains/move:
+    post:
+      tags: [admin]
+      operationId: domainMove
+      summary: Move documents to a domain
+      description: |
+        Requires a loopback socket peer, the internal bearer when configured,
+        and schema v4. Before any change, failed or in-flight members cause
+        409 not_done listing their IDs. Done members reset extraction atomically
+        and enqueue stored chunks; superseded versions get domain properties only.
+        Retry with the same op_id to resume committed progress.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [document_ids, domain]
+              properties:
+                document_ids: {type: array, minItems: 1, items: {type: string}}
+                domain: {type: string, pattern: '^[a-z0-9-]{1,40}$'}
+                op_id: {type: string}
+      responses:
+        '202':
+          description: Operation accepted; completed means all resets were queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [op_id, state]
+                properties:
+                  op_id: {type: string}
+                  state: {type: string, enum: [running, completed, failed, incomplete]}
+                  remaining: {type: array, items: {type: string}, description: Documents still in an incomplete merge source}
+                  skipped: {type: array, items: {type: string}, description: Superseded documents skipped by undo}
+        '400': {description: Invalid slug or operation}
+        '401': {description: Missing or invalid bearer}
+        '403': {description: Non-loopback peer}
+        '404': {description: Unknown document, domain or operation}
+        '409': {description: 'not_done lists blocking document IDs with no changes, or schema_not_v4'}
+        '413': {description: JSON body exceeds 1 MiB}
+        '500': {description: Store failure; committed documents stay queued}
+  /v1/admin/domains/merge:
+    post:
+      tags: [admin]
+      operationId: domainMerge
+      summary: Merge a source domain into a target
+      description: |
+        Requires a loopback socket peer and the internal bearer when configured.
+        Requires schema v4. Before any change, failed or in-flight members cause
+        409 not_done listing their IDs. Done members reset extraction atomically
+        and enqueue stored chunks; superseded versions get domain properties only.
+        Retry move/merge with the same op_id to resume. A merge with concurrent
+        remaining members reports incomplete and their IDs; retry includes them.
+        Undo requires a completed operation and live members done again; superseded
+        members are skipped and listed in the result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, into]
+              properties:
+                from: {type: string, pattern: '^[a-z0-9-]{1,40}$'}
+                into: {type: string, pattern: '^[a-z0-9-]{1,40}$'}
+                op_id: {type: string}
+      responses:
+        '202':
+          description: Operation accepted; completed means all resets were queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [op_id, state]
+                properties:
+                  op_id: {type: string}
+                  state: {type: string, enum: [running, completed, failed, incomplete]}
+                  remaining: {type: array, items: {type: string}, description: Documents still in an incomplete merge source}
+                  skipped: {type: array, items: {type: string}, description: Superseded documents skipped by undo}
+        '400': {description: Invalid slug or operation}
+        '401': {description: Missing or invalid bearer}
+        '403': {description: Non-loopback peer}
+        '404': {description: Unknown document, domain or operation}
+        '409': {description: 'not_done lists blocking document IDs with no changes, or schema_not_v4'}
+        '413': {description: JSON body exceeds 1 MiB}
+        '500': {description: Store failure; committed documents stay queued}
+  /v1/admin/domains/rename:
+    post:
+      tags: [admin]
+      operationId: domainRename
+      summary: Rename a domain display name
+      description: |
+        Requires a loopback socket peer, the internal bearer when configured,
+        and schema v4. Changes only the domain display name and records a ledger
+        decision. Does not reset extraction or requeue documents.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain, name]
+              properties:
+                domain: {type: string, pattern: '^[a-z0-9-]{1,40}$'}
+                name: {type: string, minLength: 1}
+      responses:
+        '202':
+          description: Display name updated and ledger decision recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [op_id, state]
+                properties:
+                  op_id: {type: string}
+                  state: {type: string, enum: [completed]}
+        '400': {description: Invalid slug or operation}
+        '401': {description: Missing or invalid bearer}
+        '403': {description: Non-loopback peer}
+        '404': {description: Unknown document, domain or operation}
+        '409': {description: schema_not_v4}
+        '413': {description: JSON body exceeds 1 MiB}
+        '500': {description: Store failure}
+  /v1/admin/domains/undo:
+    post:
+      tags: [admin]
+      operationId: domainUndo
+      summary: Undo a domain operation
+      description: |
+        Requires a loopback socket peer, the internal bearer when configured,
+        and schema v4. Requires a completed move, merge or undo operation.
+        Before any change, failed or in-flight live members cause 409 not_done
+        listing their IDs. Restores live members' previous domains by resetting
+        extraction and requeueing. Superseded versions are skipped and listed
+        in skipped. Retry with the original op_id to resume the same undo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [op_id]
+              properties:
+                op_id: {type: string, minLength: 1}
+      responses:
+        '202':
+          description: Operation accepted; completed means all resets were queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [op_id, state]
+                properties:
+                  op_id: {type: string}
+                  state: {type: string, enum: [running, completed, failed, incomplete]}
+                  remaining: {type: array, items: {type: string}, description: Documents still in an incomplete merge source}
+                  skipped: {type: array, items: {type: string}, description: Superseded documents skipped by undo}
+        '400': {description: Invalid slug or operation}
+        '401': {description: Missing or invalid bearer}
+        '403': {description: Non-loopback peer}
+        '404': {description: Unknown document, domain or operation}
+        '409': {description: 'not_done lists blocking document IDs with no changes, or schema_not_v4'}
+        '413': {description: JSON body exceeds 1 MiB}
+        '500': {description: Store failure; committed documents stay queued}
   /v1/admin/rebuild:
     post:
       tags: [operator]

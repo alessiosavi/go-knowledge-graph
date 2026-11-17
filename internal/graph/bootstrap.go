@@ -19,6 +19,7 @@ var uniqueConstraints = []struct {
 	{"JudgeVerdict", "key"},
 	{"FactCandidate", "id"},
 	{"Domain", "id"},
+	{"DomainOp", "op_id"},
 	{"JudgeLease", "id"},
 }
 
@@ -46,6 +47,8 @@ var secondaryIndexes = []struct {
 	{"Entity", []string{"key"}},
 	{"Entity", []string{"name_key"}},
 	{"Domain", []string{"id"}},
+	{"DomainOp", []string{"op_id"}},
+	{"DomainDecision", []string{"op_id"}},
 	{"JudgeVerdict", []string{"key"}},
 	{"JudgeVerdict", []string{"doc_id"}},
 	{"FactCandidate", []string{"id"}},

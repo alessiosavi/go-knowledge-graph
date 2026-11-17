@@ -614,3 +614,15 @@ done`, "sh", validator, renderer)
 		t.Fatalf("derived ingest timeout missing from the ingest location:\n%s", out)
 	}
 }
+
+func TestEdgeBlocksDomainAdmin(t *testing.T) {
+	template := edgeFile(t, "deploy/edge/default.conf.template")
+	routes := regexp.MustCompile(`(?m)^\s*"~([^"\n]+)"\s+(@edge_\w+);`).FindAllStringSubmatch(template, -1)
+	for _, action := range []string{"move", "merge", "rename", "undo"} {
+		for _, route := range routes {
+			if regexp.MustCompile(route[1]).MatchString("POST:/v1/admin/domains/" + action) {
+				t.Fatalf("admin %s exposed", action)
+			}
+		}
+	}
+}
