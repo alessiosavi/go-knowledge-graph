@@ -363,6 +363,11 @@ func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*in
 		return nil, nil, err
 	}
 	v4 := schemaVersion >= graph.SchemaVersionV4
+	if v4 {
+		if err := validateStoplistOverlay(cfg); err != nil {
+			return nil, nil, err
+		}
+	}
 	prov, err := providerFromConfig(cfg, "")
 	if err != nil {
 		return nil, nil, err

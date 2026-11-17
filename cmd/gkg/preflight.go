@@ -11,7 +11,18 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
 )
+
+func validateStoplistOverlay(cfg config.Config) error {
+	if cfg.Ingest.StoplistFile == "" {
+		return nil
+	}
+	if _, err := hygiene.LoadPreset(cfg.Labels.PresetsDir, "", cfg.Ingest.StoplistFile); err != nil {
+		return fmt.Errorf("stoplist overlay unreadable: %w", err)
+	}
+	return nil
+}
 
 func migrationOptions(cfg config.Config) (graph.MigrationOptions, error) {
 	opt := graph.MigrationOptions{Params: domain.Params{Tau: cfg.Domain.Tau, Delta: cfg.Domain.Delta, TauOverride: cfg.Domain.TauOverride}}
@@ -50,7 +61,7 @@ func migrateSchema(ctx context.Context, st *graph.Store, cfg config.Config) (gra
 }
 
 // runPreflight never bootstraps, builds a pipeline, or opens the spool. Deploy
-// consumes its exit status: current/empty=0, seed error=3, migration ready=10.
+// consumes its exit status: current/empty=0, seed/overlay error=3, migration ready=10.
 func runPreflight(args []string, _ io.Writer, stderr io.Writer) int {
 	fs := flag.NewFlagSet("preflight", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -80,6 +91,21 @@ func runPreflight(args []string, _ io.Writer, stderr io.Writer) int {
 	}
 	if current {
 		return 0
+	}
+	ready := func() int {
+		if err := validateStoplistOverlay(cfg); err != nil {
+			fmt.Fprintf(stderr, "gkg preflight: %v\n", err)
+			return 3
+		}
+		return 10
+	}
+	phase, err := st.RunReadQuery(ctx, `MATCH (m:GkgMeta {id:'extraction_schema',value:3,v4_phase:'assigned'}) RETURN m.id AS id`, nil, 1)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg preflight: %v\n", err)
+		return 1
+	}
+	if len(phase.Rows) > 0 {
+		return ready()
 	}
 	documents, err := st.RunReadQuery(ctx, `MATCH (d:Document)
 WHERE d.status IS NULL OR d.status <> 'superseded'
@@ -115,7 +141,7 @@ RETURN d.id AS id,d.source AS source ORDER BY d.id`, nil, 0)
 		return 3
 	}
 	if opt.DetectAll || !hasDocuments {
-		return 10
+		return ready()
 	}
 	if opt.Seed == nil && len(documents.Rows) == 0 {
 		fmt.Fprintf(stderr, "gkg preflight: %v: no live documents but legacy rows remain\n", graph.ErrSeedRequired)
@@ -135,5 +161,5 @@ RETURN d.id AS id,d.source AS source ORDER BY d.id`, nil, 0)
 		fmt.Fprintf(stderr, "gkg preflight: %v: %d unmatched sources (up to 20): %s\n", graph.ErrSeedRequired, len(unmatched), strings.Join(unmatched[:min(20, len(unmatched))], ", "))
 		return 3
 	}
-	return 10
+	return ready()
 }

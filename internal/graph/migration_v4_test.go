@@ -72,12 +72,22 @@ func TestMigrationV4SeedValidation(t *testing.T) {
 					opt.Seed.Rules = append(opt.Seed.Rules, domain.SeedRule{Match: fmt.Sprintf("https://acme.invalid/%d", i), Domain: "acme"})
 				}
 			}
-			_, err := st.MigrateExtractionSchemaOpts(context.Background(), opt)
+			var err error
+			queries := graph.CaptureReadQueries(st, func() {
+				_, err = st.MigrateExtractionSchemaOpts(context.Background(), opt)
+			})
 			if !errors.Is(err, graph.ErrSeedRequired) {
 				t.Fatalf("error=%v; want ErrSeedRequired", err)
 			}
 			if which == "unmatched" && (!strings.Contains(err.Error(), "1 unmatched") || !strings.Contains(err.Error(), "https://acme.invalid/4")) {
 				t.Errorf("missing unmatched sources: %v", err)
+			}
+			if which == "missing" {
+				for _, q := range queries {
+					if strings.Contains(q.Query, "MENTIONS") || strings.Contains(q.Query, "name_profile") {
+						t.Errorf("seedless migration read profiles before rejecting the missing seed: %s", q.Query)
+					}
+				}
 			}
 			if !reflect.DeepEqual(before, v4Snapshot(t)) {
 				t.Error("validation changed the graph")
@@ -90,6 +100,8 @@ func TestProfilesFromMentions(t *testing.T) {
 	st := v4Fixture(t)
 	uri := os.Getenv(graphtest.URIEnv)
 	rawRun(t, uri, `MATCH (d:Document {id:'acme-1'}) SET d.name_profile={stored:7}`)
+	rawRun(t, uri, `MATCH (c:Chunk {id:'acme-0-c0'})
+CREATE (e:Entity {key:'#acme-0:2042-03-04',name:'2042-03-04'}),(c)-[:MENTIONS]->(e)`)
 	before := v4Snapshot(t)
 	var profiles []domain.DocProfile
 	queries := graph.CaptureReadQueries(st, func() {
@@ -129,6 +141,31 @@ func TestProfilesFromMentions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before, v4Snapshot(t)) {
 		t.Error("profile read wrote graph")
+	}
+}
+
+func TestMigrationInterruptedSeedChanged(t *testing.T) {
+	st := v4Fixture(t)
+	opt := graph.MigrationOptions{Seed: v4Seed(t)}
+	err := graph.InterruptMigrationForTest(st, "assign", func() error {
+		_, err := st.MigrateExtractionSchemaOpts(context.Background(), opt)
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "synthetic migration interruption") {
+		t.Fatalf("interruption=%v", err)
+	}
+	// An unassigned document sorts before the conflicting recorded decision.
+	// The restart must validate every decision before assigning anything else.
+	uri := os.Getenv(graphtest.URIEnv)
+	rawRun(t, uri, `CREATE (:Document {id:'acme-00',source:'https://acme.invalid/new',status:'done'})`)
+	opt.Seed.Rules = append(opt.Seed.Rules, domain.SeedRule{Match: "https://acme.invalid/2", Domain: "zorbo"})
+	before := v4Snapshot(t)
+	_, err = st.MigrateExtractionSchemaOpts(context.Background(), opt)
+	if err == nil || !strings.Contains(err.Error(), "seed changed after the interrupted assign phase") {
+		t.Errorf("restart error=%v; want seed-changed diagnostic", err)
+	}
+	if !reflect.DeepEqual(before, v4Snapshot(t)) {
+		t.Error("changed-seed restart wrote to the graph")
 	}
 }
 

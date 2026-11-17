@@ -131,10 +131,6 @@ func (s *Store) MigrateExtractionSchemaOpts(ctx context.Context, opt MigrationOp
 		}
 		assigned := len(recs) > 0 && getString(recs[0], "phase") == "assigned"
 		if !assigned {
-			docs, err := s.ProfilesFromMentions(ctx)
-			if err != nil {
-				return result, err
-			}
 			if opt.Seed == nil && !opt.DetectAll {
 				documents, err := s.runRead(ctx, `MATCH (d:Document) RETURN d.id LIMIT 1`, nil)
 				if err != nil {
@@ -143,6 +139,10 @@ func (s *Store) MigrateExtractionSchemaOpts(ctx context.Context, opt MigrationOp
 				if len(documents) > 0 {
 					return result, ErrSeedRequired
 				}
+			}
+			docs, err := s.ProfilesFromMentions(ctx)
+			if err != nil {
+				return result, err
 			}
 			// Resolve every document before the first write, including coverage errors.
 			assignments := make([]Assignment, 0, len(docs))
@@ -188,13 +188,21 @@ func (s *Store) MigrateExtractionSchemaOpts(ctx context.Context, opt MigrationOp
 				return result, fmt.Errorf("%w: %d unmatched sources (up to 20): %s", ErrSeedRequired, len(unmatched), strings.Join(unmatched[:min(20, len(unmatched))], ", "))
 			}
 			slog.Info("graph: validated v4 migration assignments", "documents", len(assignments))
-			done, err := s.runRead(ctx, `MATCH (d:DomainDecision {op_id:'migration-v4'}) RETURN DISTINCT d.doc_id AS id`, nil)
+			done, err := s.runRead(ctx, `MATCH (d:DomainDecision {op_id:'migration-v4'}) RETURN DISTINCT d.doc_id AS id,d.domain AS domain`, nil)
 			if err != nil {
 				return result, fmt.Errorf("graph: migration decisions: %w", err)
 			}
+			resolved := make(map[string]string, len(assignments))
+			for _, a := range assignments {
+				resolved[a.DocID] = a.Domain
+			}
 			completed := make(map[string]bool, len(done))
 			for _, r := range done {
-				completed[getString(r, "id")] = true
+				id, recorded := getString(r, "id"), getString(r, "domain")
+				if recomputed, ok := resolved[id]; ok && recomputed != recorded {
+					return result, fmt.Errorf("graph: seed changed after the interrupted assign phase: document %s was assigned to %q, recomputed %q", id, recorded, recomputed)
+				}
+				completed[id] = true
 			}
 			for _, a := range assignments {
 				if completed[a.DocID] {

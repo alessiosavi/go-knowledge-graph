@@ -495,6 +495,7 @@ RETURN d.id AS id,d.source AS source,d.domain AS domain,d.name_profile AS profil
 			}
 		} else {
 			mentions, err := s.runRead(ctx, `MATCH (d:Document {id:$id})-[:HAS_CHUNK]->(c:Chunk)-[:MENTIONS]->(e:Entity)
+WHERE NOT e.key STARTS WITH '#'
 RETURN c.id AS chunk,e.name AS name`, map[string]any{"id": p.DocID})
 			if err != nil {
 				return nil, fmt.Errorf("graph: migration mentions for %s: %w", p.DocID, err)
