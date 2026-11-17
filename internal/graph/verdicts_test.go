@@ -81,3 +81,46 @@ func TestJudgeVerdictWithoutTime(t *testing.T) {
 		t.Fatalf("verdict = %+v ok=%v err=%v, want unclear with zero time", got, ok, err)
 	}
 }
+
+// TestDeleteDocumentRemovesItsVerdicts keeps deletion permanent: a verdict
+// cached for a document's request is removed with that document, while
+// verdicts first written for other documents stay.
+func TestDeleteDocumentRemovesItsVerdicts(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := t.Context()
+	uri := os.Getenv(graphtest.URIEnv)
+	tag := time.Now().UnixNano()
+	res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "text", Source: fmt.Sprintf("text/zorbo-verdict-doc-%d", tag), Hash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := fmt.Sprintf("zorbo-mine-%d", tag)
+	other := fmt.Sprintf("zorbo-other-%d", tag)
+	t.Cleanup(func() {
+		rawRun(t, uri, fmt.Sprintf(`MATCH (v:JudgeVerdict) WHERE v.key IN ['%s', '%s'] DELETE v`, mine, other))
+	})
+	for key, doc := range map[string]string{mine: res.ID, other: "someotherdoc"} {
+		if err := st.PutJudgeVerdict(ctx, graph.JudgeVerdict{Key: key, Status: "confirmed", Model: "m", PromptVersion: "1", DocID: doc, At: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A later identical request from another document keeps the first owner.
+	if err := st.PutJudgeVerdict(ctx, graph.JudgeVerdict{Key: mine, Status: "confirmed", Model: "m", PromptVersion: "1", DocID: "laterdoc", At: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := st.JudgeVerdict(ctx, mine); err != nil || got.DocID != res.ID {
+		t.Fatalf("owner = %q err=%v, want the first writer %q", got.DocID, err, res.ID)
+	}
+	if err := st.DeleteDocument(ctx, res.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := st.JudgeVerdict(ctx, mine); err != nil || ok {
+		t.Fatalf("verdict of the deleted document still cached: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := st.JudgeVerdict(ctx, other); err != nil || !ok {
+		t.Fatalf("another document's verdict lost: ok=%v err=%v", ok, err)
+	}
+	if !rawIndexExists(t, uri, "JudgeVerdict", "doc_id") {
+		t.Error("JudgeVerdict(doc_id) index missing")
+	}
+}

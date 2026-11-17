@@ -86,7 +86,7 @@ func (c *Cached) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 	}
 	if err := c.store.PutJudgeVerdict(ctx, graph.JudgeVerdict{
 		Key: key, Status: verdict.Status, Confidence: verdict.Confidence, Reason: verdict.Reason,
-		Model: c.model, PromptVersion: PromptVersion, At: time.Now().UTC(),
+		Model: c.model, PromptVersion: PromptVersion, DocID: in.DocID, At: time.Now().UTC(),
 	}); err != nil {
 		slog.Warn("judge: verdict cache write failed, verdict applied uncached", "key", key, "err", err)
 		c.count("write_error")

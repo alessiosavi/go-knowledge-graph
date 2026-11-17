@@ -40,6 +40,7 @@ var secondaryIndexes = []struct {
 	{"Entity", []string{"id"}},
 	{"Entity", []string{"key"}},
 	{"JudgeVerdict", []string{"key"}},
+	{"JudgeVerdict", []string{"doc_id"}},
 }
 
 // textIndexes are the Tantivy text indexes backing search.Query.

@@ -16,6 +16,18 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
 )
 
+// TestRequestKeyIgnoresDocID: the owning document is bookkeeping for
+// deletion, not part of the judge request, so identical requests from two
+// documents share one verdict.
+func TestRequestKeyIgnoresDocID(t *testing.T) {
+	a := ingest.FactInput{Head: "Acme-Max", DocID: "a"}
+	b := a
+	b.DocID = "b"
+	if string(ingest.CanonicalJudgeInput(a)) != string(ingest.CanonicalJudgeInput(b)) {
+		t.Fatal("DocID leaked into the judge request")
+	}
+}
+
 func TestRequestKey(t *testing.T) {
 	in := ingest.FactInput{Head: "Acme-Max", Rel: "uses", Tail: "Zorbo", Evidence: "e", DocContext: "d", Confidence: 0.75}
 	b := ingest.CanonicalJudgeInput(in)
@@ -141,7 +153,7 @@ func TestCachedMissPersists(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			st := &memoryVerdicts{values: map[string]graph.JudgeVerdict{}}
 			inner := &countingJudge{verdict: ingest.Verdict{Status: status, Reason: "evidence", Confidence: 0.8}}
-			in := ingest.FactInput{Head: "Acme-Max"}
+			in := ingest.FactInput{Head: "Acme-Max", DocID: "doc-zorbo"}
 			before := time.Now()
 			v, err := judge.NewCached(inner, st, "test-model").VerifyFact(t.Context(), in)
 			if err != nil || v != inner.verdict {
@@ -149,7 +161,7 @@ func TestCachedMissPersists(t *testing.T) {
 			}
 			key := judge.RequestKey(ingest.CanonicalJudgeInput(in), "test-model")
 			saved := st.values[key]
-			if st.puts != 1 || saved.Key != key || saved.Status != status || saved.Reason != "evidence" || saved.Confidence != 0.8 || saved.Model != "test-model" || saved.PromptVersion != judge.PromptVersion || saved.At.Before(before) || saved.At.After(time.Now()) {
+			if st.puts != 1 || saved.Key != key || saved.Status != status || saved.Reason != "evidence" || saved.Confidence != 0.8 || saved.DocID != "doc-zorbo" || saved.Model != "test-model" || saved.PromptVersion != judge.PromptVersion || saved.At.Before(before) || saved.At.After(time.Now()) {
 				t.Fatalf("saved = %+v, puts=%d", saved, st.puts)
 			}
 			// Recreate the wrapper to prove the hit comes from persistence.

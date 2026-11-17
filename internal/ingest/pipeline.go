@@ -667,6 +667,7 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 			Head: judgeName(f.HeadMention.Text, f.HeadKey), Rel: f.Rel,
 			Tail:     judgeName(f.TailMention.Text, f.TailKey),
 			Evidence: evidence, DocContext: doc.Title, Confidence: f.Confidence,
+			DocID: doc.ID,
 		})
 		if p.metrics != nil {
 			p.metrics.JudgeSeconds(time.Since(start).Seconds())

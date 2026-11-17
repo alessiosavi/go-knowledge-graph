@@ -176,7 +176,13 @@ creates a new version and supersedes the old one.
 
 `POST /v1/admin/rebuild` removes extraction results and re-queues completed
 (`done`) documents. It re-extracts and re-judges from **stored chunk text**,
-without fetching, converting or re-chunking the source. Documents and chunk
+without fetching, converting or re-chunking the source. Judge verdicts are
+cached by the exact request (fact, confidence, evidence sentence, document
+title, judge model and prompt version) and survive the rebuild, so an
+unchanged fact is not judged twice; a new judge model or prompt version
+asks again. Hits need a deterministic extractor such as the default
+`sidecar`: an extractor whose confidence scores vary from run to run
+(`openai`) changes the request and pays the judge again. Documents and chunk
 text are preserved; old facts, mentions and rejected-fact audits are removed,
 and orphan entities are collected. Busy documents are skipped and reported.
 

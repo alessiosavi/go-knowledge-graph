@@ -20,6 +20,10 @@ type FactInput struct {
 	Evidence   string
 	DocContext string
 	Confidence float64
+	// DocID names the document that asked. It is not part of the judge
+	// request or the cache key; it only ties a cached verdict to the
+	// document whose deletion removes it.
+	DocID string
 }
 
 // judgeInputPayload fixes the key order of the user message shared by ingest,
