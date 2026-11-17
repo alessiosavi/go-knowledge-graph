@@ -83,7 +83,7 @@ func (s *spoolStore) Chunks(_ context.Context, id string) ([]graph.Chunk, error)
 	defer s.mu.Unlock()
 	return s.chunks[id], nil
 }
-func (s *spoolStore) UpsertExtraction(context.Context, string, string, string, []graph.EntityUpsert, []graph.FactUpsert) error {
+func (s *spoolStore) UpsertExtractionOpts(context.Context, string, string, string, []graph.EntityUpsert, []graph.FactUpsert, graph.WriteOptions) error {
 	return nil
 }
 func (s *spoolStore) WriteFactAudit(context.Context, graph.FactAudit) error { return nil }

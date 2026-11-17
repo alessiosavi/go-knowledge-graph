@@ -10,6 +10,52 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 )
 
+func TestWriteGateConfig(t *testing.T) {
+	for _, key := range []string{"GKG_FACTS_REQUIRE_CONFIRMATION", "GKG_FACTS_ALLOW_UNVERIFIED_READS", "GKG_DOMAIN_TAU", "GKG_DOMAIN_DELTA", "GKG_DOMAIN_TAU_OVERRIDE", "GKG_DOMAIN_SEED_FILE"} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("defaults", func(t *testing.T) {
+		cfg, err := config.Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Facts != (config.FactsConfig{}) || cfg.Domain != (config.DomainConfig{Tau: 0.05, Delta: 0.02, TauOverride: 0.15}) {
+			t.Errorf("gate defaults: facts=%+v domain=%+v", cfg.Facts, cfg.Domain)
+		}
+	})
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("facts:\n  require_confirmation: true\n  allow_unverified_reads: true\ndomain:\n  tau: 0.1\n  delta: 0.03\n  tau_override: 0.2\n  seed_file: acme.json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("yaml", func(t *testing.T) {
+		cfg, err := config.Load(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Facts != (config.FactsConfig{RequireConfirmation: true, AllowUnverifiedReads: true}) || cfg.Domain != (config.DomainConfig{Tau: 0.1, Delta: 0.03, TauOverride: 0.2, SeedFile: "acme.json"}) {
+			t.Errorf("gate YAML: facts=%+v domain=%+v", cfg.Facts, cfg.Domain)
+		}
+	})
+	t.Run("environment overrides yaml", func(t *testing.T) {
+		for key, value := range map[string]string{
+			"GKG_FACTS_REQUIRE_CONFIRMATION": "false", "GKG_FACTS_ALLOW_UNVERIFIED_READS": "false",
+			"GKG_DOMAIN_TAU": "0.12", "GKG_DOMAIN_DELTA": "0.04", "GKG_DOMAIN_TAU_OVERRIDE": "0.25", "GKG_DOMAIN_SEED_FILE": "detect-all",
+		} {
+			t.Setenv(key, value)
+		}
+		cfg, err := config.Load(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Facts != (config.FactsConfig{}) || cfg.Domain != (config.DomainConfig{Tau: 0.12, Delta: 0.04, TauOverride: 0.25, SeedFile: "detect-all"}) {
+			t.Errorf("gate environment: facts=%+v domain=%+v", cfg.Facts, cfg.Domain)
+		}
+	})
+}
+
 func TestLoadDefaults(t *testing.T) {
 	cfg, err := config.Load("")
 	if err != nil {

@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -13,6 +14,19 @@ import (
 // name-only entity keys; version 3 links every mention and votes on its type.
 // Older graphs must be re-extracted from stored chunks.
 const ExtractionSchemaVersion = 3
+
+// SchemaVersionV4 is the marker that enables the new ingestion write modes.
+const SchemaVersionV4 = 4
+
+var ErrSchemaNewer = errors.New("graph: extraction schema is newer than this binary")
+
+type schemaNewerError struct{ version int }
+
+func (e schemaNewerError) Error() string {
+	return fmt.Sprintf("graph extraction schema v%d is newer than this binary (v%d); deploy a newer gkg or restore the pre-migration snapshot", e.version, ExtractionSchemaVersion)
+}
+
+func (e schemaNewerError) Unwrap() error { return ErrSchemaNewer }
 
 const extractionSchemaMetaID = "extraction_schema"
 const extractionMigrationBatch = 1000
@@ -38,13 +52,31 @@ func (s *Store) extractionSchemaVersion(ctx context.Context) (int, error) {
 	return version, nil
 }
 
+// SchemaVersion reads the extraction schema marker without modifying it.
+// A missing marker is the legacy schema version 1, even on an empty store.
+func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.extractionSchemaVersion(ctx)
+}
+
 // ExtractionSchemaCurrent checks the marker without modifying extraction data.
-// A missing marker is the legacy schema, including on an empty store.
+// A missing marker is the legacy schema, including on an empty store. It
+// returns (true, nil) when the marker equals ExtractionSchemaVersion,
+// (false, nil) when it is older (run the migration), and an error wrapping
+// ErrSchemaNewer when it is newer: check the error before the boolean, since
+// a newer graph must never be treated as one to migrate.
 func (s *Store) ExtractionSchemaCurrent(ctx context.Context) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	version, err := s.extractionSchemaVersion(ctx)
-	return version >= ExtractionSchemaVersion, err
+	if err != nil {
+		return false, err
+	}
+	if version > ExtractionSchemaVersion {
+		return false, schemaNewerError{version: version}
+	}
+	return version == ExtractionSchemaVersion, nil
 }
 
 // MigrateExtractionSchema clears outdated derived data and requeues its live
@@ -60,7 +92,10 @@ func (s *Store) MigrateExtractionSchema(ctx context.Context) (MigrationResult, e
 		return MigrationResult{}, err
 	}
 	result := MigrationResult{From: version, To: version}
-	if version >= ExtractionSchemaVersion {
+	if version > ExtractionSchemaVersion {
+		return result, schemaNewerError{version: version}
+	}
+	if version == ExtractionSchemaVersion {
 		return result, nil
 	}
 	result.To = ExtractionSchemaVersion

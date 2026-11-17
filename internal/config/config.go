@@ -30,6 +30,8 @@ type Config struct {
 	Embedder  EmbedderConfig  `yaml:"embedder"`
 	Converter ConverterConfig `yaml:"converter"`
 	Judge     JudgeConfig     `yaml:"judge"`
+	Facts     FactsConfig     `yaml:"facts"`
+	Domain    DomainConfig    `yaml:"domain"`
 	Agent     AgentConfig     `yaml:"agent"`
 	Ingest    IngestConfig    `yaml:"ingest"`
 	Labels    LabelsConfig    `yaml:"labels"`
@@ -107,6 +109,20 @@ type JudgeConfig struct {
 	Model       string  `yaml:"model"`
 }
 
+// FactsConfig controls fact confirmation and read visibility.
+type FactsConfig struct {
+	RequireConfirmation  bool `yaml:"require_confirmation"`
+	AllowUnverifiedReads bool `yaml:"allow_unverified_reads"`
+}
+
+// DomainConfig configures automatic domain assignment and migration seeding.
+type DomainConfig struct {
+	Tau         float64 `yaml:"tau"`
+	Delta       float64 `yaml:"delta"`
+	TauOverride float64 `yaml:"tau_override"`
+	SeedFile    string  `yaml:"seed_file"`
+}
+
 // AgentConfig configures the optional "Ask the graph" LLM agent served at
 // POST /v1/agent/ask. Disabled by default; the endpoint answers 501 while
 // disabled and the web UI hides its ask panel.
@@ -180,6 +196,7 @@ func defaults() Config {
 			SamplePct:   10,
 			BaseURL:     "https://api.openai.com/v1",
 		},
+		Domain: DomainConfig{Tau: 0.05, Delta: 0.02, TauOverride: 0.15},
 		Agent: AgentConfig{
 			Enabled:         false,
 			Stream:          true,

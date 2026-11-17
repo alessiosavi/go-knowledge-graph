@@ -54,6 +54,10 @@ var textIndexes = []struct {
 // IF NOT EXISTS for constraints, so existence is checked first and an
 // already-exists error from a concurrent creator is tolerated.
 func (s *Store) Bootstrap(ctx context.Context) error {
+	// Refuse rollback binaries before any cleanup or schema manipulation.
+	if _, err := s.ExtractionSchemaCurrent(ctx); err != nil {
+		return err
+	}
 	// Pre-constraint cleanup: concurrent writers could have created
 	// duplicate :GkgMeta marker nodes before the unique constraint existed;
 	// the constraint DDL would then fail on the dirty data.

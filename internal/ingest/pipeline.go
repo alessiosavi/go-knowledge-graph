@@ -121,7 +121,7 @@ type pipelineStore interface {
 	PutChunks(context.Context, string, []graph.Chunk) error
 	Chunks(context.Context, string) ([]graph.Chunk, error)
 	PutFingerprint(context.Context, string, dedup.FP) error
-	UpsertExtraction(context.Context, string, string, string, []graph.EntityUpsert, []graph.FactUpsert) error
+	UpsertExtractionOpts(context.Context, string, string, string, []graph.EntityUpsert, []graph.FactUpsert, graph.WriteOptions) error
 	WriteFactAudit(context.Context, graph.FactAudit) error
 	SetFactJudge(context.Context, string, string, string, string, string) error
 	RejectFact(context.Context, string, string, string, string, graph.FactAudit) error
@@ -175,9 +175,10 @@ type Pipeline struct {
 
 	procLocks sync.Map // docID → *sync.Mutex, serializes Process per document
 
-	judge   FactJudge
-	emb     Embedder
-	metrics Metrics
+	judge     FactJudge
+	emb       Embedder
+	metrics   Metrics
+	writeMode WriteMode
 
 	beforeSupersede func(olds []string) // Test hook; nil in production.
 }
@@ -438,14 +439,14 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 			if c.DuplicateOf != "" {
 				// A duplicate skips extraction and must not keep facts from
 				// an earlier run.
-				if err := p.store.UpsertExtraction(ctx, docID, c.ID, version, nil, nil); err != nil {
+				if err := p.store.UpsertExtractionOpts(ctx, docID, c.ID, version, nil, nil, p.writeOptions(doc)); err != nil {
 					return fail("merge", err)
 				}
 				continue
 			}
 			r := byChunk[c.ID]
 			ents, facts, audits := p.buildExtraction(doc, c, r, version, docScoped)
-			if err := p.store.UpsertExtraction(ctx, docID, c.ID, version, ents, facts); err != nil {
+			if err := p.store.UpsertExtractionOpts(ctx, docID, c.ID, version, ents, facts, p.writeOptions(doc)); err != nil {
 				return fail("merge", err)
 			}
 			if p.metrics != nil {
