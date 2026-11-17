@@ -149,6 +149,31 @@ type Metrics interface {
 	JudgeSeconds(seconds float64)
 }
 
+// JudgeCacheMetrics counts verdict-cache results (hit, miss, read_error,
+// write_error). obs.Metrics implements it; SetMetrics hands it to a judge
+// that reports cache results.
+type JudgeCacheMetrics interface {
+	JudgeCache(result string)
+}
+
+// cacheMetricsSetter is implemented by judges that report cache results.
+type cacheMetricsSetter interface {
+	SetCacheMetrics(JudgeCacheMetrics)
+}
+
+// wireJudgeCacheMetrics hands the metrics sink to the judge when both sides
+// support verdict-cache counting; SetJudge and SetMetrics both call it, so
+// the order of the two does not matter.
+func (p *Pipeline) wireJudgeCacheMetrics() {
+	j, ok := p.judge.(cacheMetricsSetter)
+	if !ok {
+		return
+	}
+	if m, ok := p.metrics.(JudgeCacheMetrics); ok {
+		j.SetCacheMetrics(m)
+	}
+}
+
 // Embedder embeds batch texts as documents (structurally satisfied by
 // embed.Provider); nil means embeddings are disabled.
 type Embedder interface {
@@ -554,6 +579,7 @@ func (p *Pipeline) forgetSuperseded(ctx context.Context, docID string) {
 // Additive to the constructor; attach it before starting workers.
 func (p *Pipeline) SetJudge(j FactJudge) {
 	p.judge = j
+	p.wireJudgeCacheMetrics()
 }
 
 // SetEmbedder attaches the optional embeddings provider; without one the
@@ -567,6 +593,7 @@ func (p *Pipeline) SetEmbedder(e Embedder) {
 // them disabled. Additive to the constructor.
 func (p *Pipeline) SetMetrics(m Metrics) {
 	p.metrics = m
+	p.wireJudgeCacheMetrics()
 }
 
 // setStatus updates a document's status and counts the transition when the

@@ -28,6 +28,7 @@ type Metrics struct {
 	factsDropped    prometheus.Counter
 	judgeVerdicts   *prometheus.CounterVec
 	judgeFailures   prometheus.Counter
+	judgeCache      *prometheus.CounterVec
 	extractorErrors prometheus.Counter
 	extractSeconds  prometheus.Histogram
 	judgeSeconds    prometheus.Histogram
@@ -66,6 +67,10 @@ func New() *Metrics {
 			Name: "judge_failures_total",
 			Help: "Judge calls that failed (fact left unverified).",
 		}),
+		judgeCache: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "judge_cache_total",
+			Help: "Verdict-cache lookups by result: hit, miss, read_error, write_error.",
+		}, []string{"result"}),
 		extractorErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "extractor_errors_total",
 			Help: "Extractor calls that failed.",
@@ -76,11 +81,11 @@ func New() *Metrics {
 		}),
 		judgeSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name: "judge_seconds",
-			Help: "Judge call latency in seconds.",
+			Help: "Judge verification latency in seconds, including cache lookups.",
 		}),
 	}
 	reg.MustRegister(m.documents, m.chunks, m.entities, m.facts, m.factsDropped,
-		m.judgeVerdicts, m.judgeFailures, m.extractorErrors, m.extractSeconds, m.judgeSeconds)
+		m.judgeVerdicts, m.judgeFailures, m.judgeCache, m.extractorErrors, m.extractSeconds, m.judgeSeconds)
 	return m
 }
 
@@ -129,13 +134,16 @@ func (m *Metrics) JudgeVerdict(status string) { m.judgeVerdicts.WithLabelValues(
 // JudgeFailure counts one failed judge call.
 func (m *Metrics) JudgeFailure() { m.judgeFailures.Inc() }
 
+// JudgeCache counts one verdict-cache result.
+func (m *Metrics) JudgeCache(result string) { m.judgeCache.WithLabelValues(result).Inc() }
+
 // ExtractorError counts one failed extractor call.
 func (m *Metrics) ExtractorError() { m.extractorErrors.Inc() }
 
 // ExtractSeconds observes one extractor call duration.
 func (m *Metrics) ExtractSeconds(seconds float64) { m.extractSeconds.Observe(seconds) }
 
-// JudgeSeconds observes one judge call duration.
+// JudgeSeconds observes one judge verification duration, including cache lookups.
 func (m *Metrics) JudgeSeconds(seconds float64) { m.judgeSeconds.Observe(seconds) }
 
 // Log returns the process logger: JSON records on stderr.

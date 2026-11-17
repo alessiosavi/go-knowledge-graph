@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -18,6 +20,44 @@ type FactInput struct {
 	Evidence   string
 	DocContext string
 	Confidence float64
+}
+
+// judgeInputPayload fixes the key order of the user message shared by ingest,
+// the verdict cache and backfill. Keep every field, including zero values.
+// Fields are in sorted key order, so the bytes equal what the judge received
+// before this type existed (json.Marshal of a map sorts its keys).
+type judgeInputPayload struct {
+	DocContext string `json:"doc_context"`
+	Evidence   string `json:"evidence"`
+	Fact       struct {
+		Confidence float64 `json:"confidence"`
+		Head       string  `json:"head"`
+		Rel        string  `json:"rel"`
+		Tail       string  `json:"tail"`
+	} `json:"fact"`
+}
+
+// CanonicalJudgeInput returns the exact JSON user message sent to the judge.
+// A non-finite confidence cannot be encoded in JSON and returns nil.
+func CanonicalJudgeInput(in FactInput) []byte {
+	var payload judgeInputPayload
+	payload.Fact.Head, payload.Fact.Rel, payload.Fact.Tail = in.Head, in.Rel, in.Tail
+	payload.Fact.Confidence = in.Confidence
+	payload.Evidence, payload.DocContext = in.Evidence, in.DocContext
+	b, _ := json.Marshal(payload)
+	return b
+}
+
+// DecodeJudgeInput reconstructs a fact from its persisted judge user message.
+func DecodeJudgeInput(b []byte) (FactInput, error) {
+	var payload judgeInputPayload
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return FactInput{}, fmt.Errorf("ingest: decode judge input: %w", err)
+	}
+	return FactInput{
+		Head: payload.Fact.Head, Rel: payload.Fact.Rel, Tail: payload.Fact.Tail,
+		Confidence: payload.Fact.Confidence, Evidence: payload.Evidence, DocContext: payload.DocContext,
+	}, nil
 }
 
 // Verdict is the judge's answer for one fact.

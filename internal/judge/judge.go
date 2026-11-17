@@ -17,6 +17,9 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 )
 
+// PromptVersion must be bumped whenever judgePrompt changes.
+const PromptVersion = "1"
+
 const judgePrompt = `You verify one extracted knowledge-graph fact against its source evidence.
 Answer with a single JSON object:
 {"verdict":"confirmed"|"refuted"|"unclear","confidence":<0..1>,"reason":"<short reason>"}
@@ -92,18 +95,9 @@ type verdictPayload struct {
 
 // VerifyFact asks the model for a verdict on one fact.
 func (c *Client) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Verdict, error) {
-	payload, err := json.Marshal(map[string]any{
-		"fact": map[string]any{
-			"head":       in.Head,
-			"rel":        in.Rel,
-			"tail":       in.Tail,
-			"confidence": in.Confidence,
-		},
-		"evidence":    in.Evidence,
-		"doc_context": in.DocContext,
-	})
-	if err != nil {
-		return ingest.Verdict{}, fmt.Errorf("judge: encode payload: %w", err)
+	payload := ingest.CanonicalJudgeInput(in)
+	if payload == nil {
+		return ingest.Verdict{}, fmt.Errorf("judge: encode payload: confidence must be finite")
 	}
 	body, err := json.Marshal(judgeWireRequest{
 		Model: c.model,
