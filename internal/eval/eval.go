@@ -21,6 +21,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 )
 
@@ -319,6 +320,10 @@ func Run(ctx context.Context, cfg config.Config, prov extract.Provider, j ingest
 	if err != nil {
 		return Report{}, err
 	}
+	hygienePreset, err := hygiene.LoadPreset(cfg.Labels.PresetsDir, preset, cfg.Ingest.StoplistFile)
+	if err != nil {
+		return Report{}, err
+	}
 	golden, err := loadGolden(goldenPath)
 	if err != nil {
 		return Report{}, err
@@ -341,7 +346,7 @@ func Run(ctx context.Context, cfg config.Config, prov extract.Provider, j ingest
 	var judgeSum, coverageSum float64
 	judgedDocs := 0
 	for _, g := range golden {
-		res, err := evaluateDoc(ctx, cfg, prov, j, entities, relations, g)
+		res, err := evaluateDoc(ctx, cfg, prov, j, entities, relations, g, hygienePreset)
 		if err != nil {
 			return Report{}, err
 		}
@@ -366,7 +371,7 @@ func Run(ctx context.Context, cfg config.Config, prov extract.Provider, j ingest
 	}
 
 	if sweepSpec != "" {
-		table, err := runSweep(ctx, cfg, prov, entities, relations, golden, sweepSpec)
+		table, err := runSweep(ctx, cfg, prov, entities, relations, golden, sweepSpec, hygienePreset)
 		if err != nil {
 			return Report{}, err
 		}
@@ -416,10 +421,47 @@ type extractedFact struct {
 	score                    float64
 }
 
+// normalizeGolden applies the same name policy as predictions without changing
+// the document or the raw evidence sent to the judge.
+func normalizeGolden(g GoldenDoc, preset hygiene.Preset) GoldenDoc {
+	cleaned := g
+	cleaned.ExpectedEntities = nil
+	names := make(map[string]string, len(g.ExpectedEntities))
+	for _, e := range g.ExpectedEntities {
+		name, _, rule := hygiene.NameOnly(e.Text, e.Label, preset)
+		names[e.Text] = name
+		if rule == "" {
+			cleaned.ExpectedEntities = append(cleaned.ExpectedEntities, ExpectedEntity{Label: e.Label, Text: name})
+		}
+	}
+	endpoint := func(text string) string {
+		if name, ok := names[text]; ok {
+			return name
+		}
+		// Some goldens have relation endpoints outside expected_entities.
+		// Without a label, only the generic name policy applies.
+		name, _, _ := hygiene.NameOnly(text, "", preset)
+		return name
+	}
+	cleanRelations := func(relations []ExpectedRelation) []ExpectedRelation {
+		var out []ExpectedRelation
+		for _, r := range relations {
+			head, tail := endpoint(r.Head), endpoint(r.Tail)
+			if head != "" && tail != "" {
+				out = append(out, ExpectedRelation{Label: r.Label, Head: head, Tail: tail})
+			}
+		}
+		return out
+	}
+	cleaned.ExpectedRelations = cleanRelations(g.ExpectedRelations)
+	cleaned.OptionalReferenceFacts = cleanRelations(g.OptionalReferenceFacts)
+	return cleaned
+}
+
 // evaluateDoc scores one golden document. Note: unlike the production
 // pipeline, eval deliberately does NOT apply the MaxChunks admission cap —
 // the harness scores the whole document even where ingest would refuse it.
-func evaluateDoc(ctx context.Context, cfg config.Config, prov extract.Provider, j ingest.FactJudge, entities, relations []extract.Label, g GoldenDoc) (DocResult, error) {
+func evaluateDoc(ctx context.Context, cfg config.Config, prov extract.Provider, j ingest.FactJudge, entities, relations []extract.Label, g GoldenDoc, preset hygiene.Preset) (DocResult, error) {
 	spans := chunk.Split(g.Doc, chunk.Options{
 		TargetWords:      cfg.Ingest.ChunkWords,
 		OverlapSentences: cfg.Ingest.OverlapSentences,
@@ -438,24 +480,25 @@ func evaluateDoc(ctx context.Context, cfg config.Config, prov extract.Provider, 
 
 	var entStrict, entLenient, relStrict, relLenient []string
 	facts := map[string]extractedFact{}
-	for _, cr := range res {
+	for _, raw := range res {
+		cr := hygiene.Apply(raw, textByID[raw.ChunkID], preset)
 		for _, m := range cr.Mentions {
-			entStrict = append(entStrict, StrictEntityKey(m.Label, m.Text))
-			entLenient = append(entLenient, LenientEntityKey(m.Label, m.Text))
+			entStrict = append(entStrict, StrictEntityKey(m.Label, m.Name))
+			entLenient = append(entLenient, LenientEntityKey(m.Label, m.Name))
 		}
 		for _, cand := range cr.Candidates {
 			if cand.Head < 0 || cand.Head >= len(cr.Mentions) || cand.Tail < 0 || cand.Tail >= len(cr.Mentions) {
 				continue
 			}
 			hm, tm := cr.Mentions[cand.Head], cr.Mentions[cand.Tail]
-			relStrict = append(relStrict, StrictRelationKey(cand.Label, hm.Text, tm.Text))
-			lk := LenientRelationKey(cand.Label, hm.Text, tm.Text)
+			relStrict = append(relStrict, StrictRelationKey(cand.Label, hm.Name, tm.Name))
+			lk := LenientRelationKey(cand.Label, hm.Name, tm.Name)
 			relLenient = append(relLenient, lk)
 			if _, ok := facts[lk]; !ok {
 				facts[lk] = extractedFact{
-					headKey:  LenientEntityKey(hm.Label, hm.Text),
+					headKey:  LenientEntityKey(hm.Label, hm.Name),
 					rel:      cand.Label,
-					tailKey:  LenientEntityKey(tm.Label, tm.Text),
+					tailKey:  LenientEntityKey(tm.Label, tm.Name),
 					headText: hm.Text, tailText: tm.Text,
 					evidence: ingest.EvidenceSentence(textByID[cr.ChunkID], hm.Start, hm.End),
 					score:    cand.Score,
@@ -464,6 +507,7 @@ func evaluateDoc(ctx context.Context, cfg config.Config, prov extract.Provider, 
 		}
 	}
 
+	g = normalizeGolden(g, preset)
 	var expEntStrict, expEntLenient []string
 	for _, e := range g.ExpectedEntities {
 		expEntStrict = append(expEntStrict, StrictEntityKey(e.Label, e.Text))
@@ -516,7 +560,7 @@ func evaluateDoc(ctx context.Context, cfg config.Config, prov extract.Provider, 
 	return out, nil
 }
 
-func extractDoc(ctx context.Context, cfg config.Config, prov extract.Provider, entities, relations []extract.Label, text string) ([]extract.ChunkResult, error) {
+func extractDoc(ctx context.Context, cfg config.Config, prov extract.Provider, entities, relations []extract.Label, text string, preset hygiene.Preset) ([]hygiene.Result, error) {
 	spans := chunk.Split(text, chunk.Options{
 		TargetWords:      cfg.Ingest.ChunkWords,
 		OverlapSentences: cfg.Ingest.OverlapSentences,
@@ -526,10 +570,22 @@ func extractDoc(ctx context.Context, cfg config.Config, prov extract.Provider, e
 	for _, s := range spans {
 		req.Chunks = append(req.Chunks, extract.RequestChunk{ID: fmt.Sprintf("eval-c%d", s.Seq), Text: s.Text})
 	}
-	return prov.Extract(ctx, req)
+	results, err := prov.Extract(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	textByID := make(map[string]string, len(req.Chunks))
+	for _, c := range req.Chunks {
+		textByID[c.ID] = c.Text
+	}
+	cleaned := make([]hygiene.Result, 0, len(results))
+	for _, r := range results {
+		cleaned = append(cleaned, hygiene.Apply(r, textByID[r.ChunkID], preset))
+	}
+	return cleaned, nil
 }
 
-func runSweep(ctx context.Context, cfg config.Config, prov extract.Provider, entities, relations []extract.Label, golden []GoldenDoc, spec string) (string, error) {
+func runSweep(ctx context.Context, cfg config.Config, prov extract.Provider, entities, relations []extract.Label, golden []GoldenDoc, spec string, preset hygiene.Preset) (string, error) {
 	eValues, rValues, err := ParseSweep(spec)
 	if err != nil {
 		return "", err
@@ -543,20 +599,21 @@ func runSweep(ctx context.Context, cfg config.Config, prov extract.Provider, ent
 			rLabels := withThreshold(relations, r)
 			var entF1, relF1 float64
 			for _, g := range golden {
-				res, err := extractDoc(ctx, cfg, prov, eLabels, rLabels, g.Doc)
+				g = normalizeGolden(g, preset)
+				res, err := extractDoc(ctx, cfg, prov, eLabels, rLabels, g.Doc, preset)
 				if err != nil {
 					return "", err
 				}
 				var gotEnt, gotRel []string
 				for _, cr := range res {
 					for _, m := range cr.Mentions {
-						gotEnt = append(gotEnt, StrictEntityKey(m.Label, m.Text))
+						gotEnt = append(gotEnt, StrictEntityKey(m.Label, m.Name))
 					}
 					for _, cand := range cr.Candidates {
 						if cand.Head < 0 || cand.Head >= len(cr.Mentions) || cand.Tail < 0 || cand.Tail >= len(cr.Mentions) {
 							continue
 						}
-						gotRel = append(gotRel, StrictRelationKey(cand.Label, cr.Mentions[cand.Head].Text, cr.Mentions[cand.Tail].Text))
+						gotRel = append(gotRel, StrictRelationKey(cand.Label, cr.Mentions[cand.Head].Name, cr.Mentions[cand.Tail].Name))
 					}
 				}
 				var expEnt, expRel []string

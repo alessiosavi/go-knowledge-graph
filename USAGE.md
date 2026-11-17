@@ -56,6 +56,10 @@ without force returns a no-op immediately, even while processing or when the
 spool is full or unavailable. A spool write failure returns `500`
 (`error: ingest_unavailable`).
 
+`GKG_INGEST_STOPLIST_FILE` optionally points to a private entity-name stoplist
+overlay: one literal entry per line; blank lines and lines beginning with `#`
+are ignored. Entries match normalized names without case or diacritic differences.
+
 Sidecar inference runs one request at a time per process, using the available
 CPU threads. `GKG_EXTRACTOR_SIDECAR_TIMEOUT_S` defaults to 300 seconds per
 batch of up to eight chunks, including time queued behind other workers
@@ -94,6 +98,23 @@ Custom presets are YAML files under `labels.presets_dir`
 (`GKG_LABELS_PRESETS_DIR`). The built-in defaults match `general`.
 Mail amounts and dates, and meeting dates, use document-local identity so
 unrelated documents do not merge their value entities.
+
+Presets also configure entity-name hygiene with `allowlist:` (exact tokens allowed
+at two characters or fewer), `stoplist:` (folded exact matches and regular
+expressions), and `code_tokens:` (allow path and code tokens; enabled in `code`
+and `documentation`):
+
+```yaml
+allowlist: [AI, EU, UK, US, UE, IT]
+stoplist:
+  exact: [Descrizione, Informazioni, Indice, Introduzione]
+  patterns: ['^Sezione \d+$', '^Section \d+$']
+code_tokens: true
+```
+
+Entity labels with `scope: document` are value labels: they skip the no-letter,
+short-name, CLI-flag, path and code shape rules, while normalization and newline,
+length, markdown-link, heading and stoplist checks still apply.
 
 **From an agent**: the MCP `ingest` tool takes `url` or `text`, plus an
 optional `source` label and `force` to re-run an unchanged document.

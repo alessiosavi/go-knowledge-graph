@@ -131,6 +131,22 @@ func TestEvalCommandUnknownPreset(t *testing.T) {
 	}
 }
 
+func TestEvalBuiltinWithoutLabels(t *testing.T) {
+	golden, err := filepath.Abs("../../eval/golden/sample.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	t.Setenv("GKG_CONFIG", "")
+	t.Setenv("GKG_LABELS_PRESETS_DIR", "labels")
+	t.Setenv("GKG_JUDGE_MODE", "off")
+	var out, errb bytes.Buffer
+	code := run([]string{"eval", "--golden", golden, "--provider", "mock"}, &out, &errb)
+	if code != 0 || errb.Len() != 0 || !strings.Contains(out.String(), "entities F1") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errb.String())
+	}
+}
+
 func TestEmbedderFromConfigOpenAIDefault(t *testing.T) {
 	cfg := config.Config{}
 	cfg.Embedder.Dim = 768

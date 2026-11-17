@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/dedup"
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
 )
 
 // Loaded is the decoded document handed over by the text loader.
@@ -117,6 +119,7 @@ type pipelineStore interface {
 	ResetExtraction(context.Context, string, string) error
 	GC(context.Context) error
 	SetStatus(context.Context, string, graph.Status, string) error
+	SetDocumentHygiene(context.Context, string, map[string]int) error
 	DeleteChunksFrom(context.Context, string, int) error
 	PutChunks(context.Context, string, []graph.Chunk) error
 	Chunks(context.Context, string) ([]graph.Chunk, error)
@@ -145,6 +148,8 @@ type Metrics interface {
 	Entities(n int)
 	Facts(n int)
 	FactsDropped(n int)
+	HygieneDropped(rule string, n int)
+	HygieneRenamed(n int)
 	ExtractorError()
 	ExtractSeconds(seconds float64)
 	JudgeVerdict(status string)
@@ -452,17 +457,31 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 				return fail("extract", err)
 			}
 		}
+		cleaned := make(map[string]hygiene.Result, len(results))
+		if p.writeMode.Hygiene {
+			preset, err := hygiene.LoadPreset(p.cfg.Labels.PresetsDir, p.labelName(doc), p.cfg.Ingest.StoplistFile)
+			if err != nil {
+				return fail("hygiene", err)
+			}
+			textByID := make(map[string]string, len(chunks))
+			for _, c := range chunks {
+				textByID[c.ID] = c.Text
+			}
+			for _, r := range results {
+				cleaned[r.ChunkID] = hygiene.Apply(r, textByID[r.ChunkID], preset)
+			}
+		} else {
+			for _, r := range results {
+				cleaned[r.ChunkID] = rawExtraction(r)
+			}
+		}
 		if err := p.setStatus(ctx, docID, graph.StatusExtracted, ""); err != nil {
 			return fail("status", err)
-		}
-
-		byChunk := make(map[string]extract.ChunkResult, len(results))
-		for _, r := range results {
-			byChunk[r.ChunkID] = r
 		}
 		version := p.prov.Version()
 		var judgeCandidates []judgeCandidate
 		embedNames := make(map[string]string)
+		hygieneCounts := map[string]int{"renamed": 0}
 		for _, c := range chunks {
 			if c.DuplicateOf != "" {
 				// A duplicate skips extraction and must not keep facts from
@@ -472,7 +491,11 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 				}
 				continue
 			}
-			r := byChunk[c.ID]
+			r := cleaned[c.ID]
+			for rule, n := range r.Dropped {
+				hygieneCounts[string(rule)] += n
+			}
+			hygieneCounts["renamed"] += r.Renamed
 			ents, facts, audits := p.buildExtraction(doc, c, r, version, docScoped)
 			if p.writeMode.RequireConfirmation {
 				for i := range facts {
@@ -504,6 +527,19 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 			// before collecting judge candidates.
 			for _, f := range dedupeFactCandidates(facts) {
 				judgeCandidates = append(judgeCandidates, judgeCandidate{fact: f, chunkText: c.Text, chunkID: c.ID})
+			}
+		}
+		if p.writeMode.Hygiene {
+			if err := p.store.SetDocumentHygiene(ctx, docID, hygieneCounts); err != nil {
+				return fail("hygiene", err)
+			}
+			if p.metrics != nil {
+				p.metrics.HygieneRenamed(hygieneCounts["renamed"])
+				for rule, n := range hygieneCounts {
+					if rule != "renamed" {
+						p.metrics.HygieneDropped(rule, n)
+					}
+				}
 			}
 		}
 		if err := p.setStatus(ctx, docID, graph.StatusMerged, ""); err != nil {
@@ -1113,10 +1149,19 @@ func (p *Pipeline) buildChunks(ctx context.Context, doc *graph.Document, text st
 	return chunks, nil
 }
 
+// rawExtraction adapts provider results without applying hygiene when the gate is off.
+func rawExtraction(r extract.ChunkResult) hygiene.Result {
+	out := hygiene.Result{ChunkID: r.ChunkID, Candidates: r.Candidates}
+	for _, m := range r.Mentions {
+		out.Mentions = append(out.Mentions, hygiene.Mention{Mention: m, Name: m.Text})
+	}
+	return out
+}
+
 // buildExtraction turns one provider chunk result into store upserts,
 // applying the confidence floors: below store_floor the fact is dropped and
 // audited; below assert_floor it is stored as low-confidence.
-func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract.ChunkResult, version string, docScoped map[string]bool) ([]graph.EntityUpsert, []graph.FactUpsert, []graph.FactAudit) {
+func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r hygiene.Result, version string, docScoped map[string]bool) ([]graph.EntityUpsert, []graph.FactUpsert, []graph.FactAudit) {
 	ents := make(map[string]graph.EntityUpsert, len(r.Mentions))
 	keys := make([]string, len(r.Mentions))
 	bestScores := make(map[string]float64, len(r.Mentions))
@@ -1130,21 +1175,26 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract
 		if strings.TrimSpace(m.Text) == "" || m.Label == "" {
 			continue
 		}
-		key := graph.EntityKey(m.Text)
+		key := graph.EntityKey(m.Name)
 		if key == "" {
 			continue
 		}
 		if docScoped[m.Label] {
-			key = graph.ScopedEntityKey(doc.ID, m.Text)
+			key = graph.ScopedEntityKey(doc.ID, m.Name)
 		}
 		keys[i] = key
 		e, ok := ents[key]
 		if !ok {
-			e = graph.EntityUpsert{Key: key, Name: graph.DisplayName(m.Text), Type: m.Label}
+			e = graph.EntityUpsert{Key: key, Name: graph.DisplayName(m.Name), Type: m.Label}
 		}
 		if !ok || m.Score > bestScores[key] || (m.Score == bestScores[key] && m.Label < e.Type) {
 			e.Type = m.Label
 			bestScores[key] = m.Score
+		}
+		for _, alias := range m.Aliases {
+			if !slices.Contains(e.Aliases, alias) {
+				e.Aliases = append(e.Aliases, alias)
+			}
 		}
 		ents[key] = e
 		mk := mentionKey{key, m.Start, m.End}
@@ -1153,7 +1203,7 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r extract
 			mentionOrder = append(mentionOrder, mk)
 		}
 		if !seen || m.Score > best.Score || (m.Score == best.Score && m.Label < best.Label) {
-			bestMentions[mk] = m
+			bestMentions[mk] = m.Mention
 		}
 	}
 	for _, mk := range mentionOrder {

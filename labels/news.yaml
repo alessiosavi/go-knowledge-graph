@@ -13,3 +13,11 @@ relations:
   - { name: located_in, text: located in, threshold: 0.25 }
   - { name: acquired, threshold: 0.3 }
   - { name: announced, threshold: 0.3 }
+
+# Generic entity-name hygiene. Private boilerplate belongs in the overlay file.
+allowlist: [AI, EU, UK, US, UE, IT]
+stoplist:
+  exact: [Descrizione, Informazioni, Indice, Introduzione, Description, Information, Index, Introduction]
+  patterns:
+    - '^Sezione \d+$'
+    - '^Section \d+$'

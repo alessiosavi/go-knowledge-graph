@@ -139,6 +139,7 @@ type AgentConfig struct {
 
 // IngestConfig tunes the ingestion pipeline.
 type IngestConfig struct {
+	StoplistFile     string  `yaml:"stoplist_file"`
 	SpoolDir         string  `yaml:"spool_dir"`
 	SpoolMaxCount    int     `yaml:"spool_max_count"`
 	SpoolMaxBytes    int     `yaml:"spool_max_bytes"`

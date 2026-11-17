@@ -26,6 +26,8 @@ type Metrics struct {
 	entities        prometheus.Counter
 	facts           prometheus.Counter
 	factsDropped    prometheus.Counter
+	hygieneDropped  *prometheus.CounterVec
+	hygieneRenamed  prometheus.Counter
 	judgeVerdicts   *prometheus.CounterVec
 	judgeFailures   prometheus.Counter
 	judgeCache      *prometheus.CounterVec
@@ -59,6 +61,12 @@ func New() *Metrics {
 			Name: "facts_dropped_total",
 			Help: "Facts dropped below the store floor.",
 		}),
+		hygieneDropped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gkg_hygiene_dropped_total", Help: "Entity mentions dropped by hygiene rule.",
+		}, []string{"rule"}),
+		hygieneRenamed: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "gkg_hygiene_renamed_total", Help: "Entity mentions renamed by hygiene.",
+		}),
 		judgeVerdicts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "judge_verdicts_total",
 			Help: "Judge verdicts by status.",
@@ -85,7 +93,7 @@ func New() *Metrics {
 		}),
 	}
 	reg.MustRegister(m.documents, m.chunks, m.entities, m.facts, m.factsDropped,
-		m.judgeVerdicts, m.judgeFailures, m.judgeCache, m.extractorErrors, m.extractSeconds, m.judgeSeconds)
+		m.hygieneDropped, m.hygieneRenamed, m.judgeVerdicts, m.judgeFailures, m.judgeCache, m.extractorErrors, m.extractSeconds, m.judgeSeconds)
 	return m
 }
 
@@ -125,6 +133,20 @@ func (m *Metrics) Facts(n int) {
 func (m *Metrics) FactsDropped(n int) {
 	if n > 0 {
 		m.factsDropped.Add(float64(n))
+	}
+}
+
+// HygieneDropped counts entity mentions removed by one rule.
+func (m *Metrics) HygieneDropped(rule string, n int) {
+	if n > 0 {
+		m.hygieneDropped.WithLabelValues(rule).Add(float64(n))
+	}
+}
+
+// HygieneRenamed counts entity mentions whose name was normalized.
+func (m *Metrics) HygieneRenamed(n int) {
+	if n > 0 {
+		m.hygieneRenamed.Add(float64(n))
 	}
 }
 

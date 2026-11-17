@@ -21,3 +21,11 @@ relations:
   - { name: competes_with, text: competes with, threshold: 0.3 }
   - { name: measured_by, text: measured by, threshold: 0.3 }
   - { name: uses, threshold: 0.3 }
+
+# Generic entity-name hygiene. Private boilerplate belongs in the overlay file.
+allowlist: [AI, EU, UK, US, UE, IT]
+stoplist:
+  exact: [Descrizione, Informazioni, Indice, Introduzione, Description, Information, Index, Introduction]
+  patterns:
+    - '^Sezione \d+$'
+    - '^Section \d+$'
