@@ -102,8 +102,9 @@ Highlights: `GKG_EXTRACTOR_MODE=openai|sidecar|mock`,
 `GKG_JUDGE_MODE=off|low-confidence|sample|all`,
 `GKG_FACTS_REQUIRE_CONFIRMATION=false` (requires judge mode `all` when enabled;
 uses candidate nodes once schema v4 writes are enabled),
-`GKG_FACTS_ALLOW_UNVERIFIED_READS=false` (permission reserved for explicit
-candidate reads; read support follows separately),
+`GKG_FACTS_ALLOW_UNVERIFIED_READS=false` (when true, REST and MCP honour
+`include_unverified=true` and return candidates marked as unverified;
+when false the parameter is ignored and `unverified_ignored` is set),
 `GKG_EMBEDDER_ENABLED`, `GKG_EMBEDDER_PROVIDER=openai|furls`,
 `GKG_API_KEY` (gkg's bearer; required by the edge, which injects it), `GKG_LIMITS_CYPHER_ROWS`.
 

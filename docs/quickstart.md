@@ -360,9 +360,10 @@ Scoring with no scored rows prints `no scored rows` and exits 2.
 See the [usage guide](../USAGE.md#judge-backfill-and-audit) for recovery and sampling details.
 
 `GKG_FACTS_ALLOW_UNVERIFIED_READS` (`facts.allow_unverified_reads`, default
-`false`) reserves permission for explicit candidate reads. The candidate read
-parameter is introduced separately; this setting currently changes no read
-responses.
+`false`) gates explicit candidate reads: when true, REST and MCP honour
+`include_unverified=true` and return candidates marked as unverified; when
+false the parameter is ignored and the response sets `unverified_ignored`.
+The agent never requests candidates.
 
 ## 7. High-quality document ingestion (docling)
 
