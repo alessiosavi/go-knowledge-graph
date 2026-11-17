@@ -450,7 +450,7 @@ func (p *probe) mcpDuring(long bool, reload func()) {
 		expect(r.code == 200 && err == nil, fmt.Sprintf("MCP call %d", i))
 		if i == 0 {
 			tools, _ := result["tools"].([]any)
-			expect(len(tools) == 7, "MCP lists seven tools")
+			expect(len(tools) == 8, "MCP lists eight tools")
 		}
 	}
 	if reload == nil && long {

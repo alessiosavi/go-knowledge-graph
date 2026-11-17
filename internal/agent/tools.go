@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
+	"github.com/alessiosavi/go-knowledge-graph/internal/chunkread"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
@@ -110,12 +111,12 @@ const (
 )
 
 // toolDefs returns the read-only tool set exposed to the model: the MCP
-// read set (search, get_entity, traverse, list_documents, status, cypher);
+// read set (search, get_entity, get_chunks, traverse, list_documents, status, cypher);
 // no ingestion in v1.
 func toolDefs() []toolDef {
 	return []toolDef{
 		functionTool("search",
-			"Full-text search over entity names and chunk text; returns scored hits with ids, titles and snippets.",
+			"Full-text search over entity names and chunk text; returns scored hits with ids, titles and snippets. Start with limit 10.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -135,8 +136,18 @@ func toolDefs() []toolDef {
 					"include_low_confidence": map[string]any{"type": "boolean", "description": "include facts below the assert floor"},
 				},
 			}),
+		functionTool("get_chunks",
+			"Read full chunk text by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": chunkread.MaxIDs, "description": "1–20 chunk ids from search hits"},
+					"neighbours": map[string]any{"type": "integer", "minimum": 0, "maximum": chunkread.MaxNeighbours, "description": "chunks before and after each requested chunk (default 0, maximum 2)"},
+				},
+				"required": []string{"ids"},
+			}),
 		functionTool("traverse",
-			"Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts.",
+			"Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. Start with limit 10.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -150,7 +161,7 @@ func toolDefs() []toolDef {
 				"required": []string{"entity"},
 			}),
 		functionTool("list_documents",
-			"List documents with metadata, optionally filtered by pipeline status.",
+			"List documents with metadata, optionally filtered by pipeline status. Start with limit 10.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -190,6 +201,8 @@ func (s *Server) execTool(ctx context.Context, name string, args json.RawMessage
 		return s.toolSearch(ctx, args)
 	case "get_entity":
 		return s.toolGetEntity(ctx, args)
+	case "get_chunks":
+		return s.toolGetChunks(ctx, args)
 	case "traverse":
 		return s.toolTraverse(ctx, args)
 	case "list_documents":
@@ -201,6 +214,17 @@ func (s *Server) execTool(ctx context.Context, name string, args json.RawMessage
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
+}
+
+func (s *Server) toolGetChunks(ctx context.Context, raw json.RawMessage) (any, error) {
+	var args struct {
+		IDs        []string `json:"ids"`
+		Neighbours int      `json:"neighbours"`
+	}
+	if err := decodeArgs(raw, &args); err != nil {
+		return nil, err
+	}
+	return chunkread.Read(ctx, s.store, chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours})
 }
 
 func decodeArgs(raw json.RawMessage, dst any) error {

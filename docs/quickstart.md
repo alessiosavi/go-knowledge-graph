@@ -211,7 +211,7 @@ earlier documents reset and queued; inspect statuses before retrying.
 The service is an MCP server over stdio (`gkg mcp`) and streamable HTTP
 (`http://localhost:8080/mcp`). Configuration examples for OpenCode and
 Claude Desktop are in [agent-setup.md](agent-setup.md); the tool set is
-`ingest`, `status`, `search`, `get_entity`, `traverse`, `list_documents`,
+`ingest`, `status`, `search`, `get_entity`, `get_chunks`, `traverse`, `list_documents`,
 `cypher`.
 
 ## 5. Local, fully-offline extraction

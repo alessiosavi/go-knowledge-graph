@@ -10,7 +10,7 @@
 #
 # Checks:
 #   1. ingest a Markdown file and a PDF, both queryable afterwards
-#   2. MCP smoke over stdio: tools/list = 7 tools, search answers
+#   2. MCP smoke over stdio: tools/list = 8 tools, search answers
 #   3. `gkg eval` on the golden sample with the mock provider
 #   4. unchanged re-ingest is a no-op; changed content supersedes cleanly
 #   5. local model offline (EN+IT) — manual SKIP

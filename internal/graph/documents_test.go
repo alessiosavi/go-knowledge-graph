@@ -16,6 +16,75 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 )
 
+func TestChunkNeighbourhood(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	doc := testUpsert(t, st, "text", uniqueSource(t), "zorbo-neighbours")
+	other := testUpsert(t, st, "text", uniqueSource(t), "quillon-neighbours")
+	t.Cleanup(func() {
+		_ = st.DeleteDocument(ctx, doc.ID)
+		_ = st.DeleteDocument(ctx, other.ID)
+	})
+	chunks := []graph.Chunk{
+		{Seq: 0, Text: "Zorbo starts."}, {Seq: 1, Text: "Acme-Max follows."},
+		{Seq: 2, Text: "Quillon Ltd continues."}, {Seq: 4, Text: "A sequence gap."},
+		{Seq: 5, Text: "Zorbo returns."}, {Seq: 6, Text: "The end."},
+	}
+	for i := range chunks {
+		chunks[i].Start = i * 100
+		chunks[i].End = chunks[i].Start + len(chunks[i].Text)
+		chunks[i].Hash = "zorbo-hash"
+		chunks[i].ExactKey = "quillon-key"
+		chunks[i].MinhashSig = []int64{11, 22}
+		chunks[i].BandKeys = []int64{33, 44}
+		chunks[i].SignatureVersion = 1
+	}
+	for _, id := range []string{doc.ID, other.ID} {
+		if err := st.PutChunks(ctx, id, chunks); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		seq  int
+		n    int
+		want []int
+	}{
+		{2, 0, nil}, {2, 1, []int{1}}, {2, 2, []int{0, 1, 4}},
+		{0, 2, []int{1, 2}}, {5, 1, []int{4, 6}}, {6, 2, []int{4, 5}},
+	} {
+		t.Run(fmt.Sprintf("seq%d_n%d", tc.seq, tc.n), func(t *testing.T) {
+			id := fmt.Sprintf("%s-c%d", doc.ID, tc.seq)
+			center, around, err := st.ChunkNeighbourhood(ctx, id, tc.n)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCenter, err := st.ChunkByID(ctx, id)
+			wantCenter = graph.Chunk{ID: wantCenter.ID, DocID: wantCenter.DocID, Seq: wantCenter.Seq, Text: wantCenter.Text}
+			if err != nil || !reflect.DeepEqual(center, wantCenter) {
+				t.Fatalf("center=%+v, want=%+v, err=%v", center, wantCenter, err)
+			}
+			var seqs []int
+			for _, c := range around {
+				if c.DocID != doc.ID || c.ID == center.ID {
+					t.Fatalf("wrong document or repeated center: %+v", c)
+				}
+				seqs = append(seqs, c.Seq)
+				wantChunk, err := st.ChunkByID(ctx, c.ID)
+				wantChunk = graph.Chunk{ID: wantChunk.ID, DocID: wantChunk.DocID, Seq: wantChunk.Seq, Text: wantChunk.Text}
+				if err != nil || !reflect.DeepEqual(c, wantChunk) {
+					t.Fatalf("neighbour=%+v, want=%+v, err=%v", c, wantChunk, err)
+				}
+			}
+			if !slices.Equal(seqs, tc.want) {
+				t.Fatalf("seqs=%v, want=%v", seqs, tc.want)
+			}
+		})
+	}
+	if _, _, err := st.ChunkNeighbourhood(ctx, doc.ID+"-absent", 2); !errors.Is(err, graph.ErrNotFound) {
+		t.Fatalf("missing error=%v", err)
+	}
+}
+
 func TestResetExtraction(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()

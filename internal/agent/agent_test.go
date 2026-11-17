@@ -118,6 +118,69 @@ func TestAskRunsToolLoopAndReturnsEvidence(t *testing.T) {
 	}
 }
 
+func TestAskGetChunksEvidenceWithoutCypher(t *testing.T) {
+	fx := newAgentFixture(t)
+	id := fx.docID + "-c0"
+	stub := newLLMStub(t,
+		toolCallReply("read1", "get_chunks", fmt.Sprintf(`{"ids":[%q]}`, id)),
+		contentReply("The full chunk says the engine is used daily."),
+	)
+	s := askServer(t, fx, stub.srv.URL, nil)
+	resp, err := s.ask(context.Background(), "Read the full text of chunk "+id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Steps != 1 || len(resp.Evidence) != 1 || resp.Evidence[0].Tool != "get_chunks" {
+		t.Fatalf("steps=%d evidence=%+v", resp.Steps, resp.Evidence)
+	}
+	var result struct {
+		Chunks []struct{ ID, Text string }
+		Meta   struct{ Returned int }
+	}
+	if err := json.Unmarshal(resp.Evidence[0].Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Meta.Returned != 1 || len(result.Chunks) != 1 || result.Chunks[0].ID != id || !strings.HasSuffix(result.Chunks[0].Text, "daily.") {
+		t.Fatalf("chunk evidence = %s", resp.Evidence[0].Result)
+	}
+	if len(stub.requests) != 2 {
+		t.Fatalf("provider requests=%d, want 2", len(stub.requests))
+	}
+	tools, ok := stub.requests[0]["tools"].([]any)
+	if !ok {
+		t.Fatalf("request has no tools array: %v", stub.requests[0]["tools"])
+	}
+	getChunksSeen := false
+	for _, tool := range tools {
+		function := tool.(map[string]any)["function"].(map[string]any)
+		if function["name"] == "get_chunks" {
+			getChunksSeen = true
+			if !strings.Contains(fmt.Sprint(function["description"]), "instead of cypher") {
+				t.Fatalf("get_chunks description lacks routing guidance: %v", function["description"])
+			}
+		}
+	}
+	if !getChunksSeen {
+		t.Fatal("provider request lacks get_chunks tool")
+	}
+	toolSeen := false
+	for _, msg := range requestMessages(t, stub.requests[1]) {
+		if calls, ok := msg["tool_calls"].([]any); ok {
+			for _, call := range calls {
+				if call.(map[string]any)["function"].(map[string]any)["name"] == "cypher" {
+					t.Fatal("cypher was called to read chunk text")
+				}
+			}
+		}
+		if msg["role"] == "tool" && msg["tool_call_id"] == "read1" && strings.Contains(fmt.Sprint(msg["content"]), id) {
+			toolSeen = true
+		}
+	}
+	if !toolSeen {
+		t.Fatal("full chunk result missing from provider transcript")
+	}
+}
+
 func TestAskStopsAtMaxSteps(t *testing.T) {
 	fx := newAgentFixture(t)
 	stub := newLLMStub(t,

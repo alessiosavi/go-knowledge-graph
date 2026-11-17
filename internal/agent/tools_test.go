@@ -246,3 +246,45 @@ func TestToolUnknownName(t *testing.T) {
 		t.Fatalf("err = %v, want an unknown-tool error", err)
 	}
 }
+
+func TestToolGetChunks(t *testing.T) {
+	fx := newAgentFixture(t)
+	s := NewServer(config.Config{}, fx.st, nil)
+	res, err := s.execTool(context.Background(), "get_chunks", json.RawMessage(fmt.Sprintf(`{"ids":[%q,"absent"],"neighbours":1}`, fx.docID+"-c0")))
+	if err != nil {
+		t.Fatalf("get_chunks: %v", err)
+	}
+	out := unmarshalResult[struct {
+		Chunks []struct{ ID, Text string }
+		Meta   struct {
+			Returned int
+			Missing  []string
+		}
+	}](t, res)
+	if len(out.Chunks) != 1 || out.Chunks[0].ID != fx.docID+"-c0" || !strings.Contains(out.Chunks[0].Text, fx.token) || out.Meta.Returned != 1 || len(out.Meta.Missing) != 1 || out.Meta.Missing[0] != "absent" {
+		t.Fatalf("get_chunks = %+v", out)
+	}
+	for _, raw := range []json.RawMessage{nil, json.RawMessage(`{"ids":[]}`), json.RawMessage(`{"ids":["c1"],"neighbours":3}`), json.RawMessage(`{"ids":"c1"}`)} {
+		if _, err := s.execTool(context.Background(), "get_chunks", raw); err == nil {
+			t.Errorf("get_chunks accepted %s", raw)
+		}
+	}
+}
+
+func TestToolResultSizeGuidance(t *testing.T) {
+	want := map[string]string{
+		"search": "Start with limit 10.", "traverse": "Start with limit 10.", "list_documents": "Start with limit 10.",
+		"get_chunks": "Read full chunk text by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
+	}
+	for _, def := range toolDefs() {
+		if desc, ok := want[def.Function.Name]; ok {
+			if !strings.Contains(def.Function.Description, desc) {
+				t.Errorf("%s description=%q, want %q", def.Function.Name, def.Function.Description, desc)
+			}
+			delete(want, def.Function.Name)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing tools: %v", want)
+	}
+}

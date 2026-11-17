@@ -20,6 +20,7 @@ The tool set is the same on both transports:
 | `status`         | pipeline status of one document, or the most recent documents           |
 | `search`         | text search over entity names and chunks (vector fusion when enabled)   |
 | `get_entity`     | entity, aliases, `together` co-mentions (with shared chunk counts) and evidenced facts |
+| `get_chunks`     | full chunk text by id, optionally with up to two neighbours from the same document |
 | `traverse`       | walk fact edges up to two hops with direction/relation filters          |
 | `list_documents` | documents with metadata, filterable by status                           |
 | `cypher`         | guarded read-only Cypher with row cap and timeout                       |
@@ -77,7 +78,7 @@ opencode mcp list    # ✓ gkg connected
 Notes:
 
 - Code Mode is the default in OpenCode V2: the tools are reachable through
-  `tools.gkg.*`. Set `"codemode": false` on the server to expose the seven
+  `tools.gkg.*`. Set `"codemode": false` on the server to expose the eight
   tools directly.
 - **Streamable HTTP instead of stdio** (e.g. the compose stack):
 
@@ -127,7 +128,7 @@ plug it in:
   answer plus its `evidence`. Simplest, but needs `GKG_AGENT_ENABLED=true`
   on gkg and spends gkg's model budget.
 - **gkg's tools over MCP.** Connect to `https://<host>/mcp` and hand gkg's
-  read tools (`search`, `get_entity`, `traverse`, `list_documents`,
+  read tools (`search`, `get_entity`, `get_chunks`, `traverse`, `list_documents`,
   `status`, `cypher`) to your model, which then does the retrieval itself.
   Every login can also `ingest`; leave that tool out if the agent should
   only read.

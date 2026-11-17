@@ -1,5 +1,5 @@
-// Package mcp exposes the gkg knowledge graph to MCP clients: seven tools
-// (ingest, status, search, get_entity, traverse, list_documents, cypher)
+// Package mcp exposes the gkg knowledge graph to MCP clients: eight tools
+// (ingest, status, search, get_entity, get_chunks, traverse, list_documents, cypher)
 // over stdio and streamable HTTP, thin over the search and traversal read
 // paths and the guarded read-only cypher surface. Low-confidence facts are
 // excluded unless the caller opts in.
@@ -16,6 +16,7 @@ import (
 	mcpgo "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
+	"github.com/alessiosavi/go-knowledge-graph/internal/chunkread"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
@@ -92,6 +93,11 @@ type getEntityArgs struct {
 	ID                   string `json:"id,omitempty" jsonschema:"entity id"`
 	Name                 string `json:"name,omitempty" jsonschema:"entity name (exact after case folding)"`
 	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include facts below the assert floor"`
+}
+
+type getChunksArgs struct {
+	IDs        []string `json:"ids" jsonschema:"1–20 chunk ids from search hits"`
+	Neighbours int      `json:"neighbours,omitempty" jsonschema:"chunks before and after each requested chunk (default 0, maximum 2)"`
 }
 
 type traverseArgs struct {
@@ -233,24 +239,36 @@ func registerTools(s *Server, sdk *mcpgo.Server) {
 	}, s.handleStatus)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "search",
-		Description: "Full-text search over entity names and chunk text, with scores and snippets; entity hits fuse embeddings when the embedder is enabled.",
+		Description: "Full-text search over entity names and chunk text, with scores and snippets; entity hits fuse embeddings when the embedder is enabled. Start with limit 10.",
 	}, s.handleSearch)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "get_entity",
 		Description: "One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status). Low-confidence facts need include_low_confidence.",
 	}, s.handleGetEntity)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
+		Name:        "get_chunks",
+		Description: "Read full chunk text by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
+	}, s.handleGetChunks)
+	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "traverse",
-		Description: "Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts.",
+		Description: "Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. Start with limit 10.",
 	}, s.handleTraverse)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "list_documents",
-		Description: "List documents with metadata, optionally filtered by pipeline status.",
+		Description: "List documents with metadata, optionally filtered by pipeline status. Start with limit 10.",
 	}, s.handleListDocuments)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "cypher",
 		Description: "Run a guarded read-only Cypher query with the configured row cap and timeout; nodes and relationships come back as JSON objects.",
 	}, s.handleCypher)
+}
+
+func (s *Server) handleGetChunks(ctx context.Context, _ *mcpgo.CallToolRequest, args getChunksArgs) (*mcpgo.CallToolResult, chunkread.Result, error) {
+	if s.store == nil {
+		return nil, chunkread.Result{}, errNoStore
+	}
+	result, err := chunkread.Read(ctx, s.store, chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours})
+	return nil, result, err
 }
 
 func (s *Server) handleIngest(ctx context.Context, _ *mcpgo.CallToolRequest, args ingestArgs) (*mcpgo.CallToolResult, ingestOut, error) {

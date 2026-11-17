@@ -125,7 +125,7 @@ func TestToolsListExactNames(t *testing.T) {
 	for _, tool := range res.Tools {
 		got[tool.Name] = true
 	}
-	want := []string{"ingest", "status", "search", "get_entity", "traverse", "list_documents", "cypher"}
+	want := []string{"ingest", "status", "search", "get_entity", "get_chunks", "traverse", "list_documents", "cypher"}
 	if len(got) != len(want) {
 		t.Fatalf("tools = %v, want exactly %v", got, want)
 	}
@@ -133,6 +133,70 @@ func TestToolsListExactNames(t *testing.T) {
 		if !got[name] {
 			t.Errorf("tool %q missing", name)
 		}
+	}
+}
+
+func TestGetChunksTool(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	doc, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "text", Source: mcpSource(t), Hash: "zorbo-chunks"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.DeleteDocument(ctx, doc.ID) })
+	if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: 0, Text: "Zorbo begins."}, {Seq: 1, Text: "Quillon Ltd follows."}}); err != nil {
+		t.Fatal(err)
+	}
+	cs := connectInMemory(t, config.Config{}, st, nil)
+	res := callTool(t, cs, "get_chunks", map[string]any{"ids": []string{doc.ID + "-c0", "absent"}, "neighbours": 1})
+	out := structured[struct {
+		Chunks []struct {
+			ID, Text    string
+			NeighbourOf string `json:"neighbour_of"`
+		}
+		Meta map[string]json.RawMessage
+	}](t, res)
+	if len(out.Chunks) != 2 || out.Chunks[0].ID != doc.ID+"-c0" || out.Chunks[0].Text != "Zorbo begins." || out.Chunks[1].NeighbourOf != doc.ID+"-c0" {
+		t.Fatalf("chunks=%+v", out.Chunks)
+	}
+	if len(out.Meta) != 4 {
+		t.Fatalf("meta=%v", out.Meta)
+	}
+	for _, key := range []string{"returned", "missing", "truncated", "omitted_for_budget"} {
+		if _, ok := out.Meta[key]; !ok {
+			t.Errorf("meta lacks %s", key)
+		}
+	}
+	if string(out.Meta["returned"]) != "2" || string(out.Meta["missing"]) != `["absent"]` {
+		t.Fatalf("meta=%v", out.Meta)
+	}
+	for _, args := range []map[string]any{{"ids": []string{}}, {"ids": []string{"c1"}, "neighbours": -1}, {"ids": []string{"c1"}, "neighbours": 3}} {
+		if res := callTool(t, cs, "get_chunks", args); !res.IsError {
+			t.Errorf("accepted invalid args=%v", args)
+		}
+	}
+}
+
+func TestToolResultSizeGuidance(t *testing.T) {
+	cs := connectInMemory(t, config.Config{}, nil, nil)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"search": "Start with limit 10.", "traverse": "Start with limit 10.", "list_documents": "Start with limit 10.",
+		"get_chunks": "Read full chunk text by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
+	}
+	for _, tool := range res.Tools {
+		if desc, ok := want[tool.Name]; ok {
+			if !strings.Contains(tool.Description, desc) {
+				t.Errorf("%s description=%q, want %q", tool.Name, tool.Description, desc)
+			}
+			delete(want, tool.Name)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing tools=%v", want)
 	}
 }
 
@@ -558,13 +622,13 @@ func TestHTTPDefaultClientThroughAPIServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools through the api surface: %v", err)
 	}
-	if len(res.Tools) != 7 {
-		t.Errorf("tools = %d, want 7", len(res.Tools))
+	if len(res.Tools) != 8 {
+		t.Errorf("tools = %d, want 8", len(res.Tools))
 	}
 }
 
 // TestHTTPHandlerServesTools pins the streamable-HTTP path used by the
-// serve command: a real MCP client over HTTP lists the same seven tools.
+// serve command: a real MCP client over HTTP lists the same eight tools.
 func TestHTTPHandlerServesTools(t *testing.T) {
 	srv := NewServer(config.Config{}, nil, nil)
 	ts := httptest.NewServer(srv.HTTPHandler())
@@ -586,7 +650,7 @@ func TestHTTPHandlerServesTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools over http: %v", err)
 	}
-	if len(res.Tools) != 7 {
-		t.Errorf("tools over http = %d, want 7", len(res.Tools))
+	if len(res.Tools) != 8 {
+		t.Errorf("tools over http = %d, want 8", len(res.Tools))
 	}
 }

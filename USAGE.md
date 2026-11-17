@@ -132,8 +132,8 @@ MATCH (d:Document) RETURN d.source, d.status, d.title ORDER BY d.created_at DESC
 
 ## 3. Query from an agent (MCP)
 
-`gkg` is an MCP server (stdio and streamable HTTP) exposing seven tools:
-`ingest`, `status`, `search`, `get_entity`, `traverse`, `list_documents`,
+`gkg` is an MCP server (stdio and streamable HTTP) exposing eight tools:
+`ingest`, `status`, `search`, `get_entity`, `get_chunks`, `traverse`, `list_documents`,
 `cypher`. Configuration examples for OpenCode and Claude Desktop are in
 [docs/agent-setup.md](docs/agent-setup.md); the short version:
 
