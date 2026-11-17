@@ -40,3 +40,7 @@ docs/superpowers/
 # AWS deploy login material
 deploy/aws/box.htpasswd
 deploy/aws/box.netrc
+deploy/aws/box.domain-seed.json
+deploy/aws/box.stoplist.txt
+deploy/box-data/*
+!deploy/box-data/.gitignore

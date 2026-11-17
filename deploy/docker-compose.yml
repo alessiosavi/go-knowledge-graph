@@ -92,6 +92,7 @@ services:
       - "127.0.0.1:${GKG_PORT:-8080}:8080"
     volumes:
       - ../labels:/labels:ro
+      - ./box-data:/etc/gkg/data:ro
       - gkg-data:/var/lib/gkg
 
   # Local, fully-offline extraction: GLiNEREL sidecar with the

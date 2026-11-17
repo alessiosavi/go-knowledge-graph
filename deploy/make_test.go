@@ -606,3 +606,50 @@ func TestMakeEdgeConfigDigest(t *testing.T) {
 		digest = moved
 	}
 }
+
+func TestMakeBoxRebuildOperations(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"box-snapshot"}, "flock /run/gkg-ops.lock bash /opt/gkg/deploy/aws/box/snapshot.sh"},
+		{[]string{"deploy", "REF=abc123", "NO_ROLLBACK=1"}, "deploy.sh 'abc123' 'no-rollback'"},
+		{[]string{"deploy", "REF=abc123", "NO_ROLLBACK=0"}, "deploy.sh 'abc123'"},
+		{[]string{"box-policy"}, ""},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			h := newAWS(t)
+			h.ids()
+			cmd := exec.Command("/usr/bin/make", append([]string{"--no-print-directory", "-s"}, tc.args...)...)
+			cmd.Dir, cmd.Env = h.root, h.env
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make failed: %v: %s", err, out)
+			}
+			if h.read("unexpected") != "" {
+				t.Fatal("unexpected subprocess")
+			}
+			if tc.args[0] == "box-policy" {
+				if h.count("put-role-policy") != 1 || h.count("ec2") != 0 || h.count("attach-role-policy") != 0 {
+					t.Fatal("box-policy must only update the inline policy")
+				}
+			} else if !strings.Contains(h.read("payload"), tc.want) {
+				t.Fatalf("make omitted %s", tc.want)
+			}
+			if tc.args[0] == "deploy" && tc.args[2] == "NO_ROLLBACK=0" && strings.Contains(h.read("payload"), "no-rollback") {
+				t.Fatal("rollback disabled without NO_ROLLBACK=1")
+			}
+		})
+	}
+	// Inherited shell values do not count as explicit deployment switches.
+	h := newAWS(t)
+	h.ids()
+	cmd := exec.Command("/usr/bin/make", "-s", "deploy", "REF=abc123")
+	cmd.Dir, cmd.Env = h.root, append(h.env, "NO_ROLLBACK=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("make: %v: %s", err, out)
+	}
+	if strings.Contains(h.read("payload"), "no-rollback") {
+		t.Fatal("inherited NO_ROLLBACK disabled recovery")
+	}
+}

@@ -503,3 +503,36 @@ func TestComposeEdgeConfigDigest(t *testing.T) {
 		}
 	}
 }
+
+func TestComposeBoxData(t *testing.T) {
+	model := defaultCompose(t)
+	found := false
+	for _, mount := range model.Services["gkg"].Volumes {
+		if mount.Target == "/etc/gkg/data" {
+			found = mount.Type == "bind" && mount.Source == filepath.Join(repoRoot(t), "deploy/box-data") && mount.ReadOnly
+		}
+	}
+	if !found {
+		t.Fatal("gkg requires a read-only box-data bind mount")
+	}
+}
+
+func TestBoxDataIgnored(t *testing.T) {
+	for file, patterns := range map[string][]string{
+		".dockerignore": {"deploy/box-data", "deploy/aws/box.domain-seed.json", "deploy/aws/box.stoplist.txt"},
+		".gitignore":    {"deploy/box-data/*", "!deploy/box-data/.gitignore", "deploy/aws/box.domain-seed.json", "deploy/aws/box.stoplist.txt"},
+	} {
+		data, err := os.ReadFile(filepath.Join(repoRoot(t), file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, pattern := range patterns {
+			if !strings.Contains("\n"+string(data), "\n"+pattern+"\n") {
+				t.Errorf("%s omits %s", file, pattern)
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot(t), "deploy/box-data/.gitignore")); err != nil {
+		t.Fatal("box-data needs a tracked placeholder")
+	}
+}

@@ -173,13 +173,25 @@ AWS_REPLACE_A := 0
 ifeq ($(origin REPLACE_A),command line)
 AWS_REPLACE_A := $(REPLACE_A)
 endif
-.PHONY: up-cached box-provision box-dns box-dns-check box-docker box-env box-login box-secrets box-bootstrap deploy box-update box-teardown
+AWS_DEPLOY_OPTION :=
+ifeq ($(origin NO_ROLLBACK),command line)
+ifeq ($(NO_ROLLBACK),1)
+AWS_DEPLOY_OPTION := 'no-rollback'
+endif
+endif
+.PHONY: up-cached box-provision box-policy box-snapshot box-dns box-dns-check box-docker box-env box-login box-secrets box-bootstrap deploy box-update box-teardown
 
 up-cached: check-env check-edge repo-modes
 	@$(COMPOSE) up -d --wait --no-build --pull never --remove-orphans
 
 box-provision:
 	@bash deploy/aws/provision.sh
+
+box-policy:
+	@bash deploy/aws/provision.sh --policy-only
+
+box-snapshot:
+	@bash deploy/aws/remote.sh --snapshot
 
 box-dns:
 	@REPLACE_A=$(call quote,$(AWS_REPLACE_A)) bash deploy/aws/dns.sh
@@ -205,7 +217,7 @@ box-bootstrap:
 
 deploy:
 	@test -n $(call quote,$(AWS_REF)) || { printf '%s\n' 'gkg-box: REF required on command line'; exit 1; }
-	@bash deploy/aws/remote.sh deploy.sh $(call quote,$(AWS_REF))
+	@bash deploy/aws/remote.sh deploy.sh $(call quote,$(AWS_REF)) $(AWS_DEPLOY_OPTION)
 
 box-update:
 	@bash deploy/aws/remote.sh --update
