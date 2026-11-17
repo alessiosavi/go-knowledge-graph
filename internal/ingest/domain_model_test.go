@@ -168,3 +168,64 @@ func TestDomainsRequireAssignment(t *testing.T) {
 		t.Errorf("unassigned domain wrote %d mentions", n)
 	}
 }
+
+// elidedProvider emits an Italian elided article ("l'Acme") so hygiene has a
+// name to normalize.
+type elidedProvider struct{}
+
+func (elidedProvider) Name() string    { return "domain-test" }
+func (elidedProvider) Version() string { return "domain-test:1" }
+func (elidedProvider) Extract(_ context.Context, req extract.Request) ([]extract.ChunkResult, error) {
+	var out []extract.ChunkResult
+	for _, c := range req.Chunks {
+		out = append(out, extract.ChunkResult{ChunkID: c.ID, Mentions: []extract.Mention{
+			{Text: "l'Acme", Label: "organization", Start: 0, End: 6, Score: 0.9},
+			{Text: "Zorbo", Label: "location", Start: 10, End: 15, Score: 0.9},
+		}, Candidates: []extract.Candidate{{Label: "located_in", Head: 0, Tail: 1, Score: 0.9}}})
+	}
+	return out, nil
+}
+
+// TestHygieneDomainsConfirmation runs all three v4 write modes together:
+// hygiene normalizes "l'Acme" before the domain prefix, the fact is a
+// candidate whose judge input keeps the raw mention, and promotion connects
+// the normalized domain keys.
+func TestHygieneDomainsConfirmation(t *testing.T) {
+	mode := ingest.WriteMode{Hygiene: true, Domains: true, RequireConfirmation: true}
+	env := domainPipeline(t, mode)
+	env.p = ingest.NewPipeline(env.cfg, env.st, elidedProvider{}, nil, textLoader)
+	env.p.SetWriteMode(mode)
+	ctx := context.Background()
+	uri := os.Getenv(graphtest.URIEnv)
+	res, err := env.p.Submit(ctx, ingest.Input{Kind: "text", Source: t.Name() + "/a", Text: "l'Acme in Zorbo for 2026.", Labels: "domain-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := env.st.DeleteDocument(ctx, res.DocumentID); err != nil {
+			t.Error(err)
+		}
+	})
+	rawRecords(t, uri, fmt.Sprintf(`MATCH (d:Document {id:'%s'}) SET d.domain='a', d.domain_tok='%s' RETURN d.id`, res.DocumentID, domain.DomainToken("a")))
+	if err := env.p.Process(ctx, res.DocumentID); err != nil {
+		t.Fatal(err)
+	}
+	rows := rawRecords(t, uri, fmt.Sprintf(`MATCH (c:FactCandidate {doc_id:'%s'}) RETURN c.id AS id,c.input_hash AS hash,c.judge_input AS input,c.head_key AS head,c.tail_key AS tail`, res.DocumentID))
+	if len(rows) != 1 {
+		t.Fatalf("candidates=%d, want 1", len(rows))
+	}
+	if head, tail := testString(rows[0], "head"), testString(rows[0], "tail"); head != "@a:acme" || tail != "@a:zorbo" {
+		t.Fatalf("candidate keys = %q -> %q, want @a:acme -> @a:zorbo", head, tail)
+	}
+	if input := testString(rows[0], "input"); !strings.Contains(input, "l'Acme") {
+		t.Errorf("judge input %s lost the raw mention text", input)
+	}
+	ok, err := env.st.PromoteCandidate(ctx, testString(rows[0], "id"), testString(rows[0], "hash"))
+	if err != nil || !ok {
+		t.Fatalf("promote=%v,%v", ok, err)
+	}
+	edges := rawRecords(t, uri, fmt.Sprintf(`MATCH (h:Entity)-[r:located_in]->(z:Entity) WHERE r.doc_id='%s' RETURN h.key AS head,h.name AS name,z.key AS tail`, res.DocumentID))
+	if len(edges) != 1 || testString(edges[0], "head") != "@a:acme" || testString(edges[0], "tail") != "@a:zorbo" || testString(edges[0], "name") != "Acme" {
+		t.Fatalf("promoted fact=%+v", edges)
+	}
+}
