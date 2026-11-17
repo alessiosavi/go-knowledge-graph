@@ -252,6 +252,66 @@ func TestTraverseMissingStartErrors(t *testing.T) {
 	}
 }
 
+func TestChunkTextSearchPunctuation(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	docID := testUpsert(t, st, "file", uniqueSource(t), "hash-search-punctuation").ID
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, docID); err != nil {
+			t.Error(err)
+		}
+	})
+	// Hit assertions use invented words that no other fixture contains, so a
+	// shared test database cannot crowd the fixture out of the index's top
+	// 1,000 hits; queries made of common words only check for errors.
+	text := "The l'Acmezorb-Maxquill valve and Zorbquill's pump meet at a:b. Not here. Zorbèllo."
+	if err := st.PutChunks(ctx, docID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
+		t.Fatalf("PutChunks: %v", err)
+	}
+	for _, tt := range []struct {
+		query   string
+		wantHit bool
+	}{
+		{"l'Acmezorb-Maxquill", true},
+		{"Zorbquill's", true},
+		{"a:b", false},
+		{"(x", false},
+		{`"x`, false},
+		{"x AND", false},
+		{"Or not", false},
+		{"*", false},
+		{"  Caffè  Ünïcode ", false},
+		{"C++ / Go", false},
+		{"x and", false},
+		{"not", false},
+		{"x aNd", false},
+		{"oR nOt", false},
+		{"Zorbquill AND", true},
+		{"zorbquill or not", true},
+		{"Zorbèllo", true},
+		{"ZORBÈLLO", true},
+		{"Zorbe\u0300llo", true},
+	} {
+		t.Run(tt.query, func(t *testing.T) {
+			rows, err := st.ChunkTextSearch(ctx, tt.query, 1000)
+			if err != nil {
+				t.Fatalf("ChunkTextSearch(%q): %v", tt.query, err)
+			}
+			if tt.query == "*" && len(rows) != 0 {
+				t.Errorf("punctuation-only query returned %d hits, want 0", len(rows))
+			}
+			if tt.wantHit {
+				for _, row := range rows {
+					if row.ID == docID+"-c0" {
+						return
+					}
+				}
+				t.Errorf("ChunkTextSearch(%q) missing fixture chunk %s-c0", tt.query, docID)
+			}
+		})
+	}
+}
+
 func TestEnsureTextIndexesIdempotent(t *testing.T) {
 	st := graphtest.Store(t)
 	uri := os.Getenv(graphtest.URIEnv)

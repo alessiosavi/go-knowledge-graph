@@ -258,3 +258,29 @@ func TestSearchUsesQueryEmbedderWhenEnabled(t *testing.T) {
 		t.Errorf("hits = %+v, want the vector-seeded entity %s", hits, fx.entityID)
 	}
 }
+
+// countingEmbedder records whether the vector leg asked for an embedding.
+type countingEmbedder struct{ calls *int }
+
+func (c countingEmbedder) EmbedQuery(context.Context, string) ([]float64, error) {
+	*c.calls++
+	return []float64{1}, nil
+}
+
+// TestQueryWithoutWordsSkipsEveryLeg covers a query of punctuation only: it
+// matches nothing, and the vector leg must not return embedding neighbours
+// of punctuation. A nil store proves no leg touched the database.
+func TestQueryWithoutWordsSkipsEveryLeg(t *testing.T) {
+	calls := 0
+	for _, q := range []string{"*", "!!!", "':()+-/", "💡"} {
+		for _, kind := range []string{"entity", "chunk", "auto"} {
+			hits, err := search.Query(context.Background(), nil, countingEmbedder{&calls}, q, kind, 5)
+			if err != nil || hits == nil || len(hits) != 0 {
+				t.Errorf("Query(%q, %s) = %v, %v; want [], nil", q, kind, hits, err)
+			}
+		}
+	}
+	if calls != 0 {
+		t.Errorf("embedder called %d times, want 0", calls)
+	}
+}

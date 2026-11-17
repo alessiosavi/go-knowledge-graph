@@ -63,6 +63,12 @@ func Query(ctx context.Context, st *graph.Store, emb QueryEmbedder, q, kind stri
 	if strings.TrimSpace(q) == "" {
 		return nil, fmt.Errorf("search: empty query")
 	}
+	// A query with no searchable word (only punctuation or symbols) matches
+	// nothing: skip every leg, the vector leg included, rather than return
+	// embedding neighbours of punctuation.
+	if len(graph.TextQueryWords(q)) == 0 {
+		return []Hit{}, nil
+	}
 	if limit <= 0 {
 		limit = 20
 	}
@@ -173,7 +179,7 @@ func chunkHits(ctx context.Context, st *graph.Store, q string, limit int) ([]Hit
 			ID:      r.ID,
 			DocID:   r.DocID,
 			Title:   r.Title,
-			Snippet: Snippet(r.Text, q),
+			Snippet: Snippet(r.Text, snippetQuery(q)),
 		}
 	}
 	fused := FuseRanks([][]string{leg})
@@ -184,6 +190,17 @@ func chunkHits(ctx context.Context, st *graph.Store, q string, limit int) ([]Hit
 		hits = append(hits, h)
 	}
 	return topHits(hits, limit), nil
+}
+
+// snippetQuery returns the query's search words, longest first, so the
+// snippet centres on the most specific word the index matched (a raw query
+// such as "l'Acme-Max" never occurs verbatim in the text).
+func snippetQuery(q string) string {
+	words := graph.TextQueryWords(q)
+	sort.SliceStable(words, func(i, j int) bool {
+		return utf8.RuneCountInString(words[i]) > utf8.RuneCountInString(words[j])
+	})
+	return strings.Join(words, " ")
 }
 
 // topHits sorts by score descending (id as tiebreaker) and truncates.

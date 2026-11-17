@@ -339,6 +339,70 @@ func TestSearchEndpoint(t *testing.T) {
 	}
 }
 
+func TestSearchPunctuationREST(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: apiSource(t), Hash: "hash-api-search-punctuation"})
+	if err != nil {
+		t.Fatalf("UpsertDocument: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, res.ID); err != nil {
+			t.Error(err)
+		}
+	})
+	text := "The l'Acme-Max valve and Zorbo's pump meet at a:b. Not here."
+	if err := st.PutChunks(ctx, res.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
+		t.Fatalf("PutChunks: %v", err)
+	}
+	var ents []graph.EntityUpsert
+	for _, name := range []string{"l'Acme-Max", "Zorbo's"} {
+		ents = append(ents, graph.EntityUpsert{Key: graph.EntityKey(name + " " + res.ID), Name: name, Type: "organization"})
+	}
+	if err := st.UpsertExtraction(ctx, res.ID, res.ID+"-c0", "mock:1", ents, nil); err != nil {
+		t.Fatalf("UpsertExtraction: %v", err)
+	}
+	h := apiHandler(t, config.Config{}, st, nil)
+	for _, query := range []string{"l'Acme-Max", "Zorbo's", "a:b", "(x", `"x`, "x AND", "Or not", "*", "  Caffè  Ünïcode ", "C++ / Go", "x and", "not", "x aNd", "oR nOt"} {
+		for _, kind := range []string{"chunk", "entity", "auto"} {
+			t.Run(query+"/"+kind, func(t *testing.T) {
+				body, err := json.Marshal(map[string]any{"query": query, "kind": kind, "limit": 100})
+				if err != nil {
+					t.Fatal(err)
+				}
+				rr := doJSON(t, h, http.MethodPost, "/v1/search", string(body))
+				if rr.Code != http.StatusOK {
+					t.Fatalf("code = %d, want 200; body %s", rr.Code, rr.Body.String())
+				}
+				got := decode[searchResponse](t, rr)
+				if query == "*" && len(got.Hits) != 0 {
+					t.Errorf("punctuation-only query returned %d hits, want 0", len(got.Hits))
+				}
+				if query != "l'Acme-Max" && query != "Zorbo's" {
+					return
+				}
+				var foundEntity, foundChunk bool
+				for _, hit := range got.Hits {
+					for _, ent := range ents {
+						if ent.Name == query && hit.Kind == "entity" && hit.ID == graph.EntityID(ent.Key) {
+							foundEntity = true
+						}
+					}
+					if hit.Kind == "chunk" && hit.ID == res.ID+"-c0" {
+						foundChunk = true
+					}
+				}
+				if kind != "chunk" && !foundEntity {
+					t.Error("missing fixture entity")
+				}
+				if kind != "entity" && !foundChunk {
+					t.Error("missing fixture chunk")
+				}
+			})
+		}
+	}
+}
+
 func TestEntityEndpointExcludesLowConfidenceByDefault(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()
