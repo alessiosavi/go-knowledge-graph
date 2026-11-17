@@ -551,3 +551,14 @@ func TestRequireConfirmationNeedsJudgeAll(t *testing.T) {
 		})
 	}
 }
+
+func TestHygieneStoplistFile(t *testing.T) {
+	t.Setenv("GKG_INGEST_STOPLIST_FILE", "/private/stop.txt")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Ingest.StoplistFile != "/private/stop.txt" {
+		t.Fatalf("ingest.stoplist_file was not loaded from the environment")
+	}
+}

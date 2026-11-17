@@ -25,3 +25,12 @@ relations:
   - { name: configured_by, text: configured by, threshold: 0.25 }
   - { name: fixes, threshold: 0.25 }
   - { name: authored_by, text: authored by, threshold: 0.25 }
+
+# Generic entity-name hygiene. Private boilerplate belongs in the overlay file.
+code_tokens: true
+allowlist: [AI, EU, UK, US, UE, IT]
+stoplist:
+  exact: [Descrizione, Informazioni, Indice, Introduzione, Description, Information, Index, Introduction]
+  patterns:
+    - '^Sezione \d+$'
+    - '^Section \d+$'

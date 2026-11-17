@@ -24,7 +24,7 @@ func TestBuildExtractionNameIdentity(t *testing.T) {
 		},
 		Candidates: []extract.Candidate{{Label: "uses", Head: 1, Tail: 3, Score: 0.8}},
 	}
-	ents, facts, audits := p.buildExtraction(&graph.Document{ID: "doc"}, graph.Chunk{ID: "chunk"}, r, "test", nil)
+	ents, facts, audits := p.buildExtraction(&graph.Document{ID: "doc"}, graph.Chunk{ID: "chunk"}, rawExtraction(r), "test", nil)
 	if len(ents) != 2 {
 		t.Fatalf("entities = %+v, want two names regardless of type", ents)
 	}
@@ -53,7 +53,7 @@ func TestBuildExtractionSameSpanTwoLabels(t *testing.T) {
 			}
 			p := &Pipeline{cfg: config.Config{}}
 			ents, _, _ := p.buildExtraction(&graph.Document{ID: "doc"}, graph.Chunk{ID: "chunk"},
-				extract.ChunkResult{Mentions: mentions}, "test", nil)
+				rawExtraction(extract.ChunkResult{Mentions: mentions}), "test", nil)
 			want := []graph.MentionSpan{{Start: 0, End: 7, Type: "organization"}}
 			if len(ents) != 1 || ents[0].Key != "shopify" || ents[0].Type != "organization" || !slices.Equal(ents[0].Mentions, want) {
 				t.Errorf("scores %v, reverse %v: entities = %+v, want shopify with mentions %+v", scores, reverse, ents, want)
@@ -64,13 +64,13 @@ func TestBuildExtractionSameSpanTwoLabels(t *testing.T) {
 
 func TestBuildExtractionKeepsDistinctSpans(t *testing.T) {
 	p := &Pipeline{cfg: config.Config{}}
-	ents, _, _ := p.buildExtraction(&graph.Document{ID: "doc"}, graph.Chunk{ID: "chunk"}, extract.ChunkResult{
+	ents, _, _ := p.buildExtraction(&graph.Document{ID: "doc"}, graph.Chunk{ID: "chunk"}, rawExtraction(extract.ChunkResult{
 		Mentions: []extract.Mention{
 			{Label: "technology", Text: "Widget", Start: 0, End: 6, Score: 0.8},
 			{Label: "product", Text: "Widget", Start: 12, End: 18, Score: 0.8},
 			{Label: "organization", Text: "Widget", Start: 12, End: 18, Score: 0.6},
 		},
-	}, "test", nil)
+	}), "test", nil)
 	want := []graph.MentionSpan{{Start: 0, End: 6, Type: "technology"}, {Start: 12, End: 18, Type: "product"}}
 	if len(ents) != 1 || ents[0].Type != "product" || !slices.Equal(ents[0].Mentions, want) {
 		t.Errorf("entities = %+v, want best type product and mentions %+v", ents, want)
@@ -100,7 +100,7 @@ func testBuildExtractionSkipsEmptyKeys(t *testing.T, docScoped map[string]bool) 
 					{Label: "uses", Head: 1, Tail: 0, Score: 0.1},
 				},
 			}
-			ents, facts, audits := p.buildExtraction(&graph.Document{ID: "doc"}, graph.Chunk{ID: "chunk"}, r, "test", docScoped)
+			ents, facts, audits := p.buildExtraction(&graph.Document{ID: "doc"}, graph.Chunk{ID: "chunk"}, rawExtraction(r), "test", docScoped)
 			if len(ents) != 1 || ents[0].Key != "note" {
 				t.Errorf("entities = %+v, want only note", ents)
 			}
@@ -128,7 +128,7 @@ func TestBuildExtractionDocumentScope(t *testing.T) {
 	}
 	keys := make(map[string]bool)
 	for _, docID := range []string{"A", "B"} {
-		ents, facts, audits := p.buildExtraction(&graph.Document{ID: docID}, graph.Chunk{ID: docID + "-c0"}, r, "test", map[string]bool{"amount": true})
+		ents, facts, audits := p.buildExtraction(&graph.Document{ID: docID}, graph.Chunk{ID: docID + "-c0"}, rawExtraction(r), "test", map[string]bool{"amount": true})
 		amountKey := graph.ScopedEntityKey(docID, "€500")
 		organizationKey := graph.EntityKey("Shopify")
 		if len(ents) != 2 {

@@ -22,3 +22,11 @@ relations:
   - { name: depends_on, text: depends on, threshold: 0.2 }
   - { name: follows_up, text: follows up, threshold: 0.2 }
   - { name: owned_by, text: owned by, threshold: 0.2 }
+
+# Generic entity-name hygiene. Private boilerplate belongs in the overlay file.
+allowlist: [AI, EU, UK, US, UE, IT]
+stoplist:
+  exact: [Descrizione, Informazioni, Indice, Introduzione, Description, Information, Index, Introduction]
+  patterns:
+    - '^Sezione \d+$'
+    - '^Section \d+$'

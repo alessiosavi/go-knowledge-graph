@@ -812,3 +812,25 @@ ORDER BY ch.id LIMIT 1000`, map[string]any{"done": string(StatusDone), "domain":
 		}
 	}
 }
+
+// SetDocumentHygiene replaces the current extraction's durable counts. A retry
+// replaces the map rather than adding to counts from an earlier attempt.
+func (s *Store) SetDocumentHygiene(ctx context.Context, docID string, counts map[string]int) error {
+	values := make(map[string]any, len(counts))
+	for rule, n := range counts {
+		values[rule] = n
+	}
+	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		status, err := txDocumentStatus(ctx, tx, docID)
+		if err != nil {
+			return err
+		}
+		if status == StatusSuperseded {
+			return fmt.Errorf("graph: document %s: %w", docID, ErrSuperseded)
+		}
+		if err := txRun(ctx, tx, `MATCH (d:Document {id: $id}) SET d.hygiene = $counts`, map[string]any{"id": docID, "counts": values}); err != nil {
+			return fmt.Errorf("graph: set document hygiene: %w", err)
+		}
+		return nil
+	})
+}
