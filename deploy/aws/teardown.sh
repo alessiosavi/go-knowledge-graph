@@ -64,7 +64,7 @@ if [ "${PURGE:-0}" = 1 ]; then
     aws_ok_if NoSuchEntity aws iam delete-role --role-name "$role"
     box_id_set ROLE ''
   fi
-  for name in "/$NAME/env" "/$NAME/htpasswd"; do
+  for name in "/$NAME/env" "/$NAME/htpasswd" "/$NAME/domain-seed" "/$NAME/stoplist"; do
     if owned parameter "$name"; then aws_ok_if ParameterNotFound aws ssm delete-parameter --name "$name"; fi
   done
 fi

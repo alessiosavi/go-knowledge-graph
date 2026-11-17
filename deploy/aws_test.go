@@ -1,6 +1,7 @@
 package deploy_test
 
 import (
+	"archive/tar"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -225,6 +226,9 @@ func awsStub() {
 			if (mode == "env-fail" && val("--name") == "/gkg/env") || (mode == "auth-fail" && val("--name") == "/gkg/htpasswd") {
 				die("injected secret fetch failure")
 			}
+			if (mode == "env-denied" && val("--name") == "/gkg/env") || (mode == "auth-denied" && val("--name") == "/gkg/htpasswd") {
+				die("An error occurred (AccessDeniedException) when calling GetParameter")
+			}
 			switch strings.ReplaceAll(val("--name"), "/"+project+"/", "/gkg/") {
 			case "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64":
 				emit(`{"Parameter":{"Value":"ami-example"}}`)
@@ -232,6 +236,24 @@ func awsStub() {
 				emit("MEMGRAPH_PASSWORD=" + awsMarker + "\nGKG_API_KEY=" + awsMarker + "\n")
 			case "/gkg/htpasswd":
 				emit("deploy:" + awsMarker + "\n")
+			case "/gkg/domain-seed", "/gkg/stoplist":
+				if mode == "optional-denied" {
+					die("An error occurred (AccessDeniedException) when calling GetParameter")
+				}
+				if mode == "optional-access-denied" {
+					die("An error occurred (AccessDenied) when calling GetParameter")
+				}
+				if mode == "optional-error" {
+					die("An error occurred (InternalServerError) when calling GetParameter")
+				}
+				if mode != "optional-present" {
+					die("An error occurred (ParameterNotFound) when calling GetParameter")
+				}
+				if strings.HasSuffix(val("--name"), "/domain-seed") {
+					emit(`{"rules":[{"match":"acme:","domain":"acme"}]}` + "\n")
+				} else {
+					emit("quillon\n")
+				}
 			default:
 				unexpected()
 			}
@@ -463,6 +485,12 @@ func awsStub() {
 			emit(awsMarker + "\n")
 			os.WriteFile(val("EDGE_HTPASSWD"), nil, 0600)
 		case has("build"):
+			if os.Getenv("STUB_REBUILD_FAIL") == "1" {
+				if _, err := os.Stat(filepath.Join(dir, "built")); err == nil {
+					die("previous image rebuild failed")
+				}
+				os.WriteFile(filepath.Join(dir, "built"), nil, 0600)
+			}
 			if mode == "build-fail" {
 				if _, e := os.Stat(filepath.Join(dir, "build-failed")); e != nil {
 					os.WriteFile(filepath.Join(dir, "build-failed"), nil, 0600)
@@ -533,7 +561,49 @@ func awsStub() {
 		}
 		emit("200")
 	case "docker":
-		if has("version") {
+		if has("preflight") {
+			if code := os.Getenv("STUB_PREFLIGHT_EXIT"); code != "" {
+				n, _ := strconv.Atoi(code)
+				os.Exit(n)
+			}
+		} else if has("migrate") {
+			if !has("--schema-only") {
+				unexpected()
+			}
+			if mode == "migration-fail" {
+				die("migration failed")
+			}
+		} else if has("stop") && has("gkg") {
+			if mode == "stop-fail" {
+				die("stop failed")
+			}
+		} else if has("exec") && has("memgraph") && has("sh") {
+			// Execute the container shell against a private filesystem fixture.
+			// Only the Docker boundary is replaced; selection and tar run for real.
+			start := 0
+			for i, arg := range a {
+				if arg == "memgraph" {
+					start = i + 1
+					break
+				}
+			}
+			if start == 0 || a[start] != "sh" || a[start+1] != "-c" {
+				unexpected()
+			}
+			inner := append([]string(nil), a[start+1:]...)
+			for i := range inner {
+				inner[i] = strings.ReplaceAll(inner[i], "/var/lib/memgraph/snapshots", filepath.Join(dir, "snapshots"))
+			}
+			c := exec.Command("/bin/sh", inner...)
+			c.Env = []string{"PATH=" + filepath.Join(dir, "container-bin"), "TMPDIR=" + dir, "STUB_DIR=" + dir, "STUB_MODE=" + mode, "MEMGRAPH_USER=fixture-user", "MEMGRAPH_PASSWORD=" + awsMarker}
+			c.Stdout, c.Stderr, c.Stdin = os.Stdout, os.Stderr, os.Stdin
+			if err := c.Run(); err != nil {
+				if ee, ok := err.(*exec.ExitError); ok {
+					os.Exit(ee.ExitCode())
+				}
+				unexpected()
+			}
+		} else if has("version") {
 			if has("compose") {
 				emit("5.7.0\n")
 			} else if mode == "engine-wrong" {
@@ -549,10 +619,38 @@ func awsStub() {
 			os.WriteFile(filepath.Join(dir, "bcrypt-stdin"), b, 0600)
 			emit("deploy:$2y$synthetic-hash\n")
 		} else if has("printenv") && has("GKG_API_KEY") {
+			if mode == "bearer-fail" {
+				die("bearer read failed")
+			}
+			if mode == "bearer-empty" {
+				break
+			}
 			emit(awsMarker + "\n")
 		} else if has("certbot") {
 		} else {
 			unexpected()
+		}
+	case "chown":
+		if len(a) != 2 || (a[0] != "10001:10001" && a[0] != "0:0") {
+			unexpected()
+		}
+	case "df":
+		available := "2"
+		if mode == "snapshot-disk-full" {
+			available = "1"
+		}
+		emit("Filesystem 1024-blocks Used Available Capacity Mounted on\nfixture 100 0 " + available + " 0% /\n")
+	case "mkdir", "mktemp", "mv":
+		// Virtualize only the fixed host backup directory. Everything else is
+		// still an ordinary operation within the harness's temporary directory.
+		mapped := append([]string(nil), a...)
+		for i := range mapped {
+			mapped[i] = strings.ReplaceAll(mapped[i], "/var/backups/gkg", filepath.Join(dir, "backups"))
+		}
+		c := exec.Command(filepath.Join(dir, "real-"+name), mapped...)
+		c.Stdout, c.Stderr = os.Stdout, os.Stderr
+		if err := c.Run(); err != nil {
+			die("backup filesystem operation failed")
 		}
 	case "sleep":
 	case "fallocate":
@@ -631,7 +729,7 @@ func newAWS(t *testing.T) *awsHarness {
 	h.bin = filepath.Join(h.dir, "bin")
 	os.MkdirAll(filepath.Join(h.root, "deploy/aws/box"), 0700)
 	os.MkdirAll(h.bin, 0700)
-	for _, n := range []string{"bash", "awk", "cat", "chmod", "cmp", "dirname", "date", "grep", "head", "jq", "mkdir", "mktemp", "mv", "rm", "sed", "sort", "tr", "wc"} {
+	for _, n := range []string{"bash", "awk", "cat", "chmod", "cksum", "cmp", "dirname", "date", "grep", "head", "jq", "mkdir", "mktemp", "mv", "rm", "sed", "sort", "tr", "wc"} {
 		path, err := exec.LookPath(n)
 		if err != nil {
 			t.Fatalf("required local utility %s missing", n)
@@ -670,7 +768,7 @@ func newAWS(t *testing.T) *awsHarness {
 		t.Fatal(e)
 	}
 	stub := "#!/bin/bash\nprintf '%s|%s|%s\\n' \"${0##*/}\" \"${1:-}\" \"$(umask)\" >>\"$STUB_DIR/masks\"\nexport GKG_AWS_STUB=1\nexec \"$AWS_TEST_BINARY\" -- \"$0\" \"$@\"\n"
-	for _, n := range []string{"aws", "docker", "dig", "curl", "make", "openssl", "git", "sleep", "dnf", "systemctl", "install", "swapon", "mkswap", "fallocate", "sha256sum", "reboot", "go", "rpm", "tar", "groupadd", "modprobe", "sysctl", "systemd-run"} {
+	for _, n := range []string{"aws", "docker", "dig", "curl", "make", "openssl", "git", "sleep", "dnf", "systemctl", "install", "swapon", "mkswap", "fallocate", "sha256sum", "reboot", "go", "rpm", "tar", "groupadd", "modprobe", "sysctl", "systemd-run", "chown", "df"} {
 		os.WriteFile(filepath.Join(h.bin, n), []byte(stub), 0700)
 	}
 	config := "AWS_PROFILE=example\nAWS_REGION=eu-west-1\nEXPECTED_ACCOUNT=123456789012\nVPC_ID=vpc-0example\nSUBNET_ID=subnet-example\nNAME=gkg\nHOSTNAME=gkg.example.com\nHOSTED_ZONE_ID=ZEXAMPLE\nINSTANCE_TYPE=t3a.xlarge\nDISK_GB=100\nREPO_URL=https://github.com/example/gkg.git\n"
@@ -846,9 +944,9 @@ func TestAWSIAMAndLaunch(t *testing.T) {
 	if e := json.Unmarshal([]byte(h.read("policy")), &p); e != nil {
 		t.Fatal("invalid IAM policy")
 	}
-	wantARNs := []string{"arn:aws:ssm:eu-west-1:123456789012:parameter/gkg/env", "arn:aws:ssm:eu-west-1:123456789012:parameter/gkg/htpasswd"}
-	if len(p.Statement) != 2 || !reflect.DeepEqual(p.Statement[0].Resource, wantARNs) || p.Statement[0].Effect != "Allow" || p.Statement[1].Effect != "Deny" || !reflect.DeepEqual(p.Statement[0].Resource, p.Statement[1].NotResource) || len(p.Statement[0].Resource) != 2 || !strings.Contains(fmt.Sprint(p.Statement[1].Action), "ssm:GetParameter*") {
-		t.Fatal("two-parameter Allow and explicit NotResource Deny required")
+	wantARNs := []string{"arn:aws:ssm:eu-west-1:123456789012:parameter/gkg/env", "arn:aws:ssm:eu-west-1:123456789012:parameter/gkg/htpasswd", "arn:aws:ssm:eu-west-1:123456789012:parameter/gkg/domain-seed", "arn:aws:ssm:eu-west-1:123456789012:parameter/gkg/stoplist"}
+	if len(p.Statement) != 2 || !reflect.DeepEqual(p.Statement[0].Resource, wantARNs) || p.Statement[0].Effect != "Allow" || p.Statement[1].Effect != "Deny" || !reflect.DeepEqual(p.Statement[0].Resource, p.Statement[1].NotResource) || !strings.Contains(fmt.Sprint(p.Statement[1].Action), "ssm:GetParameter*") {
+		t.Fatal("four-parameter Allow and explicit NotResource Deny required")
 	}
 	for _, a := range h.calls() {
 		s := strings.Join(a, " ")
@@ -1080,8 +1178,8 @@ func TestAWSFetchSecrets(t *testing.T) {
 	if e != nil || !strings.Contains(string(b), awsMarker) {
 		t.Fatal("htpasswd not installed")
 	}
-	if h.count("get-parameter") != 2 {
-		t.Fatal("must read exactly two parameters")
+	if h.count("get-parameter") != 4 {
+		t.Fatal("must read two required and two optional parameters")
 	}
 }
 func TestAWSRemoteProtocol(t *testing.T) {
@@ -1278,7 +1376,7 @@ func TestAWSDeployHealthGate(t *testing.T) {
 	h := newAWS(t)
 	os.WriteFile(filepath.Join(h.root, ".deployed-sha"), []byte("prev123\n"), 0600)
 	h.ok("box/deploy.sh", "next123")
-	if h.count("get-parameter") != 2 || h.count("-H @") == 0 {
+	if h.count("get-parameter") != 4 || h.count("-H @") == 0 {
 		t.Fatal("deploy did not refresh secrets and use a header file")
 	}
 	h = newAWS(t)
@@ -1787,6 +1885,473 @@ func TestAWSUpdateReconnect(t *testing.T) {
 				if h.count(path) == 0 {
 					t.Fatalf("update missing edge check %s", path)
 				}
+			}
+		})
+	}
+}
+
+func TestAWSPolicyOnly(t *testing.T) {
+	h := newAWS(t)
+	h.ok("provision.sh", "--policy-only")
+	for _, call := range h.calls() {
+		op := strings.Join(call[:3], " ")
+		if op != "aws sts get-caller-identity" && op != "aws iam get-role" && op != "aws iam put-role-policy" {
+			t.Fatalf("policy-only reached %s", op)
+		}
+	}
+	if h.count("get-role --role-name gkg-ssm-role") != 2 {
+		t.Fatal("policy-only must inspect the role and check project ownership before writing")
+	}
+	if h.count("put-role-policy") != 1 || h.read("ids") != "" {
+		t.Fatal("policy-only must update just the inline policy without metadata writes")
+	}
+	var p struct {
+		Statement []struct{ Resource, NotResource []string }
+	}
+	if json.Unmarshal([]byte(h.read("policy")), &p) != nil || len(p.Statement) != 2 || len(p.Statement[0].Resource) != 4 || !reflect.DeepEqual(p.Statement[0].Resource, p.Statement[1].NotResource) {
+		t.Fatal("policy-only omitted parameter ARNs")
+	}
+}
+
+func TestAWSPolicyOnlyRefusesForeignRole(t *testing.T) {
+	h := newAWS(t)
+	h.mode("foreign")
+	out, code := h.run("provision.sh", "--policy-only")
+	if code == 0 || !strings.Contains(out, "IAM role is not project-owned") {
+		t.Fatalf("policy-only must refuse an untagged role: exit=%d: %s", code, out)
+	}
+	for _, call := range h.calls() {
+		op := strings.Join(call[:3], " ")
+		if op != "aws sts get-caller-identity" && op != "aws iam get-role" {
+			t.Fatalf("unowned role reached %s", op)
+		}
+	}
+	if h.read("policy") != "" || h.read("ids") != "" {
+		t.Fatal("unowned role must leave policy and metadata untouched")
+	}
+}
+
+func TestAWSOptionalUpload(t *testing.T) {
+	for _, present := range []bool{false, true} {
+		t.Run(fmt.Sprint(present), func(t *testing.T) {
+			h := newAWS(t)
+			h.write("secrets.env", "MEMGRAPH_PASSWORD="+awsMarker+"\nGKG_API_KEY="+awsMarker+"\n")
+			h.write("htpasswd", "deploy:"+awsMarker+"\n")
+			fixtures := map[string]string{"domain-seed": `{"rules":[{"match":"acme:","domain":"acme"}]}`, "stoplist": "quillon\n"}
+			if present {
+				for kind, value := range fixtures {
+					ext := ".txt"
+					if kind == "domain-seed" {
+						ext = ".json"
+					}
+					h.write("repo/deploy/aws/box."+kind+ext, value)
+				}
+			}
+			out := h.ok("upload-secrets.sh")
+			want := 2
+			if present {
+				want = 4
+			}
+			if h.count("put-parameter") != want || h.count("add-tags-to-resource") != want {
+				t.Fatal("optional files were skipped or missing files uploaded")
+			}
+			for kind, value := range fixtures {
+				if !present {
+					if !strings.Contains(out, kind) || !strings.Contains(out, "skip") {
+						t.Fatal("missing optional file needs a note")
+					}
+					continue
+				}
+				var request struct {
+					Name, Type, Value, Tier string
+					Overwrite               bool
+				}
+				if json.Unmarshal([]byte(h.read("uploaded-"+kind)), &request) != nil || request.Name != "/gkg/"+kind || request.Value != value || request.Type != "SecureString" || request.Tier != "Standard" || !request.Overwrite {
+					t.Fatalf("invalid optional %s upload", kind)
+				}
+			}
+		})
+	}
+}
+
+func TestAWSOptionalUploadSize(t *testing.T) {
+	for _, file := range []string{"box.domain-seed.json", "box.stoplist.txt"} {
+		for _, size := range []int{4096, 4097} {
+			t.Run(fmt.Sprintf("%s/%d", file, size), func(t *testing.T) {
+				h := newAWS(t)
+				h.write("secrets.env", "MEMGRAPH_PASSWORD=x\nGKG_API_KEY=y\n")
+				h.write("htpasswd", "deploy:hash\n")
+				h.write("repo/deploy/aws/"+file, strings.Repeat("x", size))
+				out, code := h.run("upload-secrets.sh")
+				if size == 4096 {
+					if code != 0 || h.count("put-parameter") != 3 {
+						t.Fatalf("4096-byte file rejected: %s", out)
+					}
+				} else if code == 0 || !strings.Contains(out, "4097") || h.count("put-parameter") != 0 {
+					t.Fatalf("oversize file must fail before uploading with byte count: %s", out)
+				}
+			})
+		}
+	}
+}
+
+func TestAWSOptionalFetch(t *testing.T) {
+	for _, mode := range []string{"optional-present", "", "optional-denied", "optional-access-denied", "optional-error"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newAWS(t)
+			h.mode(mode)
+			data := filepath.Join(h.root, "deploy/box-data")
+			os.MkdirAll(data, 0700)
+			for _, file := range []string{"domain-seed.json", "stoplist.txt"} {
+				os.WriteFile(filepath.Join(data, file), []byte("stale"), 0600)
+			}
+			out, code := h.run("box/fetch-secrets.sh")
+			if mode == "optional-error" {
+				if code == 0 {
+					t.Fatal("access denied treated as an absent parameter")
+				}
+				b, _ := os.ReadFile(filepath.Join(data, "domain-seed.json"))
+				if string(b) != "stale" {
+					t.Fatal("fetch error removed a live file")
+				}
+				return
+			}
+			if code != 0 {
+				t.Fatalf("fetch exit=%d: %s", code, out)
+			}
+			if mode == "optional-denied" || mode == "optional-access-denied" {
+				lines := strings.Split(strings.TrimSpace(out), "\n")
+				if len(lines) != 2 {
+					t.Fatalf("need one note per unreadable optional parameter: %s", out)
+				}
+				for i, kind := range []string{"domain-seed", "stoplist"} {
+					if !strings.Contains(lines[i], "/gkg/"+kind) || !strings.Contains(lines[i], "not readable") || !strings.Contains(lines[i], "make box-policy") {
+						t.Fatalf("unreadable optional parameter needs policy recovery note: %s", lines[i])
+					}
+				}
+			}
+			info, err := os.Stat(data)
+			if err != nil || info.Mode().Perm() != 0755 || h.count("chown 0:0 "+data) != 1 {
+				t.Fatal("data directory must be root-owned and traversable")
+			}
+			for _, file := range []string{"domain-seed.json", "stoplist.txt"} {
+				path := filepath.Join(data, file)
+				info, err := os.Stat(path)
+				if mode != "optional-present" {
+					if !os.IsNotExist(err) {
+						t.Fatal("absent parameter retained a stale file")
+					}
+				} else if err != nil || info.Mode().Perm() != 0400 {
+					t.Fatal("optional data must have mode 0400")
+				}
+			}
+			if mode == "optional-present" && h.count("chown 10001:10001") != 2 {
+				t.Fatal("optional files not assigned to container uid 10001")
+			}
+		})
+	}
+}
+
+func TestAWSRequiredFetchDenied(t *testing.T) {
+	for _, tc := range []struct{ mode, message string }{
+		{"env-denied", "environment fetch failed"},
+		{"auth-denied", "password fetch failed"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			h := newAWS(t)
+			h.mode(tc.mode)
+			h.write("runtime.env", "old environment\n")
+			if err := os.MkdirAll(filepath.Join(h.root, "deploy/edge"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			h.write("repo/deploy/edge/htpasswd", "old password\n")
+			out, code := h.run("box/fetch-secrets.sh")
+			if code == 0 || !strings.Contains(out, tc.message) || strings.Contains(out, "make box-policy") {
+				t.Fatalf("required parameter denial must fail: exit=%d: %s", code, out)
+			}
+			if h.read("runtime.env") != "old environment\n" || h.read("repo/deploy/edge/htpasswd") != "old password\n" || h.count("--name /gkg/domain-seed") != 0 {
+				t.Fatal("required parameter denial must preserve secrets and stop before optional reads")
+			}
+		})
+	}
+}
+
+func TestAWSRebuildEnvAllowlist(t *testing.T) {
+	h := newAWS(t)
+	h.write("source.env", "GKG_DOMAIN_SEED_FILE=/etc/gkg/data/domain-seed.json\nGKG_DOMAIN_TAU=0.05\nGKG_FACTS_REQUIRE_CONFIRMATION=true\nGKG_FACTS_ALLOW_UNVERIFIED_READS=false\nGKG_INGEST_STOPLIST_FILE=/etc/gkg/data/stoplist.txt\nGKG_API_KEY=do-not-forward\n")
+	h.ok("make-box-env.sh")
+	for _, line := range strings.Split(strings.TrimSpace(h.read("source.env")), "\n")[:5] {
+		if !strings.Contains(h.read("secrets.env"), line+"\n") {
+			t.Fatalf("allowlist dropped %s", strings.Split(line, "=")[0])
+		}
+	}
+	if strings.Contains(h.read("secrets.env"), "do-not-forward") {
+		t.Fatal("source API key crossed the allowlist")
+	}
+}
+
+func TestAWSRemoteRebuildOperations(t *testing.T) {
+	for _, args := range [][]string{{"deploy.sh", "abc123", "no-rollback"}, {"--snapshot"}} {
+		h := newAWS(t)
+		h.ids()
+		h.ok("remote.sh", args...)
+		want := "flock /run/gkg-ops.lock bash /opt/gkg/deploy/aws/box/snapshot.sh"
+		if args[0] == "deploy.sh" {
+			want = "flock /run/gkg-ops.lock bash /opt/gkg/deploy/aws/box/deploy.sh 'abc123' 'no-rollback'"
+		}
+		if !strings.Contains(h.read("payload"), want) {
+			t.Fatalf("remote payload omitted %s", want)
+		}
+	}
+	for _, flag := range []string{"rollback", "--no-rollback", "", "no-rollback/extra"} {
+		h := newAWS(t)
+		h.ids()
+		_, code := h.run("remote.sh", "deploy.sh", "abc123", flag)
+		if code == 0 || h.count("send-command") != 0 {
+			t.Fatal("unsupported deploy argument reached SSM")
+		}
+	}
+}
+
+func TestAWSDeployPreflight(t *testing.T) {
+	for _, tc := range []struct {
+		preflight    int
+		mode         string
+		rebuildFails bool
+	}{
+		{0, "", false}, {2, "", false}, {3, "", false}, {7, "", false}, {42, "", false}, {10, "", false},
+		{10, "stop-fail", false},
+		{3, "", true}, {7, "", true}, {42, "", true}, {10, "stop-fail", true},
+	} {
+		t.Run(fmt.Sprintf("%d/%s/rebuild-fails=%t", tc.preflight, tc.mode, tc.rebuildFails), func(t *testing.T) {
+			h := newAWS(t)
+			preflight := tc.preflight
+			h.mode(tc.mode)
+			h.env = append(h.env, "STUB_PREFLIGHT_EXIT="+strconv.Itoa(preflight))
+			if tc.rebuildFails {
+				h.env = append(h.env, "STUB_REBUILD_FAIL=1")
+			}
+			h.write("repo/.deployed-sha", "prev123\n")
+			out, code := h.run("box/deploy.sh", "next123")
+			aborted := preflight == 3 || preflight == 7 || preflight == 42 || tc.mode == "stop-fail"
+			if (code != 0) != aborted {
+				t.Fatalf("preflight %d exit=%d: %s", preflight, code, out)
+			}
+			prefix := "compose --env-file " + filepath.Join(h.dir, "runtime.env") + " -f deploy/docker-compose.yml "
+			if h.count(prefix+"run --rm -T --no-deps gkg preflight") != 1 {
+				t.Error("new image preflight must disable TTY and use the deploy environment")
+			}
+			if preflight == 10 && tc.mode != "stop-fail" && h.count(prefix+"run --rm -T --no-deps gkg migrate --schema-only") != 1 {
+				t.Error("schema-only migration must disable TTY and use the deploy environment")
+			}
+			calls := h.calls()
+			index := func(s string) int {
+				for i, call := range calls {
+					if strings.Contains(strings.Join(call, " "), s) {
+						return i
+					}
+				}
+				return -1
+			}
+			if index("make build") >= index("gkg preflight") {
+				t.Fatal("preflight ran before build")
+			}
+			if aborted {
+				wantStop := 0
+				if tc.mode == "stop-fail" {
+					wantStop = 1
+				}
+				if h.count("make up") != 0 || h.count("stop gkg") != wantStop || h.count("gkg migrate") != 0 || h.count("checkout --detach prev123") != 1 || h.read("repo/.deployed-sha") != "prev123\n" {
+					t.Fatal("failed preflight mutated the live stack or retained the new revision")
+				}
+				checkout := index("checkout --detach prev123")
+				if h.count("make build") != 2 || checkout+1 >= len(calls) || strings.Join(calls[checkout+1], " ") != "make build" {
+					t.Fatal("preflight abort must rebuild previous image tags after restoring checkout")
+				}
+				wantMessage := fmt.Sprintf("preflight failed (exit %d); previous revision and image tags restored", preflight)
+				if preflight == 3 {
+					wantMessage = "seed required; previous revision and image tags restored"
+				} else if tc.mode == "stop-fail" {
+					wantMessage = "stop gkg failed; previous revision and image tags restored"
+				}
+				if tc.rebuildFails {
+					wantMessage = "previous image rebuild failed; recovery required"
+				}
+				if !strings.Contains(out, wantMessage) {
+					t.Fatalf("preflight recovery omitted %q: %s", wantMessage, out)
+				}
+			} else if preflight == 10 {
+				stop, migrate, up := index(prefix+"stop gkg"), index(prefix+"run --rm -T --no-deps gkg migrate --schema-only"), index("make up")
+				if stop <= index("gkg preflight") || migrate <= stop || up <= migrate {
+					t.Fatal("migration must run with gkg stopped before startup")
+				}
+			} else if h.count("gkg migrate") != 0 || h.count("stop gkg") != 0 || h.count("make up") != 1 {
+				t.Fatal("current/older image did not take the normal startup path")
+			}
+		})
+	}
+}
+
+func TestAWSDeployMigrationFailure(t *testing.T) {
+	h := newAWS(t)
+	h.mode("migration-fail")
+	h.env = append(h.env, "STUB_PREFLIGHT_EXIT=10")
+	h.write("repo/.deployed-sha", "prev123\n")
+	out, code := h.run("box/deploy.sh", "next123")
+	if code == 0 || h.count("gkg migrate --schema-only") != 1 || h.count("make up") != 0 || h.count("checkout --detach prev123") != 0 || h.read("repo/.deployed-sha") != "prev123\n" {
+		t.Fatal("migration failure rolled back or started the stack")
+	}
+	for _, part := range []string{"recovery", "snapshot", "/var/backups/gkg", "prev123", "automatic rollback withheld after schema migration"} {
+		if !strings.Contains(out, part) {
+			t.Fatalf("recovery omitted %s: %s", part, out)
+		}
+	}
+}
+
+func TestAWSDeployMigratedRecovery(t *testing.T) {
+	for _, flag := range []string{"", "no-rollback"} {
+		for _, tc := range []struct{ mode, message string }{
+			{"up-fail", "stack startup failed"},
+			{"bearer-fail", "read effective bearer failed"},
+			{"bearer-empty", "effective bearer missing"},
+			{"health-fail", "loopback readiness failed"},
+		} {
+			t.Run(tc.mode+"/"+flag, func(t *testing.T) {
+				h := newAWS(t)
+				h.mode(tc.mode)
+				h.env = append(h.env, "STUB_PREFLIGHT_EXIT=10")
+				h.write("repo/.deployed-sha", "prev123\n")
+				args := []string{"next123"}
+				if flag != "" {
+					args = append(args, flag)
+				}
+				out, code := h.run("box/deploy.sh", args...)
+				if code == 0 || h.count("gkg migrate --schema-only") != 1 || h.count("make up") != 1 || h.count("make build") != 1 || h.count("checkout --detach prev123") != 0 {
+					t.Fatalf("post-migration failure must withhold rollback: exit=%d: %s", code, out)
+				}
+				for _, part := range []string{tc.message, "manual recovery required", "automatic rollback withheld after schema migration", "/var/backups/gkg", "prev123"} {
+					if !strings.Contains(out, part) {
+						t.Fatalf("post-migration recovery omitted %s: %s", part, out)
+					}
+				}
+				if strings.Contains(out, "automatic rollback disabled") || h.read("repo/.deployed-sha") != "prev123\n" {
+					t.Fatal("post-migration failure misreported recovery or changed deployed SHA")
+				}
+			})
+		}
+	}
+}
+
+func TestAWSDeployNoRollback(t *testing.T) {
+	for _, mode := range []string{"", "up-fail", "health-fail"} {
+		h := newAWS(t)
+		h.mode(mode)
+		h.write("repo/.deployed-sha", "prev123\n")
+		out, code := h.run("box/deploy.sh", "next123", "no-rollback")
+		if (code == 0) != (mode == "") || h.count("make up") != 1 || h.count("make build") != 1 || h.count("checkout --detach prev123") != 0 {
+			t.Fatalf("no-rollback mode=%s exit=%d: %s", mode, code, out)
+		}
+		if mode != "" && (!strings.Contains(out, "recovery") || !strings.Contains(out, "snapshot") || !strings.Contains(out, "automatic rollback disabled") || h.read("repo/.deployed-sha") != "prev123\n") {
+			t.Fatal("failed no-rollback deploy needs recovery instructions and unchanged marker")
+		}
+	}
+	h := newAWS(t)
+	h.write("repo/.deployed-sha", "prev123\n")
+	_, code := h.run("box/deploy.sh", "next123", "bogus")
+	if code == 0 || h.count("git fetch") != 0 {
+		t.Fatal("invalid rollback option accepted")
+	}
+}
+
+func TestAWSTeardownOptionalParameters(t *testing.T) {
+	h := newAWS(t)
+	h.ids()
+	h.env = append(h.env, "YES=1", "PURGE=1")
+	h.ok("teardown.sh")
+	for _, kind := range []string{"env", "htpasswd", "domain-seed", "stoplist"} {
+		if h.count("ssm delete-parameter --name /gkg/"+kind) != 1 {
+			t.Fatalf("purge omitted %s", kind)
+		}
+	}
+}
+
+func TestAWSSnapshot(t *testing.T) {
+	for _, mode := range []string{"", "snapshot-mg-fail", "snapshot-no-new", "snapshot-disk-full"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newAWS(t)
+			h.mode(mode)
+			containerBin := filepath.Join(h.dir, "container-bin")
+			os.MkdirAll(containerBin, 0700)
+			os.MkdirAll(filepath.Join(h.dir, "snapshots"), 0700)
+			h.write("snapshots/old", "old snapshot")
+			future := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+			os.Chtimes(filepath.Join(h.dir, "snapshots/old"), future, future)
+			for _, name := range []string{"find", "ls", "sort", "head", "tail", "stat", "tar", "mktemp", "rm", "cat", "awk", "grep", "touch", "wc"} {
+				path, err := exec.LookPath(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				os.Symlink(path, filepath.Join(containerBin, name))
+			}
+			console := `#!/bin/sh
+[ "$1" = --username ] && [ "$2" = "$MEMGRAPH_USER" ] && [ "$3" = --password ] && [ "$4" = "$MEMGRAPH_PASSWORD" ] || exit 71
+[ "$(cat)" = 'CREATE SNAPSHOT;' ] || exit 72
+[ "$STUB_MODE" != snapshot-mg-fail ] || { echo "$MEMGRAPH_PASSWORD" >&2; exit 42; }
+[ "$STUB_MODE" != snapshot-no-new ] || exit 0
+printf 'first' > "$STUB_DIR/snapshots/new_a"
+printf '%01024d' 0 > "$STUB_DIR/snapshots/new_b"
+touch -t 202601010001 "$STUB_DIR/snapshots/new_a"
+touch -t 202601010002 "$STUB_DIR/snapshots/new_b"
+echo 'Snapshot created'
+`
+			os.WriteFile(filepath.Join(containerBin, "mgconsole"), []byte(console), 0700)
+			for _, name := range []string{"mkdir", "mktemp", "mv"} {
+				path, err := exec.LookPath(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// A wrapper, not a renamed symlink: multi-call coreutils
+				// (uutils on CI) refuse to run under a foreign argv[0].
+				wrapper := fmt.Sprintf("#!/bin/sh\nexec %q \"$@\"\n", path)
+				if err := os.WriteFile(filepath.Join(h.dir, "real-"+name), []byte(wrapper), 0700); err != nil {
+					t.Fatal(err)
+				}
+				os.Remove(filepath.Join(h.bin, name))
+				stub, _ := os.ReadFile(filepath.Join(h.bin, "aws"))
+				os.WriteFile(filepath.Join(h.bin, name), stub, 0700)
+			}
+			out, code := h.run("box/snapshot.sh")
+			if (code == 0) != (mode == "") {
+				t.Fatalf("snapshot mode=%s exit=%d: %s", mode, code, out)
+			}
+			archives, _ := filepath.Glob(filepath.Join(h.dir, "backups/*.tar"))
+			if mode != "" {
+				if len(archives) != 0 {
+					t.Fatal("failed snapshot published an archive")
+				}
+				return
+			}
+			if len(archives) != 1 || h.count("/var/backups/gkg") == 0 || !strings.Contains(out, "/var/backups/gkg/") {
+				t.Fatal("snapshot archive must be outside the repo under /var/backups/gkg")
+			}
+			if !regexp.MustCompile(`^[0-9]{8}T[0-9]{6}Z\.tar$`).MatchString(filepath.Base(archives[0])) {
+				t.Fatal("backup filename must be a UTC timestamp")
+			}
+			info, _ := os.Stat(archives[0])
+			if info.Mode().Perm() != 0600 {
+				t.Fatal("archive permissions must be 0600")
+			}
+			f, err := os.Open(archives[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			header, err := tar.NewReader(f).Next()
+			if err != nil || filepath.Base(header.Name) != "new_b" || header.Size != 1024 {
+				t.Fatal("archive did not select the newest snapshot created by this run")
+			}
+			if h.count(`--username "$MEMGRAPH_USER"`) != 1 || h.count(`--password "$MEMGRAPH_PASSWORD"`) != 1 {
+				t.Fatal("credentials must expand inside the container shell")
 			}
 		})
 	}

@@ -6,8 +6,16 @@ source "$(dirname "$0")/lib.sh"
 load_box_env
 assert_account
 script=${1:-}; [ "$#" -gt 0 ] || fail 'remote script required'; shift
-case "$script" in bootstrap.sh|deploy.sh|acme-probe.sh|--update|--cert|--docker) ;; *) fail 'unsupported remote operation' ;; esac
-case "$script" in bootstrap.sh|deploy.sh) [ "$#" = 1 ] || fail 'REF required' ;; acme-probe.sh) [ "$#" -ge 1 ] && [ "$#" -le 2 ] || fail 'nonce required' ;; *) [ "$#" = 0 ] || fail 'unexpected arguments' ;; esac
+case "$script" in bootstrap.sh|deploy.sh|acme-probe.sh|--update|--cert|--docker|--snapshot) ;; *) fail 'unsupported remote operation' ;; esac
+case "$script" in
+  bootstrap.sh) [ "$#" = 1 ] || fail 'REF required' ;;
+  deploy.sh)
+    [ "$#" -ge 1 ] && [ "$#" -le 2 ] || fail 'REF and optional no-rollback required'
+    [ "$#" = 1 ] || [ "$2" = no-rollback ] || fail 'second argument must be no-rollback'
+    ;;
+  acme-probe.sh) [ "$#" -ge 1 ] && [ "$#" -le 2 ] || fail 'nonce required' ;;
+  *) [ "$#" = 0 ] || fail 'unexpected arguments' ;;
+esac
 for arg in "$@"; do
   [[ "$arg" =~ ^[A-Za-z0-9_./-]+$ ]] || fail 'unsafe remote argument'
   case "$arg" in -*) [ "$script" = acme-probe.sh ] && [ "$arg" = --remove ] || fail 'unsafe remote option' ;; esac
@@ -29,6 +37,7 @@ case "$script" in
   --update) command="flock /run/gkg-ops.lock bash -c 'dnf upgrade --releasever=latest -y && systemd-run --on-active=15 /usr/bin/systemctl reboot'" ;;
   --cert) command='flock /run/gkg-ops.lock make -C /opt/gkg cert' ;;
   --docker) command='flock /run/gkg-ops.lock bash /opt/gkg/deploy/aws/box/install-docker.sh' ;;
+  --snapshot) command='flock /run/gkg-ops.lock bash /opt/gkg/deploy/aws/box/snapshot.sh' ;;
 esac
 command="export AWS_REGION='$AWS_REGION' AWS_DEFAULT_REGION='$AWS_REGION' GKG_SSM_PREFIX='/$NAME'; $command"
 jq -n --arg command "$command" --arg timeout "$seconds" '{commands:[$command],executionTimeout:[$timeout]}' >"$work/parameters"

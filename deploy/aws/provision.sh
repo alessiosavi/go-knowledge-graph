@@ -7,6 +7,20 @@ load_box_env
 assert_account
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 trap 'exit 1' HUP INT TERM
+put_secrets_policy() {
+  jq -n --arg prefix "arn:aws:ssm:$AWS_REGION:$EXPECTED_ACCOUNT:parameter/$NAME/" '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["ssm:GetParameter"],Resource:[($prefix+"env"),($prefix+"htpasswd"),($prefix+"domain-seed"),($prefix+"stoplist")]},{Effect:"Deny",Action:["ssm:GetParameter*"],NotResource:[($prefix+"env"),($prefix+"htpasswd"),($prefix+"domain-seed"),($prefix+"stoplist")]}]}' >"$work/policy"
+  aws iam put-role-policy --role-name "$NAME-ssm-role" --policy-name "$NAME-secrets" --policy-document "file://$work/policy" >/dev/null
+}
+case "$#:${1:-}" in
+  0:) ;;
+  1:--policy-only)
+    aws iam get-role --role-name "$NAME-ssm-role" --output json >"$work/role" 2>&1 || fail 'cannot inspect IAM role'
+    tagged_or_die role "$NAME-ssm-role" || fail 'IAM role is not project-owned'
+    put_secrets_policy
+    exit 0
+    ;;
+  *) fail 'usage: provision.sh [--policy-only]' ;;
+esac
 # Discover every cardinality before creating anything. Tags recover lost metadata.
 instances=$(aws ec2 describe-instances --filters "Name=tag:project,Values=$NAME" Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down --output json | jq '[.Reservations[].Instances[]]')
 instance=$(one_or_empty "$instances" InstanceId)
@@ -62,8 +76,7 @@ else
 fi
 box_id_set ROLE "$role"
 aws iam attach-role-policy --role-name "$role" --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore >/dev/null
-jq -n --arg prefix "arn:aws:ssm:$AWS_REGION:$EXPECTED_ACCOUNT:parameter/$NAME/" '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["ssm:GetParameter"],Resource:[($prefix+"env"),($prefix+"htpasswd")]},{Effect:"Deny",Action:["ssm:GetParameter*"],NotResource:[($prefix+"env"),($prefix+"htpasswd")]}]}' >"$work/policy"
-aws iam put-role-policy --role-name "$role" --policy-name "$NAME-secrets" --policy-document "file://$work/policy" >/dev/null
+put_secrets_policy
 if result=$(aws iam get-instance-profile --instance-profile-name "$profile" --output json 2>&1); then
   tagged_or_die profile "$profile" || fail 'IAM profile is not project-owned'
   roles=$(printf '%s' "$result" | jq -r '.InstanceProfile.Roles[].RoleName')
