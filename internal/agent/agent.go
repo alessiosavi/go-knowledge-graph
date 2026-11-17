@@ -54,7 +54,7 @@ Chunk{id, doc_id, seq, text}
 Entity{id, key, name, type, mention_count}
 Entity.key is case-folded; match on id or name.
 Relationships: (:Document)-[:HAS_CHUNK]->(:Chunk), (:Chunk)-[:MENTIONS]->(:Entity); typed fact edges connect entities and carry confidence, doc_id, chunk_id.
-A search hit's document_id is Chunk.doc_id.
+Chunk search hits carry document_id, the owning Chunk.doc_id; entity hits carry none.
 
 Strategy: search with keywords, then read chunks with get_chunks; use cypher last.`
 

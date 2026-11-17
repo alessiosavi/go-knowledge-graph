@@ -25,7 +25,7 @@ func TestSystemPromptSchema(t *testing.T) {
 		"(:Document)-[:HAS_CHUNK]->(:Chunk)",
 		"(:Chunk)-[:MENTIONS]->(:Entity)",
 		"typed fact edges connect entities",
-		"A search hit's document_id is Chunk.doc_id.",
+		"Chunk search hits carry document_id, the owning Chunk.doc_id; entity hits carry none.",
 	} {
 		if !strings.Contains(systemPrompt, want) {
 			t.Errorf("system prompt missing %q", want)
@@ -41,6 +41,16 @@ func TestSystemPromptSchema(t *testing.T) {
 	cypher := strings.Index(strategy, "cypher")
 	if search < 0 || chunks < 0 || cypher < 0 || search >= chunks || chunks >= cypher {
 		t.Errorf("strategy = %q, want search before get_chunks before cypher", strategy)
+	}
+	// Every tool the strategy names must be one the model can call.
+	defined := map[string]bool{}
+	for _, d := range toolDefs() {
+		defined[d.Function.Name] = true
+	}
+	for _, name := range []string{"search", "get_chunks", "cypher"} {
+		if !defined[name] {
+			t.Errorf("strategy names %q, which toolDefs does not define", name)
+		}
 	}
 }
 
