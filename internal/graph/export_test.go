@@ -7,6 +7,10 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
+func AssignDomainFailForTest(ctx context.Context, s *Store, a Assignment, err error) error {
+	return s.assignDomain(ctx, a, func() error { return err })
+}
+
 // Expose the production queries only to the external integration tests.
 const (
 	EntityByIDQuery  = entityByIDQuery

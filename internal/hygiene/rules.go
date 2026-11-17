@@ -13,7 +13,7 @@ import (
 var (
 	markdownLink  = regexp.MustCompile(`\[[^\]]*\]\([^)]*\)|\(#[^)]*\)`)
 	heading       = regexp.MustCompile(`^#{1,6}[\t ]+(.+?)\s*#*\s*$`)
-	companySuffix = regexp.MustCompile(`(?i)\s+(?:s\.r\.l\.|srl\.?|s\.p\.a\.|spa\.?|ltd\.?|inc\.?|gmbh\.?|llc\.?)$`)
+	companySuffix = regexp.MustCompile(`(?i)\s+(?:s\.r\.l\.?|srl\.?|s\.p\.a\.?|spa\.?|ltd\.?|inc\.?|gmbh\.?|llc\.?)$`)
 	quotes        = strings.NewReplacer("’", "'", "‘", "'", "“", `"`, "”", `"`)
 )
 
@@ -87,9 +87,12 @@ func normalize(name string) (string, []string) {
 	// A possessive company form ("Quillon Ltd's") matches its suffix on the
 	// stem, so it keys like the plain form.
 	stem := name
+	trimEdge := func(r rune) bool { return unicode.IsPunct(r) || unicode.IsSpace(r) || r == '`' }
+	stem = strings.TrimRightFunc(stem, trimEdge)
 	if n := len(stem); n > 2 && strings.EqualFold(stem[n-2:], "'s") {
 		stem = stem[:n-2]
 	}
+	stem = strings.TrimFunc(stem, trimEdge)
 	if at := companySuffix.FindStringIndex(stem); at != nil {
 		full := name
 		name = strings.TrimSpace(stem[:at[0]])
