@@ -252,16 +252,15 @@ type EntitySearchRow struct {
 	Type string
 }
 
-// EntityTextSearch runs the Tantivy entity index. Only the name is
-// searchable: Tantivy does not index list properties, so aliases are inert
-// (docs/known-limitations.md).
+// EntityTextSearch runs the Tantivy entity_text_v2 index. Entity search is
+// name-only by design; aliases are excluded (docs/known-limitations.md).
 func (s *Store) EntityTextSearch(ctx context.Context, q string, limit int) ([]EntitySearchRow, error) {
 	q, ok := textQuery(q)
 	if !ok {
 		return nil, nil
 	}
 	recs, err := s.runRead(ctx, `
-CALL text_search.search_all('entity_text', $q) YIELD node, score
+CALL text_search.search_all('entity_text_v2', $q) YIELD node, score
 RETURN node.id AS id, node.name AS name, node.type AS type
 ORDER BY score DESC
 LIMIT $limit`,
@@ -297,7 +296,7 @@ func (s *Store) ChunkTextSearch(ctx context.Context, q string, limit int) ([]Chu
 		return nil, nil
 	}
 	recs, err := s.runRead(ctx, `
-CALL text_search.search_all('chunk_text', $q) YIELD node, score
+CALL text_search.search_all('chunk_text_v2', $q) YIELD node, score
 WITH node, score
 ORDER BY score DESC
 LIMIT $limit

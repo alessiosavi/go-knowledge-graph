@@ -8,7 +8,7 @@ import (
 
 func TestWriteModeOptions(t *testing.T) {
 	pipe := &Pipeline{}
-	doc := &graph.Document{ID: "zorbo"}
+	doc := &graph.Document{ID: "zorbo", Domain: "a"}
 	if got := pipe.WriteMode(); got != (WriteMode{}) {
 		t.Fatalf("default WriteMode = %+v; want zero value", got)
 	}
@@ -22,6 +22,9 @@ func TestWriteModeOptions(t *testing.T) {
 			t.Errorf("WriteMode = %+v; want %+v", got, mode)
 		}
 		want := graph.WriteOptions{FactsAsCandidates: mode.RequireConfirmation}
+		if mode.Domains {
+			want.Domain = "a"
+		}
 		if got := pipe.writeOptions(doc); got != want {
 			t.Errorf("writeOptions = %+v; want %+v", got, want)
 		}

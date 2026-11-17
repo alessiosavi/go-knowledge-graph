@@ -1161,7 +1161,7 @@ func TestEntityByNameIsExactNotRanked(t *testing.T) {
 	}
 }
 
-func TestUpsertExtractionOptsRejectsUnimplemented(t *testing.T) {
+func TestUpsertExtractionOptsSupportsDomains(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()
 	docID, chunkID := entitiesTestDoc(t, st, "Zorbo joined Quillon Ltd.")
@@ -1175,8 +1175,8 @@ func TestUpsertExtractionOptsRejectsUnimplemented(t *testing.T) {
 	}
 	for _, opt := range []graph.WriteOptions{{Domain: "a"}, {FactsAsCandidates: true, Domain: "a"}} {
 		err := st.UpsertExtractionOpts(ctx, docID, chunkID, "mock:1", nil, nil, opt)
-		if !errors.Is(err, graph.ErrWriteOptionsUnsupported) {
-			t.Errorf("UpsertExtractionOpts(%+v) error = %v; want ErrWriteOptionsUnsupported", opt, err)
+		if err != nil {
+			t.Errorf("UpsertExtractionOpts(%+v) error = %v; want nil", opt, err)
 		}
 	}
 }

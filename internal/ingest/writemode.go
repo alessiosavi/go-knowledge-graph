@@ -15,5 +15,9 @@ func (p *Pipeline) SetWriteMode(m WriteMode) { p.writeMode = m }
 func (p *Pipeline) WriteMode() WriteMode { return p.writeMode }
 
 func (p *Pipeline) writeOptions(doc *graph.Document) graph.WriteOptions {
-	return graph.WriteOptions{FactsAsCandidates: p.writeMode.RequireConfirmation}
+	opt := graph.WriteOptions{FactsAsCandidates: p.writeMode.RequireConfirmation}
+	if p.writeMode.Domains {
+		opt.Domain = doc.Domain
+	}
+	return opt
 }

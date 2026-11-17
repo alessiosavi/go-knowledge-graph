@@ -18,6 +18,7 @@ var uniqueConstraints = []struct {
 	{"GkgMeta", "id"},
 	{"JudgeVerdict", "key"},
 	{"FactCandidate", "id"},
+	{"Domain", "id"},
 }
 
 // secondaryIndexes are non-unique label-property indexes bootstrapped for
@@ -36,10 +37,14 @@ var secondaryIndexes = []struct {
 }{
 	{"Document", []string{"source_kind", "source"}},
 	{"Document", []string{"id"}},
+	{"Document", []string{"domain"}},
 	{"Chunk", []string{"exact_key"}},
 	{"Chunk", []string{"id"}},
+	{"Chunk", []string{"domain"}},
 	{"Entity", []string{"id"}},
 	{"Entity", []string{"key"}},
+	{"Entity", []string{"name_key"}},
+	{"Domain", []string{"id"}},
 	{"JudgeVerdict", []string{"key"}},
 	{"JudgeVerdict", []string{"doc_id"}},
 	{"FactCandidate", []string{"id"}},
@@ -57,8 +62,8 @@ var textIndexes = []struct {
 	Label string
 	Props []string
 }{
-	{"entity_text", "Entity", []string{"name", "aliases"}},
-	{"chunk_text", "Chunk", []string{"text"}},
+	{"entity_text_v2", "Entity", []string{"name", "domain_tok"}},
+	{"chunk_text_v2", "Chunk", []string{"text", "domain_tok"}},
 }
 
 // Bootstrap creates the schema idempotently. Memgraph has no documented
@@ -117,10 +122,13 @@ DELETE dup`, nil)
 	return nil
 }
 
-// EnsureTextIndexes creates the Tantivy text indexes idempotently (also
-// invoked by Bootstrap). Text index DDL is schema manipulation, so it runs
-// in autocommit transactions like the constraints.
+// EnsureTextIndexes creates the v2 Tantivy text indexes and then drops the
+// legacy pair idempotently (also invoked by Bootstrap). Text index DDL is
+// schema manipulation, so it runs in autocommit transactions like constraints.
 func (s *Store) EnsureTextIndexes(ctx context.Context) error {
+	if err := s.orderTextIndexProperties(ctx); err != nil {
+		return err
+	}
 	for _, ix := range textIndexes {
 		ok, err := s.textIndexExists(ctx, ix.Name, ix.Label, ix.Props)
 		if err != nil {
@@ -137,12 +145,40 @@ func (s *Store) EnsureTextIndexes(ctx context.Context) error {
 			return fmt.Errorf("graph: create text index %s: %w", ix.Name, err)
 		}
 	}
+	// Both replacements must exist before dropping either legacy index.
+	recs, err := s.runRead(ctx, "SHOW INDEX INFO", nil)
+	if err != nil {
+		return fmt.Errorf("graph: inspect legacy text indexes: %w", err)
+	}
+	for _, name := range []string{"chunk_text", "entity_text"} {
+		for _, r := range recs {
+			typ, _ := r.Get("index type")
+			if !strings.Contains(fmt.Sprint(typ), "name: "+name+")") {
+				continue
+			}
+			if err := s.runAuto(ctx, "DROP TEXT INDEX "+name, nil); err != nil {
+				// A concurrent bootstrap may have dropped it since inspection.
+				current, inspectErr := s.runRead(ctx, "SHOW INDEX INFO", nil)
+				if inspectErr != nil {
+					return fmt.Errorf("graph: drop legacy text index %s: %w (recheck failed: %v)", name, err, inspectErr)
+				}
+				for _, index := range current {
+					typ, _ := index.Get("index type")
+					if strings.Contains(fmt.Sprint(typ), "name: "+name+")") {
+						return fmt.Errorf("graph: drop legacy text index %s: %w", name, err)
+					}
+				}
+			}
+			break
+		}
+	}
+
 	return nil
 }
 
 // textIndexExists reports whether a text index *with the expected name*
 // over exactly props exists on the label, per SHOW INDEX INFO (the name
-// rides inside the index-type value: "label_text (name: entity_text)").
+// rides inside the index-type value: "label_text (name: entity_text_v2)").
 func (s *Store) textIndexExists(ctx context.Context, name, label string, props []string) (bool, error) {
 	recs, err := s.runRead(ctx, "SHOW INDEX INFO", nil)
 	if err != nil {
@@ -154,7 +190,7 @@ func (s *Store) textIndexExists(ctx context.Context, name, label string, props [
 		if !strings.Contains(strings.ToLower(typStr), "text") {
 			continue
 		}
-		if !strings.Contains(typStr, "name: "+name) {
+		if !strings.Contains(typStr, "name: "+name+")") {
 			continue
 		}
 		l, _ := r.Get("label")
@@ -293,4 +329,22 @@ func propsContain(v any, prop string) bool {
 		}
 	}
 	return false
+}
+
+// orderTextIndexProperties makes Memgraph assign property ids to text and
+// name before domain_tok. Memgraph 3.14 silently leaves a text-index
+// property unindexed when it is declared after a property with a higher
+// internal id (ids follow first use of a property name). On a fresh
+// database, creating entity_text_v2 first would give domain_tok a lower id
+// than text, and chunk_text_v2 would then never index domain_tok. This
+// cheap indexed read references the names in the required order; on an
+// existing graph text and name are already older than domain_tok.
+func (s *Store) orderTextIndexProperties(ctx context.Context) error {
+	if _, err := s.runRead(ctx, `
+MATCH (n:Chunk {id: '__gkg_property_order__'})
+WHERE n.text IS NULL OR n.name IS NULL OR n.domain_tok IS NULL
+RETURN count(n) AS n`, nil); err != nil {
+		return fmt.Errorf("graph: order text index properties: %w", err)
+	}
+	return nil
 }

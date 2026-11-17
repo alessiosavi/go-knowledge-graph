@@ -33,6 +33,9 @@ func DocumentID(kind, source, hash string) string {
 //   - upserts are serialized per Store so concurrent submits cannot race
 //     the identity pre-read.
 func (s *Store) UpsertDocument(ctx context.Context, in DocumentInput) (UpsertResult, error) {
+	if in.Domain != "" && !ValidDomain(in.Domain) {
+		return UpsertResult{}, fmt.Errorf("graph: invalid domain slug %q", in.Domain)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -77,12 +80,15 @@ MERGE (d:Document {id: $id})
 ON CREATE SET d.created_at = $now
 SET d.source_kind = $kind, d.source = $source, d.final_url = $final, d.title = $title,
     d.hash = $hash, d.labels = $labels, d.status = $status, d.error = '', d.updated_at = $now, d.version_at = $now,
-    d.supersedes = coalesce(d.supersedes, '')`,
+    d.supersedes = coalesce(d.supersedes, ''),
+    d.domain = CASE WHEN $domain <> '' THEN $domain ELSE d.domain END,
+    d.domain_tok = CASE WHEN $domain <> '' THEN $domain_tok ELSE d.domain_tok END`,
 		map[string]any{
 			"id": id, "kind": in.Kind, "source": in.Source, "final": in.FinalURL,
 			"title": in.Title, "hash": in.Hash, "labels": in.Labels,
 			"status": string(StatusReceived),
-			"now":    time.Now().UTC().Format(timeLayout),
+			"domain": in.Domain, "domain_tok": domainTokenOrNil(in.Domain),
+			"now": time.Now().UTC().Format(timeLayout),
 		})
 	if err != nil {
 		return UpsertResult{}, fmt.Errorf("graph: upsert document: %w", err)
@@ -173,7 +179,8 @@ UNWIND $chunks AS c
 MERGE (ch:Chunk {id: c.id})
 SET ch.doc_id = $docID, ch.seq = c.seq, ch.text = c.text, ch.start = c.start, ch.end = c.end,
     ch.hash = c.hash, ch.exact_key = c.exact_key, ch.minhash_sig = c.sig, ch.band_keys = c.bands,
-    ch.signature_version = c.version, ch.duplicate_of = c.dup
+    ch.signature_version = c.version, ch.duplicate_of = c.dup,
+    ch.domain = d.domain, ch.domain_tok = d.domain_tok
 MERGE (d)-[h:HAS_CHUNK]->(ch)
 SET h.seq = c.seq`,
 			map[string]any{"docID": docID, "chunks": rows}); err != nil {
@@ -505,7 +512,7 @@ func (s *Store) Document(ctx context.Context, id string) (*Document, error) {
 MATCH (d:Document {id: $id})
 RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
        d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
-       coalesce(d.labels, '') AS labels,
+       coalesce(d.labels, '') AS labels, d.domain AS domain,
        d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes`,
 		map[string]any{"id": id})
 	if err != nil {
@@ -524,7 +531,7 @@ func (s *Store) Documents(ctx context.Context, limit int) ([]Document, error) {
 MATCH (d:Document)
 RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
        d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
-       coalesce(d.labels, '') AS labels,
+       coalesce(d.labels, '') AS labels, d.domain AS domain,
        d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
 ORDER BY d.updated_at DESC`
 	params := map[string]any{}
@@ -552,7 +559,7 @@ func (s *Store) DocumentsWithStatus(ctx context.Context, status Status, limit in
 MATCH (d:Document {status: $status})
 RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
        d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
-       coalesce(d.labels, '') AS labels,
+       coalesce(d.labels, '') AS labels, d.domain AS domain,
        d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
 ORDER BY d.updated_at DESC`
 	params := map[string]any{"status": string(status)}
@@ -595,11 +602,12 @@ const chunkSelect = `
 MATCH (d:Document {id: $docID})-[:HAS_CHUNK]->(ch:Chunk)
 RETURN ch.id AS id, ch.doc_id AS doc_id, ch.seq AS seq, ch.text AS text, ch.start AS start,
        ch.end AS end, ch.hash AS hash, ch.exact_key AS exact_key, ch.minhash_sig AS sig,
-       ch.band_keys AS bands, ch.signature_version AS version, ch.duplicate_of AS duplicate_of`
+       ch.band_keys AS bands, ch.signature_version AS version, ch.duplicate_of AS duplicate_of, ch.domain AS domain`
 
 func chunkFromRecord(r *neo4j.Record) Chunk {
 	return Chunk{
 		ID:               getString(r, "id"),
+		Domain:           getString(r, "domain"),
 		DocID:            getString(r, "doc_id"),
 		Seq:              getInt(r, "seq"),
 		Text:             getString(r, "text"),
@@ -620,7 +628,7 @@ func (s *Store) ChunkByID(ctx context.Context, chunkID string) (Chunk, error) {
 MATCH (ch:Chunk {id: $id})
 RETURN ch.id AS id, ch.doc_id AS doc_id, ch.seq AS seq, ch.text AS text, ch.start AS start,
        ch.end AS end, ch.hash AS hash, ch.exact_key AS exact_key, ch.minhash_sig AS sig,
-       ch.band_keys AS bands, ch.signature_version AS version, ch.duplicate_of AS duplicate_of`,
+       ch.band_keys AS bands, ch.signature_version AS version, ch.duplicate_of AS duplicate_of, ch.domain AS domain`,
 		map[string]any{"id": chunkID})
 	if err != nil {
 		return Chunk{}, fmt.Errorf("graph: chunk %s: %w", chunkID, err)
@@ -704,6 +712,7 @@ ORDER BY coalesce(o.version_at, o.created_at) ASC, o.id ASC`,
 func recordToDocument(r *neo4j.Record) *Document {
 	return &Document{
 		ID:         getString(r, "id"),
+		Domain:     getString(r, "domain"),
 		SourceKind: getString(r, "source_kind"),
 		Source:     getString(r, "source"),
 		FinalURL:   getString(r, "final_url"),
@@ -728,15 +737,15 @@ func parseTime(s string) time.Time {
 
 // ChunkNeighbourhood returns the requested chunk followed separately by its
 // same-document neighbours within n sequence positions, ordered by sequence.
-// Only ID, DocID, Seq and Text are populated.
+// Only ID, DocID, Seq, Text and Domain are populated.
 // A missing center returns ErrNotFound.
 func (s *Store) ChunkNeighbourhood(ctx context.Context, id string, n int) (center Chunk, around []Chunk, err error) {
 	recs, err := s.runRead(ctx, `
 MATCH (c:Chunk {id: $id})
 OPTIONAL MATCH (:Document {id: c.doc_id})-[:HAS_CHUNK]->(ch:Chunk)
 WHERE ch.seq >= c.seq - $n AND ch.seq <= c.seq + $n AND ch.id <> c.id
-RETURN c.id AS center_id, c.doc_id AS center_doc_id, c.seq AS center_seq, c.text AS center_text,
-       ch.id AS id, ch.doc_id AS doc_id, ch.seq AS seq, ch.text AS text
+RETURN c.id AS center_id, c.doc_id AS center_doc_id, c.seq AS center_seq, c.text AS center_text, c.domain AS center_domain,
+       ch.id AS id, ch.doc_id AS doc_id, ch.seq AS seq, ch.text AS text, ch.domain AS domain
 ORDER BY ch.seq`, map[string]any{"id": id, "n": n})
 	if err != nil {
 		return Chunk{}, nil, fmt.Errorf("graph: chunk neighbourhood %s: %w", id, err)
@@ -746,14 +755,14 @@ ORDER BY ch.seq`, map[string]any{"id": id, "n": n})
 	}
 	center = Chunk{
 		ID: getString(recs[0], "center_id"), DocID: getString(recs[0], "center_doc_id"),
-		Seq: getInt(recs[0], "center_seq"), Text: getString(recs[0], "center_text"),
+		Seq: getInt(recs[0], "center_seq"), Text: getString(recs[0], "center_text"), Domain: getString(recs[0], "center_domain"),
 	}
 	around = []Chunk{}
 	for _, r := range recs {
 		if getString(r, "id") != "" {
 			around = append(around, Chunk{
 				ID: getString(r, "id"), DocID: getString(r, "doc_id"),
-				Seq: getInt(r, "seq"), Text: getString(r, "text"),
+				Seq: getInt(r, "seq"), Text: getString(r, "text"), Domain: getString(r, "domain"),
 			})
 		}
 	}

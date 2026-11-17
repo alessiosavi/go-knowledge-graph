@@ -215,11 +215,15 @@ is benign: the newer version completes normally.
 
 ## Text search and aliases
 
-- Memgraph text indexes (Tantivy) **do not index list properties**, so the
-  `aliases` half of `entity_text` is inert upstream: entity search is
-  authoritative on `name` only and alias-only lookups silently miss
-  (pinned by `TestSearchAliasesAreNotIndexed`). A flattened scalar alias
-  property is the planned follow-up.
+- Entity text search is **name-only by design**: `entity_text_v2` indexes
+  `name` and `domain_tok`, and excludes `aliases`. Alias-only lookups miss
+  (pinned by `TestSearchAliasesAreNotIndexed`). Memgraph text indexes
+  (Tantivy) do not index list properties.
+- Memgraph 3.14 leaves a multi-property text-index property unindexed when
+  it is declared after a property with a higher internal id (ids follow the
+  first use of a property name). Bootstrap therefore references `text` and
+  `name` before `domain_tok`, so the v2 indexes cover all their properties on
+  a fresh database as well as on an existing one.
 - `kind: auto` merges entity and chunk hits by fused score; with a small
   `limit`, entities (up to two fusion legs) can crowd chunks out — ask for
   the kind explicitly when that matters.
