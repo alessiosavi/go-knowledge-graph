@@ -321,6 +321,48 @@ gkg eval --provider sidecar --labels documentation \
   --sweep 'entity=0.2:0.7:0.05 relation=0.1:0.5:0.05' --out documentation-sweep
 ```
 
+### Judge backfill and audit
+
+Judge pending fact candidates with the configured judge provider:
+
+```sh
+gkg judge backfill --limit 100 --budget-calls 120
+gkg judge backfill --domain quillon --budget-calls 120
+```
+
+Candidates are processed by id; only `judge=''` counts as unjudged, including
+candidates left on a `done` document after interrupted verification. An unclear
+verdict stays a candidate. `--limit 0` (the default) means no candidate limit.
+`--budget-calls` is required and must be greater than zero; missing, zero or
+negative budgets exit 2 with usage. The budget counts provider attempts,
+including retries; cache hits use no calls.
+Verdicts are cached before application, so rerunning recovers cached work.
+Per-candidate errors are logged and counted as `failed`; later candidates are
+still judged, and a rerun may retry failed candidates. An unchanged candidate
+whose endpoint disappeared is deleted and counted as `orphaned`, separately
+from `vanished` candidates whose identity or input changed during judging.
+A lease lasts 120 seconds and renews every 30 seconds. `--force` takes over a
+live lease; it does not select already judged candidates. Cache misses call the
+configured provider and can incur charges.
+
+Sample confirmed typed facts by domain for manual labelling, then score the JSONL offline:
+
+```sh
+gkg judge audit --sample 200 --seed 1 --out audit.jsonl
+# Set each row's label to ok, wrong, noise or skip.
+gkg judge audit --score audit.jsonl
+```
+
+Each row includes its identity, domain, head, relation, tail and evidence sentence.
+The population contains only typed edges with `judge='confirmed'`; deployments
+without confirmation yield an empty or partial population. The snapshot reads
+edge identities first, then loads evidence only for sampled rows.
+The sample uses proportional domain allocation with largest remainders and is
+repeatable for the same snapshot and seed. Scoring reports `ok/(ok+wrong+noise)`
+and a Wilson 95% interval; skipped and unlabelled rows do not enter the denominator.
+If no rows are scored, the command prints `no scored rows` and exits 2.
+Audit files contain graph-derived text; store them with the source data.
+
 ## 7. Operations
 
 - Health: `GET /healthz`, `GET /readyz`; metrics: `GET /metrics`

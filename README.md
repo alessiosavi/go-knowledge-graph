@@ -76,7 +76,7 @@ For the SSM-managed EC2 deployment, see [AWS box operations](docs/deploy-aws.md)
 
 | Component          | What it does                                                                       |
 | ------------------ | ---------------------------------------------------------------------------------- |
-| `cmd/gkg`          | CLI: `serve` (REST + /mcp + workers), `ingest`, `mcp` (stdio), `eval`, `migrate`   |
+| `cmd/gkg`          | CLI: `serve` (REST + /mcp + workers), `ingest`, `mcp` (stdio), `eval`, `judge`, `migrate`   |
 | `internal/api`     | REST `/v1/*`, health/metrics, bearer auth, body caps, read-only Cypher guard       |
 | `internal/mcp`     | the eight agent tools over stdio and streamable HTTP                               |
 | `internal/ingest`  | pipeline, worker pool, recovery, dedup, URL/PDF/HTML inputs                        |

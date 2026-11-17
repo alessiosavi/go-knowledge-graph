@@ -345,6 +345,20 @@ audit. Entity facts and traversal therefore expose only confirmed edges in
 this mode; co-mentions still come from mentions. Before schema v4, extraction
 keeps writing typed edges directly, as with the default setting.
 
+Use `gkg judge backfill --limit 100 --budget-calls 120` to judge pending
+candidates, including those left on `done` documents by interrupted verification.
+`--budget-calls` is required and must be greater than zero; missing or invalid
+budgets exit 2 with usage.
+Cache hits consume no provider attempts; retries count against the budget.
+`--domain <slug>` restricts candidates and `--force` takes over the backfill lease.
+For a manually labelled precision audit, run
+`gkg judge audit --sample 200 --seed 1 --out audit.jsonl`, label the rows
+`ok|wrong|noise|skip`, then `gkg judge audit --score audit.jsonl` offline.
+Only typed edges with `judge='confirmed'` enter the audit population, so a
+deployment without confirmation yields an empty or partial population.
+Scoring with no scored rows prints `no scored rows` and exits 2.
+See the [usage guide](../USAGE.md#judge-backfill-and-audit) for recovery and sampling details.
+
 `GKG_FACTS_ALLOW_UNVERIFIED_READS` (`facts.allow_unverified_reads`, default
 `false`) reserves permission for explicit candidate reads. The candidate read
 parameter is introduced separately; this setting currently changes no read

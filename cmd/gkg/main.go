@@ -60,6 +60,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runMigrate(stdout, stderr)
 	case "eval":
 		return runEval(args[1:], stdout, stderr)
+	case "judge":
+		return runJudge(args[1:], stdout, stderr)
 	case "eval-retrieval":
 		return runEvalRetrieval(args[1:], stdout, stderr)
 	case "serve":
@@ -316,8 +318,15 @@ func converterFromConfig(cfg config.Config) (convert.Converter, error) {
 
 // newFactJudge shares the persistent verdict cache with every ingest entry point.
 func newFactJudge(cfg config.Config, st *graph.Store) ingest.FactJudge {
+	cached, _ := newFactJudgeClient(cfg, st)
+	return cached
+}
+
+// newFactJudgeClient also returns the provider client for backfill's attempt gate.
+// All entry points share the same cache construction and fallback behavior.
+func newFactJudgeClient(cfg config.Config, st *graph.Store) (*judge.Cached, *judge.Client) {
 	client := judge.NewClient(cfg)
-	return judge.NewCached(client, st, client.Model())
+	return judge.NewCached(client, st, client.Model()), client
 }
 
 // buildPipeline wires the extractor, the re-seeded dedup index, the
@@ -625,6 +634,7 @@ commands:
   ingest    ingest a file, URL or stdin into the knowledge graph (-source <s> overrides the identity)
   eval      run the golden-set evaluation harness
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
+  judge     backfill unjudged candidates or sample and score a fact audit
   migrate   upgrade the Memgraph schema and re-extract in-flight documents
   version   print the version
   mcp       run the MCP server over stdio
