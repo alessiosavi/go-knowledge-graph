@@ -100,3 +100,20 @@ func TestRequestLoggerRecordsStatusAndPath(t *testing.T) {
 		t.Errorf("request log leaks the query string: %s", out)
 	}
 }
+
+func TestJudgeCacheCounter(t *testing.T) {
+	m := New()
+	m.JudgeCache("hit")
+	m.JudgeCache("hit")
+	m.JudgeCache("miss")
+	m.JudgeCache("read_error")
+	if err := testutil.GatherAndCompare(m.Registry(), strings.NewReader(`
+# HELP judge_cache_total Verdict-cache lookups by result: hit, miss, read_error, write_error.
+# TYPE judge_cache_total counter
+judge_cache_total{result="hit"} 2
+judge_cache_total{result="miss"} 1
+judge_cache_total{result="read_error"} 1
+`), "judge_cache_total"); err != nil {
+		t.Errorf("judge_cache_total: %v", err)
+	}
+}

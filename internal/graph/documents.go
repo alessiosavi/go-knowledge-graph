@@ -390,10 +390,10 @@ func (s *Store) DeleteChain(ctx context.Context, id string) (int, error) {
 	return len(ordered), nil
 }
 
-// txDeleteDocument deletes one document's mentions, fact edges, chunks and
-// node inside an existing transaction, clears supersedes pointers that
-// reference it, refreshes the mention counts of the touched entities and
-// prunes the ones left without relationships.
+// txDeleteDocument deletes one document's mentions, fact edges, chunks,
+// cached judge verdicts and node inside an existing transaction, clears
+// supersedes pointers that reference it, refreshes the mention counts of
+// the touched entities and prunes the ones left without relationships.
 func txDeleteDocument(ctx context.Context, tx neo4j.ManagedTransaction, id string) error {
 	if _, err := txDocumentStatus(ctx, tx, id); err != nil {
 		return err
@@ -408,6 +408,11 @@ func txDeleteDocument(ctx context.Context, tx neo4j.ManagedTransaction, id strin
 	if err := txRun(ctx, tx, `MATCH (d:Document {id: $id}) DETACH DELETE d`,
 		map[string]any{"id": id}); err != nil {
 		return fmt.Errorf("graph: delete document: %w", err)
+	}
+	// Cached judge verdicts hold text derived from the document's evidence.
+	if err := txRun(ctx, tx, `MATCH (v:JudgeVerdict {doc_id: $id}) DELETE v`,
+		map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("graph: delete judge verdicts: %w", err)
 	}
 	if err := txRun(ctx, tx, `MATCH (d:Document) WHERE d.supersedes = $id SET d.supersedes = ''`,
 		map[string]any{"id": id}); err != nil {

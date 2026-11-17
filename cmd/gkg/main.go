@@ -312,6 +312,12 @@ func converterFromConfig(cfg config.Config) (convert.Converter, error) {
 	}
 }
 
+// newFactJudge shares the persistent verdict cache with every ingest entry point.
+func newFactJudge(cfg config.Config, st *graph.Store) ingest.FactJudge {
+	client := judge.NewClient(cfg)
+	return judge.NewCached(client, st, client.Model())
+}
+
 // buildPipeline wires the extractor, the re-seeded dedup index, the
 // optional judge and embedder and the text loader on an open store; the
 // returned pipeline is ready for submissions. serve, mcp and ingest share
@@ -342,7 +348,7 @@ func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*in
 	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg), conv))
 	pipe.SetWriteMode(ingest.WriteMode{Hygiene: v4, Domains: v4, RequireConfirmation: v4 && cfg.Facts.RequireConfirmation})
 	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
-		pipe.SetJudge(judge.NewClient(cfg))
+		pipe.SetJudge(newFactJudge(cfg, st))
 	}
 	var emb embed.Provider
 	if cfg.Embedder.Enabled {

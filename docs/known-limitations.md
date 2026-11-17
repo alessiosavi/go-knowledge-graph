@@ -86,8 +86,11 @@ When conversion is off (including light mode), PDF text extraction uses
 ## Deleting documents
 
 Deletion is permanent: `DELETE /v1/documents/{id}` removes the document
-node with its chunks, fact edges and mentions, and prunes the entities
-left without relationships. There is no undo and no tombstone.
+node with its chunks, fact edges and mentions, the judge verdicts cached
+for its facts, and prunes the entities left without relationships. There
+is no undo and no tombstone. A verdict belongs to the document that first
+asked for it; an identical request from another document reuses it, and
+pays the judge again only after that first document is deleted.
 
 `?chain=1` removes every version of the same source identity — superseded
 history included — in one all-or-nothing transaction; the API default
