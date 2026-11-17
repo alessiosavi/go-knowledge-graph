@@ -71,6 +71,12 @@ When conversion is off (including light mode), PDF text extraction uses
   Previously failed and superseded documents are not requeued. `gkg ingest`
   refuses an outdated graph; run `gkg migrate` or start `gkg serve` before
   ingesting.
+  Schema v4 migrations require `GKG_DOMAIN_SEED_FILE` covering every live source
+  (or `detect-all` for development). `gkg preflight` is read-only, and
+  `gkg migrate --schema-only` leaves re-extraction to the next `serve` startup.
+  After the rebuild, run `gkg judge backfill --budget-calls N` with the owner's
+  approved call budget: a crash during verification can leave unjudged candidates
+  in a completed document; those candidates remain invisible until backfilled.
 - Legacy or missing-spool **URLs** re-fetch and re-convert, then hash-check;
   changed content fails with a resubmit hint. Missing-spool **files/text**
   cannot reload; re-push them. **Failed** documents are not automatically

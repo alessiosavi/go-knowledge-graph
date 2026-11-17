@@ -58,7 +58,7 @@ func TestMigrateKeepsJudgeVerdict(t *testing.T) {
 	rawRun(t, uri, fmt.Sprintf(`CREATE (:Entity {key: '%s'})`, key))
 	t.Cleanup(func() { rawRun(t, uri, fmt.Sprintf(`MATCH (n) WHERE n.key = '%s' DETACH DELETE n`, key)) })
 	rawRun(t, uri, `MERGE (m:GkgMeta {id: 'extraction_schema'}) SET m.value = 2`)
-	result, err := st.MigrateExtractionSchema(ctx)
+	result, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true})
 	if err != nil || !result.Migrated || result.EntitiesRemoved < 1 {
 		t.Fatalf("migration = %+v err=%v", result, err)
 	}

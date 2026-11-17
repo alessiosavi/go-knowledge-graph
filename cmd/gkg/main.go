@@ -56,8 +56,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "help", "-h", "--help":
 		usage(stdout)
 		return 0
+	case "preflight":
+		return runPreflight(args[1:], stdout, stderr)
 	case "migrate":
-		return runMigrate(stdout, stderr)
+		return runMigrateArgs(args[1:], stdout, stderr)
 	case "eval":
 		return runEval(args[1:], stdout, stderr)
 	case "domain":
@@ -139,7 +141,19 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 }
 
 // runMigrate upgrades the schema and synchronously finishes in-flight work.
-func runMigrate(stdout, stderr io.Writer) int {
+func runMigrate(stdout, stderr io.Writer) int { return runMigrateArgs(nil, stdout, stderr) }
+
+func runMigrateArgs(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	schemaOnly := fs.Bool("schema-only", false, "migrate schema without re-extracting queued documents")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "gkg migrate: unexpected argument %q\n", fs.Arg(0))
+		return 2
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cfg, err := loadConfig()
@@ -157,11 +171,14 @@ func runMigrate(stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg migrate: %v\n", err)
 		return 1
 	}
-	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
+	if _, err := migrateSchema(ctx, st, cfg); err != nil {
 		fmt.Fprintf(stderr, "gkg migrate: %v\n", err)
 		return 1
 	}
 	fmt.Fprintln(stdout, "schema ok")
+	if *schemaOnly {
+		return 0
+	}
 	pipe, _, err := buildPipeline(ctx, cfg, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg migrate: %v; start \"gkg serve\" with a usable extractor to finish the re-extraction of queued documents\n", err)
@@ -415,7 +432,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
 		return 1
 	}
-	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
+	if _, err := migrateSchema(ctx, st, cfg); err != nil {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
 		return 1
 	}
@@ -579,7 +596,7 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1
 	}
-	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
+	if _, err := migrateSchema(ctx, st, cfg); err != nil {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1
 	}
@@ -641,7 +658,11 @@ commands:
   domain    list, inspect, evaluate and administer domains through serve
   judge     backfill unjudged candidates or sample and score a fact audit
   quality   report read-only graph quality metrics and optional private hygiene samples
+  preflight check schema and seed read-only (exit 0=current/empty, 3=seed required, 10=migration ready)
   migrate   upgrade the Memgraph schema and re-extract in-flight documents
+  migrate --schema-only  upgrade schema and leave re-extraction to serve
+  help      show this help (-h, --help)
+  pdf-extract  internal isolated PDF parser
   version   print the version
   mcp       run the MCP server over stdio
 `)

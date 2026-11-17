@@ -2157,11 +2157,17 @@ func TestAWSDeployPreflight(t *testing.T) {
 				t.Fatal("preflight ran before build")
 			}
 			if aborted {
-				wantStop := 0
+				wantStop, wantUp := 0, 0
 				if tc.mode == "stop-fail" {
 					wantStop = 1
+					if !tc.rebuildFails {
+						wantUp = 1
+					}
+					if wantUp == 1 && index("make up") <= index("checkout --detach prev123") {
+						t.Error("stop failure must restart the previous stack after restoration")
+					}
 				}
-				if h.count("make up") != 0 || h.count("stop gkg") != wantStop || h.count("gkg migrate") != 0 || h.count("checkout --detach prev123") != 1 || h.read("repo/.deployed-sha") != "prev123\n" {
+				if h.count("make up") != wantUp || h.count("stop gkg") != wantStop || h.count("gkg migrate") != 0 || h.count("checkout --detach prev123") != 1 || h.read("repo/.deployed-sha") != "prev123\n" {
 					t.Fatal("failed preflight mutated the live stack or retained the new revision")
 				}
 				checkout := index("checkout --detach prev123")

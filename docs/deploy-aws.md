@@ -149,12 +149,15 @@ SSM initially executes the deploy script already installed on the box.
 environment. Exit 0 continues normally; exit 2 means an older binary with no
 preflight command and skips migration. Exit 3 aborts with `seed required`;
 all other exits except 10 also abort and restore the previous revision and image
-tags before startup. A failure to stop gkg before migration restores them too.
+tags before startup. A failure to stop gkg before migration restores them too
+and attempts `make up` to restart a stack that may have been partially stopped.
 Exit 10 stops gkg, runs `gkg migrate --schema-only` on the new image,
 then starts the stack. Migration failure always leaves the new revision in
 place and prints recovery instructions; it never rolls back automatically.
 After a successful migration, startup, bearer-read and readiness failures also
 require manual recovery, even without `NO_ROLLBACK=1`.
+If `migrate --schema-only` fails with "unmatched sources", nothing was changed:
+extend the seed and re-run `make deploy`; no snapshot restore is needed.
 
 For a schema-changing deployment, first update the existing instance policy
 with `make box-policy` (only the inline secrets policy is replaced). Run it
@@ -164,10 +167,25 @@ files that the old policy cannot read are skipped with a note. Set
 `GKG_INGEST_STOPLIST_FILE=/etc/gkg/data/stoplist.txt` in the source environment;
 place the private upload files, run `make box-env`, then `make box-secrets`.
 If enabling `GKG_FACTS_REQUIRE_CONFIRMATION=true`, also set `GKG_JUDGE_MODE=all`.
+A seedless `gkg serve` or `gkg mcp` start on a document-bearing v3 graph
+creates indexes and constraints idempotently before refusing migration.
+
 After the owner's approval for the rebuild and any provider spend, run
 `make box-snapshot`, followed by `make deploy REF=<main-commit> NO_ROLLBACK=1`.
 That explicit switch disables automatic rollback after startup or readiness
 failure. It leaves `.deployed-sha` unchanged and prints recovery steps.
+
+The v4 migration clears every chunk's `duplicate_of` link. The rebuild extracts
+every chunk once as its own original, with no dedup borrowing; the extractor
+and judge budget estimate must therefore count all chunks, including former
+duplicates.
+
+After the v4 deploy, verify `/readyz` and wait for re-extraction to finish.
+Then run `gkg judge backfill --budget-calls N` with the owner's approved call
+budget. A crash during verification can leave candidates unjudged even when
+their document is `done`; backfill judges those candidates before the quality,
+retrieval and audit measurements. Also check `/readyz` after any failed v4
+deploy, since stopping gkg may have partially succeeded.
 
 `box-snapshot` uses the same host lock, asks Memgraph to `CREATE SNAPSHOT;`
 with credentials expanded only from its container environment, and archives

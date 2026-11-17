@@ -5,18 +5,31 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 // ExtractionSchemaVersion versions derived extraction data. Version 2 uses
 // name-only entity keys; version 3 links every mention and votes on its type.
+// Version 4 assigns domains before clearing derived data for re-extraction.
 // Older graphs must be re-extracted from stored chunks.
-const ExtractionSchemaVersion = 3
+const ExtractionSchemaVersion = 4
 
 // SchemaVersionV4 is the marker that enables the new ingestion write modes.
 const SchemaVersionV4 = 4
+
+// ErrSeedRequired prevents destructive migration before every source is assigned.
+var ErrSeedRequired = errors.New("graph: v4 migration needs GKG_DOMAIN_SEED_FILE (a seed covering every document, or detect-all)")
+
+type MigrationOptions struct {
+	Seed      *domain.Seed
+	DetectAll bool
+	Params    domain.Params
+}
 
 var ErrSchemaNewer = errors.New("graph: extraction schema is newer than this binary")
 
@@ -84,6 +97,13 @@ func (s *Store) ExtractionSchemaCurrent(ctx context.Context) (bool, error) {
 // with this process as the database's only writer. Batches bound transaction
 // size; the marker is written last so an interrupted upgrade can be retried.
 func (s *Store) MigrateExtractionSchema(ctx context.Context) (MigrationResult, error) {
+	return s.MigrateExtractionSchemaOpts(ctx, MigrationOptions{})
+}
+
+// MigrateExtractionSchemaOpts assigns live documents before clearing derived
+// data. Assignments and the assigned phase are durable restart boundaries.
+// The caller must stop every other database writer for the whole migration.
+func (s *Store) MigrateExtractionSchemaOpts(ctx context.Context, opt MigrationOptions) (MigrationResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -99,23 +119,95 @@ func (s *Store) MigrateExtractionSchema(ctx context.Context) (MigrationResult, e
 		return result, nil
 	}
 	result.To = ExtractionSchemaVersion
-	recs, err := s.runRead(ctx, `MATCH (e:Entity) RETURN e.key LIMIT 1`, nil)
+
+	hasData, err := s.hasExtractionData(ctx)
 	if err != nil {
-		return result, fmt.Errorf("graph: inspect extraction data: %w", err)
+		return result, err
 	}
-	if len(recs) == 0 {
-		recs, err = s.runRead(ctx, `MATCH (r:RejectedFact) RETURN r LIMIT 1`, nil)
+	if hasData {
+		recs, err := s.runRead(ctx, `MATCH (m:GkgMeta {id:$id}) RETURN m.v4_phase AS phase`, map[string]any{"id": extractionSchemaMetaID})
 		if err != nil {
-			return result, fmt.Errorf("graph: inspect extraction audits: %w", err)
+			return result, fmt.Errorf("graph: migration phase: %w", err)
 		}
-	}
-	if len(recs) == 0 {
-		recs, err = s.runRead(ctx, `MATCH (c:FactCandidate) RETURN c LIMIT 1`, nil)
-		if err != nil {
-			return result, fmt.Errorf("graph: inspect fact candidates: %w", err)
+		assigned := len(recs) > 0 && getString(recs[0], "phase") == "assigned"
+		if !assigned {
+			docs, err := s.ProfilesFromMentions(ctx)
+			if err != nil {
+				return result, err
+			}
+			if opt.Seed == nil && !opt.DetectAll {
+				documents, err := s.runRead(ctx, `MATCH (d:Document) RETURN d.id LIMIT 1`, nil)
+				if err != nil {
+					return result, fmt.Errorf("graph: inspect migration documents: %w", err)
+				}
+				if len(documents) > 0 {
+					return result, ErrSeedRequired
+				}
+			}
+			// Resolve every document before the first write, including coverage errors.
+			assignments := make([]Assignment, 0, len(docs))
+			corpus := make([]domain.DocProfile, 0, len(docs))
+			var unmatched []string
+			params := opt.Params
+			if params == (domain.Params{}) {
+				params = domain.DefaultParams()
+			}
+			for _, doc := range docs {
+				a := Assignment{DocID: doc.DocID, Profile: doc.Profile, CreatedBy: "auto"}
+				decision := domain.Decision{Action: "seed", Params: params}
+				if opt.Seed != nil {
+					var ok bool
+					decision.Domain, ok = opt.Seed.DomainFor(doc.Source)
+					if !ok {
+						unmatched = append(unmatched, doc.Source)
+						continue
+					}
+					if !domain.ValidDomain(decision.Domain) {
+						return result, fmt.Errorf("%w: invalid domain %q", ErrSeedRequired, decision.Domain)
+					}
+					a.CreatedBy = "seed"
+					a.DomainName = opt.Seed.Names[decision.Domain]
+				} else {
+					// Always replay from the start in id order; partially persisted domains
+					// must not bias decisions after an interruption in the assign phase.
+					decision = domain.Decide(doc, corpus, params)
+					if decision.Action == "prefix" {
+						decision.Action = "attach"
+					}
+					if decision.Action == "new" {
+						a.DomainName = domain.DomainName(doc, nil, corpus)
+					}
+				}
+				a.Domain = decision.Domain
+				a.Decision = DecisionRecord{OpID: "migration-v4", DocID: doc.DocID, Domain: a.Domain, PreviousDomain: doc.Domain, Action: decision.Action, By: "admin", Top: decision.Top, Params: decision.Params, Note: decision.Note}
+				assignments = append(assignments, a)
+				doc.Domain = a.Domain
+				corpus = append(corpus, doc)
+			}
+			if len(unmatched) > 0 {
+				return result, fmt.Errorf("%w: %d unmatched sources (up to 20): %s", ErrSeedRequired, len(unmatched), strings.Join(unmatched[:min(20, len(unmatched))], ", "))
+			}
+			slog.Info("graph: validated v4 migration assignments", "documents", len(assignments))
+			done, err := s.runRead(ctx, `MATCH (d:DomainDecision {op_id:'migration-v4'}) RETURN DISTINCT d.doc_id AS id`, nil)
+			if err != nil {
+				return result, fmt.Errorf("graph: migration decisions: %w", err)
+			}
+			completed := make(map[string]bool, len(done))
+			for _, r := range done {
+				completed[getString(r, "id")] = true
+			}
+			for _, a := range assignments {
+				if completed[a.DocID] {
+					continue
+				}
+				if err := s.assignDomainUnlocked(ctx, a, nil); err != nil {
+					return result, fmt.Errorf("graph: migration assign %s: %w", a.DocID, err)
+				}
+			}
+			if err := s.runWrite(ctx, `MERGE (m:GkgMeta {id:$id}) SET m.v4_phase='assigned'`, map[string]any{"id": extractionSchemaMetaID}); err != nil {
+				return result, fmt.Errorf("graph: migration assigned phase: %w", err)
+			}
 		}
-	}
-	if len(recs) > 0 {
 		// Requeue before deleting entities: if startup fails after the last
 		// entity batch, the next startup's no-entities path is still safe.
 		result.DocumentsRequeued, err = s.extractionMigrationBatches(ctx, `
@@ -132,6 +224,8 @@ RETURN count(*) AS n`)
 			`MATCH (:Entity)-[r]->(:Entity) WITH r LIMIT $batch DELETE r RETURN count(*) AS n`,
 			`MATCH (r:RejectedFact) WITH r LIMIT $batch DETACH DELETE r RETURN count(*) AS n`,
 			`MATCH (c:FactCandidate) WITH c LIMIT $batch DELETE c RETURN count(*) AS n`,
+			// Rebuild every chunk as an original, independent of recovery order.
+			`MATCH (c:Chunk) WHERE coalesce(c.duplicate_of,'')<>'' WITH c LIMIT $batch SET c.duplicate_of='' RETURN count(*) AS n`,
 		} {
 			if _, err := s.extractionMigrationBatches(ctx, query); err != nil {
 				return result, fmt.Errorf("graph: clear extraction data: %w", err)
@@ -146,7 +240,7 @@ RETURN count(*) AS n`)
 			return result, fmt.Errorf("graph: clear extraction entities: %w", err)
 		}
 	}
-	if err := s.runWrite(ctx, `MERGE (m:GkgMeta {id: $id}) SET m.value = $version`,
+	if err := s.runWrite(ctx, `MERGE (m:GkgMeta {id: $id}) SET m.value = $version REMOVE m.v4_phase`,
 		map[string]any{"id": extractionSchemaMetaID, "version": ExtractionSchemaVersion}); err != nil {
 		return result, fmt.Errorf("graph: set extraction schema: %w", err)
 	}
@@ -167,18 +261,12 @@ func (s *Store) markEmptyExtractionSchema(ctx context.Context) error {
 	if err != nil || version >= ExtractionSchemaVersion {
 		return err
 	}
-	for _, query := range []string{
-		`MATCH (e:Entity) RETURN e.key LIMIT 1`,
-		`MATCH (r:RejectedFact) RETURN r.id LIMIT 1`,
-		`MATCH (c:FactCandidate) RETURN c.id LIMIT 1`,
-	} {
-		recs, err := s.runRead(ctx, query, nil)
-		if err != nil {
-			return fmt.Errorf("graph: inspect extraction data: %w", err)
-		}
-		if len(recs) > 0 {
-			return nil
-		}
+	hasData, err := s.hasExtractionData(ctx)
+	if err != nil {
+		return err
+	}
+	if hasData {
+		return nil
 	}
 	if err := s.runWrite(ctx, `MERGE (m:GkgMeta {id: $id}) SET m.value = $version`,
 		map[string]any{"id": extractionSchemaMetaID, "version": ExtractionSchemaVersion}); err != nil {
@@ -215,4 +303,23 @@ func (s *Store) extractionMigrationBatches(ctx context.Context, query string) (i
 			return total, nil
 		}
 	}
+}
+
+// hasExtractionData includes documents, even when all mentions are absent.
+func (s *Store) hasExtractionData(ctx context.Context) (bool, error) {
+	for _, query := range []string{
+		`MATCH (d:Document) RETURN d.id LIMIT 1`,
+		`MATCH (e:Entity) RETURN e.key LIMIT 1`,
+		`MATCH (r:RejectedFact) RETURN r.id LIMIT 1`,
+		`MATCH (c:FactCandidate) RETURN c.id LIMIT 1`,
+	} {
+		recs, err := s.runRead(ctx, query, nil)
+		if err != nil {
+			return false, fmt.Errorf("graph: inspect extraction data: %w", err)
+		}
+		if len(recs) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
