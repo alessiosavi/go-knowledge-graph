@@ -122,6 +122,9 @@ DELETE dup`, nil)
 // legacy pair idempotently (also invoked by Bootstrap). Text index DDL is
 // schema manipulation, so it runs in autocommit transactions like constraints.
 func (s *Store) EnsureTextIndexes(ctx context.Context) error {
+	if err := s.orderTextIndexProperties(ctx); err != nil {
+		return err
+	}
 	for _, ix := range textIndexes {
 		ok, err := s.textIndexExists(ctx, ix.Name, ix.Label, ix.Props)
 		if err != nil {
@@ -322,4 +325,22 @@ func propsContain(v any, prop string) bool {
 		}
 	}
 	return false
+}
+
+// orderTextIndexProperties makes Memgraph assign property ids to text and
+// name before domain_tok. Memgraph 3.14 silently leaves a text-index
+// property unindexed when it is declared after a property with a higher
+// internal id (ids follow first use of a property name). On a fresh
+// database, creating entity_text_v2 first would give domain_tok a lower id
+// than text, and chunk_text_v2 would then never index domain_tok. This
+// cheap indexed read references the names in the required order; on an
+// existing graph text and name are already older than domain_tok.
+func (s *Store) orderTextIndexProperties(ctx context.Context) error {
+	if _, err := s.runRead(ctx, `
+MATCH (n:Chunk {id: '__gkg_property_order__'})
+WHERE n.text IS NULL OR n.name IS NULL OR n.domain_tok IS NULL
+RETURN count(n) AS n`, nil); err != nil {
+		return fmt.Errorf("graph: order text index properties: %w", err)
+	}
+	return nil
 }

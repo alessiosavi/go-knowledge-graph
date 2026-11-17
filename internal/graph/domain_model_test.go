@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
@@ -283,7 +284,7 @@ func TestDomainTokensIndexed(t *testing.T) {
 		}
 	})
 	key := "quillon-" + doc
-	for _, slug := range []string{"travel", "a-b", strings.Repeat("x", 40)} {
+	for _, slug := range []string{"zorbo-trips", "a-b", strings.Repeat("x", 40)} {
 		// Exercise indexed SET updates on an existing chunk and entity.
 		rawRun(t, uri, fmt.Sprintf(`MATCH (d:Document {id:'%s'}) SET d.domain='%s',d.domain_tok='%s'`, doc, slug, domain.DomainToken(slug)))
 		if err := st.PutChunks(ctx, doc, []graph.Chunk{{Text: "Quillon makes tools."}}); err != nil {
@@ -304,12 +305,51 @@ func TestDomainTokensIndexed(t *testing.T) {
 			if !found {
 				t.Errorf("scoped index %s missing fixture for slug %q", ix.name, slug)
 			}
-			rows = rawRecords(t, uri, fmt.Sprintf(`CALL text_search.search_all('%s','"travel"') YIELD node RETURN node.id AS id`, ix.name))
+			rows = rawRecords(t, uri, fmt.Sprintf(`CALL text_search.search_all('%s','"trips"') YIELD node RETURN node.id AS id`, ix.name))
 			for _, r := range rows {
 				if id, _ := r.Get("id"); id == ix.id {
 					t.Errorf("slug leaked into unscoped index %s", ix.name)
 				}
 			}
 		}
+	}
+}
+
+// TestChangedContentTakesNewDomain pins the changed-content upsert path: the
+// new version carries the supplied domain and token, and so do its chunks.
+func TestChangedContentTakesNewDomain(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	src := fmt.Sprintf("text/%s-%d", t.Name(), time.Now().UnixNano())
+	first, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "text", Source: src, Hash: "original", Domain: "zorbo-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "text", Source: src, Hash: "changed", Domain: "zorbo-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, id := range []string{first.ID, second.ID} {
+			if err := st.DeleteDocument(ctx, id); err != nil && !errors.Is(err, graph.ErrNotFound) {
+				t.Error(err)
+			}
+		}
+	})
+	if err := st.PutChunks(ctx, second.ID, []graph.Chunk{{Text: "Quillon makes tools."}}); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := st.Document(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Domain != "zorbo-b" {
+		t.Fatalf("new version domain = %q, want zorbo-b", doc.Domain)
+	}
+	uri := os.Getenv(graphtest.URIEnv)
+	rows := rawRecords(t, uri, fmt.Sprintf(`MATCH (d:Document {id:'%s'})-[:HAS_CHUNK]->(c:Chunk) RETURN d.domain_tok AS dtok, c.domain AS cdom, c.domain_tok AS ctok`, second.ID))
+	want := domain.DomainToken("zorbo-b")
+	if len(rows) != 1 || testString(rows[0], "dtok") != want || testString(rows[0], "cdom") != "zorbo-b" || testString(rows[0], "ctok") != want {
+		t.Fatalf("version/chunk domain = %+v, want zorbo-b / %s", rows, want)
 	}
 }
