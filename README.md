@@ -76,7 +76,7 @@ For the SSM-managed EC2 deployment, see [AWS box operations](docs/deploy-aws.md)
 
 | Component          | What it does                                                                       |
 | ------------------ | ---------------------------------------------------------------------------------- |
-| `cmd/gkg`          | CLI: `serve` (REST + /mcp + workers), `ingest`, `mcp` (stdio), `eval`, `migrate`   |
+| `cmd/gkg`          | CLI: `serve` (REST + /mcp + workers), `ingest`, `mcp` (stdio), `eval`, `judge`, `migrate`   |
 | `internal/api`     | REST `/v1/*`, health/metrics, bearer auth, body caps, read-only Cypher guard       |
 | `internal/mcp`     | the eight agent tools over stdio and streamable HTTP                               |
 | `internal/ingest`  | pipeline, worker pool, recovery, dedup, URL/PDF/HTML inputs                        |
@@ -102,8 +102,9 @@ Highlights: `GKG_EXTRACTOR_MODE=openai|sidecar|mock`,
 `GKG_JUDGE_MODE=off|low-confidence|sample|all`,
 `GKG_FACTS_REQUIRE_CONFIRMATION=false` (requires judge mode `all` when enabled;
 uses candidate nodes once schema v4 writes are enabled),
-`GKG_FACTS_ALLOW_UNVERIFIED_READS=false` (permission reserved for explicit
-candidate reads; read support follows separately),
+`GKG_FACTS_ALLOW_UNVERIFIED_READS=false` (when true, REST and MCP honour
+`include_unverified=true` and return candidates marked as unverified;
+when false the parameter is ignored and `unverified_ignored` is set),
 `GKG_EMBEDDER_ENABLED`, `GKG_EMBEDDER_PROVIDER=openai|furls`,
 `GKG_API_KEY` (gkg's bearer; required by the edge, which injects it), `GKG_LIMITS_CYPHER_ROWS`.
 

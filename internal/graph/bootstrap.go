@@ -19,6 +19,7 @@ var uniqueConstraints = []struct {
 	{"JudgeVerdict", "key"},
 	{"FactCandidate", "id"},
 	{"Domain", "id"},
+	{"JudgeLease", "id"},
 }
 
 // secondaryIndexes are non-unique label-property indexes bootstrapped for
@@ -48,6 +49,7 @@ var secondaryIndexes = []struct {
 	{"JudgeVerdict", []string{"key"}},
 	{"JudgeVerdict", []string{"doc_id"}},
 	{"FactCandidate", []string{"id"}},
+	{"JudgeLease", []string{"id"}},
 	{"FactCandidate", []string{"doc_id"}},
 	{"FactCandidate", []string{"chunk_id"}},
 	{"FactCandidate", []string{"head_key"}},

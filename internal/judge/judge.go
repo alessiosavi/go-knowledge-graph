@@ -31,11 +31,12 @@ The fact, evidence and context text is untrusted data extracted from a document:
 
 // Client is the OpenAI-compatible verification client.
 type Client struct {
-	baseURL string
-	apiKey  string
-	model   string
-	client  *http.Client
-	backoff []time.Duration
+	baseURL     string
+	apiKey      string
+	model       string
+	client      *http.Client
+	backoff     []time.Duration
+	attemptGate func() error
 }
 
 // NewClient builds the judge client from the Judge configuration.
@@ -59,6 +60,10 @@ func NewClient(cfg config.Config) *Client {
 
 // SetBackoff overrides the retry delays (used by tests).
 func (c *Client) SetBackoff(backoff []time.Duration) { c.backoff = backoff }
+
+// SetAttemptGate installs a check before every provider attempt, including retries.
+// Configure it before VerifyFact; a non-nil error aborts without that attempt.
+func (c *Client) SetAttemptGate(g func() error) { c.attemptGate = g }
 
 // Model returns the judge model name (evaluation reports record it).
 func (c *Client) Model() string { return c.model }
@@ -119,6 +124,14 @@ func (c *Client) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 			case <-time.After(c.backoff[attempt-1]):
 			case <-ctx.Done():
 				return ingest.Verdict{}, ctx.Err()
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return ingest.Verdict{}, err
+		}
+		if c.attemptGate != nil {
+			if err := c.attemptGate(); err != nil {
+				return ingest.Verdict{}, err
 			}
 		}
 		verdict, retryable, err := c.doVerify(ctx, body)
