@@ -167,17 +167,18 @@ func mentionEdges(ents []EntityUpsert, facts []FactUpsert) []mentionEdge {
 	return out
 }
 
-// WriteOptions controls extraction writes. Its fields are reserved for
-// candidate facts and domain-scoped entities, which this version does not
-// implement yet: UpsertExtractionOpts rejects any non-zero option with
-// ErrWriteOptionsUnsupported instead of silently writing legacy data.
+// WriteOptions controls extraction writes. FactsAsCandidates stores facts as
+// nodes until confirmed. Domain-scoped writes are not implemented yet.
 type WriteOptions struct {
 	FactsAsCandidates bool
 	Domain            string
 }
 
 // ErrWriteOptionsUnsupported reports a write option this version cannot honour.
-var ErrWriteOptionsUnsupported = errors.New("graph: candidate facts and domain-scoped writes are not supported by this version")
+var ErrWriteOptionsUnsupported = errors.New("graph: domain-scoped writes are not supported by this version")
+
+// ErrMissingJudgeInput reports a candidate fact without its canonical judge request.
+var ErrMissingJudgeInput = errors.New("graph: fact candidate requires judge input")
 
 // UpsertExtraction replaces one chunk's extraction using the default options.
 func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorVersion string, ents []EntityUpsert, facts []FactUpsert) error {
@@ -198,10 +199,13 @@ func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorV
 // same entity key abort at commit with a unique-constraint violation that
 // the driver does not retry (single-process scope, like UpsertDocument).
 func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extractorVersion string, ents []EntityUpsert, facts []FactUpsert, opt WriteOptions) error {
-	if opt != (WriteOptions{}) {
+	if opt.Domain != "" {
 		return ErrWriteOptionsUnsupported
 	}
 	for _, f := range facts {
+		if opt.FactsAsCandidates && len(f.JudgeInput) == 0 {
+			return ErrMissingJudgeInput
+		}
 		if strings.Trim(sanitizeRel(f.Rel), "_") == "" {
 			return fmt.Errorf("graph: fact %q -[%q]-> %q: relation label has no alphanumeric content", f.HeadKey, f.Rel, f.TailKey)
 		}
@@ -256,12 +260,19 @@ func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extrac
 	}
 	factRows := make([]map[string]any, 0, len(facts))
 	for _, f := range facts {
-		factRows = append(factRows, map[string]any{
+		row := map[string]any{
 			"head": f.HeadKey, "tail": f.TailKey, "rel": sanitizeRel(f.Rel),
 			"confidence": f.Confidence, "low": f.LowConfidence,
 			"hs": f.HeadMention.Start, "he": f.HeadMention.End,
 			"ts": f.TailMention.Start, "te": f.TailMention.End,
-		})
+		}
+		if opt.FactsAsCandidates {
+			row["id"] = CandidateID(f.HeadKey, sanitizeRel(f.Rel), f.TailKey, chunkID)
+			row["input"] = string(f.JudgeInput)
+			sum := sha256.Sum256(f.JudgeInput)
+			row["hash"] = hex.EncodeToString(sum[:])
+		}
+		factRows = append(factRows, row)
 	}
 	menRows := make([]map[string]any, 0, len(mentions))
 	for _, m := range mentions {
@@ -312,6 +323,10 @@ func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extrac
 		if err := txRun(ctx, tx, `MATCH (:Entity)-[r]->(:Entity) WHERE r.chunk_id = $cid DELETE r`,
 			map[string]any{"cid": chunkID}); err != nil {
 			return fmt.Errorf("graph: clear facts: %w", err)
+		}
+		if err := txRun(ctx, tx, `MATCH (f:FactCandidate {chunk_id: $cid}) DELETE f`,
+			map[string]any{"cid": chunkID}); err != nil {
+			return fmt.Errorf("graph: clear fact candidates: %w", err)
 		}
 		if len(entRows) > 0 {
 			// Merge stored aliases with this call's aliases instead of
@@ -367,17 +382,22 @@ SET e.name = ent.name,
 			}
 		}
 		if len(factRows) > 0 {
-			if err := txRun(ctx, tx, `
+			if opt.FactsAsCandidates {
+				if err := txRun(ctx, tx, `
 UNWIND $facts AS f
-MATCH (a:Entity {key: f.head}), (b:Entity {key: f.tail})
-WITH a, b, f, {t: f.rel} AS x
-CREATE (a)-[r:x.t]->(b)
-SET r.confidence = f.confidence, r.low_confidence = f.low, r.judge = '',
-    r.extractor_version = $ver, r.doc_id = $doc, r.chunk_id = $cid,
-    r.head_key = f.head, r.tail_key = f.tail,
-    r.head_start = f.hs, r.head_end = f.he, r.tail_start = f.ts, r.tail_end = f.te`,
-				map[string]any{"facts": factRows, "ver": extractorVersion, "doc": docID, "cid": chunkID}); err != nil {
-				return fmt.Errorf("graph: create facts: %w", err)
+CREATE (c:FactCandidate {id: f.id})
+SET c.head_key = f.head, c.rel = f.rel, c.tail_key = f.tail,
+    c.confidence = f.confidence, c.low_confidence = f.low,
+    c.head_start = f.hs, c.head_end = f.he, c.tail_start = f.ts, c.tail_end = f.te,
+    c.judge = '', c.judge_input = f.input, c.input_hash = f.hash,
+    c.doc_id = $doc, c.chunk_id = $cid, c.extractor_version = $ver,
+    c.domain = $domain, c.created_at = $now`,
+					map[string]any{"facts": factRows, "ver": extractorVersion, "doc": docID, "cid": chunkID,
+						"domain": opt.Domain, "now": time.Now().UTC().Format(timeLayout)}); err != nil {
+					return fmt.Errorf("graph: create fact candidates: %w", err)
+				}
+			} else if _, err := txWriteFactEdge(ctx, tx, factRows, extractorVersion, docID, chunkID, ""); err != nil {
+				return err
 			}
 		}
 		if len(menRows) > 0 {
@@ -397,6 +417,124 @@ SET men.start = m.start, men.end = m.end, men.type = m.type`,
 		}
 		return nil
 	})
+}
+
+// txWriteFactEdge writes typed edges identically for direct extraction and promotion.
+func txWriteFactEdge(ctx context.Context, tx neo4j.ManagedTransaction, facts []map[string]any, version, docID, chunkID, judge string) (int, error) {
+	res, err := tx.Run(ctx, `
+UNWIND $facts AS f
+MATCH (a:Entity {key: f.head}), (b:Entity {key: f.tail})
+WITH a, b, f, {t: f.rel} AS x
+CREATE (a)-[r:x.t]->(b)
+SET r.confidence = f.confidence, r.low_confidence = f.low, r.judge = $judge,
+    r.extractor_version = $ver, r.doc_id = $doc, r.chunk_id = $cid,
+    r.head_key = f.head, r.tail_key = f.tail,
+    r.head_start = f.hs, r.head_end = f.he, r.tail_start = f.ts, r.tail_end = f.te
+RETURN count(r) AS n`,
+		map[string]any{"facts": facts, "ver": version, "doc": docID, "cid": chunkID, "judge": judge})
+	if err != nil {
+		return 0, fmt.Errorf("graph: create facts: %w", err)
+	}
+	recs, err := res.Collect(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("graph: create facts: %w", err)
+	}
+	return getInt(recs[0], "n"), nil
+}
+
+// CandidateID uses the same identity as the corresponding audit row.
+// rel is the sanitized relation type, as stored on the candidate.
+func CandidateID(headKey, rel, tailKey, chunkID string) string {
+	return FactAuditID(headKey, rel, tailKey, chunkID)
+}
+
+// txCandidate matches both identity and the exact request that was judged.
+func txCandidate(ctx context.Context, tx neo4j.ManagedTransaction, id, inputHash string) (map[string]any, error) {
+	res, err := tx.Run(ctx, `MATCH (c:FactCandidate {id: $id}) WHERE c.input_hash = $hash RETURN properties(c) AS props`,
+		map[string]any{"id": id, "hash": inputHash})
+	if err != nil {
+		return nil, fmt.Errorf("graph: read fact candidate: %w", err)
+	}
+	recs, err := res.Collect(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("graph: read fact candidate: %w", err)
+	}
+	if len(recs) == 0 {
+		return nil, nil
+	}
+	props, _ := recs[0].Get("props")
+	return props.(map[string]any), nil
+}
+
+func txDeleteCandidate(ctx context.Context, tx neo4j.ManagedTransaction, id, inputHash string) error {
+	return txRun(ctx, tx, `MATCH (c:FactCandidate {id: $id}) WHERE c.input_hash = $hash DELETE c`, map[string]any{"id": id, "hash": inputHash})
+}
+
+// PromoteCandidate atomically writes the confirmed edge and removes its candidate.
+// A vanished candidate, changed request or missing endpoint returns false without writing.
+func (s *Store) PromoteCandidate(ctx context.Context, id, inputHash string) (bool, error) {
+	applied := false
+	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		applied = false
+		c, err := txCandidate(ctx, tx, id, inputHash)
+		if err != nil || c == nil {
+			return err
+		}
+		row := map[string]any{"head": c["head_key"], "rel": c["rel"], "tail": c["tail_key"],
+			"confidence": c["confidence"], "low": c["low_confidence"],
+			"hs": c["head_start"], "he": c["head_end"], "ts": c["tail_start"], "te": c["tail_end"]}
+		created, err := txWriteFactEdge(ctx, tx, []map[string]any{row}, c["extractor_version"].(string), c["doc_id"].(string), c["chunk_id"].(string), "confirmed")
+		if err != nil || created == 0 {
+			return err
+		}
+		if err := txDeleteCandidate(ctx, tx, id, inputHash); err != nil {
+			return err
+		}
+		applied = true
+		return nil
+	})
+	return applied && err == nil, err
+}
+
+// SetCandidateJudge records an unclear verdict without exposing a typed edge.
+func (s *Store) SetCandidateJudge(ctx context.Context, id, inputHash, status string) (bool, error) {
+	applied := false
+	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		applied = false
+		res, err := tx.Run(ctx, `MATCH (c:FactCandidate {id: $id}) WHERE c.input_hash = $hash SET c.judge = $status RETURN c.id`,
+			map[string]any{"id": id, "hash": inputHash, "status": status})
+		if err != nil {
+			return fmt.Errorf("graph: set candidate judge: %w", err)
+		}
+		recs, err := res.Collect(ctx)
+		if err != nil {
+			return fmt.Errorf("graph: set candidate judge: %w", err)
+		}
+		applied = len(recs) > 0
+		return nil
+	})
+	return applied && err == nil, err
+}
+
+// RefuteCandidate atomically records the rejection audit and removes its candidate.
+func (s *Store) RefuteCandidate(ctx context.Context, id, inputHash string, audit FactAudit) (bool, error) {
+	applied := false
+	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		applied = false
+		c, err := txCandidate(ctx, tx, id, inputHash)
+		if err != nil || c == nil {
+			return err
+		}
+		if err := txWriteFactAudit(ctx, tx, audit); err != nil {
+			return err
+		}
+		if err := txDeleteCandidate(ctx, tx, id, inputHash); err != nil {
+			return err
+		}
+		applied = true
+		return nil
+	})
+	return applied && err == nil, err
 }
 
 // FactAudit is one audited fact refusal: a candidate dropped below the

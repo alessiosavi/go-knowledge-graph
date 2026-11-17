@@ -313,6 +313,21 @@ without them search is text-only. The judge verifies facts after extraction
 against their evidence sentence and removes refuted ones with an audit
 trail.
 
+`GKG_FACTS_REQUIRE_CONFIRMATION=true` (`facts.require_confirmation`, default
+`false`) requires `GKG_JUDGE_MODE=all`; other judge modes fail config loading
+with `facts.require_confirmation needs judge.mode=all`. Once schema v4 writes
+are enabled, extracted facts remain `FactCandidate` nodes until the judge
+confirms them. Confirmation creates the typed edge atomically; unclear or
+failed judgments leave a candidate, and refutations create a `RejectedFact`
+audit. Entity facts and traversal therefore expose only confirmed edges in
+this mode; co-mentions still come from mentions. Before schema v4, extraction
+keeps writing typed edges directly, as with the default setting.
+
+`GKG_FACTS_ALLOW_UNVERIFIED_READS` (`facts.allow_unverified_reads`, default
+`false`) reserves permission for explicit candidate reads. The candidate read
+parameter is introduced separately; this setting currently changes no read
+responses.
+
 ## 7. High-quality document ingestion (docling)
 
 [docling-serve](https://github.com/docling-project/docling-serve) starts

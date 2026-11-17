@@ -1,11 +1,16 @@
 package ingest_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +20,8 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
+	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
+	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 )
 
 // mode selection is exercised through the pure helpers.
@@ -391,4 +398,256 @@ func TestSamplePctZeroNeverJudges(t *testing.T) {
 		t.Errorf("sample pct 0 called the judge %d times", len(stub.calls))
 	}
 	_ = time.Second
+}
+
+type candidateProvider struct{}
+
+func (candidateProvider) Name() string    { return "candidate" }
+func (candidateProvider) Version() string { return "candidate:1" }
+func (candidateProvider) Extract(_ context.Context, req extract.Request) ([]extract.ChunkResult, error) {
+	var out []extract.ChunkResult
+	for _, c := range req.Chunks {
+		out = append(out, extract.ChunkResult{ChunkID: c.ID, Mentions: []extract.Mention{
+			{Label: "person", Text: "Zorbo", Start: 0, End: 5, Score: 0.9},
+			{Label: "organization", Text: "Quillon Ltd", Start: 13, End: 24, Score: 0.9},
+		}, Candidates: []extract.Candidate{
+			{Label: "joined", Head: 0, Tail: 1, Score: 0.9},
+			{Label: "uses", Head: 0, Tail: 1, Score: 0.3},
+			{Label: "owns", Head: 0, Tail: 1, Score: 0.8},
+		}})
+	}
+	return out, nil
+}
+
+type checkingCandidateJudge struct {
+	t     *testing.T
+	calls []ingest.FactInput
+	fail  bool
+}
+
+func (j *checkingCandidateJudge) VerifyFact(_ context.Context, in ingest.FactInput) (ingest.Verdict, error) {
+	j.t.Helper()
+	j.calls = append(j.calls, in)
+	if in.DocID == "" {
+		j.t.Fatal("judge input lost DocID")
+	}
+	rows := rawRecords(j.t, os.Getenv(graphtest.URIEnv), fmt.Sprintf("MATCH (n:FactCandidate {doc_id: '%s', rel: '%s'}) RETURN n.judge_input AS payload, n.input_hash AS hash, n.judge AS judge", in.DocID, in.Rel))
+	if len(rows) != 1 {
+		j.t.Fatalf("candidates before judge = %d, want 1", len(rows))
+	}
+	payload := ingest.CanonicalJudgeInput(in)
+	if got := testString(rows[0], "payload"); got != string(payload) {
+		j.t.Fatalf("stored payload = %s, judge payload = %s", got, payload)
+	}
+	if got := testString(rows[0], "hash"); got != fmt.Sprintf("%x", sha256.Sum256(payload)) {
+		j.t.Fatalf("input_hash = %s", got)
+	}
+	if got := testString(rows[0], "judge"); got != "" {
+		j.t.Fatalf("candidate already judged: %q", got)
+	}
+	decoded, err := ingest.DecodeJudgeInput(payload)
+	if err != nil {
+		j.t.Fatal(err)
+	}
+	decoded.DocID = in.DocID
+	if !reflect.DeepEqual(decoded, in) {
+		j.t.Fatalf("payload round-trip = %+v, want %+v", decoded, in)
+	}
+	if j.fail {
+		return ingest.Verdict{}, errors.New("judge unavailable")
+	}
+	status := map[string]string{"joined": "confirmed", "uses": "unclear", "owns": "refuted"}[in.Rel]
+	return ingest.Verdict{Status: status, Reason: "synthetic verdict"}, nil
+}
+
+func TestPipelineFactCandidates(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("judge_error=%v", fail), func(t *testing.T) {
+			env := newPipelineEnv(t)
+			env.cfg.Judge.Mode = "all"
+			env.cfg.Ingest.ChunkWords = 200
+			env.cfg.Ingest.ChunkDedup = "off"
+			env.p = ingest.NewPipeline(env.cfg, env.st, candidateProvider{}, env.ix, textLoader)
+			env.p.SetWriteMode(ingest.WriteMode{RequireConfirmation: true})
+			judge := &checkingCandidateJudge{t: t, fail: fail}
+			env.p.SetJudge(judge)
+			metrics := obs.New()
+			env.p.SetMetrics(metrics)
+			source, _ := uniqueText(t)
+			res := mustProcess(t, env, ingest.Input{Kind: "text", Source: source, Text: "Zorbo joined Quillon Ltd.", Title: "Synthetic document"})
+			t.Cleanup(func() { _ = env.st.DeleteDocument(context.Background(), res.DocumentID) })
+			if len(judge.calls) != 3 {
+				t.Fatalf("judge calls = %d, want 3", len(judge.calls))
+			}
+			uri := os.Getenv(graphtest.URIEnv)
+			counts := []int64{
+				rawCount(t, uri, fmt.Sprintf("MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = '%s' RETURN count(r) AS n", res.DocumentID)),
+				rawCount(t, uri, fmt.Sprintf("MATCH (n:FactCandidate {doc_id:'%s'}) RETURN count(n) AS n", res.DocumentID)),
+				rawCount(t, uri, fmt.Sprintf("MATCH (n:RejectedFact {doc_id:'%s'}) RETURN count(n) AS n", res.DocumentID)),
+			}
+			want := []int64{1, 1, 1}
+			if fail {
+				want = []int64{0, 3, 0}
+			}
+			if !reflect.DeepEqual(counts, want) {
+				t.Fatalf("edges/candidates/audits = %v, want %v", counts, want)
+			}
+			if scrape := gather(t, metrics); !strings.Contains(scrape, fmt.Sprintf("\nfacts_total %d\n", want[0])) {
+				t.Errorf("facts_total must count promoted edges (%d):\n%s", want[0], scrape)
+			}
+			if !fail {
+				if n := rawCount(t, uri, fmt.Sprintf("MATCH (n:FactCandidate {doc_id:'%s',judge:'unclear'}) RETURN count(n) AS n", res.DocumentID)); n != 1 {
+					t.Errorf("unclear candidates = %d", n)
+				}
+				if n := rawCount(t, uri, fmt.Sprintf("MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = '%s' AND r.judge = 'confirmed' RETURN count(r) AS n", res.DocumentID)); n != 1 {
+					t.Errorf("confirmed edges = %d", n)
+				}
+			} else if n := rawCount(t, uri, fmt.Sprintf("MATCH (n:FactCandidate {doc_id:'%s',judge:''}) RETURN count(n) AS n", res.DocumentID)); n != 3 {
+				t.Errorf("unjudged candidates = %d, want 3", n)
+			}
+			doc, err := env.st.Document(context.Background(), res.DocumentID)
+			if err != nil || doc.Status != graph.StatusDone {
+				t.Fatalf("document = %+v, %v", doc, err)
+			}
+		})
+	}
+}
+
+func TestPipelineFactCandidatesCachedReExtraction(t *testing.T) {
+	env := newPipelineEnv(t)
+	env.cfg.Judge.Mode = "all"
+	env.cfg.Ingest.ChunkWords = 200
+	env.cfg.Ingest.ChunkDedup = "off"
+	inner := &checkingCandidateJudge{t: t}
+	newPipeline := func() *obs.Metrics {
+		env.p = ingest.NewPipeline(env.cfg, env.st, candidateProvider{}, env.ix, textLoader)
+		env.p.SetWriteMode(ingest.WriteMode{RequireConfirmation: true})
+		env.p.SetJudge(judge.NewCached(inner, env.st, "synthetic-model"))
+		metrics := obs.New()
+		env.p.SetMetrics(metrics)
+		return metrics
+	}
+	metrics := newPipeline()
+	source, _ := uniqueText(t)
+	res := mustProcess(t, env, ingest.Input{Kind: "text", Source: source, Text: "Zorbo joined Quillon Ltd.", Title: "Acme-Max " + source})
+	ctx := context.Background()
+	t.Cleanup(func() { _ = env.st.DeleteDocument(ctx, res.DocumentID) })
+	uri := os.Getenv(graphtest.URIEnv)
+	edgeQuery := fmt.Sprintf("MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = '%s' RETURN type(r), properties(r)", res.DocumentID)
+	wantEdges := rawRecords(t, uri, edgeQuery)
+	check := func(m *obs.Metrics, cacheResult string) {
+		t.Helper()
+		if rows := rawRecords(t, uri, edgeQuery); len(rows) != 1 || !reflect.DeepEqual(rows, wantEdges) {
+			t.Errorf("promoted edges = %+v, want one identical confirmed edge", rows)
+		}
+		for label, want := range map[string]int64{"FactCandidate": 1, "RejectedFact": 1} {
+			if n := rawCount(t, uri, fmt.Sprintf("MATCH (n:%s {doc_id: '%s'}) RETURN count(n) AS n", label, res.DocumentID)); n != want {
+				t.Errorf("%s count = %d, want %d", label, n, want)
+			}
+		}
+		if n := rawCount(t, uri, fmt.Sprintf("MATCH (n:FactCandidate {doc_id: '%s', judge: 'unclear'}) RETURN count(n) AS n", res.DocumentID)); n != 1 {
+			t.Errorf("unclear candidates = %d, want 1", n)
+		}
+		if n := rawCount(t, uri, fmt.Sprintf("MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = '%s' AND r.judge = 'confirmed' RETURN count(r) AS n", res.DocumentID)); n != 1 {
+			t.Errorf("confirmed edges = %d, want 1", n)
+		}
+		scrape := gather(t, m)
+		for _, want := range []string{"\nfacts_total 1\n", fmt.Sprintf("judge_cache_total{result=%q} 3", cacheResult)} {
+			if !strings.Contains(scrape, want) {
+				t.Errorf("metrics missing %q:\n%s", want, scrape)
+			}
+		}
+	}
+	if len(inner.calls) != 3 {
+		t.Fatalf("initial judge provider calls = %d, want 3", len(inner.calls))
+	}
+	check(metrics, "miss")
+	inner.calls = nil
+	inner.fail = true // A cache miss on the second pass must leave a visible failure.
+	metrics = newPipeline()
+	requeued, err := env.p.Rebuild(ctx, res.DocumentID, "") // ResetExtraction + requeue.
+	if err != nil || !reflect.DeepEqual(requeued.Queued, []string{res.DocumentID}) {
+		t.Fatalf("requeue = %+v, %v", requeued, err)
+	}
+	if edges := rawRecords(t, uri, edgeQuery); len(edges) != 0 {
+		t.Fatalf("ResetExtraction left %d edges", len(edges))
+	}
+	if err := env.p.Process(ctx, res.DocumentID); err != nil {
+		t.Fatal(err)
+	}
+	if len(inner.calls) != 0 {
+		t.Errorf("re-extraction judge provider calls = %d, want 0", len(inner.calls))
+	}
+	check(metrics, "hit")
+	t.Log("initial provider calls=3; re-extraction provider calls=0; each pass: 1 confirmed edge, 1 unclear candidate, 1 audit, facts_total=1")
+}
+
+type candidateChangingJudge struct {
+	change func(ingest.FactInput)
+	status string
+}
+
+func (j candidateChangingJudge) VerifyFact(_ context.Context, in ingest.FactInput) (ingest.Verdict, error) {
+	j.change(in)
+	return ingest.Verdict{Status: j.status}, nil
+}
+
+func TestPipelineLogsDiscardedCandidateVerdicts(t *testing.T) {
+	for _, state := range []string{"missing", "changed"} {
+		for _, status := range []string{"confirmed", "unclear", "refuted"} {
+			t.Run(state+"/"+status, func(t *testing.T) {
+				env := newPipelineEnv(t)
+				env.cfg.Judge.Mode = "all"
+				env.cfg.Ingest.ChunkWords = 200
+				env.cfg.Ingest.ChunkDedup = "off"
+				env.p = ingest.NewPipeline(env.cfg, env.st, candidateProvider{}, env.ix, textLoader)
+				env.p.SetWriteMode(ingest.WriteMode{RequireConfirmation: true})
+				var logs bytes.Buffer
+				previous := slog.Default()
+				slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+				t.Cleanup(func() { slog.SetDefault(previous) })
+				var ids []string
+				env.p.SetJudge(candidateChangingJudge{status: status, change: func(in ingest.FactInput) {
+					rows := rawRecords(t, os.Getenv(graphtest.URIEnv), fmt.Sprintf("MATCH (c:FactCandidate {doc_id: '%s', rel: '%s'}) RETURN c.id AS id", in.DocID, in.Rel))
+					if len(rows) != 1 {
+						t.Fatalf("candidates before verdict = %d, want 1", len(rows))
+					}
+					id := testString(rows[0], "id")
+					ids = append(ids, id)
+					query := fmt.Sprintf("MATCH (c:FactCandidate {id: '%s'}) DELETE c", id)
+					if state == "changed" {
+						query = fmt.Sprintf("MATCH (c:FactCandidate {id: '%s'}) SET c.input_hash = 'changed'", id)
+					}
+					rawRecords(t, os.Getenv(graphtest.URIEnv), query)
+				}})
+				metrics := obs.New()
+				env.p.SetMetrics(metrics)
+				source, _ := uniqueText(t)
+				res := mustProcess(t, env, ingest.Input{Kind: "text", Source: source, Text: "Zorbo joined Quillon Ltd."})
+				t.Cleanup(func() { _ = env.st.DeleteDocument(context.Background(), res.DocumentID) })
+				seen := make(map[string]bool)
+				for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+					if line == "" {
+						continue
+					}
+					var record map[string]any
+					if err := json.Unmarshal([]byte(line), &record); err != nil {
+						t.Fatal(err)
+					}
+					if record["msg"] == "ingest: discarded candidate verdict" && record["level"] == "INFO" && record["status"] == status {
+						id, _ := record["candidate_id"].(string)
+						seen[id] = true
+					}
+				}
+				for _, id := range ids {
+					if !seen[id] {
+						t.Errorf("missing INFO discard log with candidate_id=%s status=%s:\n%s", id, status, logs.String())
+					}
+				}
+				if scrape := gather(t, metrics); !strings.Contains(scrape, "\nfacts_total 0\n") {
+					t.Errorf("discarded verdict counted a typed fact edge:\n%s", scrape)
+				}
+			})
+		}
+	}
 }

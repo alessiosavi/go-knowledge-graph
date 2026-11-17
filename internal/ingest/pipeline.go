@@ -125,6 +125,9 @@ type pipelineStore interface {
 	WriteFactAudit(context.Context, graph.FactAudit) error
 	SetFactJudge(context.Context, string, string, string, string, string) error
 	RejectFact(context.Context, string, string, string, string, graph.FactAudit) error
+	PromoteCandidate(context.Context, string, string) (bool, error)
+	SetCandidateJudge(context.Context, string, string, string) (bool, error)
+	RefuteCandidate(context.Context, string, string, graph.FactAudit) (bool, error)
 	EnsureVectorIndex(context.Context, int) error
 	SetEntityEmbeddings(context.Context, []string, [][]float64) (int, error)
 	OlderLiveVersions(context.Context, string) ([]string, error)
@@ -471,12 +474,19 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 			}
 			r := byChunk[c.ID]
 			ents, facts, audits := p.buildExtraction(doc, c, r, version, docScoped)
+			if p.writeMode.RequireConfirmation {
+				for i := range facts {
+					facts[i].JudgeInput = CanonicalJudgeInput(factInputFor(doc, c, facts[i]))
+				}
+			}
 			if err := p.store.UpsertExtractionOpts(ctx, docID, c.ID, version, ents, facts, p.writeOptions(doc)); err != nil {
 				return fail("merge", err)
 			}
 			if p.metrics != nil {
 				p.metrics.Entities(len(ents))
-				p.metrics.Facts(len(facts))
+				if !p.writeMode.RequireConfirmation {
+					p.metrics.Facts(len(facts))
+				}
 				p.metrics.FactsDropped(len(audits))
 			}
 			for _, e := range ents {
@@ -650,8 +660,18 @@ func judgeName(text, key string) string {
 	return key
 }
 
+// factInputFor builds the exact judge request shared by candidate storage and verification.
+func factInputFor(doc *graph.Document, chunk graph.Chunk, fact graph.FactUpsert) FactInput {
+	return FactInput{
+		Head: judgeName(fact.HeadMention.Text, fact.HeadKey), Rel: fact.Rel,
+		Tail:       judgeName(fact.TailMention.Text, fact.TailKey),
+		Evidence:   EvidenceSentence(chunk.Text, fact.HeadMention.Start, fact.HeadMention.End),
+		DocContext: doc.Title, Confidence: fact.Confidence, DocID: doc.ID,
+	}
+}
+
 // verifyFacts runs the judge over selected facts. Failures never fail the
-// document: unverified facts simply keep judge=”.
+// document: unverified facts remain unjudged.
 func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candidates []judgeCandidate, version string) {
 	mode := p.cfg.Judge.Mode
 	for _, cand := range candidates {
@@ -660,16 +680,10 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 		if !ShouldJudge(mode, f.Confidence, p.cfg.Judge.VerifyFloor, p.cfg.Judge.SamplePct, factKey) {
 			continue
 		}
-		evidence := EvidenceSentence(cand.chunkText, f.HeadMention.Start, f.HeadMention.End)
 		start := time.Now()
 		// The judge compares names with the evidence sentence: send the
 		// mention text, never the key (a scoped key is "#<doc>:<name>").
-		verdict, err := p.judge.VerifyFact(ctx, FactInput{
-			Head: judgeName(f.HeadMention.Text, f.HeadKey), Rel: f.Rel,
-			Tail:     judgeName(f.TailMention.Text, f.TailKey),
-			Evidence: evidence, DocContext: doc.Title, Confidence: f.Confidence,
-			DocID: doc.ID,
-		})
+		verdict, err := p.judge.VerifyFact(ctx, factInputFor(doc, graph.Chunk{ID: cand.chunkID, Text: cand.chunkText}, f))
 		if p.metrics != nil {
 			p.metrics.JudgeSeconds(time.Since(start).Seconds())
 		}
@@ -683,6 +697,36 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 		}
 		if p.metrics != nil {
 			p.metrics.JudgeVerdict(verdict.Status)
+		}
+		if p.writeMode.RequireConfirmation {
+			id := graph.CandidateID(f.HeadKey, graph.SanitizeRel(f.Rel), f.TailKey, cand.chunkID)
+			inputHash := sha256Hex(string(f.JudgeInput))
+			var applied bool
+			var err error
+			switch verdict.Status {
+			case "confirmed":
+				applied, err = p.store.PromoteCandidate(ctx, id, inputHash)
+				if err == nil && applied && p.metrics != nil {
+					p.metrics.Facts(1)
+				}
+			case "unclear":
+				applied, err = p.store.SetCandidateJudge(ctx, id, inputHash, verdict.Status)
+			case "refuted":
+				applied, err = p.store.RefuteCandidate(ctx, id, inputHash, graph.FactAudit{
+					HeadKey: f.HeadKey, Rel: f.Rel, TailKey: f.TailKey,
+					DocID: doc.ID, ChunkID: cand.chunkID, Score: f.Confidence,
+					JudgeVerdict: "refuted", Reason: verdict.Reason, ExtractorVersion: version,
+				})
+			default:
+				slog.Warn("ingest: judge returned an unknown verdict status", "doc", doc.ID, "status", verdict.Status)
+				continue
+			}
+			if err != nil {
+				slog.Warn("ingest: could not apply candidate verdict", "doc", doc.ID, "err", err)
+			} else if !applied {
+				slog.Info("ingest: discarded candidate verdict", "candidate_id", id, "status", verdict.Status)
+			}
+			continue
 		}
 		switch verdict.Status {
 		case "confirmed", "unclear":

@@ -1003,3 +1003,35 @@ func TestAdminRebuild(t *testing.T) {
 		})
 	}
 }
+
+func TestCandidateNotVisible(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	doc, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: apiSource(t), Hash: "candidate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.DeleteDocument(ctx, doc.ID) })
+	token := apiToken(t)
+	ents := []graph.EntityUpsert{{Key: "zorbo-" + token, Name: "Zorbo", Type: "person"}, {Key: "quillon-" + token, Name: "Quillon Ltd", Type: "organization"}}
+	text := "Zorbo joined Quillon Ltd."
+	if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: 0, Text: text, End: len(text)}}); err != nil {
+		t.Fatal(err)
+	}
+	facts := []graph.FactUpsert{{HeadKey: ents[0].Key, Rel: "joined", TailKey: ents[1].Key, Confidence: 0.9, HeadMention: graph.Span{Start: 0, End: 5}, TailMention: graph.Span{Start: 13, End: 24}}}
+	facts[0].JudgeInput = ingest.CanonicalJudgeInput(ingest.FactInput{
+		Head: "Zorbo", Rel: "joined", Tail: "Quillon Ltd", Confidence: 0.9, Evidence: text, DocID: doc.ID,
+	})
+	if err := st.UpsertExtractionOpts(ctx, doc.ID, doc.ID+"-c0", "mock:1", ents, facts, graph.WriteOptions{FactsAsCandidates: true}); err != nil {
+		t.Fatal(err)
+	}
+	h := apiHandler(t, config.Config{}, st, nil)
+	rr := do(t, h, http.MethodGet, "/v1/entities/"+graph.EntityID(ents[0].Key)+"?include_low_confidence=true", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
+	}
+	view := decode[entityDTO](t, rr)
+	if len(view.Facts) != 0 || len(view.Together) != 1 || view.Together[0].Key != ents[1].Key {
+		t.Fatalf("candidate view = %+v", view)
+	}
+}

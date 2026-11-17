@@ -123,6 +123,9 @@ type FactUpsert struct {
 	HeadMention   Span
 	TailMention   Span
 	LowConfidence bool
+	// JudgeInput is the canonical judge request, persisted only for candidates.
+	// It must be non-empty for every fact when FactsAsCandidates is set.
+	JudgeInput []byte
 }
 
 // EntityRef identifies an entity node.

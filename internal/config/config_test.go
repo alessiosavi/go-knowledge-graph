@@ -27,7 +27,7 @@ func TestWriteGateConfig(t *testing.T) {
 		}
 	})
 	p := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(p, []byte("facts:\n  require_confirmation: true\n  allow_unverified_reads: true\ndomain:\n  tau: 0.1\n  delta: 0.03\n  tau_override: 0.2\n  seed_file: acme.json\n"), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte("judge:\n  mode: all\nfacts:\n  require_confirmation: true\n  allow_unverified_reads: true\ndomain:\n  tau: 0.1\n  delta: 0.03\n  tau_override: 0.2\n  seed_file: acme.json\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Run("yaml", func(t *testing.T) {
@@ -530,5 +530,24 @@ func TestAgentContextBudgetYAML(t *testing.T) {
 	cfg, err := config.Load(p)
 	if err != nil || cfg.Agent.ContextBudgetKB != 64 {
 		t.Fatalf("budget=%d err=%v", cfg.Agent.ContextBudgetKB, err)
+	}
+}
+
+func TestRequireConfirmationNeedsJudgeAll(t *testing.T) {
+	for _, mode := range []string{"off", "low-confidence", "sample", "", "all"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("GKG_FACTS_REQUIRE_CONFIRMATION", "true")
+			t.Setenv("GKG_JUDGE_MODE", mode)
+			_, err := config.Load("")
+			if mode == "all" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "facts.require_confirmation needs judge.mode=all") {
+				t.Fatalf("mode %q: error = %v, want facts.require_confirmation needs judge.mode=all", mode, err)
+			}
+		})
 	}
 }

@@ -114,7 +114,7 @@ func (m *Metrics) Entities(n int) {
 	}
 }
 
-// Facts counts written fact edges.
+// Facts counts typed fact edges written directly or promoted from candidates.
 func (m *Metrics) Facts(n int) {
 	if n > 0 {
 		m.facts.Add(float64(n))
