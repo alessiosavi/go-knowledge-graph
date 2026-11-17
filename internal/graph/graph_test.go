@@ -73,7 +73,6 @@ func TestBootstrapIdempotent(t *testing.T) {
 	for _, ix := range []struct{ label, prop string }{
 		{"Document", "id"},
 		{"Chunk", "id"},
-		{"Chunk", "doc_id"},
 		{"Entity", "id"},
 		{"Entity", "key"},
 	} {

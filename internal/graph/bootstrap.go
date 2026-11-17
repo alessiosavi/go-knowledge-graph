@@ -24,9 +24,10 @@ var uniqueConstraints = []struct {
 //
 // Memgraph unique constraints do not create an index, unlike Neo4j: every
 // `{id: $id}` / `{key: $key}` lookup on a constrained property is a label
-// scan unless it has its own index. Document(id), Chunk(id), Entity(key)
-// and Chunk(doc_id) are the hot lookup properties (search joins, entity
-// views, traversal evidence, per-document chunk reads).
+// scan unless it has its own index. Document(id), Chunk(id) and
+// Entity(key) are the hot lookup properties (search joins, entity views,
+// traversal evidence). Per-document chunk reads go through HAS_CHUNK from
+// the indexed Document(id), so Chunk(doc_id) needs no index.
 var secondaryIndexes = []struct {
 	Label string
 	Props []string
@@ -35,7 +36,6 @@ var secondaryIndexes = []struct {
 	{"Document", []string{"id"}},
 	{"Chunk", []string{"exact_key"}},
 	{"Chunk", []string{"id"}},
-	{"Chunk", []string{"doc_id"}},
 	{"Entity", []string{"id"}},
 	{"Entity", []string{"key"}},
 }
