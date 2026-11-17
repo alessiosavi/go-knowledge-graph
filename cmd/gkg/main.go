@@ -62,6 +62,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runEval(args[1:], stdout, stderr)
 	case "judge":
 		return runJudge(args[1:], stdout, stderr)
+	case "quality":
+		return runQuality(args[1:], stdout, stderr)
 	case "eval-retrieval":
 		return runEvalRetrieval(args[1:], stdout, stderr)
 	case "serve":
@@ -635,6 +637,7 @@ commands:
   eval      run the golden-set evaluation harness
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
   judge     backfill unjudged candidates or sample and score a fact audit
+  quality   report read-only graph quality metrics and optional private hygiene samples
   migrate   upgrade the Memgraph schema and re-extract in-flight documents
   version   print the version
   mcp       run the MCP server over stdio
