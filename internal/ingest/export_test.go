@@ -24,3 +24,19 @@ func (s domainWriteBarrier) UpsertExtractionOpts(ctx context.Context, doc, chunk
 func SetBeforeDomainWrite(p *Pipeline, f func(string)) {
 	p.store = domainWriteBarrier{pipelineStore: p.store, before: f}
 }
+
+type domainAssignmentHook struct {
+	pipelineStore
+	before func(graph.Assignment) error
+}
+
+func (s domainAssignmentHook) AssignDomain(ctx context.Context, a graph.Assignment) error {
+	if err := s.before(a); err != nil {
+		return err
+	}
+	return s.pipelineStore.AssignDomain(ctx, a)
+}
+
+func SetBeforeDomainAssignment(p *Pipeline, f func(graph.Assignment) error) {
+	p.store = domainAssignmentHook{pipelineStore: p.store, before: f}
+}

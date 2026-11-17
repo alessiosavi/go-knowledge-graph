@@ -1,8 +1,11 @@
 package ingest_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"reflect"
 	"strings"
@@ -22,6 +25,7 @@ import (
 type detectProvider struct {
 	mu         sync.Mutex
 	ids        []string
+	calls      int
 	secondPass bool
 }
 
@@ -30,6 +34,7 @@ func (*detectProvider) Version() string { return "detect-test:1" }
 func (p *detectProvider) Extract(_ context.Context, req extract.Request) ([]extract.ChunkResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.calls++
 	var out []extract.ChunkResult
 	for _, c := range req.Chunks {
 		p.ids = append(p.ids, c.ID)
@@ -214,6 +219,64 @@ func TestCrossDomainDuplicateExtracted(t *testing.T) {
 	storedProfile(t, env, b)
 }
 
+func TestSameDocumentDuplicateKeepsExtraction(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		confirmation bool
+		preset       string
+	}{
+		{name: "facts"},
+		{name: "candidates", confirmation: true},
+		{name: "assigned", preset: "quillon-local"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, prov := detectionEnv(t, func(cfg *config.Config) { cfg.Ingest.ChunkWords = 5 })
+			env.p.SetWriteMode(ingest.WriteMode{Domains: true, RequireConfirmation: tc.confirmation})
+			const sentence = "Acme-Max visits Zorbo with Quillon."
+			id := detectSubmit(t, env, "duplicate", sentence+" "+sentence, tc.preset)
+			detectProcess(t, env, id)
+			chunks, err := env.st.Chunks(context.Background(), id)
+			if err != nil || len(chunks) != 2 {
+				t.Fatalf("chunks=%+v err=%v", chunks, err)
+			}
+			if chunks[1].DuplicateOf != chunks[0].ID {
+				t.Errorf("duplicate_of=%q, want %q", chunks[1].DuplicateOf, chunks[0].ID)
+			}
+			if prov.calls != 1 || !reflect.DeepEqual(prov.ids, []string{chunks[0].ID}) {
+				t.Errorf("provider calls=%d chunks=%v, want one call for root only", prov.calls, prov.ids)
+			}
+			want := map[string]any{"acmemax": int64(2), "zorbo": int64(2), "quillon": int64(2)}
+			if got := storedProfile(t, env, id); !reflect.DeepEqual(got, want) {
+				t.Errorf("profile=%v, want %v", got, want)
+			}
+			uri := os.Getenv(graphtest.URIEnv)
+			for i, c := range chunks {
+				wantMentions, wantFacts, wantCandidates := int64(0), int64(0), int64(0)
+				if i == 0 {
+					wantMentions = 3
+					if tc.confirmation {
+						wantCandidates = 1
+					} else {
+						wantFacts = 1
+					}
+				}
+				for _, check := range []struct {
+					query string
+					want  int64
+				}{
+					{fmt.Sprintf(`MATCH (:Chunk {id:'%s'})-[r:MENTIONS]->(:Entity) RETURN count(r) AS n`, c.ID), wantMentions},
+					{fmt.Sprintf(`MATCH (:Entity)-[r]->(:Entity) WHERE r.chunk_id='%s' RETURN count(r) AS n`, c.ID), wantFacts},
+					{fmt.Sprintf(`MATCH (n:FactCandidate {chunk_id:'%s'}) RETURN count(n) AS n`, c.ID), wantCandidates},
+				} {
+					if got := rawCount(t, uri, check.query); got != check.want {
+						t.Errorf("%s = %d, want %d", check.query, got, check.want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestDuplicateChainRoot(t *testing.T) {
 	env, prov := detectionEnv(t, nil)
 	text := "Acme-Max explores Zorbo with Quillon in the archive."
@@ -286,11 +349,21 @@ func TestBrokenDuplicateRootsExtracted(t *testing.T) {
 			env, prov := detectionEnv(t, nil)
 			id := detectSubmit(t, env, "root", "Acme-Max visits Quillon and Zorbo.", "quillon-roots")
 			root := "missing-chunk"
-			if kind == "cycle" || kind == "unfinished" {
+			if kind == "cycle" {
 				root = id + "-c1"
 			}
+			if kind == "unfinished" {
+				other := detectSubmit(t, env, "unfinished", "Quillon visits Acme-Max and Zorbo.", "quillon-roots")
+				if err := env.st.PutChunks(context.Background(), other, []graph.Chunk{{Text: "Quillon visits Acme-Max and Zorbo."}}); err != nil {
+					t.Fatal(err)
+				}
+				if err := env.st.SetStatus(context.Background(), other, graph.StatusChunked, ""); err != nil {
+					t.Fatal(err)
+				}
+				root = other + "-c0"
+			}
 			chunks := []graph.Chunk{{Seq: 0, Text: "Acme-Max visits Quillon and Zorbo.", DuplicateOf: root}}
-			if kind != "missing" {
+			if kind == "cycle" {
 				back := ""
 				if kind == "cycle" {
 					back = id + "-c0"
@@ -335,6 +408,96 @@ func TestReingestInherits(t *testing.T) {
 	rows := rawRecords(t, os.Getenv(graphtest.URIEnv), fmt.Sprintf(`MATCH (r:DomainDecision {doc_id:'%s'}) RETURN r.action AS action,r.domain AS domain,r.previous_domain AS previous ORDER BY action`, b))
 	if len(rows) != 2 || testString(rows[0], "action") != "inherit" || testString(rows[1], "action") != "proposed-move" || testString(rows[1], "domain") != od.Domain || testString(rows[1], "previous") != ad.Domain {
 		t.Fatalf("inherit/proposal=%+v", rows)
+	}
+}
+
+func TestProposedMoveFailureDoesNotFailIngest(t *testing.T) {
+	env, _ := detectionEnv(t, nil)
+	a := detectSubmit(t, env, "version", "Acme-Max explores Zorbo with Quillon.", "")
+	ad := detectProcess(t, env, a)
+	other := detectSubmit(t, env, "other", "Elsewhere Flimble explores Wexora with Trindle.", "")
+	od := detectProcess(t, env, other)
+	b := detectSubmit(t, env, "version", "Elsewhere Flimble now visits Wexora and Trindle.", "")
+	var logs bytes.Buffer
+	logger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(logger) })
+	proposalAttempted := false
+	ingest.SetBeforeDomainAssignment(env.p, func(a graph.Assignment) error {
+		if a.Decision.Action != "proposed-move" {
+			return nil
+		}
+		proposalAttempted = true
+		if a.Decision.Domain != od.Domain || a.Decision.PreviousDomain != ad.Domain {
+			t.Errorf("proposal=%+v", a.Decision)
+		}
+		return errors.New("injected proposal write failure")
+	})
+	if d := detectProcess(t, env, b); d.Domain != ad.Domain {
+		t.Errorf("domain=%q, want inherited %q", d.Domain, ad.Domain)
+	}
+	if !proposalAttempted {
+		t.Fatal("proposal failure was not exercised")
+	}
+	rows := rawRecords(t, os.Getenv(graphtest.URIEnv), fmt.Sprintf(`MATCH (r:DomainDecision {doc_id:'%s'}) RETURN r.action AS action,r.domain AS domain`, b))
+	if len(rows) != 1 || testString(rows[0], "action") != "inherit" || testString(rows[0], "domain") != ad.Domain {
+		t.Errorf("committed inheritance=%+v", rows)
+	}
+	storedProfile(t, env, b)
+	if output := logs.String(); !strings.Contains(output, "level=WARN") || !strings.Contains(output, "proposed-move") || !strings.Contains(output, b) || !strings.Contains(output, "injected proposal write failure") {
+		t.Errorf("missing proposal warning: %s", output)
+	}
+}
+
+func TestInheritedAssignmentProfileExcludesCrossDomainRoots(t *testing.T) {
+	env, prov := detectionEnv(t, nil)
+	const ownText = "Acme-Max explores Zorbo with Quillon."
+	const foreignText = "Elsewhere Flimble explores Wexora with Trindle."
+	a := detectSubmit(t, env, "version", ownText, "")
+	ad := detectProcess(t, env, a)
+	other := detectSubmit(t, env, "other", foreignText, "")
+	od := detectProcess(t, env, other)
+	if ad.Domain == od.Domain {
+		t.Fatal("fixture domains must differ")
+	}
+	b := detectSubmit(t, env, "version", ownText+" "+foreignText, "")
+	if err := env.st.PutChunks(context.Background(), b, []graph.Chunk{
+		{Seq: 0, Text: "Acme-Max revisits Zorbo with Quillon."},
+		{Seq: 1, Text: ownText, DuplicateOf: a + "-c0"},
+		{Seq: 2, Text: foreignText, DuplicateOf: other + "-c0"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.st.SetStatus(context.Background(), b, graph.StatusChunked, ""); err != nil {
+		t.Fatal(err)
+	}
+	observed := false
+	ingest.SetBeforeDomainWrite(env.p, func(id string) {
+		if id != b || observed {
+			return
+		}
+		observed = true
+		want := map[string]any{"acmemax": int64(2), "zorbo": int64(2), "quillon": int64(2)}
+		if got := storedProfile(t, env, b); !reflect.DeepEqual(got, want) {
+			t.Errorf("assignment profile=%v, want only own-domain names %v", got, want)
+		}
+	})
+	if d := detectProcess(t, env, b); d.Domain != ad.Domain {
+		t.Errorf("domain=%q, want inherited %q", d.Domain, ad.Domain)
+	}
+	if !observed {
+		t.Fatal("assignment profile was not observed before final refresh")
+	}
+	want := map[string]any{"acmemax": int64(2), "zorbo": int64(2), "quillon": int64(2), "flimble": int64(1), "wexora": int64(1), "trindle": int64(1)}
+	if got := storedProfile(t, env, b); !reflect.DeepEqual(got, want) {
+		t.Errorf("final profile=%v, want %v", got, want)
+	}
+	chunks, err := env.st.Chunks(context.Background(), b)
+	if err != nil || len(chunks) != 3 || chunks[1].DuplicateOf != a+"-c0" || chunks[2].DuplicateOf != "" {
+		t.Errorf("chunks=%+v err=%v", chunks, err)
+	}
+	if !reflect.DeepEqual(prov.ids, []string{a + "-c0", other + "-c0", b + "-c0", b + "-c2"}) {
+		t.Errorf("provider chunks=%v", prov.ids)
 	}
 }
 

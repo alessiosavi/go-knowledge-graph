@@ -484,13 +484,8 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		cleanResults(results)
 		var profile domain.Profile
 		if p.writeMode.Domains {
-			var originals map[string]string
-			profile, originals, err = p.nameProfile(ctx, chunks, cleaned, roots)
-			if err != nil {
-				return fail("domain", err)
-			}
 			if doc.Domain == "" {
-				if err := p.detectDomain(ctx, doc, profile, originals); err != nil {
+				if err := p.detectDomain(ctx, doc, chunks, cleaned, roots); err != nil {
 					return fail("domain", err)
 				}
 			}
@@ -499,7 +494,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 			var clear []string
 			for i := range chunks {
 				c := &chunks[i]
-				if c.DuplicateOf != "" && roots[c.ID].Domain != doc.Domain {
+				if c.DuplicateOf != "" && roots[c.ID].DocID != doc.ID && roots[c.ID].Domain != doc.Domain {
 					clear = append(clear, c.ID)
 					c.DuplicateOf = ""
 					second.Chunks = append(second.Chunks, extract.RequestChunk{ID: c.ID, Text: c.Text})
@@ -513,7 +508,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 				return fail("extract", err)
 			}
 			cleanResults(secondResults)
-			profile, _, err = p.nameProfile(ctx, chunks, cleaned, roots)
+			profile, _, err = p.nameProfile(ctx, chunks, cleaned, roots, doc.Domain)
 			if err != nil {
 				return fail("domain", err)
 			}
@@ -1198,7 +1193,7 @@ func (p *Pipeline) buildChunks(ctx context.Context, doc *graph.Document, text st
 }
 
 // duplicateRoots validates the complete chain before extraction. Broken chains,
-// cycles and roots still being processed cannot supply names safely.
+// cycles and roots being processed by another document cannot supply names safely.
 func (p *Pipeline) duplicateRoots(ctx context.Context, chunks []graph.Chunk) (map[string]graph.Chunk, error) {
 	roots := make(map[string]graph.Chunk)
 	var clear []string
@@ -1230,7 +1225,7 @@ func (p *Pipeline) duplicateRoots(ctx context.Context, chunks []graph.Chunk) (ma
 			if err != nil {
 				return nil, err
 			}
-			if doc.Status == graph.StatusDone {
+			if root.DocID == c.DocID || doc.Status == graph.StatusDone {
 				root.Domain = doc.Domain
 				roots[c.ID] = root
 				valid = true
@@ -1263,12 +1258,16 @@ func (p *Pipeline) extractChunks(ctx context.Context, req extract.Request) ([]ex
 	return results, err
 }
 
-func (p *Pipeline) nameProfile(ctx context.Context, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk) (domain.Profile, map[string]string, error) {
+func (p *Pipeline) nameProfile(ctx context.Context, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk, onlyDomain string) (domain.Profile, map[string]string, error) {
 	var ids []string
 	seen := make(map[string]bool)
 	for _, c := range chunks {
 		if c.DuplicateOf != "" {
-			id := roots[c.ID].ID
+			root := roots[c.ID]
+			if root.DocID == c.DocID || (onlyDomain != "" && root.Domain != onlyDomain) {
+				continue
+			}
+			id := root.ID
 			if !seen[id] {
 				ids = append(ids, id)
 				seen[id] = true
@@ -1283,10 +1282,14 @@ func (p *Pipeline) nameProfile(ctx context.Context, chunks []graph.Chunk, cleane
 	originals := make(map[string]string)
 	for _, c := range chunks {
 		var names []string
-		if c.DuplicateOf != "" {
+		if c.DuplicateOf != "" && roots[c.ID].DocID != c.DocID {
 			names = borrowed[roots[c.ID].ID]
 		} else {
-			for _, m := range cleaned[c.ID].Mentions {
+			id := c.ID
+			if c.DuplicateOf != "" {
+				id = roots[c.ID].ID
+			}
+			for _, m := range cleaned[id].Mentions {
 				names = append(names, m.Name)
 			}
 		}
@@ -1318,16 +1321,9 @@ func domainParams(cfg config.DomainConfig) domain.Params {
 	return p
 }
 
-func (p *Pipeline) detectDomain(ctx context.Context, doc *graph.Document, profile domain.Profile, originals map[string]string) error {
+func (p *Pipeline) detectDomain(ctx context.Context, doc *graph.Document, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk) error {
 	p.domainMu.Lock()
 	defer p.domainMu.Unlock()
-	corpus, err := p.store.DomainProfiles(ctx, doc.ID)
-	if err != nil {
-		return err
-	}
-	params := domainParams(p.cfg.Domain)
-	target := domain.DocProfile{DocID: doc.ID, Source: doc.Source, Profile: profile}
-	decision := domain.Decide(target, corpus, params)
 	olds, err := p.store.OlderLiveVersions(ctx, doc.ID)
 	if err != nil {
 		return err
@@ -1347,6 +1343,19 @@ func (p *Pipeline) detectDomain(ctx context.Context, doc *graph.Document, profil
 			break
 		}
 	}
+	// Foreign roots will be extracted locally after assignment. Until then,
+	// an inherited document can borrow only names from its final domain.
+	profile, originals, err := p.nameProfile(ctx, chunks, cleaned, roots, inherited)
+	if err != nil {
+		return err
+	}
+	corpus, err := p.store.DomainProfiles(ctx, doc.ID)
+	if err != nil {
+		return err
+	}
+	params := domainParams(p.cfg.Domain)
+	target := domain.DocProfile{DocID: doc.ID, Source: doc.Source, Profile: profile}
+	decision := domain.Decide(target, corpus, params)
 	record := graph.DecisionRecord{DocID: doc.ID, Domain: decision.Domain, Action: decision.Action, By: "auto", Top: decision.Top, Params: decision.Params, Note: decision.Note}
 	a := graph.Assignment{DocID: doc.ID, Domain: decision.Domain, CreatedBy: "auto", NewDomain: decision.Action == "new", Profile: profile, Decision: record}
 	if inherited != "" {
@@ -1364,7 +1373,10 @@ func (p *Pipeline) detectDomain(ctx context.Context, doc *graph.Document, profil
 			if score.Domain == decision.Domain && score.Score >= params.TauOverride {
 				a.Decision = record
 				a.Decision.Action, a.Decision.PreviousDomain = "proposed-move", inherited
-				return p.store.AssignDomain(ctx, a)
+				if err := p.store.AssignDomain(ctx, a); err != nil {
+					slog.Warn("ingest: could not record proposed-move", "doc", doc.ID, "err", err)
+				}
+				break
 			}
 		}
 	}
