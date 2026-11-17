@@ -13,6 +13,7 @@ class Element {
   constructor(hidden = false) {
     this.hidden = hidden;
     this.value = "";
+    this.checked = false;
     this.textContent = "";
     this.dataset = {};
     this.listeners = new Map();
@@ -32,6 +33,13 @@ class Element {
   replaceChildren(...children) {
     this.children = children;
   }
+  querySelector(selector) {
+    assert.equal(selector, "tbody");
+    return this.tbody ??= new Element();
+  }
+  setAttribute(name, value) {
+    this[name] = value;
+  }
 }
 
 async function page(key = savedKey) {
@@ -41,6 +49,7 @@ async function page(key = savedKey) {
   }
   const storage = new Map(key ? [[keyStore, key]] : []);
   const requests = [];
+  const replies = new Map();
   let unauthorizedPath = "";
   let challenge = "";
   vm.runInNewContext(script, {
@@ -48,6 +57,8 @@ async function page(key = savedKey) {
       readyState: "complete",
       getElementById: (id) => elements.get(id),
       createElement: () => new Element(),
+      createElementNS: () => new Element(),
+      createTextNode: (text) => Object.assign(new Element(), { textContent: text }),
     },
     localStorage: {
       getItem: (name) => storage.get(name) ?? null,
@@ -62,13 +73,13 @@ async function page(key = savedKey) {
         status,
         ok: status === 200,
         headers: { get: (name) => name.toLowerCase() === "www-authenticate" ? challenge : null },
-        json: async () => path === "/v1/agent/status" ? { enabled: true, stream: true } : {},
+        json: async () => replies.get(path) ?? (path === "/v1/agent/status" ? { enabled: true, stream: true } : {}),
       };
     },
   });
   await setImmediate();
   return {
-    elements, storage, requests,
+    elements, storage, requests, replies,
     reject(path, header) {
       unauthorizedPath = path;
       challenge = header;
@@ -129,4 +140,45 @@ test("fresh page sends no bearer and saving a key reveals the forget button", as
   assert.equal(p.storage.get(keyStore), savedKey);
   assert.equal(p.elements.get("auth-forget").hidden, false);
   assert.equal(p.requests.at(-1).headers.Authorization, `Bearer ${savedKey}`);
+});
+
+async function selectEntity(p) {
+  p.replies.set("/v1/search", { hits: [{ kind: "entity", id: "zorbo", title: "Zorbo" }] });
+  p.replies.set("/v1/entities/zorbo", { id: "zorbo", name: "Zorbo", hidden: { unclear: 1, unjudged: 2, rejected: 1 } });
+  p.replies.set("/v1/entities/zorbo?include_low_confidence=true", { id: "zorbo", name: "Zorbo" });
+  p.elements.get("search-input").value = "Zorbo";
+  await p.fire("search-form", "submit");
+  p.elements.get("results").children[0].dispatch("click");
+  await setImmediate();
+}
+
+test("entity and neighborhood requests omit low confidence by default", async () => {
+  const p = await page();
+  await selectEntity(p);
+  const entity = p.requests.find((r) => r.path.startsWith("/v1/entities/"));
+  assert.equal(entity.path, "/v1/entities/zorbo");
+  const traversal = p.requests.find((r) => r.path === "/v1/traverse");
+  assert.equal(Object.hasOwn(JSON.parse(traversal.body), "include_low_confidence"), false);
+});
+
+test("low confidence checkbox reloads entity and neighborhood with opt-in", async () => {
+  const p = await page();
+  await selectEntity(p);
+  const checkbox = p.elements.get("include-low-confidence");
+  assert.ok(checkbox, "missing low-confidence checkbox");
+  assert.equal(checkbox.checked, false);
+  checkbox.checked = true;
+  await p.fire("include-low-confidence", "change");
+  assert.ok(p.requests.some((r) => r.path === "/v1/entities/zorbo?include_low_confidence=true"));
+  assert.equal(JSON.parse(p.requests.filter((r) => r.path === "/v1/traverse").at(-1).body).include_low_confidence, true);
+  checkbox.checked = false;
+  await p.fire("include-low-confidence", "change");
+  assert.equal(p.requests.filter((r) => r.path.startsWith("/v1/entities/")).at(-1).path, "/v1/entities/zorbo");
+  assert.equal(Object.hasOwn(JSON.parse(p.requests.at(-1).body), "include_low_confidence"), false);
+});
+
+test("entity card explains hidden facts by state", async () => {
+  const p = await page();
+  await selectEntity(p);
+  assert.ok(p.elements.get("entity").children.some((e) => e.textContent === "Hidden: 1 unclear, 2 unjudged, 1 rejected facts"));
 });

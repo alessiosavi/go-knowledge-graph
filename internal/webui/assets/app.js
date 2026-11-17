@@ -168,11 +168,15 @@
 
   // ---- entity card + facts ------------------------------------------------
 
+  let selectedEntityID = "";
+
   async function loadEntity(id) {
+    selectedEntityID = id;
     const box = $("entity");
     box.replaceChildren(el("p", "muted", "Loading…"));
     const view = await api(
-      "/v1/entities/" + encodeURIComponent(id) + "?include_low_confidence=true",
+      "/v1/entities/" + encodeURIComponent(id) +
+        ($("include-low-confidence").checked ? "?include_low_confidence=true" : ""),
     );
     box.replaceChildren();
     const title = el("p");
@@ -186,6 +190,11 @@
       box.append(el("p", "muted", "aliases: " + view.aliases.join(", ")));
     }
     box.append(el("p", "muted", (view.mention_count || 0) + " mentions"));
+    if (view.hidden) {
+      box.append(el("p", "muted", "Hidden: " + (view.hidden.unclear || 0) +
+        " unclear, " + (view.hidden.unjudged || 0) + " unjudged, " +
+        (view.hidden.rejected || 0) + " rejected facts"));
+    }
     if (view.together && view.together.length) {
       const heading = el("p");
       heading.append(el("strong", null, "Appears with"));
@@ -277,7 +286,7 @@
           entity: entity.id,
           direction: "both",
           depth: 1,
-          include_low_confidence: true,
+          ...($("include-low-confidence").checked ? { include_low_confidence: true } : {}),
           limit: 100,
         },
       });
@@ -904,6 +913,9 @@
   // ---- wiring -------------------------------------------------------------
 
   function wire() {
+    $("include-low-confidence").addEventListener("change", () => {
+      if (selectedEntityID) loadEntity(selectedEntityID).catch(() => {});
+    });
     $("search-form").addEventListener("submit", (ev) => {
       ev.preventDefault();
       const query = $("search-input").value.trim();

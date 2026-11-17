@@ -122,7 +122,7 @@ curl -s -H 'Content-Type: application/json' \
      -d '{"query":"knowledge graph","kind":"auto"}' localhost:8080/v1/search
 
 # one entity with evidenced facts
-curl -s 'localhost:8080/v1/entities/<id-or-key>?include_low_confidence=true'
+curl -s 'localhost:8080/v1/entities/<id-or-key>'
 
 # guarded read-only Cypher
 curl -s -H 'Content-Type: application/json' \
@@ -132,6 +132,28 @@ curl -s -H 'Content-Type: application/json' \
 The same data is browsable in the built-in viewer: open
 `http://localhost:8080/ui/` for search, entity cards with evidence,
 documents, ingest and a one-hop neighborhood graph — no extra service.
+
+Entity and traversal reads exclude low-confidence typed facts by default. Add
+`?include_low_confidence=true` to the entity URL (or the JSON boolean on
+`POST /v1/traverse`) to include them. The viewer's unchecked **Include
+low-confidence facts** checkbox applies to both the entity card and neighborhood.
+
+With confirmation enabled, unjudged and unclear facts stay as candidates, outside
+the typed graph edges. The `hidden` response object counts `unclear`, `unjudged`
+and `rejected` facts touching the viewed entity (the start entity for traversal),
+regardless of filters or inclusion options. Each distinct `(head_key, rel, tail_key)`
+counts once per state, even when extracted from multiple chunks. It is omitted
+when all three counts are zero.
+The viewer renders these counts below the entity details.
+
+To inspect candidates deliberately, set `facts.allow_unverified_reads: true`
+(environment: `GKG_FACTS_ALLOW_UNVERIFIED_READS=true`), then request
+`?include_unverified=true` on an entity URL or `"include_unverified":true` in the
+traversal JSON. This adds candidates regardless of confidence, with
+`unverified:true` and `judge:""` (unjudged) or `judge:"unclear"`. Rejected audits
+remain hidden. By default the setting is false: the request is ignored and
+`unverified_ignored:true` explains why. MCP's `get_entity` and `traverse` accept
+the same flags and enforce the same setting; agent tools keep candidates hidden.
 
 The same submissions work from the CLI without HTTP:
 

@@ -652,6 +652,11 @@ RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type,
 // then mention count descending and key ascending, regardless of fact confidence.
 // idOrKey matches the entity id first, falling back to the entity key.
 func (s *Store) EntityView(ctx context.Context, idOrKey string, includeLowConfidence bool) (EntityView, error) {
+	return s.EntityViewOpts(ctx, idOrKey, ViewOptions{IncludeLowConfidence: includeLowConfidence})
+}
+
+// EntityViewOpts additionally exposes candidate facts when explicitly requested.
+func (s *Store) EntityViewOpts(ctx context.Context, idOrKey string, opt ViewOptions) (EntityView, error) {
 	params := map[string]any{"q": idOrKey}
 	recs, err := s.runRead(ctx, entityByIDQuery, params)
 	if err == nil && len(recs) == 0 {
@@ -686,9 +691,32 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
        coalesce(r.head_key, '') AS head_key, coalesce(r.tail_key, '') AS tail_key,
        coalesce(r.head_start, -1) AS head_start, coalesce(r.tail_start, -1) AS tail_start,
        coalesce(c.text, '') AS text`,
-		map[string]any{"key": view.Key, "include": includeLowConfidence})
+		map[string]any{"key": view.Key, "include": opt.IncludeLowConfidence})
 	if err != nil {
 		return EntityView{}, fmt.Errorf("graph: entity facts: %w", err)
+	}
+	if opt.IncludeUnverified {
+		const projection = `
+OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
+RETURN r.rel AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
+       coalesce(r.confidence, 0) AS confidence, coalesce(r.judge, '') AS judge, true AS unverified,
+       coalesce(r.low_confidence, false) AS low, coalesce(r.doc_id, '') AS doc_id,
+       coalesce(r.chunk_id, '') AS chunk_id,
+       r.head_key AS head_key, r.tail_key AS tail_key,
+       coalesce(r.head_start, -1) AS head_start, coalesce(r.tail_start, -1) AS tail_start,
+       coalesce(c.text, '') AS text`
+		candidates, err := s.runRead(ctx, `
+MATCH (r:FactCandidate {head_key: $key})
+WHERE coalesce(r.judge, '') IN ['', 'unclear']
+MATCH (o:Entity {key: r.tail_key})`+projection+`
+UNION ALL
+MATCH (r:FactCandidate {tail_key: $key})
+WHERE r.head_key <> $key AND coalesce(r.judge, '') IN ['', 'unclear']
+MATCH (o:Entity {key: r.head_key})`+projection, map[string]any{"key": view.Key})
+		if err != nil {
+			return EntityView{}, fmt.Errorf("graph: entity candidates: %w", err)
+		}
+		recs = append(recs, candidates...)
 	}
 	groupCount := make(map[string]int, len(recs))
 	facts := make([]FactView, 0, len(recs))
@@ -708,6 +736,7 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
 			},
 			Confidence:    getFloat(fr, "confidence"),
 			Judge:         getString(fr, "judge"),
+			Unverified:    getBool(fr, "unverified"),
 			LowConfidence: getBool(fr, "low"),
 			Outgoing:      outgoing,
 			DocID:         getString(fr, "doc_id"),
@@ -735,6 +764,10 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
 		return facts[i].ChunkID < facts[j].ChunkID
 	})
 	view.Facts = facts
+	view.Hidden, err = s.hiddenCounts(ctx, view.Key)
+	if err != nil {
+		return EntityView{}, err
+	}
 
 	recs, err = s.runRead(ctx, `
 MATCH (e:Entity {key: $key})<-[:MENTIONS]-(c:Chunk)-[:MENTIONS]->(o:Entity)
@@ -759,6 +792,43 @@ LIMIT 10`, map[string]any{"key": view.Key})
 		})
 	}
 	return view, nil
+}
+
+// hiddenCounts counts distinct fact tuples per state without joining endpoints:
+// an audit still explains a missing fact when its other endpoint no longer exists.
+// The head/tail branches are disjoint, so self-loops count only once.
+func (s *Store) hiddenCounts(ctx context.Context, key string) (HiddenCounts, error) {
+	recs, err := s.runRead(ctx, `
+MATCH (f:FactCandidate {head_key: $key})
+RETURN coalesce(f.judge, '') AS judge, count(DISTINCT [f.head_key, f.rel, f.tail_key]) AS n, false AS rejected
+UNION ALL
+MATCH (f:FactCandidate {tail_key: $key})
+WHERE f.head_key <> $key
+RETURN coalesce(f.judge, '') AS judge, count(DISTINCT [f.head_key, f.rel, f.tail_key]) AS n, false AS rejected
+UNION ALL
+MATCH (f:RejectedFact {head_key: $key})
+RETURN '' AS judge, count(DISTINCT [f.head_key, f.rel, f.tail_key]) AS n, true AS rejected
+UNION ALL
+MATCH (f:RejectedFact {tail_key: $key})
+WHERE f.head_key <> $key
+RETURN '' AS judge, count(DISTINCT [f.head_key, f.rel, f.tail_key]) AS n, true AS rejected`, map[string]any{"key": key})
+	if err != nil {
+		return HiddenCounts{}, fmt.Errorf("graph: hidden facts: %w", err)
+	}
+	var counts HiddenCounts
+	for _, r := range recs {
+		if getBool(r, "rejected") {
+			counts.Rejected += getInt(r, "n")
+		} else {
+			switch getString(r, "judge") {
+			case "":
+				counts.Unjudged += getInt(r, "n")
+			case "unclear":
+				counts.Unclear += getInt(r, "n")
+			}
+		}
+	}
+	return counts, nil
 }
 
 // EntityByName returns the entity whose stored name matches the argument

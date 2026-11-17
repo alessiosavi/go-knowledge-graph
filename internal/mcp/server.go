@@ -93,6 +93,7 @@ type getEntityArgs struct {
 	ID                   string `json:"id,omitempty" jsonschema:"entity id"`
 	Name                 string `json:"name,omitempty" jsonschema:"entity name (exact after case folding)"`
 	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include facts below the assert floor"`
+	IncludeUnverified    bool   `json:"include_unverified,omitempty" jsonschema:"include marked candidates only when facts.allow_unverified_reads is enabled; otherwise unverified_ignored is true"`
 }
 
 type getChunksArgs struct {
@@ -107,6 +108,7 @@ type traverseArgs struct {
 	Depth                int    `json:"depth,omitempty" jsonschema:"hops, 1 or 2 (default 1)"`
 	Limit                int    `json:"limit,omitempty" jsonschema:"maximum edges (default 50, capped at 200)"`
 	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include facts below the assert floor"`
+	IncludeUnverified    bool   `json:"include_unverified,omitempty" jsonschema:"include marked candidates only when facts.allow_unverified_reads is enabled; otherwise unverified_ignored is true"`
 }
 
 type listDocumentsArgs struct {
@@ -175,7 +177,8 @@ type factOut struct {
 	Rel           string       `json:"rel"`
 	Other         entityRefOut `json:"other"`
 	Confidence    float64      `json:"confidence"`
-	Judge         string       `json:"judge,omitempty"`
+	Judge         *string      `json:"judge,omitempty"`
+	Unverified    bool         `json:"unverified,omitempty"`
 	LowConfidence bool         `json:"low_confidence"`
 	Outgoing      bool         `json:"outgoing"`
 	DocID         string       `json:"doc_id"`
@@ -184,14 +187,16 @@ type factOut struct {
 }
 
 type entityOut struct {
-	ID           string         `json:"id"`
-	Key          string         `json:"key"`
-	Name         string         `json:"name"`
-	Type         string         `json:"type"`
-	Aliases      []string       `json:"aliases"`
-	MentionCount int            `json:"mention_count"`
-	Facts        []factOut      `json:"facts"`
-	Together     []coMentionOut `json:"together"`
+	ID                string              `json:"id"`
+	Key               string              `json:"key"`
+	Name              string              `json:"name"`
+	Type              string              `json:"type"`
+	Aliases           []string            `json:"aliases"`
+	MentionCount      int                 `json:"mention_count"`
+	Facts             []factOut           `json:"facts"`
+	Together          []coMentionOut      `json:"together"`
+	Hidden            *graph.HiddenCounts `json:"hidden,omitempty"`
+	UnverifiedIgnored bool                `json:"unverified_ignored,omitempty"`
 }
 
 type edgeOut struct {
@@ -199,7 +204,8 @@ type edgeOut struct {
 	To            string  `json:"to"`
 	Rel           string  `json:"rel"`
 	Confidence    float64 `json:"confidence"`
-	Judge         string  `json:"judge,omitempty"`
+	Judge         *string `json:"judge,omitempty"`
+	Unverified    bool    `json:"unverified,omitempty"`
 	LowConfidence bool    `json:"low_confidence"`
 	DocID         string  `json:"doc_id"`
 	ChunkID       string  `json:"chunk_id"`
@@ -207,8 +213,10 @@ type edgeOut struct {
 }
 
 type traverseOut struct {
-	Nodes []entityRefOut `json:"nodes"`
-	Edges []edgeOut      `json:"edges"`
+	Nodes             []entityRefOut      `json:"nodes"`
+	Edges             []edgeOut           `json:"edges"`
+	Hidden            *graph.HiddenCounts `json:"hidden,omitempty"`
+	UnverifiedIgnored bool                `json:"unverified_ignored,omitempty"`
 }
 
 type cypherOut struct {
@@ -362,11 +370,16 @@ func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, 
 		}
 		id = resolved
 	}
-	view, err := s.store.EntityView(ctx, id, args.IncludeLowConfidence)
+	view, err := s.store.EntityViewOpts(ctx, id, graph.ViewOptions{
+		IncludeLowConfidence: args.IncludeLowConfidence,
+		IncludeUnverified:    args.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
+	})
 	if err != nil {
 		return nil, entityOut{}, fmt.Errorf("entity %s: %w", id, err)
 	}
-	return nil, toEntityOut(view), nil
+	out := toEntityOut(view)
+	out.UnverifiedIgnored = args.IncludeUnverified && !s.cfg.Facts.AllowUnverifiedReads
+	return nil, out, nil
 }
 
 // entityByName resolves an exact entity name (trimmed, case-folded) through
@@ -413,7 +426,10 @@ func (s *Server) handleTraverse(ctx context.Context, _ *mcpgo.CallToolRequest, a
 	if limit > traverseMaxLimit {
 		limit = traverseMaxLimit
 	}
-	sub, err := s.store.Traverse(ctx, entity, args.Relation, direction, depth, limit, args.IncludeLowConfidence)
+	sub, err := s.store.TraverseOpts(ctx, entity, args.Relation, direction, depth, limit, graph.ViewOptions{
+		IncludeLowConfidence: args.IncludeLowConfidence,
+		IncludeUnverified:    args.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
+	})
 	if err != nil {
 		return nil, traverseOut{}, err
 	}
@@ -423,19 +439,29 @@ func (s *Server) handleTraverse(ctx context.Context, _ *mcpgo.CallToolRequest, a
 	}
 	edges := make([]edgeOut, 0, len(sub.Edges))
 	for _, e := range sub.Edges {
+		var judge *string
+		if e.Judge != "" || e.Unverified {
+			judge = &e.Judge
+		}
 		edges = append(edges, edgeOut{
 			From:          e.From,
 			To:            e.To,
 			Rel:           e.Rel,
 			Confidence:    e.Confidence,
-			Judge:         e.Judge,
+			Judge:         judge,
+			Unverified:    e.Unverified,
 			LowConfidence: e.LowConfidence,
 			DocID:         e.DocID,
 			ChunkID:       e.ChunkID,
 			Excerpt:       e.Excerpt,
 		})
 	}
-	return nil, traverseOut{Nodes: nodes, Edges: edges}, nil
+	var hidden *graph.HiddenCounts
+	if sub.Hidden != (graph.HiddenCounts{}) {
+		hidden = &sub.Hidden
+	}
+	return nil, traverseOut{Nodes: nodes, Edges: edges, Hidden: hidden,
+		UnverifiedIgnored: args.IncludeUnverified && !s.cfg.Facts.AllowUnverifiedReads}, nil
 }
 
 func (s *Server) handleListDocuments(ctx context.Context, _ *mcpgo.CallToolRequest, args listDocumentsArgs) (*mcpgo.CallToolResult, listDocumentsOut, error) {
@@ -538,11 +564,16 @@ func toEntityOut(view graph.EntityView) entityOut {
 	}
 	facts := make([]factOut, 0, len(view.Facts))
 	for _, f := range view.Facts {
+		var judge *string
+		if f.Judge != "" || f.Unverified {
+			judge = &f.Judge
+		}
 		facts = append(facts, factOut{
 			Rel:           f.Rel,
 			Other:         toEntityRefOut(f.Other),
 			Confidence:    f.Confidence,
-			Judge:         f.Judge,
+			Judge:         judge,
+			Unverified:    f.Unverified,
 			LowConfidence: f.LowConfidence,
 			Outgoing:      f.Outgoing,
 			DocID:         f.DocID,
@@ -557,6 +588,10 @@ func toEntityOut(view graph.EntityView) entityOut {
 			SharedChunks: other.SharedChunks,
 		})
 	}
+	var hidden *graph.HiddenCounts
+	if view.Hidden != (graph.HiddenCounts{}) {
+		hidden = &view.Hidden
+	}
 	return entityOut{
 		ID:           view.ID,
 		Key:          view.Key,
@@ -566,5 +601,6 @@ func toEntityOut(view graph.EntityView) entityOut {
 		MentionCount: view.MentionCount,
 		Facts:        facts,
 		Together:     together,
+		Hidden:       hidden,
 	}
 }

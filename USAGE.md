@@ -138,6 +138,11 @@ options:
 - **gkg REST**: `POST /v1/search` (entity + chunk hits), `GET /v1/entities/{id-or-key}`
   (entity card with evidenced facts), `POST /v1/traverse` (fact-edge walk),
   `POST /v1/cypher` (guarded read-only Cypher).
+  Entity/traversal reads exclude low-confidence typed facts by default; the
+  viewer checkbox opts in. Responses report nonzero `hidden` counts of distinct
+  facts per state. `include_unverified` additionally returns marked candidates only when
+  `facts.allow_unverified_reads` is enabled; otherwise `unverified_ignored:true`
+  explains the ignored request. See [visibility options](docs/quickstart.md).
 - **Memgraph Lab**: run `memgraph/lab`, point it at the Bolt endpoint
   (`bolt://localhost:7687`; credentials from your `.env`) and use the Query
   editor with the Graph view. Handy starting queries:
