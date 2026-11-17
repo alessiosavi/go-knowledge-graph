@@ -176,6 +176,7 @@ for mode in DetectionOnly On; do
   # Unlisted requests must not appear in gkg's request log (nginx status alone
   # cannot demonstrate that no upstream request was made).
   "${compose[@]}" logs --no-color --no-log-prefix gkg >"$tmp/gkg.log" 2>&1
+  grep -F '"path":"/v1/domains"' "$tmp/gkg.log" >/dev/null || fail 'domains list reached upstream'
   grep -F '"path":"/v1/documents"' "$tmp/gkg.log" >/dev/null || fail 'upstream request log positive control'
   if grep -E '"path":"(/metrics|/readyz|/v1/cypher|/v1/unknown|/ui/\.\./metrics)"|"method":"(PUT|OPTIONS)"' "$tmp/gkg.log" >/dev/null; then fail 'allowlist reached upstream'; fi
   ok 'allowlist absent from upstream logs'

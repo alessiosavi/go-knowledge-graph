@@ -453,3 +453,28 @@ counts and uses mode 0600. Names go only to `--out`; stdout contains aggregates.
 - Troubleshooting and known limits:
   [docs/known-limitations.md](docs/known-limitations.md) and the
   quickstart's troubleshooting section.
+
+### Domain-scoped reads
+
+`GET /v1/domains` returns `[{id, name, documents}]` for the UI pickers;
+`documents` counts done documents, and empty domains remain listed. Search and
+Ask offer independent domain pickers, defaulting to all domains. Hits and
+list/detail document views show their domain. The API accepts `domain` on
+`POST /v1/search`, `POST /v1/agent/ask` and `/v1/agent/ask/stream`, and as a
+query parameter on `GET /v1/documents`. Slugs use `[a-z0-9-]{1,40}`; empty
+means all domains. MCP `search`, `get_entity`, `get_chunks`, `traverse`,
+`list_documents` and `status` also accept `domain` (there is no MCP ask tool).
+
+An ask's domain applies to every answer tool; model arguments cannot widen it.
+An entity or traversal start outside scope is not found; `get_chunks` reports
+out-of-scope ids in `missing`. Cypher is not domain-enforced; the prompt states
+the scope. At schema v4, name resolution uses `EntityKey` folding (including
+possessives and edge punctuation), covering document-scoped entities; older
+schemas keep case-folded display-name matching. Unscoped ambiguous names
+return `candidates`, one per domain. Text filters run before ranking and the
+text engine's hit cap. Scoped vector search over-fetches 5× then post-filters,
+so it can return fewer than the requested number of hits.
+
+`gkg eval-retrieval --questions questions.json --domain zorbo` applies that
+scope to all questions, including gold resolution and null checks. Without
+`--domain`, each question's optional `domain` is used.

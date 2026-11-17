@@ -255,3 +255,17 @@ is benign: the newer version completes normally.
 - **Reload and long streams:** after a certificate renewal an old nginx worker
   stays alive while an MCP session it serves remains open (the pinned image
   has no place for `worker_shutdown_timeout`).
+
+### Domain filtering
+
+`GET /v1/domains` and the UI picker are empty until documents have assigned domains (task 37.14b / the v4 migration).
+
+`GET /v1/domains` lists domains with done-document counts, including empty
+domains. Text search scopes inside the v2 index using an opaque token and
+then checks the exact slug before ranking/limiting. Scoped entity vector
+search over-fetches 5× and post-filters; a small domain can return fewer
+results than the requested limit. Ask scope is enforced on answer tools;
+guarded Cypher is not domain-enforced and relies on the stated prompt scope.
+Name lookup uses indexed `Entity.name_key` and `EntityKey` folding at v4
+(possessives and edge punctuation included); legacy graphs retain the
+case-folded name scan. Ambiguous unscoped names return one candidate per domain.

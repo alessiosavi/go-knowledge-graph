@@ -27,6 +27,7 @@ func TestEdgeAllowlist(t *testing.T) {
 		"^(GET|HEAD):/docs(/.*)?$":                          "@edge_default",
 		"^(GET|HEAD):/ui(/.*)?$":                            "@edge_default",
 		"^(GET|HEAD):/v1/entities/[^/]+$":                   "@edge_default",
+		"^(GET|HEAD):/v1/domains$":                          "@edge_default",
 		"^(GET|HEAD):/v1/documents$":                        "@edge_default",
 		"^(GET|HEAD|DELETE):/v1/documents/[^/]+$":           "@edge_default",
 		"^(GET|HEAD):/v1/documents/[^/]+/(status|content)$": "@edge_default",

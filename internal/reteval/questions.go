@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
 type QuestionSet struct {
@@ -84,8 +86,8 @@ func prepare(set QuestionSet) (QuestionSet, error) {
 			return fail("duplicate id")
 		}
 		seen[q.ID] = true
-		if q.Domain != "" {
-			return fail("domain scope not supported yet")
+		if q.Domain != "" && !graph.ValidDomain(q.Domain) {
+			return fail("invalid domain slug")
 		}
 		if len(q.Kinds) == 0 {
 			q.Kinds = []string{"chunk", "auto"}

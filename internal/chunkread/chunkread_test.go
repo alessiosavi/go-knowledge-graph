@@ -274,3 +274,46 @@ func TestReadBudgetIncludesAllMetadata(t *testing.T) {
 		t.Fatal("truncated includes omitted chunks")
 	}
 }
+
+func TestReadDomain(t *testing.T) {
+	st := &fakeStore{chunks: []graph.Chunk{{ID: "a", DocID: "zorbo", Domain: "a", Seq: 0, Text: "Quillon"}, {ID: "b", DocID: "zorbo", Domain: "b", Seq: 1, Text: "Acme"}}}
+	got, err := Read(context.Background(), st, Request{IDs: []string{"a", "b"}, Neighbours: 1, Domain: "a"})
+	if err != nil || len(got.Chunks) != 1 || got.Chunks[0].ID != "a" || !reflect.DeepEqual(got.Meta.Missing, []string{"b"}) {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if _, err := Read(context.Background(), st, Request{IDs: []string{"a"}, Domain: "BAD"}); err == nil {
+		t.Fatal("invalid domain accepted")
+	}
+}
+
+func TestReadDomainNeighbours(t *testing.T) {
+	st := &fakeStore{chunks: []graph.Chunk{
+		{ID: "before", DocID: "quillon", Domain: "a", Seq: 0, Text: "Acme"},
+		{ID: "center", DocID: "quillon", Domain: "a", Seq: 1, Text: "Quillon"},
+		{ID: "outside", DocID: "quillon", Domain: "b", Seq: 2, Text: "Zorbo"},
+	}}
+	for _, tc := range []struct {
+		domain string
+		want   []string
+	}{
+		{"a", []string{"center", "before"}},
+		{"", []string{"center", "before", "outside"}},
+	} {
+		t.Run("domain="+tc.domain, func(t *testing.T) {
+			got, err := Read(context.Background(), st, Request{IDs: []string{"center"}, Neighbours: 1, Domain: tc.domain})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ids []string
+			for _, item := range got.Chunks {
+				ids = append(ids, item.ID)
+				if item.ID != "center" && item.NeighbourOf != "center" {
+					t.Errorf("neighbour_of=%q for %s", item.NeighbourOf, item.ID)
+				}
+			}
+			if !slices.Equal(ids, tc.want) || got.Meta.Returned != len(tc.want) || len(got.Meta.Missing) != 0 {
+				t.Fatalf("ids=%v meta=%+v, want %v without missing requested chunks", ids, got.Meta, tc.want)
+			}
+		})
+	}
+}

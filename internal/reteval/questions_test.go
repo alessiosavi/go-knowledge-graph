@@ -47,7 +47,7 @@ func TestLoad(t *testing.T) {
 		{"global-items", func(s *QuestionSet) { s.Questions[0].Stratum = "global" }},
 		{"null-absent", func(s *QuestionSet) { s.Questions[0].Stratum = "null" }},
 		{"duplicate", func(s *QuestionSet) { s.Questions = append(s.Questions, base) }},
-		{"domain", func(s *QuestionSet) { s.Questions[0].Domain = "quillon" }},
+		{"domain", func(s *QuestionSet) { s.Questions[0].Domain = "BAD" }},
 		{"kind", func(s *QuestionSet) { s.Questions[0].Kinds = []string{"bogus"} }},
 		{"empty-quote", func(s *QuestionSet) { s.Questions[0].Gold = []Anchor{{Quote: ""}} }},
 	} {
@@ -96,5 +96,12 @@ func TestLoadUTF8BOM(t *testing.T) {
 	}
 	if len(got.Questions) != 1 || got.Questions[0].ID != "n" || !reflect.DeepEqual(got.Questions[0].Kinds, []string{"chunk", "auto"}) {
 		t.Fatalf("loaded set = %+v", got)
+	}
+}
+
+func TestLoadDomain(t *testing.T) {
+	set := QuestionSet{Schema: 1, Questions: []Question{{ID: "q", Stratum: "null", Question: "Quillon?", Absent: []string{"Zorbo"}, Domain: "zorbotrips"}}}
+	if _, err := Load(questionFile(t, set)); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -187,6 +187,8 @@ SEARCH_BODY="$(req -fsS -X POST "$BASE_URL/v1/search" -H 'Content-Type: applicat
 HITS="$(printf '%s' "$SEARCH_BODY" | grep -o '"kind"' | wc -l | tr -d ' ' || true)"
 [[ "$HITS" -ge 1 ]] || fail "search for the acceptance marker returned no hits: $SEARCH_BODY"
 ok "search finds the ingested content ($HITS hits)"
+req -fsS "$BASE_URL/v1/domains" >"$TMP/domains.json" || fail "domains list"
+ok "domains list responds"
 
 # ---------------------------------------------------------------------------
 step "2. MCP smoke over stdio"

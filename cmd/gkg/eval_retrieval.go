@@ -23,6 +23,7 @@ func runEvalRetrieval(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval-retrieval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	questions := fs.String("questions", "", "schema-v1 question JSON file (required)")
+	slug := fs.String("domain", "", "scope all questions to one domain slug")
 	agentLevel := fs.Bool("agent", false, "run the configured agent (spends provider money)")
 	replay := fs.String("replay", "", "re-score agent answers from a stored JSON report")
 	kList := fs.String("k", "5,10,20", "comma-separated positive search cutoffs")
@@ -39,6 +40,10 @@ func runEvalRetrieval(args []string, stdout, stderr io.Writer) int {
 	}
 	if *agentLevel && *replay != "" {
 		fmt.Fprintln(stderr, "gkg eval-retrieval: --agent and --replay cannot be used together")
+		return 2
+	}
+	if *slug != "" && !graph.ValidDomain(*slug) {
+		fmt.Fprintln(stderr, "gkg eval-retrieval: invalid domain slug")
 		return 2
 	}
 	var ks []int
@@ -93,7 +98,7 @@ func runEvalRetrieval(args []string, stdout, stderr io.Writer) int {
 	if *agentLevel {
 		d.Agent = agent.NewServer(cfg, st, emb)
 	}
-	r, err := reteval.Run(ctx, d, set, reteval.Options{Agent: *agentLevel, ReplayPath: *replay, Ks: ks})
+	r, err := reteval.Run(ctx, d, set, reteval.Options{Domain: *slug, Agent: *agentLevel, ReplayPath: *replay, Ks: ks})
 	runErr := err
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg eval-retrieval: %v\n", err)

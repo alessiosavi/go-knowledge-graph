@@ -19,7 +19,7 @@ import (
 )
 
 func TestEvalRetrievalFlags(t *testing.T) {
-	for _, args := range [][]string{{"eval-retrieval"}, {"eval-retrieval", "--k", "0"}, {"eval-retrieval", "--k", "bogus"}, {"eval-retrieval", "--bogus"}} {
+	for _, args := range [][]string{{"eval-retrieval"}, {"eval-retrieval", "--k", "0"}, {"eval-retrieval", "--k", "bogus"}, {"eval-retrieval", "--bogus"}, {"eval-retrieval", "--questions", "missing.json", "--domain", "BAD"}} {
 		var out, err bytes.Buffer
 		if code := run(args, &out, &err); code != 2 {
 			t.Errorf("%v exit=%d err=%s", args, code, err.String())
@@ -29,7 +29,7 @@ func TestEvalRetrievalFlags(t *testing.T) {
 	if code := run([]string{"eval-retrieval", "--help"}, &out, &err); code != 0 {
 		t.Fatalf("help exit=%d", code)
 	}
-	for _, flag := range []string{"-questions", "-agent", "-replay", "-k", "-out"} {
+	for _, flag := range []string{"-questions", "-agent", "-replay", "-k", "-out", "-domain"} {
 		if !strings.Contains(err.String(), flag) {
 			t.Errorf("help missing %s", flag)
 		}

@@ -136,10 +136,11 @@ type FactUpsert struct {
 
 // EntityRef identifies an entity node.
 type EntityRef struct {
-	ID   string
-	Key  string
-	Name string
-	Type string
+	Domain string
+	ID     string
+	Key    string
+	Name   string
+	Type   string
 }
 
 // CoMention is an entity sharing chunks with the viewed entity.
@@ -150,7 +151,9 @@ type CoMention struct {
 
 // ViewOptions controls opt-in fact visibility. Low confidence filters typed
 // edges; unverified additionally includes candidates, regardless of confidence.
+// Domain restricts the start entity; empty selects all domains.
 type ViewOptions struct {
+	Domain               string
 	IncludeLowConfidence bool
 	IncludeUnverified    bool
 }

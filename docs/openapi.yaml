@@ -220,12 +220,38 @@ paths:
                 $ref: "#/components/schemas/Error"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
+  /v1/domains:
+    get:
+      tags: [documents]
+      operationId: listDomains
+      summary: List domains for search and ask
+      responses:
+        "200":
+          description: Domains ordered by id, including empty domains; documents counts done documents only.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DomainCount"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
   /v1/documents:
     get:
       tags: [documents]
       operationId: listDocuments
       summary: List documents
       parameters:
+        - name: domain
+          in: query
+          description: Optional domain slug; empty selects all. Applied before the limit.
+          schema: { type: string, pattern: "^[a-z0-9-]{1,40}$" }
         - name: limit
           in: query
           description: defaults to 100, capped at 1000
@@ -241,6 +267,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DocumentsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -249,8 +277,6 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
-        "400":
-          $ref: "#/components/responses/BadRequest"
   /v1/documents/{id}:
     get:
       tags: [documents]
@@ -364,7 +390,7 @@ paths:
       tags: [graph]
       operationId: search
       summary: Search entities, chunks or both
-      description: Entities and chunks are searched through the Memgraph text indexes; when the embedder is enabled, entity hits fuse the text leg with entity-embedding vector hits (text recall is never dropped). Chunks are text-only in v0.
+      description: Entities and chunks are searched through the Memgraph text indexes; when the embedder is enabled, entity hits fuse the text leg with entity-embedding vector hits (text recall is never dropped). Chunks are text-only in v0. Domain text filtering runs inside Tantivy before its hit cap and before ORDER BY/LIMIT; the scoped vector leg over-fetches 5x and post-filters, so it may return fewer hits. Name lookup in agent/MCP get_entity uses EntityKey folding (possessives and edge punctuation) at schema v4, and legacy case folding below v4. Unscoped ambiguous names return one candidate per domain.
       requestBody:
         required: true
         content:
@@ -519,6 +545,10 @@ paths:
         evidence. A step/context budget reached without a final answer still
         returns 200 with the evidence gathered. A disabled agent returns 501
         before reading the body. Questions are trimmed and must not be empty.
+        Domain is request scope for search, get_entity, get_chunks, traverse and
+        list_documents; model arguments cannot widen it. Out-of-scope entities
+        are not found and chunks are reported missing. Cypher is not domain-enforced;
+        the system prompt states the scope.
       requestBody:
         $ref: "#/components/requestBodies/AskQuestion"
       responses:
@@ -575,6 +605,7 @@ paths:
         on disconnect. With provider streaming off it remains SSE and sends tool
         and done events only, plus heartbeats or a terminal error. Clients should
         replace accumulated delta text with the authoritative done answer.
+        Domain scope is enforced exactly as on the JSON ask endpoint.
       requestBody:
         $ref: "#/components/requestBodies/AskQuestion"
       responses:
@@ -814,10 +845,20 @@ components:
       properties:
         document_id: { type: string }
         noop: { type: boolean }
+    DomainCount:
+      type: object
+      required: [id, name, documents]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        documents: { type: integer, description: Number of done documents }
     Document:
       type: object
       required: [id, source_kind, source, status, created_at, updated_at]
       properties:
+        domain:
+          type: string
+          description: Domain slug; empty selects all on requests and denotes unassigned legacy data on views.
         id: { type: string }
         source_kind: { type: string, enum: [url, file, text] }
         source: { type: string }
@@ -875,6 +916,10 @@ components:
       type: object
       required: [query]
       properties:
+        domain:
+          type: string
+          pattern: "^([a-z0-9-]{1,40})?$"
+          description: Optional domain slug; empty selects all.
         query: { type: string }
         kind:
           type: string
@@ -896,6 +941,9 @@ components:
       type: object
       required: [kind, id, title, score, snippet]
       properties:
+        domain:
+          type: string
+          description: Domain slug; empty = unassigned legacy data.
         kind: { type: string, enum: [entity, chunk] }
         id: { type: string }
         title: { type: string }
@@ -1102,6 +1150,10 @@ components:
       type: object
       required: [question]
       properties:
+        domain:
+          type: string
+          pattern: "^([a-z0-9-]{1,40})?$"
+          description: Optional domain slug; empty selects all.
         question:
           type: string
           minLength: 1

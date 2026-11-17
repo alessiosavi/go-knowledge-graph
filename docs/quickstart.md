@@ -455,3 +455,14 @@ searches confidence floors, and `--out report` writes `report.md` +
 
 Code is Apache-2.0. The default sidecar model (GLiNEREL) and Memgraph carry
 their own licenses — see the table in the [README](../README.md#license).
+
+### Read one domain
+
+Use the search/ask domain pickers in `/ui/` (default: all), or pass a `domain`
+slug in the JSON body of `/v1/search`, `/v1/agent/ask` or `/v1/agent/ask/stream`.
+`GET /v1/domains` lists `{id, name, documents}` with done-document counts.
+`GET /v1/documents?domain=zorbo` filters documents before the page limit;
+document list/detail responses and search hits include `domain`.
+MCP read tools accept the same optional scope; see [agent setup](agent-setup.md#domain-scope).
+`gkg eval-retrieval --questions questions.json --domain zorbo` scopes search,
+gold and null checks; per-question `domain` is used without the flag.

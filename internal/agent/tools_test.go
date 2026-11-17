@@ -274,7 +274,7 @@ func TestToolGetChunks(t *testing.T) {
 func TestToolResultSizeGuidance(t *testing.T) {
 	want := map[string]string{
 		"search": "Start with limit 10.", "traverse": "Start with limit 10.", "list_documents": "Start with limit 10.",
-		"get_chunks": "Read full chunk text by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
+		"get_chunks": "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
 	}
 	for _, def := range toolDefs() {
 		if desc, ok := want[def.Function.Name]; ok {

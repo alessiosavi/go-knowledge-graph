@@ -17,6 +17,7 @@ import (
 // Result shapes mirror the REST/MCP wire vocabulary so the model, the
 // evidence array and the UI share one language.
 type searchHitOut struct {
+	Domain     string  `json:"domain"`
 	Kind       string  `json:"kind"`
 	ID         string  `json:"id"`
 	Title      string  `json:"title"`
@@ -30,10 +31,11 @@ type searchOut struct {
 }
 
 type entityRefOut struct {
-	ID   string `json:"id"`
-	Key  string `json:"key"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Domain string `json:"domain"`
+	ID     string `json:"id"`
+	Key    string `json:"key"`
+	Name   string `json:"name"`
+	Type   string `json:"type"`
 }
 
 type coMentionOut struct {
@@ -84,6 +86,7 @@ type traverseOut struct {
 }
 
 type documentOut struct {
+	Domain     string    `json:"domain"`
 	ID         string    `json:"id"`
 	SourceKind string    `json:"source_kind"`
 	Source     string    `json:"source"`
@@ -129,17 +132,17 @@ func toolDefs() []toolDef {
 				"required": []string{"query"},
 			}),
 		functionTool("get_entity",
-			"One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status); resolve by id or exact name.",
+			"One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status); resolve by id or name. At schema v4, names use EntityKey folding (possessives and edge punctuation); legacy graphs use case folding. Unscoped ambiguous names return candidates, one per domain.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"id":                     map[string]any{"type": "string", "description": "entity id"},
-					"name":                   map[string]any{"type": "string", "description": "entity name (exact after case folding; used when id is omitted)"},
+					"name":                   map[string]any{"type": "string", "description": "entity name (EntityKey folding at v4; case folding on legacy graphs; used when id is omitted)"},
 					"include_low_confidence": map[string]any{"type": "boolean", "description": "include facts below the assert floor"},
 				},
 			}),
 		functionTool("get_chunks",
-			"Read full chunk text by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
+			"Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -226,7 +229,7 @@ func (s *Server) toolGetChunks(ctx context.Context, raw json.RawMessage) (any, e
 	if err := decodeArgs(raw, &args); err != nil {
 		return nil, err
 	}
-	return chunkread.Read(ctx, s.store, chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours})
+	return chunkread.Read(ctx, s.store, chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours, Domain: requestDomain(ctx)})
 }
 
 func decodeArgs(raw json.RawMessage, dst any) error {
@@ -267,13 +270,13 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 	if limit > searchMaxLimit {
 		limit = searchMaxLimit
 	}
-	hits, err := search.Query(ctx, s.store, s.emb, args.Query, kind, limit)
+	hits, err := search.Query(ctx, s.store, s.emb, args.Query, kind, limit, search.InDomain(requestDomain(ctx)))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]searchHitOut, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, searchHitOut{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID})
+		out = append(out, searchHitOut{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID, Domain: h.Domain})
 	}
 	return searchOut{Hits: out}, nil
 }
@@ -292,16 +295,29 @@ func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, e
 	case id == "" && args.Name == "":
 		return nil, errors.New("id or name is required")
 	case id == "":
-		ref, err := s.store.EntityByName(ctx, args.Name)
+		refs, err := s.store.EntityCandidatesByName(ctx, args.Name, requestDomain(ctx))
 		if err != nil {
-			if errors.Is(err, graph.ErrNotFound) {
-				return nil, fmt.Errorf("no entity matching %q", args.Name)
-			}
 			return nil, fmt.Errorf("entity lookup: %w", err)
 		}
-		id = ref.ID
+		if len(refs) == 0 {
+			return nil, fmt.Errorf("no entity matching %q: %w", args.Name, graph.ErrNotFound)
+		}
+		candidates := []entityRefOut{}
+		seen := map[string]bool{}
+		for _, ref := range refs {
+			if !seen[ref.Domain] {
+				seen[ref.Domain] = true
+				candidates = append(candidates, entityRefOut{ID: ref.ID, Key: ref.Key, Name: ref.Name, Type: ref.Type, Domain: ref.Domain})
+			}
+		}
+		if len(candidates) > 1 {
+			return struct {
+				Candidates []entityRefOut `json:"candidates"`
+			}{candidates}, nil
+		}
+		id = refs[0].ID
 	}
-	view, err := s.store.EntityViewOpts(ctx, id, graph.ViewOptions{IncludeLowConfidence: args.IncludeLowConfidence, IncludeUnverified: false})
+	view, err := s.store.EntityViewOpts(ctx, id, graph.ViewOptions{Domain: requestDomain(ctx), IncludeLowConfidence: args.IncludeLowConfidence, IncludeUnverified: false})
 	if err != nil {
 		return nil, fmt.Errorf("entity %s: %w", id, err)
 	}
@@ -385,7 +401,7 @@ func (s *Server) toolTraverse(ctx context.Context, raw json.RawMessage) (any, er
 	if limit > traverseMaxLimit {
 		limit = traverseMaxLimit
 	}
-	sub, err := s.store.TraverseOpts(ctx, args.Entity, args.Relation, direction, depth, limit, graph.ViewOptions{IncludeLowConfidence: args.IncludeLowConfidence, IncludeUnverified: false})
+	sub, err := s.store.TraverseOpts(ctx, args.Entity, args.Relation, direction, depth, limit, graph.ViewOptions{Domain: requestDomain(ctx), IncludeLowConfidence: args.IncludeLowConfidence, IncludeUnverified: false})
 	if err != nil {
 		return nil, err
 	}
@@ -432,13 +448,7 @@ func (s *Server) toolListDocuments(ctx context.Context, raw json.RawMessage) (an
 	if limit > docsMaxLimit {
 		limit = docsMaxLimit
 	}
-	var docs []graph.Document
-	var err error
-	if args.Status != "" {
-		docs, err = s.store.DocumentsWithStatus(ctx, graph.Status(args.Status), limit)
-	} else {
-		docs, err = s.store.Documents(ctx, limit)
-	}
+	docs, err := s.store.DocumentsIn(ctx, graph.Status(args.Status), requestDomain(ctx), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list documents: %w", err)
 	}
@@ -457,9 +467,12 @@ func (s *Server) toolStatus(ctx context.Context, raw json.RawMessage) (any, erro
 		if err != nil {
 			return nil, fmt.Errorf("document %s: %w", args.DocumentID, err)
 		}
+		if d := requestDomain(ctx); d != "" && doc.Domain != d {
+			return nil, graph.ErrNotFound
+		}
 		return documentsOut{Documents: []documentOut{toDocumentOut(*doc)}}, nil
 	}
-	docs, err := s.store.Documents(ctx, statusListLimit)
+	docs, err := s.store.DocumentsIn(ctx, "", requestDomain(ctx), statusListLimit)
 	if err != nil {
 		return nil, fmt.Errorf("list documents: %w", err)
 	}
@@ -511,6 +524,7 @@ func (s *Server) toolCypher(ctx context.Context, raw json.RawMessage) (any, erro
 
 func toDocumentOut(d graph.Document) documentOut {
 	return documentOut{
+		Domain:     d.Domain,
 		ID:         d.ID,
 		SourceKind: d.SourceKind,
 		Source:     d.Source,

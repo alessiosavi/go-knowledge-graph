@@ -17,6 +17,10 @@
           aria-label="Search"
           required
         />
+        <label for="search-domain">Domain</label>
+        <select id="search-domain">
+          <option value="">All domains</option>
+        </select>
         <button type="submit">Search</button>
       </form>
       <span id="status" class="muted" aria-live="polite"></span>
@@ -105,6 +109,10 @@
       <div class="col">
         <section class="panel" id="ask-panel" hidden>
           <h2>Ask the graph</h2>
+          <label for="ask-domain">Domain</label>
+          <select id="ask-domain">
+            <option value="">All domains</option>
+          </select>
           <form id="ask-form" autocomplete="off">
             <div class="row">
               <input

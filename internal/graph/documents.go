@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
@@ -533,14 +534,36 @@ RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url
 // Documents returns documents, most recently updated first; limit <= 0
 // returns all.
 func (s *Store) Documents(ctx context.Context, limit int) ([]Document, error) {
-	q := `
-MATCH (d:Document)
-RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
-       d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
-       coalesce(d.labels, '') AS labels, d.domain AS domain,
-       d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
-ORDER BY d.updated_at DESC`
-	params := map[string]any{}
+	return s.DocumentsIn(ctx, "", "", limit)
+}
+
+func (s *Store) DocumentsWithStatus(ctx context.Context, status Status, limit int) ([]Document, error) {
+	return s.DocumentsIn(ctx, status, "", limit)
+}
+
+// DocumentsIn applies both filters before the limit; empty values select all.
+func (s *Store) DocumentsIn(ctx context.Context, status Status, slug string, limit int) ([]Document, error) {
+	if slug != "" && !ValidDomain(slug) {
+		return nil, fmt.Errorf("graph: invalid domain slug %q", slug)
+	}
+	q := "MATCH (d:Document)"
+	var filters []string
+	if status != "" {
+		filters = append(filters, "d.status = $status")
+	}
+	if slug != "" {
+		filters = append(filters, "d.domain = $domain")
+	}
+	if len(filters) > 0 {
+		q += " WHERE " + strings.Join(filters, " AND ")
+	}
+	q += `
+ RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
+ d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
+ coalesce(d.labels, '') AS labels, d.domain AS domain,
+ d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
+ ORDER BY d.updated_at DESC`
+	params := map[string]any{"status": string(status), "domain": slug}
 	if limit > 0 {
 		q += " LIMIT $limit"
 		params["limit"] = limit
@@ -548,34 +571,6 @@ ORDER BY d.updated_at DESC`
 	recs, err := s.runRead(ctx, q, params)
 	if err != nil {
 		return nil, fmt.Errorf("graph: documents: %w", err)
-	}
-	docs := make([]Document, 0, len(recs))
-	for _, r := range recs {
-		docs = append(docs, *recordToDocument(r))
-	}
-	return docs, nil
-}
-
-// DocumentsWithStatus returns only the documents in one status, most
-// recently updated first; limit <= 0 returns all. The filter runs in the
-// query, before the row limit, so a page cannot be emptied by newer
-// non-matching documents.
-func (s *Store) DocumentsWithStatus(ctx context.Context, status Status, limit int) ([]Document, error) {
-	q := `
-MATCH (d:Document {status: $status})
-RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
-       d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
-       coalesce(d.labels, '') AS labels, d.domain AS domain,
-       d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
-ORDER BY d.updated_at DESC`
-	params := map[string]any{"status": string(status)}
-	if limit > 0 {
-		q += " LIMIT $limit"
-		params["limit"] = limit
-	}
-	recs, err := s.runRead(ctx, q, params)
-	if err != nil {
-		return nil, fmt.Errorf("graph: documents by status: %w", err)
 	}
 	docs := make([]Document, 0, len(recs))
 	for _, r := range recs {

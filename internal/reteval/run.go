@@ -26,6 +26,7 @@ type Deps struct {
 	Agent    Asker
 }
 type Options struct {
+	Domain     string
 	Agent      bool
 	ReplayPath string
 	Ks         []int
@@ -34,6 +35,15 @@ type Options struct {
 // Run resolves gold against the current store, evaluates search, and optionally
 // scores agent answers. Replay never calls the agent provider.
 func Run(ctx context.Context, d Deps, set QuestionSet, opt Options) (Report, error) {
+	if opt.Domain != "" && !graph.ValidDomain(opt.Domain) {
+		return Report{}, errors.New("reteval: invalid domain slug")
+	}
+	set.Questions = slices.Clone(set.Questions)
+	for i := range set.Questions {
+		if opt.Domain != "" {
+			set.Questions[i].Domain = opt.Domain
+		}
+	}
 	set, err := prepare(set)
 	if err != nil {
 		return Report{}, err
@@ -86,7 +96,7 @@ func Run(ctx context.Context, d Deps, set QuestionSet, opt Options) (Report, err
 		}
 		if q.Stratum == "null" {
 			for _, term := range q.Absent {
-				hits, err := search.Query(ctx, d.Store, nil, term, "chunk", 1)
+				hits, err := search.Query(ctx, d.Store, nil, term, "chunk", 1, search.InDomain(q.Domain))
 				if err != nil {
 					return Report{}, err
 				}
@@ -108,7 +118,7 @@ func Run(ctx context.Context, d Deps, set QuestionSet, opt Options) (Report, err
 			}
 			for _, v := range variants {
 				for _, kind := range q.Kinds {
-					hits, err := search.Query(ctx, d.Store, d.Embedder, v.text, kind, ks[len(ks)-1])
+					hits, err := search.Query(ctx, d.Store, d.Embedder, v.text, kind, ks[len(ks)-1], search.InDomain(q.Domain))
 					if err != nil {
 						return Report{}, fmt.Errorf("reteval: %s/%s/%s: %w", q.ID, kind, v.name, err)
 					}

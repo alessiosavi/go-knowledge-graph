@@ -182,3 +182,33 @@ test("entity card explains hidden facts by state", async () => {
   await selectEntity(p);
   assert.ok(p.elements.get("entity").children.some((e) => e.textContent === "Hidden: 1 unclear, 2 unjudged, 1 rejected facts"));
 });
+
+test("domain keys are hidden like document keys", async () => {
+ const p=await page();
+ p.replies.set("/v1/search",{hits:[{kind:"entity",id:"acme",title:"Acme"}]});
+ p.replies.set("/v1/entities/acme",{id:"acme",name:"Acme",key:"@a:acme"});
+ p.elements.get("search-input").value="Acme";
+ await p.fire("search-form","submit");
+ p.elements.get("results").children[0].dispatch("click");
+ await setImmediate();
+ const texts=(e)=>[e.textContent,...e.children.flatMap(texts)].join(" ");
+ assert.equal(texts(p.elements.get("entity" )).includes("@a:acme"),false);
+});
+
+test("domain pickers scope search, JSON ask and streaming ask", async () => {
+  const p = await page();
+  assert.ok(p.elements.has("search-domain"));
+  assert.ok(p.elements.has("ask-domain"));
+  assert.ok(p.requests.some((r) => r.path === "/v1/domains"));
+  p.elements.get("search-domain").value = "a";
+  p.elements.get("search-input").value = "Quillon";
+  await p.fire("search-form", "submit");
+  assert.equal(JSON.parse(p.requests.find((r) => r.path === "/v1/search").body).domain, "a");
+  p.elements.get("ask-domain").value = "b";
+  p.elements.get("ask-input").value = "Quillon?";
+  await p.fire("ask-form", "submit");
+  const asks = p.requests.filter((r) => r.path.startsWith("/v1/agent/ask"));
+  assert.ok(asks.some((r) => r.path.endsWith("/stream")));
+  assert.ok(asks.some((r) => r.path === "/v1/agent/ask"));
+  for (const req of asks) assert.equal(JSON.parse(req.body).domain, "b");
+});

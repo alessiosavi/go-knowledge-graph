@@ -300,3 +300,50 @@ func TestRunNullOmitsSearch(t *testing.T) {
 		t.Fatalf("null search=%+v json=%s strata=%+v", r.Questions[0].Search, mustJSON(t, q), r.Strata)
 	}
 }
+
+func TestRunDomainScopesSearchGoldAndNull(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	word := fmt.Sprintf("quillon%d", time.Now().UnixNano())
+	for _, slug := range []string{"a", "b"} {
+		doc, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "text", Source: word + slug, Hash: word, Domain: slug})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.DeleteDocument(ctx, doc.ID) })
+		text := word + " owns Zorbo"
+		if slug == "b" {
+			text += " " + word + "absent"
+		}
+		if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: 0, Text: text}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetStatus(ctx, doc.ID, graph.StatusDone, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set := QuestionSet{Schema: 1, Questions: []Question{
+		{ID: "s", Stratum: "single", Question: word, Domain: "a", Gold: []Anchor{{Quote: word + " owns"}}, Kinds: []string{"chunk"}},
+		{ID: "n", Stratum: "null", Question: "Where is Zorbo?", Domain: "a", Absent: []string{word + "absent"}},
+	}}
+	report, err := Run(ctx, Deps{Store: st}, set, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Questions) != 2 || len(report.Invalid) != 0 {
+		t.Fatalf("report=%+v", report)
+	}
+	if len(report.Questions[0].CrossDomain) != 1 || report.Questions[0].Search[0].Recall["5"] != 1 {
+		t.Fatalf("scoped gold/search=%+v", report.Questions[0])
+	}
+	report, err = Run(ctx, Deps{Store: st}, set, Options{Domain: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Invalid) != 1 || report.Invalid["n"] == "" || report.Questions[0].Domain != "b" {
+		t.Fatalf("override=%+v", report)
+	}
+	if set.Questions[0].Domain != "a" {
+		t.Fatal("Run changed its caller's question scope")
+	}
+}

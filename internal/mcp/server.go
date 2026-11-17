@@ -79,10 +79,12 @@ type ingestArgs struct {
 }
 
 type statusArgs struct {
+	Domain     string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	DocumentID string `json:"document_id,omitempty" jsonschema:"one document id; omit to list documents"`
 }
 
 type searchArgs struct {
+	Domain               string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	Query                string `json:"query" jsonschema:"full-text query over entity names and chunk text"`
 	Kind                 string `json:"kind,omitempty" jsonschema:"entity | chunk | auto (default auto)"`
 	Limit                int    `json:"limit,omitempty" jsonschema:"maximum hits (default 20, capped at 100)"`
@@ -90,18 +92,21 @@ type searchArgs struct {
 }
 
 type getEntityArgs struct {
+	Domain               string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	ID                   string `json:"id,omitempty" jsonschema:"entity id"`
-	Name                 string `json:"name,omitempty" jsonschema:"entity name (exact after case folding)"`
+	Name                 string `json:"name,omitempty" jsonschema:"entity name (EntityKey folding at v4 including possessives and edge punctuation; legacy case folding)"`
 	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include facts below the assert floor"`
 	IncludeUnverified    bool   `json:"include_unverified,omitempty" jsonschema:"include marked candidates only when facts.allow_unverified_reads is enabled; otherwise unverified_ignored is true"`
 }
 
 type getChunksArgs struct {
+	Domain     string   `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	IDs        []string `json:"ids" jsonschema:"1–20 chunk ids from search hits"`
 	Neighbours int      `json:"neighbours,omitempty" jsonschema:"chunks before and after each requested chunk (default 0, maximum 2)"`
 }
 
 type traverseArgs struct {
+	Domain               string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	Entity               string `json:"entity" jsonschema:"start entity id or key"`
 	Relation             string `json:"relation,omitempty" jsonschema:"relation filter (sanitized, e.g. works_at)"`
 	Direction            string `json:"direction,omitempty" jsonschema:"out | in | both (default out)"`
@@ -112,6 +117,7 @@ type traverseArgs struct {
 }
 
 type listDocumentsArgs struct {
+	Domain string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	Limit  int    `json:"limit,omitempty" jsonschema:"maximum documents (default 100, capped at 1000)"`
 	Status string `json:"status,omitempty" jsonschema:"filter by pipeline status (received|fetched|chunked|extracted|merged|verifying|done|failed|superseded)"`
 }
@@ -128,6 +134,7 @@ type ingestOut struct {
 }
 
 type documentOut struct {
+	Domain     string    `json:"domain"`
 	ID         string    `json:"id"`
 	SourceKind string    `json:"source_kind"`
 	Source     string    `json:"source"`
@@ -149,6 +156,7 @@ type listDocumentsOut struct {
 }
 
 type searchHit struct {
+	Domain     string  `json:"domain"`
 	Kind       string  `json:"kind"`
 	ID         string  `json:"id"`
 	Title      string  `json:"title"`
@@ -162,10 +170,11 @@ type searchOut struct {
 }
 
 type entityRefOut struct {
-	ID   string `json:"id"`
-	Key  string `json:"key"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Domain string `json:"domain"`
+	ID     string `json:"id"`
+	Key    string `json:"key"`
+	Name   string `json:"name"`
+	Type   string `json:"type"`
 }
 
 type coMentionOut struct {
@@ -197,6 +206,10 @@ type entityOut struct {
 	Together          []coMentionOut      `json:"together"`
 	Hidden            *graph.HiddenCounts `json:"hidden,omitempty"`
 	UnverifiedIgnored bool                `json:"unverified_ignored,omitempty"`
+}
+
+type candidatesOut struct {
+	Candidates []entityRefOut `json:"candidates"`
 }
 
 type edgeOut struct {
@@ -251,11 +264,11 @@ func registerTools(s *Server, sdk *mcpgo.Server) {
 	}, s.handleSearch)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "get_entity",
-		Description: "One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status). Low-confidence facts need include_low_confidence.",
+		Description: "One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status). Low-confidence facts need include_low_confidence. At schema v4 name lookup uses EntityKey folding (possessives and edge punctuation), with legacy case folding below v4. Unscoped ambiguous names return candidates, one per domain.",
 	}, s.handleGetEntity)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "get_chunks",
-		Description: "Read full chunk text by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
+		Description: "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
 	}, s.handleGetChunks)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "traverse",
@@ -275,7 +288,7 @@ func (s *Server) handleGetChunks(ctx context.Context, _ *mcpgo.CallToolRequest, 
 	if s.store == nil {
 		return nil, chunkread.Result{}, errNoStore
 	}
-	result, err := chunkread.Read(ctx, s.store, chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours})
+	result, err := chunkread.Read(ctx, s.store, chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours, Domain: args.Domain})
 	return nil, result, err
 }
 
@@ -307,14 +320,20 @@ func (s *Server) handleStatus(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	if s.store == nil {
 		return nil, statusOut{}, errNoStore
 	}
+	if args.Domain != "" && !graph.ValidDomain(args.Domain) {
+		return nil, statusOut{}, errors.New("invalid domain slug")
+	}
 	if args.DocumentID != "" {
 		doc, err := s.store.Document(ctx, args.DocumentID)
 		if err != nil {
 			return nil, statusOut{}, fmt.Errorf("document %s: %w", args.DocumentID, err)
 		}
+		if args.Domain != "" && doc.Domain != args.Domain {
+			return nil, statusOut{}, graph.ErrNotFound
+		}
 		return nil, statusOut{Documents: []documentOut{toDocumentOut(*doc)}}, nil
 	}
-	docs, err := s.store.Documents(ctx, statusListLimit)
+	docs, err := s.store.DocumentsIn(ctx, "", args.Domain, statusListLimit)
 	if err != nil {
 		return nil, statusOut{}, fmt.Errorf("list documents: %w", err)
 	}
@@ -344,18 +363,18 @@ func (s *Server) handleSearch(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	if limit > searchMaxLimit {
 		limit = searchMaxLimit
 	}
-	hits, err := search.Query(ctx, s.store, s.emb, args.Query, kind, limit)
+	hits, err := search.Query(ctx, s.store, s.emb, args.Query, kind, limit, search.InDomain(args.Domain))
 	if err != nil {
 		return nil, searchOut{}, err
 	}
 	out := make([]searchHit, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, searchHit{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID})
+		out = append(out, searchHit{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID, Domain: h.Domain})
 	}
 	return nil, searchOut{Hits: out}, nil
 }
 
-func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, args getEntityArgs) (*mcpgo.CallToolResult, entityOut, error) {
+func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, args getEntityArgs) (*mcpgo.CallToolResult, any, error) {
 	if s.store == nil {
 		return nil, entityOut{}, errNoStore
 	}
@@ -364,15 +383,29 @@ func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, 
 	case id == "" && strings.TrimSpace(args.Name) == "":
 		return nil, entityOut{}, errors.New("id or name is required")
 	case id == "":
-		resolved, err := s.entityByName(ctx, strings.TrimSpace(args.Name))
+		refs, err := s.store.EntityCandidatesByName(ctx, strings.TrimSpace(args.Name), args.Domain)
 		if err != nil {
 			return nil, entityOut{}, err
 		}
-		id = resolved
+		if len(refs) == 0 {
+			return nil, entityOut{}, fmt.Errorf("no entity matching %q: %w", args.Name, graph.ErrNotFound)
+		}
+		candidates := []entityRefOut{}
+		seen := map[string]bool{}
+		for _, ref := range refs {
+			if !seen[ref.Domain] {
+				seen[ref.Domain] = true
+				candidates = append(candidates, toEntityRefOut(ref))
+			}
+		}
+		if len(candidates) > 1 {
+			return nil, candidatesOut{Candidates: candidates}, nil
+		}
+		id = refs[0].ID
 	}
 	view, err := s.store.EntityViewOpts(ctx, id, graph.ViewOptions{
-		IncludeLowConfidence: args.IncludeLowConfidence,
-		IncludeUnverified:    args.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
+		Domain: args.Domain, IncludeLowConfidence: args.IncludeLowConfidence,
+		IncludeUnverified: args.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
 	})
 	if err != nil {
 		return nil, entityOut{}, fmt.Errorf("entity %s: %w", id, err)
@@ -380,19 +413,6 @@ func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, 
 	out := toEntityOut(view)
 	out.UnverifiedIgnored = args.IncludeUnverified && !s.cfg.Facts.AllowUnverifiedReads
 	return nil, out, nil
-}
-
-// entityByName resolves an exact entity name (trimmed, case-folded) through
-// the store; a miss is an actionable error, never a silent empty view.
-func (s *Server) entityByName(ctx context.Context, name string) (string, error) {
-	ref, err := s.store.EntityByName(ctx, name)
-	if err != nil {
-		if errors.Is(err, graph.ErrNotFound) {
-			return "", fmt.Errorf("no entity matching %q", name)
-		}
-		return "", fmt.Errorf("entity lookup: %w", err)
-	}
-	return ref.ID, nil
 }
 
 func (s *Server) handleTraverse(ctx context.Context, _ *mcpgo.CallToolRequest, args traverseArgs) (*mcpgo.CallToolResult, traverseOut, error) {
@@ -427,8 +447,8 @@ func (s *Server) handleTraverse(ctx context.Context, _ *mcpgo.CallToolRequest, a
 		limit = traverseMaxLimit
 	}
 	sub, err := s.store.TraverseOpts(ctx, entity, args.Relation, direction, depth, limit, graph.ViewOptions{
-		IncludeLowConfidence: args.IncludeLowConfidence,
-		IncludeUnverified:    args.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
+		Domain: args.Domain, IncludeLowConfidence: args.IncludeLowConfidence,
+		IncludeUnverified: args.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
 	})
 	if err != nil {
 		return nil, traverseOut{}, err
@@ -478,13 +498,7 @@ func (s *Server) handleListDocuments(ctx context.Context, _ *mcpgo.CallToolReque
 	if limit > docsMaxLimit {
 		limit = docsMaxLimit
 	}
-	var docs []graph.Document
-	var err error
-	if args.Status != "" {
-		docs, err = s.store.DocumentsWithStatus(ctx, graph.Status(args.Status), limit)
-	} else {
-		docs, err = s.store.Documents(ctx, limit)
-	}
+	docs, err := s.store.DocumentsIn(ctx, graph.Status(args.Status), args.Domain, limit)
 	if err != nil {
 		return nil, listDocumentsOut{}, fmt.Errorf("list documents: %w", err)
 	}
@@ -532,6 +546,7 @@ func (s *Server) handleCypher(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 
 func toDocumentOut(d graph.Document) documentOut {
 	return documentOut{
+		Domain:     d.Domain,
 		ID:         d.ID,
 		SourceKind: d.SourceKind,
 		Source:     d.Source,
@@ -554,7 +569,7 @@ func toDocumentOuts(docs []graph.Document) []documentOut {
 }
 
 func toEntityRefOut(ref graph.EntityRef) entityRefOut {
-	return entityRefOut{ID: ref.ID, Key: ref.Key, Name: ref.Name, Type: ref.Type}
+	return entityRefOut{ID: ref.ID, Key: ref.Key, Name: ref.Name, Type: ref.Type, Domain: ref.Domain}
 }
 
 func toEntityOut(view graph.EntityView) entityOut {

@@ -122,6 +122,7 @@ func (s *Server) routes() []mount {
 		{"GET /readyz", http.HandlerFunc(s.handleReadyz)},
 		{"POST /v1/ingest", http.HandlerFunc(s.handleIngest)},
 		{"POST /v1/admin/rebuild", http.HandlerFunc(s.handleAdminRebuild)},
+		{"GET /v1/domains", http.HandlerFunc(s.handleDomains)},
 		{"GET /v1/documents", http.HandlerFunc(s.handleDocuments)},
 		{"GET /v1/documents/{id}", http.HandlerFunc(s.handleDocument)},
 		{"GET /v1/documents/{id}/status", http.HandlerFunc(s.handleStatus)},

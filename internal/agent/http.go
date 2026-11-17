@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
 // errorBody is the JSON error shape shared with the REST surface.
@@ -27,25 +29,28 @@ func writeError(w http.ResponseWriter, code int, kind, detail string) {
 
 // decodeAskQuestion decodes and validates the ask request body, writing the
 // JSON error response itself when the request is unusable.
-func decodeAskQuestion(w http.ResponseWriter, r *http.Request) (string, bool) {
+func decodeAskQuestion(w http.ResponseWriter, r *http.Request) (AskRequest, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, responseBodyCap)
-	var req struct {
-		Question string `json:"question"`
-	}
+	var req AskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		if isTooLarge(err) {
 			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body exceeds the agent limit")
-			return "", false
+			return AskRequest{}, false
 		}
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
-		return "", false
+		return AskRequest{}, false
 	}
 	question := strings.TrimSpace(req.Question)
 	if question == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "question is required")
-		return "", false
+		return AskRequest{}, false
 	}
-	return question, true
+	if req.Domain != "" && !graph.ValidDomain(req.Domain) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid domain slug")
+		return AskRequest{}, false
+	}
+	req.Question = question
+	return req, true
 }
 
 // AskHandler serves POST /v1/agent/ask: one question, one bounded
@@ -58,14 +63,14 @@ func (s *Server) AskHandler() http.Handler {
 			writeError(w, http.StatusNotImplemented, "agent_disabled", "the ask agent is not enabled on this server")
 			return
 		}
-		question, ok := decodeAskQuestion(w, r)
+		req, ok := decodeAskQuestion(w, r)
 		if !ok {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
+		ctx, cancel := context.WithTimeout(withDomain(r.Context(), req.Domain), s.timeout)
 		defer cancel()
-		resp, err := s.ask(ctx, question)
+		resp, err := s.ask(ctx, req.Question)
 		if err != nil {
 			slog.Warn("agent: ask failed", "err", err)
 			if errors.Is(err, context.DeadlineExceeded) {

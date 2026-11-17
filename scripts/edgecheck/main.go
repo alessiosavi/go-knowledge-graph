@@ -185,6 +185,7 @@ func (p *probe) routing() {
 	expect(len(hits) > 0, "ingested marker is searchable")
 	p.check("SQL-looking search", "POST", "/v1/search", encode(map[string]any{"query": "SELECT * FROM users WHERE id = 1 OR 1=1; UNION SELECT password FROM users;"}), 200)
 	p.check("documents list", "GET", "/v1/documents", nil, 200)
+	p.check("domains list", "GET", "/v1/domains", nil, 200)
 	p.check("encoded slash in query remains allowed", "GET", "/v1/documents?x=a%2Fb", nil, 200)
 	for _, suffix := range []string{"", "/status", "/content"} {
 		p.check("document read "+suffix, "GET", "/v1/documents/"+ids[0]+suffix, nil, 200)
