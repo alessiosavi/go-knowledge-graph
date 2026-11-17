@@ -78,7 +78,7 @@ For the SSM-managed EC2 deployment, see [AWS box operations](docs/deploy-aws.md)
 | ------------------ | ---------------------------------------------------------------------------------- |
 | `cmd/gkg`          | CLI: `serve` (REST + /mcp + workers), `ingest`, `mcp` (stdio), `eval`, `migrate`   |
 | `internal/api`     | REST `/v1/*`, health/metrics, bearer auth, body caps, read-only Cypher guard       |
-| `internal/mcp`     | the seven agent tools over stdio and streamable HTTP                               |
+| `internal/mcp`     | the eight agent tools over stdio and streamable HTTP                               |
 | `internal/ingest`  | pipeline, worker pool, recovery, dedup, URL/PDF/HTML inputs                        |
 | `internal/convert` | default docling-serve converter (PDF/Office/images → markdown)                     |
 | `internal/graph`   | Memgraph store: documents/chunks/entities/facts, supersede, GC, text/vector search |
