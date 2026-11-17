@@ -1,0 +1,5 @@
+{
+  "chunk_recall_at_10": 0.90,
+  "chunk_mrr": 0.85,
+  "comment": "Worst of three shared-corpus runs (existing corpus; after sequential ingest and graph suites; repeat): R@10=1.000000, MRR=0.958333. Subtract 0.10 from each minimum and round down to two decimals: 0.90 and 0.85."
+}

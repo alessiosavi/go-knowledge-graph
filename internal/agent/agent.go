@@ -66,8 +66,8 @@ This endpoint does not support tool calls. Reply with ONLY a JSON object of one 
 
 const planFinalPrompt = `Using only the tool results above, answer the question now in GitHub-flavoured Markdown, without raw HTML. Do not request more tools. Cite entity ids, chunk ids and document ids.`
 
-// noAnswerText is the fallback when a final answer is unavailable.
-const noAnswerText = "I could not reach a final answer within the step budget; the evidence below lists what the tools returned."
+// NoAnswerText is the fallback when a final answer is unavailable.
+const NoAnswerText = "I could not reach a final answer within the step budget; the evidence below lists what the tools returned."
 
 // responseBodyCap bounds the ask request body.
 const responseBodyCap = 1 << 20
@@ -415,7 +415,7 @@ func (s *Server) askWithPlan(ctx context.Context, question string, emit func(str
 func answerResponse(answer string, evidence []EvidenceItem, steps int) AskResponse {
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
-		answer = noAnswerText
+		answer = NoAnswerText
 	}
 	resp := AskResponse{Answer: answer, Evidence: evidence, Steps: steps}
 	html, err := markdown.RenderAnswer(answer)

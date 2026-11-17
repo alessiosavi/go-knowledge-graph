@@ -1,9 +1,25 @@
 package reteval
 
 import (
+	"context"
 	"math"
+	"strings"
 	"testing"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/agent"
 )
+
+func TestAbstainedStepLimitFallback(t *testing.T) {
+	for _, answer := range []string{agent.NoAnswerText, strings.ToUpper(agent.NoAnswerText)} {
+		a := &AgentResult{Answer: answer}
+		if err := scoreAgent(context.Background(), nil, Question{Stratum: "null"}, resolvedGold{}, a); err != nil {
+			t.Fatal(err)
+		}
+		if a.Abstained == nil || !*a.Abstained || !a.NeedsReview {
+			t.Errorf("step-limit fallback must abstain and need review: %+v", a)
+		}
+	}
+}
 
 func TestSearchMetrics(t *testing.T) {
 	a := [][]string{{"a"}, {"b", "c"}}

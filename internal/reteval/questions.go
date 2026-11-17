@@ -3,6 +3,7 @@
 package reteval
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,7 +49,11 @@ func Load(path string) (QuestionSet, error) {
 		return QuestionSet{}, fmt.Errorf("reteval: questions: %w", err)
 	}
 	defer f.Close()
-	dec := json.NewDecoder(f)
+	r := bufio.NewReader(f)
+	if prefix, _ := r.Peek(3); string(prefix) == "\xef\xbb\xbf" {
+		_, _ = r.Discard(3)
+	}
+	dec := json.NewDecoder(r)
 	dec.DisallowUnknownFields()
 	var set QuestionSet
 	if err := dec.Decode(&set); err != nil {

@@ -79,3 +79,22 @@ func TestLoadStrictJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadUTF8BOM(t *testing.T) {
+	set := QuestionSet{Schema: 1, Questions: []Question{{ID: "n", Stratum: "null", Question: "Where is Unseenquillon?", Absent: []string{"Unseenquillon"}}}}
+	path := questionFile(t, set)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append([]byte{0xef, 0xbb, 0xbf}, b...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with leading UTF-8 BOM: %v", err)
+	}
+	if len(got.Questions) != 1 || got.Questions[0].ID != "n" || !reflect.DeepEqual(got.Questions[0].Kinds, []string{"chunk", "auto"}) {
+		t.Fatalf("loaded set = %+v", got)
+	}
+}

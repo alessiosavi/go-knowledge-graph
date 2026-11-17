@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/agent"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -96,7 +97,7 @@ func AnswerPartRecall(parts []AnswerPart, answer string) float64 {
 // since a matching answer may also contain a factual claim.
 func Abstained(answer string) bool {
 	answer = Fold(answer)
-	for _, p := range []string{"cannot answer", "can't answer", "no information", "not found in the", "i don't know", "non ho trovato", "non è presente", "non risulta", "nessuna informazione", "non sono in grado"} {
+	for _, p := range []string{"cannot answer", "can't answer", "no information", "not found in the", "i don't know", "non ho trovato", "non è presente", "non risulta", "nessuna informazione", "non sono in grado", agent.NoAnswerText} {
 		if strings.Contains(answer, Fold(p)) {
 			return true
 		}
