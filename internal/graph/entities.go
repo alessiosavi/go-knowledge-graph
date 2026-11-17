@@ -497,18 +497,28 @@ SET e.aliases = $aliases`,
 	return nil
 }
 
+const entityByIDQuery = `
+MATCH (e:Entity {id: $q})
+RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type,
+       coalesce(e.aliases, []) AS aliases, coalesce(e.mention_count, 0) AS mention_count`
+
+const entityByKeyQuery = `
+MATCH (e:Entity {key: $q})
+RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type,
+       coalesce(e.aliases, []) AS aliases, coalesce(e.mention_count, 0) AS mention_count`
+
 // EntityView returns an entity with its aliases, mention count and facts,
 // grouped by (relation, other entity) with larger groups first;
 // low-confidence facts are excluded unless includeLowConfidence is set.
 // Together lists up to ten co-mentioned entities ranked by shared chunks,
 // then mention count descending and key ascending, regardless of fact confidence.
-// idOrKey matches the entity id or the entity key.
+// idOrKey matches the entity id first, falling back to the entity key.
 func (s *Store) EntityView(ctx context.Context, idOrKey string, includeLowConfidence bool) (EntityView, error) {
-	recs, err := s.runRead(ctx, `
-MATCH (e:Entity) WHERE e.id = $q OR e.key = $q
-RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type,
-       coalesce(e.aliases, []) AS aliases, coalesce(e.mention_count, 0) AS mention_count`,
-		map[string]any{"q": idOrKey})
+	params := map[string]any{"q": idOrKey}
+	recs, err := s.runRead(ctx, entityByIDQuery, params)
+	if err == nil && len(recs) == 0 {
+		recs, err = s.runRead(ctx, entityByKeyQuery, params)
+	}
 	if err != nil {
 		return EntityView{}, fmt.Errorf("graph: entity view: %w", err)
 	}

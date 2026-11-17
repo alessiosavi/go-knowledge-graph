@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,6 +67,119 @@ func TestUpsertExtractionWrapper(t *testing.T) {
 		if after := rawRecords(t, uri, query); !reflect.DeepEqual(before[i], after) {
 			t.Errorf("wrapper and zero options differ for %s: before %+v, after %+v", query, before[i], after)
 		}
+	}
+}
+
+func TestEntityLookupPlansUseIndex(t *testing.T) {
+	st := graphtest.Store(t)
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"id", graph.EntityByIDQuery},
+		{"key", graph.EntityByKeyQuery},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			operators := planOperators(t, st, tc.query)
+			t.Logf("operators: %v", operators)
+			if !slices.Contains(operators, "ScanAllByLabelProperties") {
+				t.Errorf("operators = %v, want ScanAllByLabelProperties", operators)
+			}
+			if slices.Contains(operators, "ScanAll") {
+				t.Errorf("operators = %v, must not contain ScanAll", operators)
+			}
+		})
+	}
+	t.Run("negative_control", func(t *testing.T) {
+		operators := planOperators(t, st, `MATCH (e:Entity) WHERE e.id = $q OR e.key = $q RETURN e`)
+		t.Logf("operators: %v", operators)
+		if !slices.Contains(operators, "ScanAll") {
+			t.Errorf("negative-control operators = %v, want ScanAll", operators)
+		}
+	})
+}
+
+func TestEntityViewByIDOrKey(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	text := "Zorbo joined Quillon Ltd."
+	docID, chunkID := entitiesTestDoc(t, st, text)
+	tag := strconv.FormatInt(time.Now().UnixNano(), 36)
+	ents := []graph.EntityUpsert{
+		{Key: graph.EntityKey("Zorbo " + tag), Name: "Zorbo", Type: "person", Aliases: []string{"Zorb"},
+			Mentions: []graph.MentionSpan{{Start: 0, End: 5, Type: "person"}}},
+		{Key: graph.EntityKey("Quillon Ltd " + tag), Name: "Quillon Ltd", Type: "organization",
+			Mentions: []graph.MentionSpan{{Start: 13, End: 24, Type: "organization"}}},
+	}
+	facts := []graph.FactUpsert{{HeadKey: ents[0].Key, TailKey: ents[1].Key, Rel: "joined", Confidence: 0.9,
+		HeadMention: graph.Span{Start: 0, End: 5, Text: "Zorbo"},
+		TailMention: graph.Span{Start: 13, End: 24, Text: "Quillon Ltd"}}}
+	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", ents, facts); err != nil {
+		t.Fatal(err)
+	}
+	for _, include := range []bool{false, true} {
+		byID, err := st.EntityView(ctx, graph.EntityID(ents[0].Key), include)
+		if err != nil {
+			t.Fatalf("EntityView(id): %v", err)
+		}
+		byKey, err := st.EntityView(ctx, ents[0].Key, include)
+		if err != nil {
+			t.Fatalf("EntityView(key): %v", err)
+		}
+		if !reflect.DeepEqual(byID, byKey) {
+			t.Errorf("EntityView(id) = %+v, EntityView(key) = %+v", byID, byKey)
+		}
+		if byID.Key != ents[0].Key || !reflect.DeepEqual(byID.Aliases, []string{"Zorb"}) || byID.MentionCount != 1 || len(byID.Facts) != 1 || len(byID.Together) != 1 {
+			t.Errorf("incomplete entity view: %+v", byID)
+		}
+	}
+	if _, err := st.EntityView(ctx, "missing-"+tag, false); !errors.Is(err, graph.ErrNotFound) {
+		t.Errorf("unknown entity error = %v, want ErrNotFound", err)
+	}
+	// Traversal resolves the same two forms through resolveEntityRef.
+	byID, err := st.Traverse(ctx, graph.EntityID(ents[0].Key), "", "out", 1, 10, false)
+	if err != nil {
+		t.Fatalf("Traverse(id): %v", err)
+	}
+	byKey, err := st.Traverse(ctx, ents[0].Key, "", "out", 1, 10, false)
+	if err != nil {
+		t.Fatalf("Traverse(key): %v", err)
+	}
+	if !reflect.DeepEqual(byID, byKey) || len(byID.Edges) != 1 {
+		t.Errorf("Traverse(id) = %+v, Traverse(key) = %+v; want the same fact", byID, byKey)
+	}
+	if _, err := st.Traverse(ctx, "missing-"+tag, "", "out", 1, 10, false); !errors.Is(err, graph.ErrNotFound) {
+		t.Errorf("unknown traversal start error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestEntityLookupPrefersID(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	docID, chunkID := entitiesTestDoc(t, st, "Acme-Max and Zorbo.")
+	key := graph.EntityKey("Acme-Max " + strconv.FormatInt(time.Now().UnixNano(), 36))
+	id := graph.EntityID(key)
+	// Insert the competing key first: lookup must explicitly prefer the id.
+	ents := []graph.EntityUpsert{
+		{Key: id, Name: "Zorbo", Type: "organization"},
+		{Key: key, Name: "Acme-Max", Type: "organization"},
+	}
+	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", ents, nil); err != nil {
+		t.Fatal(err)
+	}
+	view, err := st.EntityView(ctx, id, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.ID != id || view.Key != key {
+		t.Errorf("EntityView(%q) = %+v, want id %q and key %q", id, view.EntityRef, id, key)
+	}
+	sub, err := st.Traverse(ctx, id, "", "out", 1, 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sub.Nodes) != 1 || sub.Nodes[0].ID != id || sub.Nodes[0].Key != key {
+		t.Errorf("Traverse(%q) nodes = %+v, want id %q and key %q", id, sub.Nodes, id, key)
 	}
 }
 

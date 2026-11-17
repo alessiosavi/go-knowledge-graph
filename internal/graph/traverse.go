@@ -91,10 +91,11 @@ func (s *Store) Traverse(ctx context.Context, startID, rel, direction string, de
 }
 
 func (s *Store) resolveEntityRef(ctx context.Context, idOrKey string) (EntityRef, error) {
-	recs, err := s.runRead(ctx, `
-MATCH (e:Entity) WHERE e.id = $q OR e.key = $q
-RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type`,
-		map[string]any{"q": idOrKey})
+	params := map[string]any{"q": idOrKey}
+	recs, err := s.runRead(ctx, entityByIDQuery, params)
+	if err == nil && len(recs) == 0 {
+		recs, err = s.runRead(ctx, entityByKeyQuery, params)
+	}
 	if err != nil {
 		return EntityRef{}, fmt.Errorf("graph: traverse: %w", err)
 	}
