@@ -559,14 +559,19 @@ func FactAuditID(headKey, rel, tailKey, chunkID string) string {
 
 // WriteFactAudit records one audit row (:RejectedFact).
 func (s *Store) WriteFactAudit(ctx context.Context, a FactAudit) error {
-	return s.runWriteTx(ctx, func(tx neo4j.ManagedTransaction) error {
+	// Locked, so it is ordered against DeleteDocument within the process.
+	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
 		return txWriteFactAudit(ctx, tx, a)
 	})
 }
 
 // txWriteFactAudit merges one audit row inside an existing transaction.
 func txWriteFactAudit(ctx context.Context, tx neo4j.ManagedTransaction, a FactAudit) error {
+	// An audit for a document that no longer exists (deleted while its
+	// judge call was in flight) is not written: nothing could delete it.
 	err := txRun(ctx, tx, `
+OPTIONAL MATCH (d:Document {id: $doc})
+WITH d WHERE $doc = '' OR d IS NOT NULL
 MERGE (rf:RejectedFact {id: $id})
 SET rf.head_key = $head, rf.rel = $rel, rf.tail_key = $tail, rf.doc_id = $doc,
     rf.chunk_id = $chunk, rf.score = $score, rf.judge_verdict = $verdict,
@@ -610,7 +615,7 @@ SET r.judge = $status`,
 // RejectFact deletes a refuted fact edge and records the audit row in one
 // transaction (refuted facts are never silently dropped).
 func (s *Store) RejectFact(ctx context.Context, headKey, rel, tailKey, chunkID string, audit FactAudit) error {
-	return s.runWriteTx(ctx, func(tx neo4j.ManagedTransaction) error {
+	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
 		if err := txRun(ctx, tx, `
 MATCH (a:Entity {key: $head})-[r]->(b:Entity {key: $tail})
 WHERE r.chunk_id = $chunk AND type(r) = $rel

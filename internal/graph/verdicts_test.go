@@ -173,6 +173,18 @@ func TestDeleteDocumentRemovesItsAudits(t *testing.T) {
 	if n := count(ids[1]); n != 1 {
 		t.Fatalf("other document's audits = %d, want 1", n)
 	}
+	// An audit write that arrives after the delete (a judge call that was in
+	// flight) must not recreate document-derived text.
+	late := graph.FactAudit{DocID: ids[0], ChunkID: ids[0] + "-c1", HeadKey: "quillon", TailKey: "zorbo", Rel: "uses", JudgeVerdict: "refuted", Reason: "late"}
+	if err := st.WriteFactAudit(ctx, late); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RejectFact(ctx, "quillon", "uses", "zorbo", ids[0]+"-c2", late); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(ids[0]); n != 0 {
+		t.Fatalf("late audit writes recreated %d rows for the deleted document", n)
+	}
 	if !rawIndexExists(t, uri, "RejectedFact", "doc_id") {
 		t.Error("RejectedFact(doc_id) index missing")
 	}
