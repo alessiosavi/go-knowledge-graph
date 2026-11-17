@@ -1,0 +1,1752 @@
+
+
+
+
+
+
+Internet Engineering Task Force (IETF)                  R. Fielding, Ed.
+Request for Comments: 7231                                         Adobe
+Obsoletes: 2616                                          J. Reschke, Ed.
+Updates: 2817                                                 greenbytes
+Category: Standards Track                                      June 2014
+ISSN: 2070-1721
+
+
+     Hypertext Transfer Protocol (HTTP/1.1): Semantics and Content
+
+Abstract
+
+   The Hypertext Transfer Protocol (HTTP) is a stateless application-
+   level protocol for distributed, collaborative, hypertext information
+   systems.  This document defines the semantics of HTTP/1.1 messages,
+   as expressed by request methods, request header fields, response
+   status codes, and response header fields, along with the payload of
+   messages (metadata and body content) and mechanisms for content
+   negotiation.
+
+Status of This Memo
+
+   This is an Internet Standards Track document.
+
+   This document is a product of the Internet Engineering Task Force
+   (IETF).  It represents the consensus of the IETF community.  It has
+   received public review and has been approved for publication by the
+   Internet Engineering Steering Group (IESG).  Further information on
+   Internet Standards is available in Section 2 of RFC 5741.
+
+   Information about the current status of this document, any errata,
+   and how to provide feedback on it may be obtained at
+   http://www.rfc-editor.org/info/rfc7231.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Fielding & Reschke           Standards Track                    [Page 1]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+Copyright Notice
+
+   Copyright (c) 2014 IETF Trust and the persons identified as the
+   document authors.  All rights reserved.
+
+   This document is subject to BCP 78 and the IETF Trust's Legal
+   Provisions Relating to IETF Documents
+   (http://trustee.ietf.org/license-info) in effect on the date of
+   publication of this document.  Please review these documents
+   carefully, as they describe your rights and restrictions with respect
+   to this document.  Code Components extracted from this document must
+   include Simplified BSD License text as described in Section 4.e of
+   the Trust Legal Provisions and are provided without warranty as
+   described in the Simplified BSD License.
+
+   This document may contain material from IETF Documents or IETF
+   Contributions published or made publicly available before November
+   10, 2008.  The person(s) controlling the copyright in some of this
+   material may not have granted the IETF Trust the right to allow
+   modifications of such material outside the IETF Standards Process.
+   Without obtaining an adequate license from the person(s) controlling
+   the copyright in such materials, this document may not be modified
+   outside the IETF Standards Process, and derivative works of it may
+   not be created outside the IETF Standards Process, except to format
+   it for publication as an RFC or to translate it into languages other
+   than English.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Fielding & Reschke           Standards Track                    [Page 2]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+4.  Request Methods
+
+4.1.  Overview
+
+   The request method token is the primary source of request semantics;
+   it indicates the purpose for which the client has made this request
+   and what is expected by the client as a successful result.
+
+   The request method's semantics might be further specialized by the
+   semantics of some header fields when present in a request (Section 5)
+   if those additional semantics do not conflict with the method.  For
+   example, a client can send conditional request header fields
+   (Section 5.2) to make the requested action conditional on the current
+   state of the target resource ([RFC7232]).
+
+     method = token
+
+   HTTP was originally designed to be usable as an interface to
+   distributed object systems.  The request method was envisioned as
+   applying semantics to a target resource in much the same way as
+   invoking a defined method on an identified object would apply
+   semantics.  The method token is case-sensitive because it might be
+   used as a gateway to object-based systems with case-sensitive method
+   names.
+
+   Unlike distributed objects, the standardized request methods in HTTP
+   are not resource-specific, since uniform interfaces provide for
+   better visibility and reuse in network-based systems [REST].  Once
+   defined, a standardized method ought to have the same semantics when
+   applied to any resource, though each resource determines for itself
+   whether those semantics are implemented or allowed.
+
+   This specification defines a number of standardized methods that are
+   commonly used in HTTP, as outlined by the following table.  By
+   convention, standardized methods are defined in all-uppercase
+   US-ASCII letters.
+
+
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 21]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   +---------+-------------------------------------------------+-------+
+   | Method  | Description                                     | Sec.  |
+   +---------+-------------------------------------------------+-------+
+   | GET     | Transfer a current representation of the target | 4.3.1 |
+   |         | resource.                                       |       |
+   | HEAD    | Same as GET, but only transfer the status line  | 4.3.2 |
+   |         | and header section.                             |       |
+   | POST    | Perform resource-specific processing on the     | 4.3.3 |
+   |         | request payload.                                |       |
+   | PUT     | Replace all current representations of the      | 4.3.4 |
+   |         | target resource with the request payload.       |       |
+   | DELETE  | Remove all current representations of the       | 4.3.5 |
+   |         | target resource.                                |       |
+   | CONNECT | Establish a tunnel to the server identified by  | 4.3.6 |
+   |         | the target resource.                            |       |
+   | OPTIONS | Describe the communication options for the      | 4.3.7 |
+   |         | target resource.                                |       |
+   | TRACE   | Perform a message loop-back test along the path | 4.3.8 |
+   |         | to the target resource.                         |       |
+   +---------+-------------------------------------------------+-------+
+
+   All general-purpose servers MUST support the methods GET and HEAD.
+   All other methods are OPTIONAL.
+
+   Additional methods, outside the scope of this specification, have
+   been standardized for use in HTTP.  All such methods ought to be
+   registered within the "Hypertext Transfer Protocol (HTTP) Method
+   Registry" maintained by IANA, as defined in Section 8.1.
+
+   The set of methods allowed by a target resource can be listed in an
+   Allow header field (Section 7.4.1).  However, the set of allowed
+   methods can change dynamically.  When a request method is received
+   that is unrecognized or not implemented by an origin server, the
+   origin server SHOULD respond with the 501 (Not Implemented) status
+   code.  When a request method is received that is known by an origin
+   server but not allowed for the target resource, the origin server
+   SHOULD respond with the 405 (Method Not Allowed) status code.
+
+4.2.  Common Method Properties
+
+4.2.1.  Safe Methods
+
+   Request methods are considered "safe" if their defined semantics are
+   essentially read-only; i.e., the client does not request, and does
+   not expect, any state change on the origin server as a result of
+   applying a safe method to a target resource.  Likewise, reasonable
+   use of a safe method is not expected to cause any harm, loss of
+   property, or unusual burden on the origin server.
+
+
+
+Fielding & Reschke           Standards Track                   [Page 22]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   This definition of safe methods does not prevent an implementation
+   from including behavior that is potentially harmful, that is not
+   entirely read-only, or that causes side effects while invoking a safe
+   method.  What is important, however, is that the client did not
+   request that additional behavior and cannot be held accountable for
+   it.  For example, most servers append request information to access
+   log files at the completion of every response, regardless of the
+   method, and that is considered safe even though the log storage might
+   become full and crash the server.  Likewise, a safe request initiated
+   by selecting an advertisement on the Web will often have the side
+   effect of charging an advertising account.
+
+   Of the request methods defined by this specification, the GET, HEAD,
+   OPTIONS, and TRACE methods are defined to be safe.
+
+   The purpose of distinguishing between safe and unsafe methods is to
+   allow automated retrieval processes (spiders) and cache performance
+   optimization (pre-fetching) to work without fear of causing harm.  In
+   addition, it allows a user agent to apply appropriate constraints on
+   the automated use of unsafe methods when processing potentially
+   untrusted content.
+
+   A user agent SHOULD distinguish between safe and unsafe methods when
+   presenting potential actions to a user, such that the user can be
+   made aware of an unsafe action before it is requested.
+
+   When a resource is constructed such that parameters within the
+   effective request URI have the effect of selecting an action, it is
+   the resource owner's responsibility to ensure that the action is
+   consistent with the request method semantics.  For example, it is
+   common for Web-based content editing software to use actions within
+   query parameters, such as "page?do=delete".  If the purpose of such a
+   resource is to perform an unsafe action, then the resource owner MUST
+   disable or disallow that action when it is accessed using a safe
+   request method.  Failure to do so will result in unfortunate side
+   effects when automated processes perform a GET on every URI reference
+   for the sake of link maintenance, pre-fetching, building a search
+   index, etc.
+
+4.2.2.  Idempotent Methods
+
+   A request method is considered "idempotent" if the intended effect on
+   the server of multiple identical requests with that method is the
+   same as the effect for a single such request.  Of the request methods
+   defined by this specification, PUT, DELETE, and safe request methods
+   are idempotent.
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 23]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   Like the definition of safe, the idempotent property only applies to
+   what has been requested by the user; a server is free to log each
+   request separately, retain a revision control history, or implement
+   other non-idempotent side effects for each idempotent request.
+
+   Idempotent methods are distinguished because the request can be
+   repeated automatically if a communication failure occurs before the
+   client is able to read the server's response.  For example, if a
+   client sends a PUT request and the underlying connection is closed
+   before any response is received, then the client can establish a new
+   connection and retry the idempotent request.  It knows that repeating
+   the request will have the same intended effect, even if the original
+   request succeeded, though the response might differ.
+
+4.2.3.  Cacheable Methods
+
+   Request methods can be defined as "cacheable" to indicate that
+   responses to them are allowed to be stored for future reuse; for
+   specific requirements see [RFC7234].  In general, safe methods that
+   do not depend on a current or authoritative response are defined as
+   cacheable; this specification defines GET, HEAD, and POST as
+   cacheable, although the overwhelming majority of cache
+   implementations only support GET and HEAD.
+
+4.3.  Method Definitions
+
+4.3.1.  GET
+
+   The GET method requests transfer of a current selected representation
+   for the target resource.  GET is the primary mechanism of information
+   retrieval and the focus of almost all performance optimizations.
+   Hence, when people speak of retrieving some identifiable information
+   via HTTP, they are generally referring to making a GET request.
+
+   It is tempting to think of resource identifiers as remote file system
+   pathnames and of representations as being a copy of the contents of
+   such files.  In fact, that is how many resources are implemented (see
+   Section 9.1 for related security considerations).  However, there are
+   no such limitations in practice.  The HTTP interface for a resource
+   is just as likely to be implemented as a tree of content objects, a
+   programmatic view on various database records, or a gateway to other
+   information systems.  Even when the URI mapping mechanism is tied to
+   a file system, an origin server might be configured to execute the
+   files with the request as input and send the output as the
+   representation rather than transfer the files directly.  Regardless,
+   only the origin server needs to know how each of its resource
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 24]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   identifiers corresponds to an implementation and how each
+   implementation manages to select and send a current representation of
+   the target resource in a response to GET.
+
+   A client can alter the semantics of GET to be a "range request",
+   requesting transfer of only some part(s) of the selected
+   representation, by sending a Range header field in the request
+   ([RFC7233]).
+
+   A payload within a GET request message has no defined semantics;
+   sending a payload body on a GET request might cause some existing
+   implementations to reject the request.
+
+   The response to a GET request is cacheable; a cache MAY use it to
+   satisfy subsequent GET and HEAD requests unless otherwise indicated
+   by the Cache-Control header field (Section 5.2 of [RFC7234]).
+
+4.3.2.  HEAD
+
+   The HEAD method is identical to GET except that the server MUST NOT
+   send a message body in the response (i.e., the response terminates at
+   the end of the header section).  The server SHOULD send the same
+   header fields in response to a HEAD request as it would have sent if
+   the request had been a GET, except that the payload header fields
+   (Section 3.3) MAY be omitted.  This method can be used for obtaining
+   metadata about the selected representation without transferring the
+   representation data and is often used for testing hypertext links for
+   validity, accessibility, and recent modification.
+
+   A payload within a HEAD request message has no defined semantics;
+   sending a payload body on a HEAD request might cause some existing
+   implementations to reject the request.
+
+   The response to a HEAD request is cacheable; a cache MAY use it to
+   satisfy subsequent HEAD requests unless otherwise indicated by the
+   Cache-Control header field (Section 5.2 of [RFC7234]).  A HEAD
+   response might also have an effect on previously cached responses to
+   GET; see Section 4.3.5 of [RFC7234].
+
+4.3.3.  POST
+
+   The POST method requests that the target resource process the
+   representation enclosed in the request according to the resource's
+   own specific semantics.  For example, POST is used for the following
+   functions (among others):
+
+   o  Providing a block of data, such as the fields entered into an HTML
+      form, to a data-handling process;
+
+
+
+Fielding & Reschke           Standards Track                   [Page 25]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   o  Posting a message to a bulletin board, newsgroup, mailing list,
+      blog, or similar group of articles;
+
+   o  Creating a new resource that has yet to be identified by the
+      origin server; and
+
+   o  Appending data to a resource's existing representation(s).
+
+   An origin server indicates response semantics by choosing an
+   appropriate status code depending on the result of processing the
+   POST request; almost all of the status codes defined by this
+   specification might be received in a response to POST (the exceptions
+   being 206 (Partial Content), 304 (Not Modified), and 416 (Range Not
+   Satisfiable)).
+
+   If one or more resources has been created on the origin server as a
+   result of successfully processing a POST request, the origin server
+   SHOULD send a 201 (Created) response containing a Location header
+   field that provides an identifier for the primary resource created
+   (Section 7.1.2) and a representation that describes the status of the
+   request while referring to the new resource(s).
+
+   Responses to POST requests are only cacheable when they include
+   explicit freshness information (see Section 4.2.1 of [RFC7234]).
+   However, POST caching is not widely implemented.  For cases where an
+   origin server wishes the client to be able to cache the result of a
+   POST in a way that can be reused by a later GET, the origin server
+   MAY send a 200 (OK) response containing the result and a
+   Content-Location header field that has the same value as the POST's
+   effective request URI (Section 3.1.4.2).
+
+   If the result of processing a POST would be equivalent to a
+   representation of an existing resource, an origin server MAY redirect
+   the user agent to that resource by sending a 303 (See Other) response
+   with the existing resource's identifier in the Location field.  This
+   has the benefits of providing the user agent a resource identifier
+   and transferring the representation via a method more amenable to
+   shared caching, though at the cost of an extra request if the user
+   agent does not already have the representation cached.
+
+4.3.4.  PUT
+
+   The PUT method requests that the state of the target resource be
+   created or replaced with the state defined by the representation
+   enclosed in the request message payload.  A successful PUT of a given
+   representation would suggest that a subsequent GET on that same
+   target resource will result in an equivalent representation being
+   sent in a 200 (OK) response.  However, there is no guarantee that
+
+
+
+Fielding & Reschke           Standards Track                   [Page 26]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   such a state change will be observable, since the target resource
+   might be acted upon by other user agents in parallel, or might be
+   subject to dynamic processing by the origin server, before any
+   subsequent GET is received.  A successful response only implies that
+   the user agent's intent was achieved at the time of its processing by
+   the origin server.
+
+   If the target resource does not have a current representation and the
+   PUT successfully creates one, then the origin server MUST inform the
+   user agent by sending a 201 (Created) response.  If the target
+   resource does have a current representation and that representation
+   is successfully modified in accordance with the state of the enclosed
+   representation, then the origin server MUST send either a 200 (OK) or
+   a 204 (No Content) response to indicate successful completion of the
+   request.
+
+   An origin server SHOULD ignore unrecognized header fields received in
+   a PUT request (i.e., do not save them as part of the resource state).
+
+   An origin server SHOULD verify that the PUT representation is
+   consistent with any constraints the server has for the target
+   resource that cannot or will not be changed by the PUT.  This is
+   particularly important when the origin server uses internal
+   configuration information related to the URI in order to set the
+   values for representation metadata on GET responses.  When a PUT
+   representation is inconsistent with the target resource, the origin
+   server SHOULD either make them consistent, by transforming the
+   representation or changing the resource configuration, or respond
+   with an appropriate error message containing sufficient information
+   to explain why the representation is unsuitable.  The 409 (Conflict)
+   or 415 (Unsupported Media Type) status codes are suggested, with the
+   latter being specific to constraints on Content-Type values.
+
+   For example, if the target resource is configured to always have a
+   Content-Type of "text/html" and the representation being PUT has a
+   Content-Type of "image/jpeg", the origin server ought to do one of:
+
+   a.  reconfigure the target resource to reflect the new media type;
+
+   b.  transform the PUT representation to a format consistent with that
+       of the resource before saving it as the new resource state; or,
+
+   c.  reject the request with a 415 (Unsupported Media Type) response
+       indicating that the target resource is limited to "text/html",
+       perhaps including a link to a different resource that would be a
+       suitable target for the new representation.
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 27]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   HTTP does not define exactly how a PUT method affects the state of an
+   origin server beyond what can be expressed by the intent of the user
+   agent request and the semantics of the origin server response.  It
+   does not define what a resource might be, in any sense of that word,
+   beyond the interface provided via HTTP.  It does not define how
+   resource state is "stored", nor how such storage might change as a
+   result of a change in resource state, nor how the origin server
+   translates resource state into representations.  Generally speaking,
+   all implementation details behind the resource interface are
+   intentionally hidden by the server.
+
+   An origin server MUST NOT send a validator header field
+   (Section 7.2), such as an ETag or Last-Modified field, in a
+   successful response to PUT unless the request's representation data
+   was saved without any transformation applied to the body (i.e., the
+   resource's new representation data is identical to the representation
+   data received in the PUT request) and the validator field value
+   reflects the new representation.  This requirement allows a user
+   agent to know when the representation body it has in memory remains
+   current as a result of the PUT, thus not in need of being retrieved
+   again from the origin server, and that the new validator(s) received
+   in the response can be used for future conditional requests in order
+   to prevent accidental overwrites (Section 5.2).
+
+   The fundamental difference between the POST and PUT methods is
+   highlighted by the different intent for the enclosed representation.
+   The target resource in a POST request is intended to handle the
+   enclosed representation according to the resource's own semantics,
+   whereas the enclosed representation in a PUT request is defined as
+   replacing the state of the target resource.  Hence, the intent of PUT
+   is idempotent and visible to intermediaries, even though the exact
+   effect is only known by the origin server.
+
+   Proper interpretation of a PUT request presumes that the user agent
+   knows which target resource is desired.  A service that selects a
+   proper URI on behalf of the client, after receiving a state-changing
+   request, SHOULD be implemented using the POST method rather than PUT.
+   If the origin server will not make the requested PUT state change to
+   the target resource and instead wishes to have it applied to a
+   different resource, such as when the resource has been moved to a
+   different URI, then the origin server MUST send an appropriate 3xx
+   (Redirection) response; the user agent MAY then make its own decision
+   regarding whether or not to redirect the request.
+
+   A PUT request applied to the target resource can have side effects on
+   other resources.  For example, an article might have a URI for
+   identifying "the current version" (a resource) that is separate from
+   the URIs identifying each particular version (different resources
+
+
+
+Fielding & Reschke           Standards Track                   [Page 28]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   that at one point shared the same state as the current version
+   resource).  A successful PUT request on "the current version" URI
+   might therefore create a new version resource in addition to changing
+   the state of the target resource, and might also cause links to be
+   added between the related resources.
+
+   An origin server that allows PUT on a given target resource MUST send
+   a 400 (Bad Request) response to a PUT request that contains a
+   Content-Range header field (Section 4.2 of [RFC7233]), since the
+   payload is likely to be partial content that has been mistakenly PUT
+   as a full representation.  Partial content updates are possible by
+   targeting a separately identified resource with state that overlaps a
+   portion of the larger resource, or by using a different method that
+   has been specifically defined for partial updates (for example, the
+   PATCH method defined in [RFC5789]).
+
+   Responses to the PUT method are not cacheable.  If a successful PUT
+   request passes through a cache that has one or more stored responses
+   for the effective request URI, those stored responses will be
+   invalidated (see Section 4.4 of [RFC7234]).
+
+4.3.5.  DELETE
+
+   The DELETE method requests that the origin server remove the
+   association between the target resource and its current
+   functionality.  In effect, this method is similar to the rm command
+   in UNIX: it expresses a deletion operation on the URI mapping of the
+   origin server rather than an expectation that the previously
+   associated information be deleted.
+
+   If the target resource has one or more current representations, they
+   might or might not be destroyed by the origin server, and the
+   associated storage might or might not be reclaimed, depending
+   entirely on the nature of the resource and its implementation by the
+   origin server (which are beyond the scope of this specification).
+   Likewise, other implementation aspects of a resource might need to be
+   deactivated or archived as a result of a DELETE, such as database or
+   gateway connections.  In general, it is assumed that the origin
+   server will only allow DELETE on resources for which it has a
+   prescribed mechanism for accomplishing the deletion.
+
+   Relatively few resources allow the DELETE method -- its primary use
+   is for remote authoring environments, where the user has some
+   direction regarding its effect.  For example, a resource that was
+   previously created using a PUT request, or identified via the
+   Location header field after a 201 (Created) response to a POST
+   request, might allow a corresponding DELETE request to undo those
+   actions.  Similarly, custom user agent implementations that implement
+
+
+
+Fielding & Reschke           Standards Track                   [Page 29]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   an authoring function, such as revision control clients using HTTP
+   for remote operations, might use DELETE based on an assumption that
+   the server's URI space has been crafted to correspond to a version
+   repository.
+
+   If a DELETE method is successfully applied, the origin server SHOULD
+   send a 202 (Accepted) status code if the action will likely succeed
+   but has not yet been enacted, a 204 (No Content) status code if the
+   action has been enacted and no further information is to be supplied,
+   or a 200 (OK) status code if the action has been enacted and the
+   response message includes a representation describing the status.
+
+   A payload within a DELETE request message has no defined semantics;
+   sending a payload body on a DELETE request might cause some existing
+   implementations to reject the request.
+
+   Responses to the DELETE method are not cacheable.  If a DELETE
+   request passes through a cache that has one or more stored responses
+   for the effective request URI, those stored responses will be
+   invalidated (see Section 4.4 of [RFC7234]).
+
+4.3.6.  CONNECT
+
+   The CONNECT method requests that the recipient establish a tunnel to
+   the destination origin server identified by the request-target and,
+   if successful, thereafter restrict its behavior to blind forwarding
+   of packets, in both directions, until the tunnel is closed.  Tunnels
+   are commonly used to create an end-to-end virtual connection, through
+   one or more proxies, which can then be secured using TLS (Transport
+   Layer Security, [RFC5246]).
+
+   CONNECT is intended only for use in requests to a proxy.  An origin
+   server that receives a CONNECT request for itself MAY respond with a
+   2xx (Successful) status code to indicate that a connection is
+   established.  However, most origin servers do not implement CONNECT.
+
+   A client sending a CONNECT request MUST send the authority form of
+   request-target (Section 5.3 of [RFC7230]); i.e., the request-target
+   consists of only the host name and port number of the tunnel
+   destination, separated by a colon.  For example,
+
+     CONNECT server.example.com:80 HTTP/1.1
+     Host: server.example.com:80
+
+   The recipient proxy can establish a tunnel either by directly
+   connecting to the request-target or, if configured to use another
+   proxy, by forwarding the CONNECT request to the next inbound proxy.
+   Any 2xx (Successful) response indicates that the sender (and all
+
+
+
+Fielding & Reschke           Standards Track                   [Page 30]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   inbound proxies) will switch to tunnel mode immediately after the
+   blank line that concludes the successful response's header section;
+   data received after that blank line is from the server identified by
+   the request-target.  Any response other than a successful response
+   indicates that the tunnel has not yet been formed and that the
+   connection remains governed by HTTP.
+
+   A tunnel is closed when a tunnel intermediary detects that either
+   side has closed its connection: the intermediary MUST attempt to send
+   any outstanding data that came from the closed side to the other
+   side, close both connections, and then discard any remaining data
+   left undelivered.
+
+   Proxy authentication might be used to establish the authority to
+   create a tunnel.  For example,
+
+     CONNECT server.example.com:80 HTTP/1.1
+     Host: server.example.com:80
+     Proxy-Authorization: basic aGVsbG86d29ybGQ=
+
+   There are significant risks in establishing a tunnel to arbitrary
+   servers, particularly when the destination is a well-known or
+   reserved TCP port that is not intended for Web traffic.  For example,
+   a CONNECT to a request-target of "example.com:25" would suggest that
+   the proxy connect to the reserved port for SMTP traffic; if allowed,
+   that could trick the proxy into relaying spam email.  Proxies that
+   support CONNECT SHOULD restrict its use to a limited set of known
+   ports or a configurable whitelist of safe request targets.
+
+   A server MUST NOT send any Transfer-Encoding or Content-Length header
+   fields in a 2xx (Successful) response to CONNECT.  A client MUST
+   ignore any Content-Length or Transfer-Encoding header fields received
+   in a successful response to CONNECT.
+
+   A payload within a CONNECT request message has no defined semantics;
+   sending a payload body on a CONNECT request might cause some existing
+   implementations to reject the request.
+
+   Responses to the CONNECT method are not cacheable.
+
+4.3.7.  OPTIONS
+
+   The OPTIONS method requests information about the communication
+   options available for the target resource, at either the origin
+   server or an intervening intermediary.  This method allows a client
+   to determine the options and/or requirements associated with a
+   resource, or the capabilities of a server, without implying a
+   resource action.
+
+
+
+Fielding & Reschke           Standards Track                   [Page 31]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   An OPTIONS request with an asterisk ("*") as the request-target
+   (Section 5.3 of [RFC7230]) applies to the server in general rather
+   than to a specific resource.  Since a server's communication options
+   typically depend on the resource, the "*" request is only useful as a
+   "ping" or "no-op" type of method; it does nothing beyond allowing the
+   client to test the capabilities of the server.  For example, this can
+   be used to test a proxy for HTTP/1.1 conformance (or lack thereof).
+
+   If the request-target is not an asterisk, the OPTIONS request applies
+   to the options that are available when communicating with the target
+   resource.
+
+   A server generating a successful response to OPTIONS SHOULD send any
+   header fields that might indicate optional features implemented by
+   the server and applicable to the target resource (e.g., Allow),
+   including potential extensions not defined by this specification.
+   The response payload, if any, might also describe the communication
+   options in a machine or human-readable representation.  A standard
+   format for such a representation is not defined by this
+   specification, but might be defined by future extensions to HTTP.  A
+   server MUST generate a Content-Length field with a value of "0" if no
+   payload body is to be sent in the response.
+
+   A client MAY send a Max-Forwards header field in an OPTIONS request
+   to target a specific recipient in the request chain (see
+   Section 5.1.2).  A proxy MUST NOT generate a Max-Forwards header
+   field while forwarding a request unless that request was received
+   with a Max-Forwards field.
+
+   A client that generates an OPTIONS request containing a payload body
+   MUST send a valid Content-Type header field describing the
+   representation media type.  Although this specification does not
+   define any use for such a payload, future extensions to HTTP might
+   use the OPTIONS body to make more detailed queries about the target
+   resource.
+
+   Responses to the OPTIONS method are not cacheable.
+
+4.3.8.  TRACE
+
+   The TRACE method requests a remote, application-level loop-back of
+   the request message.  The final recipient of the request SHOULD
+   reflect the message received, excluding some fields described below,
+   back to the client as the message body of a 200 (OK) response with a
+   Content-Type of "message/http" (Section 8.3.1 of [RFC7230]).  The
+   final recipient is either the origin server or the first server to
+   receive a Max-Forwards value of zero (0) in the request
+   (Section 5.1.2).
+
+
+
+Fielding & Reschke           Standards Track                   [Page 32]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   A client MUST NOT generate header fields in a TRACE request
+   containing sensitive data that might be disclosed by the response.
+   For example, it would be foolish for a user agent to send stored user
+   credentials [RFC7235] or cookies [RFC6265] in a TRACE request.  The
+   final recipient of the request SHOULD exclude any request header
+   fields that are likely to contain sensitive data when that recipient
+   generates the response body.
+
+   TRACE allows the client to see what is being received at the other
+   end of the request chain and use that data for testing or diagnostic
+   information.  The value of the Via header field (Section 5.7.1 of
+   [RFC7230]) is of particular interest, since it acts as a trace of the
+   request chain.  Use of the Max-Forwards header field allows the
+   client to limit the length of the request chain, which is useful for
+   testing a chain of proxies forwarding messages in an infinite loop.
+
+   A client MUST NOT send a message body in a TRACE request.
+
+   Responses to the TRACE method are not cacheable.
+
+6.  Response Status Codes
+
+   The status-code element is a three-digit integer code giving the
+   result of the attempt to understand and satisfy the request.
+
+   HTTP status codes are extensible.  HTTP clients are not required to
+   understand the meaning of all registered status codes, though such
+   understanding is obviously desirable.  However, a client MUST
+   understand the class of any status code, as indicated by the first
+   digit, and treat an unrecognized status code as being equivalent to
+   the x00 status code of that class, with the exception that a
+   recipient MUST NOT cache a response with an unrecognized status code.
+
+   For example, if an unrecognized status code of 471 is received by a
+   client, the client can assume that there was something wrong with its
+   request and treat the response as if it had received a 400 (Bad
+   Request) status code.  The response message will usually contain a
+   representation that explains the status.
+
+   The first digit of the status-code defines the class of response.
+   The last two digits do not have any categorization role.  There are
+   five values for the first digit:
+
+   o  1xx (Informational): The request was received, continuing process
+
+   o  2xx (Successful): The request was successfully received,
+      understood, and accepted
+
+   o  3xx (Redirection): Further action needs to be taken in order to
+      complete the request
+
+   o  4xx (Client Error): The request contains bad syntax or cannot be
+      fulfilled
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 47]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   o  5xx (Server Error): The server failed to fulfill an apparently
+      valid request
+
+6.1.  Overview of Status Codes
+
+   The status codes listed below are defined in this specification,
+   Section 4 of [RFC7232], Section 4 of [RFC7233], and Section 3 of
+   [RFC7235].  The reason phrases listed here are only recommendations
+   -- they can be replaced by local equivalents without affecting the
+   protocol.
+
+   Responses with status codes that are defined as cacheable by default
+   (e.g., 200, 203, 204, 206, 300, 301, 404, 405, 410, 414, and 501 in
+   this specification) can be reused by a cache with heuristic
+   expiration unless otherwise indicated by the method definition or
+   explicit cache controls [RFC7234]; all other status codes are not
+   cacheable by default.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 48]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   +------+-------------------------------+--------------------------+
+   | Code | Reason-Phrase                 | Defined in...            |
+   +------+-------------------------------+--------------------------+
+   | 100  | Continue                      | Section 6.2.1            |
+   | 101  | Switching Protocols           | Section 6.2.2            |
+   | 200  | OK                            | Section 6.3.1            |
+   | 201  | Created                       | Section 6.3.2            |
+   | 202  | Accepted                      | Section 6.3.3            |
+   | 203  | Non-Authoritative Information | Section 6.3.4            |
+   | 204  | No Content                    | Section 6.3.5            |
+   | 205  | Reset Content                 | Section 6.3.6            |
+   | 206  | Partial Content               | Section 4.1 of [RFC7233] |
+   | 300  | Multiple Choices              | Section 6.4.1            |
+   | 301  | Moved Permanently             | Section 6.4.2            |
+   | 302  | Found                         | Section 6.4.3            |
+   | 303  | See Other                     | Section 6.4.4            |
+   | 304  | Not Modified                  | Section 4.1 of [RFC7232] |
+   | 305  | Use Proxy                     | Section 6.4.5            |
+   | 307  | Temporary Redirect            | Section 6.4.7            |
+   | 400  | Bad Request                   | Section 6.5.1            |
+   | 401  | Unauthorized                  | Section 3.1 of [RFC7235] |
+   | 402  | Payment Required              | Section 6.5.2            |
+   | 403  | Forbidden                     | Section 6.5.3            |
+   | 404  | Not Found                     | Section 6.5.4            |
+   | 405  | Method Not Allowed            | Section 6.5.5            |
+   | 406  | Not Acceptable                | Section 6.5.6            |
+   | 407  | Proxy Authentication Required | Section 3.2 of [RFC7235] |
+   | 408  | Request Timeout               | Section 6.5.7            |
+   | 409  | Conflict                      | Section 6.5.8            |
+   | 410  | Gone                          | Section 6.5.9            |
+   | 411  | Length Required               | Section 6.5.10           |
+   | 412  | Precondition Failed           | Section 4.2 of [RFC7232] |
+   | 413  | Payload Too Large             | Section 6.5.11           |
+   | 414  | URI Too Long                  | Section 6.5.12           |
+   | 415  | Unsupported Media Type        | Section 6.5.13           |
+   | 416  | Range Not Satisfiable         | Section 4.4 of [RFC7233] |
+   | 417  | Expectation Failed            | Section 6.5.14           |
+   | 426  | Upgrade Required              | Section 6.5.15           |
+   | 500  | Internal Server Error         | Section 6.6.1            |
+   | 501  | Not Implemented               | Section 6.6.2            |
+   | 502  | Bad Gateway                   | Section 6.6.3            |
+   | 503  | Service Unavailable           | Section 6.6.4            |
+   | 504  | Gateway Timeout               | Section 6.6.5            |
+   | 505  | HTTP Version Not Supported    | Section 6.6.6            |
+   +------+-------------------------------+--------------------------+
+
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 49]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   Note that this list is not exhaustive -- it does not include
+   extension status codes defined in other specifications.  The complete
+   list of status codes is maintained by IANA.  See Section 8.2 for
+   details.
+
+6.2.  Informational 1xx
+
+   The 1xx (Informational) class of status code indicates an interim
+   response for communicating connection status or request progress
+   prior to completing the requested action and sending a final
+   response. 1xx responses are terminated by the first empty line after
+   the status-line (the empty line signaling the end of the header
+   section).  Since HTTP/1.0 did not define any 1xx status codes, a
+   server MUST NOT send a 1xx response to an HTTP/1.0 client.
+
+   A client MUST be able to parse one or more 1xx responses received
+   prior to a final response, even if the client does not expect one.  A
+   user agent MAY ignore unexpected 1xx responses.
+
+   A proxy MUST forward 1xx responses unless the proxy itself requested
+   the generation of the 1xx response.  For example, if a proxy adds an
+   "Expect: 100-continue" field when it forwards a request, then it need
+   not forward the corresponding 100 (Continue) response(s).
+
+6.2.1.  100 Continue
+
+   The 100 (Continue) status code indicates that the initial part of a
+   request has been received and has not yet been rejected by the
+   server.  The server intends to send a final response after the
+   request has been fully received and acted upon.
+
+   When the request contains an Expect header field that includes a
+   100-continue expectation, the 100 response indicates that the server
+   wishes to receive the request payload body, as described in
+   Section 5.1.1.  The client ought to continue sending the request and
+   discard the 100 response.
+
+   If the request did not contain an Expect header field containing the
+   100-continue expectation, the client can simply discard this interim
+   response.
+
+6.2.2.  101 Switching Protocols
+
+   The 101 (Switching Protocols) status code indicates that the server
+   understands and is willing to comply with the client's request, via
+   the Upgrade header field (Section 6.7 of [RFC7230]), for a change in
+   the application protocol being used on this connection.  The server
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 50]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   MUST generate an Upgrade header field in the response that indicates
+   which protocol(s) will be switched to immediately after the empty
+   line that terminates the 101 response.
+
+   It is assumed that the server will only agree to switch protocols
+   when it is advantageous to do so.  For example, switching to a newer
+   version of HTTP might be advantageous over older versions, and
+   switching to a real-time, synchronous protocol might be advantageous
+   when delivering resources that use such features.
+
+6.3.  Successful 2xx
+
+   The 2xx (Successful) class of status code indicates that the client's
+   request was successfully received, understood, and accepted.
+
+6.3.1.  200 OK
+
+   The 200 (OK) status code indicates that the request has succeeded.
+   The payload sent in a 200 response depends on the request method.
+   For the methods defined by this specification, the intended meaning
+   of the payload can be summarized as:
+
+   GET  a representation of the target resource;
+
+   HEAD  the same representation as GET, but without the representation
+      data;
+
+   POST  a representation of the status of, or results obtained from,
+      the action;
+
+   PUT, DELETE  a representation of the status of the action;
+
+   OPTIONS  a representation of the communications options;
+
+   TRACE  a representation of the request message as received by the end
+      server.
+
+   Aside from responses to CONNECT, a 200 response always has a payload,
+   though an origin server MAY generate a payload body of zero length.
+   If no payload is desired, an origin server ought to send 204 (No
+   Content) instead.  For CONNECT, no payload is allowed because the
+   successful result is a tunnel, which begins immediately after the 200
+   response header section.
+
+   A 200 response is cacheable by default; i.e., unless otherwise
+   indicated by the method definition or explicit cache controls (see
+   Section 4.2.2 of [RFC7234]).
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 51]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+6.3.2.  201 Created
+
+   The 201 (Created) status code indicates that the request has been
+   fulfilled and has resulted in one or more new resources being
+   created.  The primary resource created by the request is identified
+   by either a Location header field in the response or, if no Location
+   field is received, by the effective request URI.
+
+   The 201 response payload typically describes and links to the
+   resource(s) created.  See Section 7.2 for a discussion of the meaning
+   and purpose of validator header fields, such as ETag and
+   Last-Modified, in a 201 response.
+
+6.3.3.  202 Accepted
+
+   The 202 (Accepted) status code indicates that the request has been
+   accepted for processing, but the processing has not been completed.
+   The request might or might not eventually be acted upon, as it might
+   be disallowed when processing actually takes place.  There is no
+   facility in HTTP for re-sending a status code from an asynchronous
+   operation.
+
+   The 202 response is intentionally noncommittal.  Its purpose is to
+   allow a server to accept a request for some other process (perhaps a
+   batch-oriented process that is only run once per day) without
+   requiring that the user agent's connection to the server persist
+   until the process is completed.  The representation sent with this
+   response ought to describe the request's current status and point to
+   (or embed) a status monitor that can provide the user with an
+   estimate of when the request will be fulfilled.
+
+6.3.4.  203 Non-Authoritative Information
+
+   The 203 (Non-Authoritative Information) status code indicates that
+   the request was successful but the enclosed payload has been modified
+   from that of the origin server's 200 (OK) response by a transforming
+   proxy (Section 5.7.2 of [RFC7230]).  This status code allows the
+   proxy to notify recipients when a transformation has been applied,
+   since that knowledge might impact later decisions regarding the
+   content.  For example, future cache validation requests for the
+   content might only be applicable along the same request path (through
+   the same proxies).
+
+   The 203 response is similar to the Warning code of 214 Transformation
+   Applied (Section 5.5 of [RFC7234]), which has the advantage of being
+   applicable to responses with any status code.
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 52]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   A 203 response is cacheable by default; i.e., unless otherwise
+   indicated by the method definition or explicit cache controls (see
+   Section 4.2.2 of [RFC7234]).
+
+6.3.5.  204 No Content
+
+   The 204 (No Content) status code indicates that the server has
+   successfully fulfilled the request and that there is no additional
+   content to send in the response payload body.  Metadata in the
+   response header fields refer to the target resource and its selected
+   representation after the requested action was applied.
+
+   For example, if a 204 status code is received in response to a PUT
+   request and the response contains an ETag header field, then the PUT
+   was successful and the ETag field-value contains the entity-tag for
+   the new representation of that target resource.
+
+   The 204 response allows a server to indicate that the action has been
+   successfully applied to the target resource, while implying that the
+   user agent does not need to traverse away from its current "document
+   view" (if any).  The server assumes that the user agent will provide
+   some indication of the success to its user, in accord with its own
+   interface, and apply any new or updated metadata in the response to
+   its active representation.
+
+   For example, a 204 status code is commonly used with document editing
+   interfaces corresponding to a "save" action, such that the document
+   being saved remains available to the user for editing.  It is also
+   frequently used with interfaces that expect automated data transfers
+   to be prevalent, such as within distributed version control systems.
+
+   A 204 response is terminated by the first empty line after the header
+   fields because it cannot contain a message body.
+
+   A 204 response is cacheable by default; i.e., unless otherwise
+   indicated by the method definition or explicit cache controls (see
+   Section 4.2.2 of [RFC7234]).
+
+6.3.6.  205 Reset Content
+
+   The 205 (Reset Content) status code indicates that the server has
+   fulfilled the request and desires that the user agent reset the
+   "document view", which caused the request to be sent, to its original
+   state as received from the origin server.
+
+   This response is intended to support a common data entry use case
+   where the user receives content that supports data entry (a form,
+   notepad, canvas, etc.), enters or manipulates data in that space,
+
+
+
+Fielding & Reschke           Standards Track                   [Page 53]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   causes the entered data to be submitted in a request, and then the
+   data entry mechanism is reset for the next entry so that the user can
+   easily initiate another input action.
+
+   Since the 205 status code implies that no additional content will be
+   provided, a server MUST NOT generate a payload in a 205 response.  In
+   other words, a server MUST do one of the following for a 205
+   response: a) indicate a zero-length body for the response by
+   including a Content-Length header field with a value of 0; b)
+   indicate a zero-length payload for the response by including a
+   Transfer-Encoding header field with a value of chunked and a message
+   body consisting of a single chunk of zero-length; or, c) close the
+   connection immediately after sending the blank line terminating the
+   header section.
+
+6.4.  Redirection 3xx
+
+   The 3xx (Redirection) class of status code indicates that further
+   action needs to be taken by the user agent in order to fulfill the
+   request.  If a Location header field (Section 7.1.2) is provided, the
+   user agent MAY automatically redirect its request to the URI
+   referenced by the Location field value, even if the specific status
+   code is not understood.  Automatic redirection needs to done with
+   care for methods not known to be safe, as defined in Section 4.2.1,
+   since the user might not wish to redirect an unsafe request.
+
+   There are several types of redirects:
+
+   1.  Redirects that indicate the resource might be available at a
+       different URI, as provided by the Location field, as in the
+       status codes 301 (Moved Permanently), 302 (Found), and 307
+       (Temporary Redirect).
+
+   2.  Redirection that offers a choice of matching resources, each
+       capable of representing the original request target, as in the
+       300 (Multiple Choices) status code.
+
+   3.  Redirection to a different resource, identified by the Location
+       field, that can represent an indirect response to the request, as
+       in the 303 (See Other) status code.
+
+   4.  Redirection to a previously cached result, as in the 304 (Not
+       Modified) status code.
+
+      Note: In HTTP/1.0, the status codes 301 (Moved Permanently) and
+      302 (Found) were defined for the first type of redirect
+      ([RFC1945], Section 9.3).  Early user agents split on whether the
+      method applied to the redirect target would be the same as the
+
+
+
+Fielding & Reschke           Standards Track                   [Page 54]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+      original request or would be rewritten as GET.  Although HTTP
+      originally defined the former semantics for 301 and 302 (to match
+      its original implementation at CERN), and defined 303 (See Other)
+      to match the latter semantics, prevailing practice gradually
+      converged on the latter semantics for 301 and 302 as well.  The
+      first revision of HTTP/1.1 added 307 (Temporary Redirect) to
+      indicate the former semantics without being impacted by divergent
+      practice.  Over 10 years later, most user agents still do method
+      rewriting for 301 and 302; therefore, this specification makes
+      that behavior conformant when the original request is POST.
+
+   A client SHOULD detect and intervene in cyclical redirections (i.e.,
+   "infinite" redirection loops).
+
+      Note: An earlier version of this specification recommended a
+      maximum of five redirections ([RFC2068], Section 10.3).  Content
+      developers need to be aware that some clients might implement such
+      a fixed limitation.
+
+6.4.1.  300 Multiple Choices
+
+   The 300 (Multiple Choices) status code indicates that the target
+   resource has more than one representation, each with its own more
+   specific identifier, and information about the alternatives is being
+   provided so that the user (or user agent) can select a preferred
+   representation by redirecting its request to one or more of those
+   identifiers.  In other words, the server desires that the user agent
+   engage in reactive negotiation to select the most appropriate
+   representation(s) for its needs (Section 3.4).
+
+   If the server has a preferred choice, the server SHOULD generate a
+   Location header field containing a preferred choice's URI reference.
+   The user agent MAY use the Location field value for automatic
+   redirection.
+
+   For request methods other than HEAD, the server SHOULD generate a
+   payload in the 300 response containing a list of representation
+   metadata and URI reference(s) from which the user or user agent can
+   choose the one most preferred.  The user agent MAY make a selection
+   from that list automatically if it understands the provided media
+   type.  A specific format for automatic selection is not defined by
+   this specification because HTTP tries to remain orthogonal to the
+   definition of its payloads.  In practice, the representation is
+   provided in some easily parsed format believed to be acceptable to
+   the user agent, as determined by shared design or content
+   negotiation, or in some commonly accepted hypertext format.
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 55]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   A 300 response is cacheable by default; i.e., unless otherwise
+   indicated by the method definition or explicit cache controls (see
+   Section 4.2.2 of [RFC7234]).
+
+      Note: The original proposal for the 300 status code defined the
+      URI header field as providing a list of alternative
+      representations, such that it would be usable for 200, 300, and
+      406 responses and be transferred in responses to the HEAD method.
+      However, lack of deployment and disagreement over syntax led to
+      both URI and Alternates (a subsequent proposal) being dropped from
+      this specification.  It is possible to communicate the list using
+      a set of Link header fields [RFC5988], each with a relationship of
+      "alternate", though deployment is a chicken-and-egg problem.
+
+6.4.2.  301 Moved Permanently
+
+   The 301 (Moved Permanently) status code indicates that the target
+   resource has been assigned a new permanent URI and any future
+   references to this resource ought to use one of the enclosed URIs.
+   Clients with link-editing capabilities ought to automatically re-link
+   references to the effective request URI to one or more of the new
+   references sent by the server, where possible.
+
+   The server SHOULD generate a Location header field in the response
+   containing a preferred URI reference for the new permanent URI.  The
+   user agent MAY use the Location field value for automatic
+   redirection.  The server's response payload usually contains a short
+   hypertext note with a hyperlink to the new URI(s).
+
+      Note: For historical reasons, a user agent MAY change the request
+      method from POST to GET for the subsequent request.  If this
+      behavior is undesired, the 307 (Temporary Redirect) status code
+      can be used instead.
+
+   A 301 response is cacheable by default; i.e., unless otherwise
+   indicated by the method definition or explicit cache controls (see
+   Section 4.2.2 of [RFC7234]).
+
+6.4.3.  302 Found
+
+   The 302 (Found) status code indicates that the target resource
+   resides temporarily under a different URI.  Since the redirection
+   might be altered on occasion, the client ought to continue to use the
+   effective request URI for future requests.
+
+
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 56]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   The server SHOULD generate a Location header field in the response
+   containing a URI reference for the different URI.  The user agent MAY
+   use the Location field value for automatic redirection.  The server's
+   response payload usually contains a short hypertext note with a
+   hyperlink to the different URI(s).
+
+      Note: For historical reasons, a user agent MAY change the request
+      method from POST to GET for the subsequent request.  If this
+      behavior is undesired, the 307 (Temporary Redirect) status code
+      can be used instead.
+
+6.4.4.  303 See Other
+
+   The 303 (See Other) status code indicates that the server is
+   redirecting the user agent to a different resource, as indicated by a
+   URI in the Location header field, which is intended to provide an
+   indirect response to the original request.  A user agent can perform
+   a retrieval request targeting that URI (a GET or HEAD request if
+   using HTTP), which might also be redirected, and present the eventual
+   result as an answer to the original request.  Note that the new URI
+   in the Location header field is not considered equivalent to the
+   effective request URI.
+
+   This status code is applicable to any HTTP method.  It is primarily
+   used to allow the output of a POST action to redirect the user agent
+   to a selected resource, since doing so provides the information
+   corresponding to the POST response in a form that can be separately
+   identified, bookmarked, and cached, independent of the original
+   request.
+
+   A 303 response to a GET request indicates that the origin server does
+   not have a representation of the target resource that can be
+   transferred by the server over HTTP.  However, the Location field
+   value refers to a resource that is descriptive of the target
+   resource, such that making a retrieval request on that other resource
+   might result in a representation that is useful to recipients without
+   implying that it represents the original target resource.  Note that
+   answers to the questions of what can be represented, what
+   representations are adequate, and what might be a useful description
+   are outside the scope of HTTP.
+
+   Except for responses to a HEAD request, the representation of a 303
+   response ought to contain a short hypertext note with a hyperlink to
+   the same URI reference provided in the Location header field.
+
+
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 57]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+6.4.5.  305 Use Proxy
+
+   The 305 (Use Proxy) status code was defined in a previous version of
+   this specification and is now deprecated (Appendix B).
+
+6.4.6.  306 (Unused)
+
+   The 306 status code was defined in a previous version of this
+   specification, is no longer used, and the code is reserved.
+
+6.4.7.  307 Temporary Redirect
+
+   The 307 (Temporary Redirect) status code indicates that the target
+   resource resides temporarily under a different URI and the user agent
+   MUST NOT change the request method if it performs an automatic
+   redirection to that URI.  Since the redirection can change over time,
+   the client ought to continue using the original effective request URI
+   for future requests.
+
+   The server SHOULD generate a Location header field in the response
+   containing a URI reference for the different URI.  The user agent MAY
+   use the Location field value for automatic redirection.  The server's
+   response payload usually contains a short hypertext note with a
+   hyperlink to the different URI(s).
+
+      Note: This status code is similar to 302 (Found), except that it
+      does not allow changing the request method from POST to GET.  This
+      specification defines no equivalent counterpart for 301 (Moved
+      Permanently) ([RFC7238], however, defines the status code 308
+      (Permanent Redirect) for this purpose).
+
+6.5.  Client Error 4xx
+
+   The 4xx (Client Error) class of status code indicates that the client
+   seems to have erred.  Except when responding to a HEAD request, the
+   server SHOULD send a representation containing an explanation of the
+   error situation, and whether it is a temporary or permanent
+   condition.  These status codes are applicable to any request method.
+   User agents SHOULD display any included representation to the user.
+
+6.5.1.  400 Bad Request
+
+   The 400 (Bad Request) status code indicates that the server cannot or
+   will not process the request due to something that is perceived to be
+   a client error (e.g., malformed request syntax, invalid request
+   message framing, or deceptive request routing).
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 58]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+6.5.2.  402 Payment Required
+
+   The 402 (Payment Required) status code is reserved for future use.
+
+6.5.3.  403 Forbidden
+
+   The 403 (Forbidden) status code indicates that the server understood
+   the request but refuses to authorize it.  A server that wishes to
+   make public why the request has been forbidden can describe that
+   reason in the response payload (if any).
+
+   If authentication credentials were provided in the request, the
+   server considers them insufficient to grant access.  The client
+   SHOULD NOT automatically repeat the request with the same
+   credentials.  The client MAY repeat the request with new or different
+   credentials.  However, a request might be forbidden for reasons
+   unrelated to the credentials.
+
+   An origin server that wishes to "hide" the current existence of a
+   forbidden target resource MAY instead respond with a status code of
+   404 (Not Found).
+
+6.5.4.  404 Not Found
+
+   The 404 (Not Found) status code indicates that the origin server did
+   not find a current representation for the target resource or is not
+   willing to disclose that one exists.  A 404 status code does not
+   indicate whether this lack of representation is temporary or
+   permanent; the 410 (Gone) status code is preferred over 404 if the
+   origin server knows, presumably through some configurable means, that
+   the condition is likely to be permanent.
+
+   A 404 response is cacheable by default; i.e., unless otherwise
+   indicated by the method definition or explicit cache controls (see
+   Section 4.2.2 of [RFC7234]).
+
+6.5.5.  405 Method Not Allowed
+
+   The 405 (Method Not Allowed) status code indicates that the method
+   received in the request-line is known by the origin server but not
+   supported by the target resource.  The origin server MUST generate an
+   Allow header field in a 405 response containing a list of the target
+   resource's currently supported methods.
+
+   A 405 response is cacheable by default; i.e., unless otherwise
+   indicated by the method definition or explicit cache controls (see
+   Section 4.2.2 of [RFC7234]).
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 59]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+6.5.6.  406 Not Acceptable
+
+   The 406 (Not Acceptable) status code indicates that the target
+   resource does not have a current representation that would be
+   acceptable to the user agent, according to the proactive negotiation
+   header fields received in the request (Section 5.3), and the server
+   is unwilling to supply a default representation.
+
+   The server SHOULD generate a payload containing a list of available
+   representation characteristics and corresponding resource identifiers
+   from which the user or user agent can choose the one most
+   appropriate.  A user agent MAY automatically select the most
+   appropriate choice from that list.  However, this specification does
+   not define any standard for such automatic selection, as described in
+   Section 6.4.1.
+
+6.5.7.  408 Request Timeout
+
+   The 408 (Request Timeout) status code indicates that the server did
+   not receive a complete request message within the time that it was
+   prepared to wait.  A server SHOULD send the "close" connection option
+   (Section 6.1 of [RFC7230]) in the response, since 408 implies that
+   the server has decided to close the connection rather than continue
+   waiting.  If the client has an outstanding request in transit, the
+   client MAY repeat that request on a new connection.
+
+6.5.8.  409 Conflict
+
+   The 409 (Conflict) status code indicates that the request could not
+   be completed due to a conflict with the current state of the target
+   resource.  This code is used in situations where the user might be
+   able to resolve the conflict and resubmit the request.  The server
+   SHOULD generate a payload that includes enough information for a user
+   to recognize the source of the conflict.
+
+   Conflicts are most likely to occur in response to a PUT request.  For
+   example, if versioning were being used and the representation being
+   PUT included changes to a resource that conflict with those made by
+   an earlier (third-party) request, the origin server might use a 409
+   response to indicate that it can't complete the request.  In this
+   case, the response representation would likely contain information
+   useful for merging the differences based on the revision history.
+
+6.5.9.  410 Gone
+
+   The 410 (Gone) status code indicates that access to the target
+   resource is no longer available at the origin server and that this
+   condition is likely to be permanent.  If the origin server does not
+
+
+
+Fielding & Reschke           Standards Track                   [Page 60]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   know, or has no facility to determine, whether or not the condition
+   is permanent, the status code 404 (Not Found) ought to be used
+   instead.
+
+   The 410 response is primarily intended to assist the task of web
+   maintenance by notifying the recipient that the resource is
+   intentionally unavailable and that the server owners desire that
+   remote links to that resource be removed.  Such an event is common
+   for limited-time, promotional services and for resources belonging to
+   individuals no longer associated with the origin server's site.  It
+   is not necessary to mark all permanently unavailable resources as
+   "gone" or to keep the mark for any length of time -- that is left to
+   the discretion of the server owner.
+
+   A 410 response is cacheable by default; i.e., unless otherwise
+   indicated by the method definition or explicit cache controls (see
+   Section 4.2.2 of [RFC7234]).
+
+6.5.10.  411 Length Required
+
+   The 411 (Length Required) status code indicates that the server
+   refuses to accept the request without a defined Content-Length
+   (Section 3.3.2 of [RFC7230]).  The client MAY repeat the request if
+   it adds a valid Content-Length header field containing the length of
+   the message body in the request message.
+
+6.5.11.  413 Payload Too Large
+
+   The 413 (Payload Too Large) status code indicates that the server is
+   refusing to process a request because the request payload is larger
+   than the server is willing or able to process.  The server MAY close
+   the connection to prevent the client from continuing the request.
+
+   If the condition is temporary, the server SHOULD generate a
+   Retry-After header field to indicate that it is temporary and after
+   what time the client MAY try again.
+
+6.5.12.  414 URI Too Long
+
+   The 414 (URI Too Long) status code indicates that the server is
+   refusing to service the request because the request-target (Section
+   5.3 of [RFC7230]) is longer than the server is willing to interpret.
+   This rare condition is only likely to occur when a client has
+   improperly converted a POST request to a GET request with long query
+   information, when the client has descended into a "black hole" of
+   redirection (e.g., a redirected URI prefix that points to a suffix of
+   itself) or when the server is under attack by a client attempting to
+   exploit potential security holes.
+
+
+
+Fielding & Reschke           Standards Track                   [Page 61]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   A 414 response is cacheable by default; i.e., unless otherwise
+   indicated by the method definition or explicit cache controls (see
+   Section 4.2.2 of [RFC7234]).
+
+6.5.13.  415 Unsupported Media Type
+
+   The 415 (Unsupported Media Type) status code indicates that the
+   origin server is refusing to service the request because the payload
+   is in a format not supported by this method on the target resource.
+   The format problem might be due to the request's indicated
+   Content-Type or Content-Encoding, or as a result of inspecting the
+   data directly.
+
+6.5.14.  417 Expectation Failed
+
+   The 417 (Expectation Failed) status code indicates that the
+   expectation given in the request's Expect header field
+   (Section 5.1.1) could not be met by at least one of the inbound
+   servers.
+
+6.5.15.  426 Upgrade Required
+
+   The 426 (Upgrade Required) status code indicates that the server
+   refuses to perform the request using the current protocol but might
+   be willing to do so after the client upgrades to a different
+   protocol.  The server MUST send an Upgrade header field in a 426
+   response to indicate the required protocol(s) (Section 6.7 of
+   [RFC7230]).
+
+   Example:
+
+     HTTP/1.1 426 Upgrade Required
+     Upgrade: HTTP/3.0
+     Connection: Upgrade
+     Content-Length: 53
+     Content-Type: text/plain
+
+     This service requires use of the HTTP/3.0 protocol.
+
+6.6.  Server Error 5xx
+
+   The 5xx (Server Error) class of status code indicates that the server
+   is aware that it has erred or is incapable of performing the
+   requested method.  Except when responding to a HEAD request, the
+   server SHOULD send a representation containing an explanation of the
+   error situation, and whether it is a temporary or permanent
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 62]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+   condition.  A user agent SHOULD display any included representation
+   to the user.  These response codes are applicable to any request
+   method.
+
+6.6.1.  500 Internal Server Error
+
+   The 500 (Internal Server Error) status code indicates that the server
+   encountered an unexpected condition that prevented it from fulfilling
+   the request.
+
+6.6.2.  501 Not Implemented
+
+   The 501 (Not Implemented) status code indicates that the server does
+   not support the functionality required to fulfill the request.  This
+   is the appropriate response when the server does not recognize the
+   request method and is not capable of supporting it for any resource.
+
+   A 501 response is cacheable by default; i.e., unless otherwise
+   indicated by the method definition or explicit cache controls (see
+   Section 4.2.2 of [RFC7234]).
+
+6.6.3.  502 Bad Gateway
+
+   The 502 (Bad Gateway) status code indicates that the server, while
+   acting as a gateway or proxy, received an invalid response from an
+   inbound server it accessed while attempting to fulfill the request.
+
+6.6.4.  503 Service Unavailable
+
+   The 503 (Service Unavailable) status code indicates that the server
+   is currently unable to handle the request due to a temporary overload
+   or scheduled maintenance, which will likely be alleviated after some
+   delay.  The server MAY send a Retry-After header field
+   (Section 7.1.3) to suggest an appropriate amount of time for the
+   client to wait before retrying the request.
+
+      Note: The existence of the 503 status code does not imply that a
+      server has to use it when becoming overloaded.  Some servers might
+      simply refuse the connection.
+
+6.6.5.  504 Gateway Timeout
+
+   The 504 (Gateway Timeout) status code indicates that the server,
+   while acting as a gateway or proxy, did not receive a timely response
+   from an upstream server it needed to access in order to complete the
+   request.
+
+
+
+
+
+Fielding & Reschke           Standards Track                   [Page 63]
+
+RFC 7231             HTTP/1.1 Semantics and Content            June 2014
+
+
+6.6.6.  505 HTTP Version Not Supported
+
+   The 505 (HTTP Version Not Supported) status code indicates that the
+   server does not support, or refuses to support, the major version of
+   HTTP that was used in the request message.  The server is indicating
+   that it is unable or unwilling to complete the request using the same
+   major version as the client, as described in Section 2.6 of
+   [RFC7230], other than with this error message.  The server SHOULD
+   generate a representation for the 505 response that describes why
+   that version is not supported and what other protocols are supported
+   by that server.
+

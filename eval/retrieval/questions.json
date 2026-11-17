@@ -1,0 +1,392 @@
+{
+  "schema": 1,
+  "questions": [
+    {
+      "id": "s1",
+      "stratum": "single",
+      "question": "What does the GET method request transfer of?",
+      "keywords": "GET method transfer selected representation",
+      "gold": [
+        {
+          "source": "rfc7231-trimmed.txt",
+          "quote": "The GET method requests transfer of a current selected representation"
+        }
+      ],
+      "answer": [
+        {
+          "names": [
+            "a current selected representation"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s2",
+      "stratum": "single",
+      "question": "What does status code 404 Not Found indicate about a target resource?",
+      "keywords": "404 Not Found current representation",
+      "gold": [
+        {
+          "source": "rfc7231-trimmed.txt",
+          "quote": "not find a current representation for the target resource"
+        }
+      ],
+      "answer": [
+        {
+          "names": [
+            "not find a current representation"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s3",
+      "stratum": "single",
+      "question": "Who tends Torvani's beacon as the lantern watchkeeper?",
+      "keywords": "Torvani beacon lantern watchkeeper",
+      "gold": [
+        {
+          "source": "synthetic/torvani-handbook.md",
+          "quote": "Tovira tends Torvani's beacon as its lantern watchkeeper."
+        }
+      ],
+      "answer": [
+        {
+          "names": [
+            "Tovira"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s4",
+      "stratum": "single",
+      "question": "Which reset sequence releases Drelvo's jammed dovetail jig?",
+      "keywords": "Drelvo jammed dovetail jig reset sequence",
+      "gold": [
+        {
+          "source": "synthetic/drelvo-workshop.md",
+          "quote": "The jammed dovetail jig at Drelvo releases under the silverreed reset sequence."
+        }
+      ],
+      "answer": [
+        {
+          "names": [
+            "silverreed"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s5",
+      "stratum": "single",
+      "question": "What color is Brinvel's eyepiece shutter during daylight checks?",
+      "keywords": "Brinvel eyepiece shutter daylight checks",
+      "gold": [
+        {
+          "source": "synthetic/brinvel-observatory.md",
+          "quote": "Brinvel covers the eyepiece with a teal shutter during daylight checks."
+        }
+      ],
+      "answer": [
+        {
+          "names": [
+            "teal"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "m1",
+      "stratum": "multi",
+      "question": "Which spoken word reopens Torvani's spiral latch after a storm drill, and which reset sequence releases Drelvo's jammed dovetail jig?",
+      "keywords": "Torvani spiral latch storm drill Drelvo dovetail jig reset",
+      "gold": [
+        {
+          "source": "synthetic/torvani-handbook.md",
+          "quote": "After a storm drill, Torvani's spiral latch reopens when the operator speaks ambercoil."
+        },
+        {
+          "source": "synthetic/drelvo-workshop.md",
+          "quote": "The jammed dovetail jig at Drelvo releases under the silverreed reset sequence."
+        }
+      ],
+      "answer": [
+        {
+          "names": [
+            "ambercoil"
+          ]
+        },
+        {
+          "names": [
+            "silverreed"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "m2",
+      "stratum": "multi",
+      "question": "Which alignment recipe recalibrates Brinvel's frozen azimuth dial, and which collation remedy repairs Velnora's scrambled folios?",
+      "keywords": "Brinvel frozen azimuth dial alignment Velnora scrambled folios collation",
+      "gold": [
+        {
+          "source": "synthetic/brinvel-observatory.md",
+          "quote": "Brinvel recalibrates the frozen azimuth dial with the crystalfern alignment recipe."
+        },
+        {
+          "source": "synthetic/velnora-archive.md",
+          "quote": "For Velnora's scrambled folios, copperleaf names the collation remedy."
+        }
+      ],
+      "answer": [
+        {
+          "names": [
+            "crystalfern"
+          ]
+        },
+        {
+          "names": [
+            "copperleaf"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "m3",
+      "stratum": "multi",
+      "question": "Who serves as Torvani's beacon lantern watchkeeper, and who charts Brinvel's meteor tracks as the observatory astronomer?",
+      "keywords": "Torvani lantern watchkeeper Brinvel meteor tracks astronomer",
+      "gold": [
+        {
+          "source": "synthetic/torvani-handbook.md",
+          "quote": "Tovira tends Torvani's beacon as its lantern watchkeeper."
+        },
+        {
+          "source": "synthetic/brinvel-observatory.md",
+          "quote": "Renvika charts Brinvel's meteor tracks while serving as the observatory astronomer."
+        }
+      ],
+      "answer": [
+        {
+          "names": [
+            "Tovira"
+          ]
+        },
+        {
+          "names": [
+            "Renvika"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "m4",
+      "stratum": "multi",
+      "question": "What colors identify Drelvo's sharpening alcove enamel tag and Velnora's outgoing loan ledger ribbon?",
+      "keywords": "Drelvo sharpening alcove enamel tag Velnora outgoing loan ledger ribbon",
+      "gold": [
+        {
+          "source": "synthetic/drelvo-workshop.md",
+          "quote": "An orange enamel tag identifies Drelvo's sharpening alcove."
+        },
+        {
+          "source": "synthetic/velnora-archive.md",
+          "quote": "Velnora binds its loan ledger with an indigo ribbon to distinguish outgoing volumes."
+        }
+      ],
+      "answer": [
+        {
+          "names": [
+            "orange"
+          ]
+        },
+        {
+          "names": [
+            "indigo"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "g1",
+      "stratum": "global",
+      "question": "Name the beacon lantern watchkeeper, joinery apprentice mentor, meteor track astronomer, and parchment vault conservator.",
+      "keywords": "beacon lantern watchkeeper joinery apprentices mentor meteor tracks astronomer parchment vault conservator",
+      "answer_items": [
+        {
+          "names": [
+            "Tovira"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/torvani-handbook.md",
+              "quote": "Tovira tends Torvani's beacon as its lantern watchkeeper."
+            }
+          ]
+        },
+        {
+          "names": [
+            "Peluno"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/drelvo-workshop.md",
+              "quote": "Drelvo entrusts its joinery apprentices to Peluno, the workshop mentor."
+            }
+          ]
+        },
+        {
+          "names": [
+            "Renvika"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/brinvel-observatory.md",
+              "quote": "Renvika charts Brinvel's meteor tracks while serving as the observatory astronomer."
+            }
+          ]
+        },
+        {
+          "names": [
+            "Sobali"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/velnora-archive.md",
+              "quote": "The manuscript conservator Sobali oversees Velnora's parchment vault."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "g2",
+      "stratum": "global",
+      "question": "List the storm drill spiral latch word, jammed dovetail jig reset sequence, frozen azimuth dial alignment recipe, and scrambled folios collation remedy.",
+      "keywords": "storm drill spiral latch dovetail jig reset frozen azimuth dial alignment scrambled folios collation remedy",
+      "answer_items": [
+        {
+          "names": [
+            "ambercoil"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/torvani-handbook.md",
+              "quote": "After a storm drill, Torvani's spiral latch reopens when the operator speaks ambercoil."
+            }
+          ]
+        },
+        {
+          "names": [
+            "silverreed"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/drelvo-workshop.md",
+              "quote": "The jammed dovetail jig at Drelvo releases under the silverreed reset sequence."
+            }
+          ]
+        },
+        {
+          "names": [
+            "crystalfern"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/brinvel-observatory.md",
+              "quote": "Brinvel recalibrates the frozen azimuth dial with the crystalfern alignment recipe."
+            }
+          ]
+        },
+        {
+          "names": [
+            "copperleaf"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/velnora-archive.md",
+              "quote": "For Velnora's scrambled folios, copperleaf names the collation remedy."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "g3",
+      "stratum": "global",
+      "question": "List the colors of the twilight sailing pennant, sharpening alcove enamel tag, daylight eyepiece shutter, and outgoing loan ledger ribbon.",
+      "keywords": "twilight sailing pennant sharpening alcove enamel tag daylight eyepiece shutter outgoing loan ledger ribbon",
+      "answer_items": [
+        {
+          "names": [
+            "violet"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/torvani-handbook.md",
+              "quote": "A violet pennant above Torvani's eastern stair announces the twilight sailing exercise."
+            }
+          ]
+        },
+        {
+          "names": [
+            "orange"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/drelvo-workshop.md",
+              "quote": "An orange enamel tag identifies Drelvo's sharpening alcove."
+            }
+          ]
+        },
+        {
+          "names": [
+            "teal"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/brinvel-observatory.md",
+              "quote": "Brinvel covers the eyepiece with a teal shutter during daylight checks."
+            }
+          ]
+        },
+        {
+          "names": [
+            "indigo"
+          ],
+          "evidence": [
+            {
+              "source": "synthetic/velnora-archive.md",
+              "quote": "Velnora binds its loan ledger with an indigo ribbon to distinguish outgoing volumes."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "n1",
+      "stratum": "null",
+      "question": "What does the fixture say about Unseenquillon?",
+      "absent": [
+        "Unseenquillon"
+      ]
+    },
+    {
+      "id": "n2",
+      "stratum": "null",
+      "question": "What does the fixture say about Drelvofrost?",
+      "absent": [
+        "Drelvofrost"
+      ]
+    },
+    {
+      "id": "n3",
+      "stratum": "null",
+      "question": "What does the fixture say about Velnorawisp?",
+      "absent": [
+        "Velnorawisp"
+      ]
+    }
+  ]
+}

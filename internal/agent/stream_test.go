@@ -277,7 +277,7 @@ func TestStreamHandlerMaxTurns(t *testing.T) {
 		{
 			name:         "empty final stream",
 			final:        []string{sseFinish("stop"), sseDone},
-			wantAnswer:   noAnswerText,
+			wantAnswer:   NoAnswerText,
 			wantHTML:     "<p>I could not reach a final answer within the step budget; the evidence below lists what the tools returned.</p>\n",
 			wantRequests: 4, // The empty stream is retried once non-streamed.
 		},

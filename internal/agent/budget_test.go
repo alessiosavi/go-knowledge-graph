@@ -20,8 +20,8 @@ func TestBudgetFinalTurn(t *testing.T) {
 		want  string
 	}{
 		{"answer", contentReply("# Gathered answer"), "# Gathered answer"},
-		{"empty", contentReply("  "), noAnswerText},
-		{"error", stubResponse{status: 503}, noAnswerText},
+		{"empty", contentReply("  "), NoAnswerText},
+		{"error", stubResponse{status: 503}, NoAnswerText},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub := newLLMStub(t, toolCallReply("c1", "unknown", `{}`), tc.final)
@@ -229,7 +229,7 @@ func TestPlanContextBudgetFinalFailure(t *testing.T) {
 	s := NewServer(cfg, &graph.Store{}, nil)
 	s.llm.backoff = nil
 	resp, err := s.askWithPlan(context.Background(), "q", nil)
-	if err != nil || resp.Answer != noAnswerText || resp.Steps != 1 || resp.AnswerHTML == "" {
+	if err != nil || resp.Answer != NoAnswerText || resp.Steps != 1 || resp.AnswerHTML == "" {
 		t.Fatalf("resp=%+v err=%v", resp, err)
 	}
 }
