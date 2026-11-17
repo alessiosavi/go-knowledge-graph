@@ -87,7 +87,7 @@ When conversion is off (including light mode), PDF text extraction uses
 
 Deletion is permanent: `DELETE /v1/documents/{id}` removes the document
 node with its chunks, fact edges and mentions, the judge verdicts cached
-for its facts, and prunes the entities left without relationships. There
+for its facts, its rejected-fact audits, and prunes the entities left without relationships. There
 is no undo and no tombstone. A verdict belongs to the document that first
 asked for it; an identical request from another document reuses it, and
 pays the judge again only after that first document is deleted.

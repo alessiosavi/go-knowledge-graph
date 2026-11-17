@@ -137,3 +137,55 @@ func TestDeleteDocumentRemovesItsVerdicts(t *testing.T) {
 		t.Error("JudgeVerdict(doc_id) index missing")
 	}
 }
+
+// TestDeleteDocumentRemovesItsAudits keeps deletion permanent for audits
+// too: a :RejectedFact row carries the judge's reason for a fact of the
+// document, so it is deleted with the document. Other documents' audits stay.
+func TestDeleteDocumentRemovesItsAudits(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := t.Context()
+	uri := os.Getenv(graphtest.URIEnv)
+	tag := time.Now().UnixNano()
+	var ids []string
+	for _, name := range []string{"gone", "kept"} {
+		res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "text", Source: fmt.Sprintf("text/zorbo-audit-%s-%d", name, tag), Hash: "h"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, res.ID)
+		if err := st.WriteFactAudit(ctx, graph.FactAudit{DocID: res.ID, ChunkID: res.ID + "-c0", HeadKey: "quillon", TailKey: "zorbo", Rel: "uses", JudgeVerdict: "refuted", Reason: "contradicted by the evidence"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_ = st.DeleteDocument(context.Background(), ids[1])
+		rawRun(t, uri, fmt.Sprintf(`MATCH (r:RejectedFact) WHERE r.doc_id IN ['%s', '%s'] DELETE r`, ids[0], ids[1]))
+	})
+	if err := st.DeleteDocument(ctx, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	count := func(id string) int64 {
+		return rawCount(t, uri, fmt.Sprintf(`MATCH (r:RejectedFact {doc_id: '%s'}) RETURN count(r) AS n`, id))
+	}
+	if n := count(ids[0]); n != 0 {
+		t.Fatalf("deleted document keeps %d audits", n)
+	}
+	if n := count(ids[1]); n != 1 {
+		t.Fatalf("other document's audits = %d, want 1", n)
+	}
+	// An audit write that arrives after the delete (a judge call that was in
+	// flight) must not recreate document-derived text.
+	late := graph.FactAudit{DocID: ids[0], ChunkID: ids[0] + "-c1", HeadKey: "quillon", TailKey: "zorbo", Rel: "uses", JudgeVerdict: "refuted", Reason: "late"}
+	if err := st.WriteFactAudit(ctx, late); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RejectFact(ctx, "quillon", "uses", "zorbo", ids[0]+"-c2", late); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(ids[0]); n != 0 {
+		t.Fatalf("late audit writes recreated %d rows for the deleted document", n)
+	}
+	if !rawIndexExists(t, uri, "RejectedFact", "doc_id") {
+		t.Error("RejectedFact(doc_id) index missing")
+	}
+}
