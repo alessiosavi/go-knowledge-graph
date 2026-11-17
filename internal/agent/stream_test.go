@@ -126,7 +126,7 @@ func TestStreamHandlerFramingAndDone(t *testing.T) {
 	if doneEvent == nil {
 		t.Fatalf("no done event in %+v", events)
 	}
-	var resp askResponse
+	var resp AskResponse
 	if err := json.Unmarshal([]byte(doneEvent.data), &resp); err != nil {
 		t.Fatalf("done payload %q: %v", doneEvent.data, err)
 	}
@@ -248,7 +248,7 @@ func TestStreamHandlerStreamFlagOff(t *testing.T) {
 	if doneEvent == nil {
 		t.Fatalf("no done event in %+v", events)
 	}
-	var resp askResponse
+	var resp AskResponse
 	if err := json.Unmarshal([]byte(doneEvent.data), &resp); err != nil {
 		t.Fatalf("done payload %q: %v", doneEvent.data, err)
 	}
@@ -333,7 +333,7 @@ func TestStreamHandlerMaxTurns(t *testing.T) {
 			if last.name != "done" || doneCount != 1 {
 				t.Fatalf("last event = %+v, done count = %d, want one terminal done after the step budget", last, doneCount)
 			}
-			var resp askResponse
+			var resp AskResponse
 			if err := json.Unmarshal([]byte(last.data), &resp); err != nil {
 				t.Fatalf("done payload %q: %v", last.data, err)
 			}

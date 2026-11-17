@@ -60,6 +60,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runMigrate(stdout, stderr)
 	case "eval":
 		return runEval(args[1:], stdout, stderr)
+	case "eval-retrieval":
+		return runEvalRetrieval(args[1:], stdout, stderr)
 	case "serve":
 		return runServe(args[1:], stdout, stderr)
 	case "ingest":
@@ -616,6 +618,7 @@ commands:
   serve     run the REST API, MCP endpoint and ingestion workers
   ingest    ingest a file, URL or stdin into the knowledge graph (-source <s> overrides the identity)
   eval      run the golden-set evaluation harness
+  eval-retrieval  evaluate retrieval and optional live or replayed agent answers
   migrate   upgrade the Memgraph schema and re-extract in-flight documents
   version   print the version
   mcp       run the MCP server over stdio

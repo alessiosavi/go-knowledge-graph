@@ -105,20 +105,36 @@ func agentTimeout(a config.AgentConfig) time.Duration {
 	return d
 }
 
-// askResponse is the POST /v1/agent/ask body: the prose answer plus the raw
+// AskResponse is the POST /v1/agent/ask body: the prose answer plus the raw
 // tool results, so provenance renders even when the prose is sloppy.
-type askResponse struct {
+type AskResponse struct {
 	Answer     string         `json:"answer"`
 	AnswerHTML string         `json:"answer_html,omitempty"`
-	Evidence   []evidenceItem `json:"evidence"`
+	Evidence   []EvidenceItem `json:"evidence"`
 	Steps      int            `json:"steps"`
 }
 
-// evidenceItem is one executed (or budget-skipped) tool call.
-type evidenceItem struct {
+// EvidenceItem is one executed (or budget-skipped) tool call.
+type EvidenceItem struct {
 	Tool      string          `json:"tool"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Result    json.RawMessage `json:"result,omitempty"`
+}
+
+// AskRequest is an in-process question, optionally scoped to a domain.
+type AskRequest struct{ Question, Domain string }
+
+// Ask runs the configured provider with the same deadline as the HTTP surface.
+func (s *Server) Ask(ctx context.Context, req AskRequest) (AskResponse, error) {
+	if req.Domain != "" {
+		return AskResponse{}, errors.New("domain scope not supported yet")
+	}
+	if strings.TrimSpace(req.Question) == "" {
+		return AskResponse{}, errors.New("question is required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	return s.ask(ctx, req.Question)
 }
 
 // rawOrNull returns raw when it is valid JSON so evidence marshaling cannot
@@ -145,7 +161,7 @@ type streamEvent struct {
 
 // ask drives the bounded tool loop over the JSON endpoint (no streaming:
 // emit is nil) and returns the full answer with its evidence.
-func (s *Server) ask(ctx context.Context, question string) (askResponse, error) {
+func (s *Server) ask(ctx context.Context, question string) (AskResponse, error) {
 	return s.run(ctx, question, nil)
 }
 
@@ -156,12 +172,12 @@ func (s *Server) ask(ctx context.Context, question string) (askResponse, error) 
 // delta events and each tool call as a tool event. A provider that cannot
 // take the tools parameter falls back to the constrained JSON plan within
 // the same request.
-func (s *Server) run(ctx context.Context, question string, emit func(streamEvent) error) (askResponse, error) {
+func (s *Server) run(ctx context.Context, question string, emit func(streamEvent) error) (AskResponse, error) {
 	msgs := []chatMessage{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: question},
 	}
-	ev := make([]evidenceItem, 0, s.maxSteps)
+	ev := make([]EvidenceItem, 0, s.maxSteps)
 	steps := 0
 	transcriptBytes := 0
 	for steps < s.maxSteps && !s.contextBudgetReached(transcriptBytes) {
@@ -172,7 +188,7 @@ func (s *Server) run(ctx context.Context, question string, emit func(streamEvent
 			if toolsUnsupported(err) {
 				return s.askWithPlan(ctx, question, emit)
 			}
-			return askResponse{}, err
+			return AskResponse{}, err
 		}
 		if len(reply.ToolCalls) == 0 {
 			return answerResponse(reply.Content, ev, steps), nil
@@ -183,7 +199,7 @@ func (s *Server) run(ctx context.Context, question string, emit func(streamEvent
 		for _, tc := range reply.ToolCalls {
 			if emit != nil {
 				if err := emit(streamEvent{Kind: "tool", Tool: tc.Function.Name, Arguments: rawOrNull([]byte(tc.Function.Arguments))}); err != nil {
-					return askResponse{}, err
+					return AskResponse{}, err
 				}
 			}
 			var result any
@@ -200,7 +216,7 @@ func (s *Server) run(ctx context.Context, question string, emit func(streamEvent
 			if encErr != nil {
 				raw = json.RawMessage(`{"error":"unencodable tool result"}`)
 			}
-			ev = append(ev, evidenceItem{
+			ev = append(ev, EvidenceItem{
 				Tool:      tc.Function.Name,
 				Arguments: rawOrNull([]byte(tc.Function.Arguments)),
 				Result:    raw,
@@ -316,7 +332,7 @@ func streamFallbackEligible(err error) bool {
 // one final call over the results. The plan call stays non-streamed (it must
 // return the constrained JSON); the final answer call rides the normal turn
 // path, so it streams when streaming is available.
-func (s *Server) askWithPlan(ctx context.Context, question string, emit func(streamEvent) error) (askResponse, error) {
+func (s *Server) askWithPlan(ctx context.Context, question string, emit func(streamEvent) error) (AskResponse, error) {
 	msgs := []chatMessage{
 		{Role: "system", Content: planSystemPrompt},
 		{Role: "user", Content: question},
@@ -325,7 +341,7 @@ func (s *Server) askWithPlan(ctx context.Context, question string, emit func(str
 		Model: s.llm.model, Messages: msgs, ResponseFormat: map[string]string{"type": "json_object"},
 	})
 	if err != nil {
-		return askResponse{}, err
+		return AskResponse{}, err
 	}
 	var plan struct {
 		ToolCalls []struct {
@@ -335,9 +351,9 @@ func (s *Server) askWithPlan(ctx context.Context, question string, emit func(str
 		Answer string `json:"answer"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(reply.Content)), &plan); err != nil {
-		return askResponse{}, fmt.Errorf("agent: could not parse the provider plan: %w", err)
+		return AskResponse{}, fmt.Errorf("agent: could not parse the provider plan: %w", err)
 	}
-	ev := make([]evidenceItem, 0, len(plan.ToolCalls))
+	ev := make([]EvidenceItem, 0, len(plan.ToolCalls))
 	if len(plan.ToolCalls) == 0 {
 		return answerResponse(plan.Answer, ev, 0), nil
 	}
@@ -347,7 +363,7 @@ func (s *Server) askWithPlan(ctx context.Context, question string, emit func(str
 	for _, tc := range plan.ToolCalls {
 		if emit != nil {
 			if err := emit(streamEvent{Kind: "tool", Tool: tc.Name, Arguments: rawOrNull(tc.Arguments)}); err != nil {
-				return askResponse{}, err
+				return AskResponse{}, err
 			}
 		}
 		var result any
@@ -365,7 +381,7 @@ func (s *Server) askWithPlan(ctx context.Context, question string, emit func(str
 		if encErr != nil {
 			raw = json.RawMessage(`{"error":"unencodable tool result"}`)
 		}
-		ev = append(ev, evidenceItem{Tool: tc.Name, Arguments: rawOrNull(tc.Arguments), Result: raw})
+		ev = append(ev, EvidenceItem{Tool: tc.Name, Arguments: rawOrNull(tc.Arguments), Result: raw})
 		copy := transcriptResult(raw)
 		transcriptBytes += len(copy)
 		// Keep result text outside a JSON envelope: encoding a truncated
@@ -379,19 +395,19 @@ func (s *Server) askWithPlan(ctx context.Context, question string, emit func(str
 	}
 	reply, err = s.runTurn(ctx, chatRequest{Model: s.llm.model, Messages: msgs}, emit)
 	if err != nil {
-		return askResponse{}, err
+		return AskResponse{}, err
 	}
 	return answerResponse(reply.Content, ev, 1), nil
 }
 
 // answerResponse renders every successful path without making rendering a
 // prerequisite for answering. The plain answer remains the wire fallback.
-func answerResponse(answer string, evidence []evidenceItem, steps int) askResponse {
+func answerResponse(answer string, evidence []EvidenceItem, steps int) AskResponse {
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
 		answer = noAnswerText
 	}
-	resp := askResponse{Answer: answer, Evidence: evidence, Steps: steps}
+	resp := AskResponse{Answer: answer, Evidence: evidence, Steps: steps}
 	html, err := markdown.RenderAnswer(answer)
 	if err != nil {
 		slog.Warn("agent: render answer failed", "err", err)
@@ -425,13 +441,13 @@ func (s *Server) contextBudgetReached(transcriptBytes int) bool {
 
 // budgetFinalAnswer makes one tools-less turn within the original ask
 // deadline. Ordinary provider failures fall back to the bounded notice.
-func (s *Server) budgetFinalAnswer(ctx context.Context, msgs []chatMessage, ev []evidenceItem, steps int, emit func(streamEvent) error) (askResponse, error) {
+func (s *Server) budgetFinalAnswer(ctx context.Context, msgs []chatMessage, ev []EvidenceItem, steps int, emit func(streamEvent) error) (AskResponse, error) {
 	reply, err := s.runTurn(ctx, chatRequest{Model: s.llm.model, Messages: msgs}, emit)
 	if ctx.Err() != nil {
-		return askResponse{}, ctx.Err()
+		return AskResponse{}, ctx.Err()
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return askResponse{}, err
+		return AskResponse{}, err
 	}
 	if err != nil {
 		slog.Warn("agent: budget final turn failed", "err", err)
