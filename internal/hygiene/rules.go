@@ -84,9 +84,15 @@ func normalize(name string) (string, []string) {
 			break
 		}
 	}
-	if at := companySuffix.FindStringIndex(name); at != nil {
+	// A possessive company form ("Quillon Ltd's") matches its suffix on the
+	// stem, so it keys like the plain form.
+	stem := name
+	if n := len(stem); n > 2 && strings.EqualFold(stem[n-2:], "'s") {
+		stem = stem[:n-2]
+	}
+	if at := companySuffix.FindStringIndex(stem); at != nil {
 		full := name
-		name = strings.TrimSpace(name[:at[0]])
+		name = strings.TrimSpace(stem[:at[0]])
 		return name, []string{full}
 	}
 	return name, nil

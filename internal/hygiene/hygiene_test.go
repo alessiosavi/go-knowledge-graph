@@ -146,6 +146,9 @@ func TestNormalize(t *testing.T) {
 		{"Zorbo’s", "Zorbo's", nil}, {"“Zorbo”", `"Zorbo"`, nil},
 		{"l'Acme", "Acme", nil}, {"l’Acme", "Acme", nil}, {"l'Ax", "l'Ax", nil},
 		{"  Acme\t Max  ", "Acme Max", nil},
+		// A possessive company form keys like its plain form.
+		{"Quillon Ltd's", "Quillon", []string{"Quillon Ltd's"}},
+		{"Quillon Ltd’s", "Quillon", []string{"Quillon Ltd's"}},
 	}
 	for _, prefix := range []string{"un'", "d'", "dell'", "dall'", "all'", "nell'", "sull'", "dagl'", "degl'", "negl'", "sugl'", "quell'"} {
 		tests = append(tests, struct {
@@ -335,7 +338,8 @@ func TestBuiltinPresetWithoutFiles(t *testing.T) {
 			t.Errorf("%q dropped=%q", name, rule)
 		}
 	}
-	for _, name := range []string{"Descrizione", "Informazioni", "Indice", "Introduzione", "Sezione 3", "Section 12"} {
+	// The built-in preset matches labels/general.yaml's generic words.
+	for _, name := range []string{"Descrizione", "Informazioni", "Indice", "Introduzione", "Description", "Information", "Index", "Introduction", "Sezione 3", "Section 12"} {
 		if _, _, rule := NameOnly(name, "document", p); rule != "stoplist" {
 			t.Errorf("%q dropped=%q", name, rule)
 		}

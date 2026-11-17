@@ -35,7 +35,7 @@ func LoadPreset(dir, name, overlayPath string) (Preset, error) {
 		for _, word := range []string{"AI", "EU", "UK", "US", "UE", "IT"} {
 			p.Allow[word] = true
 		}
-		for _, word := range []string{"Descrizione", "Informazioni", "Indice", "Introduzione"} {
+		for _, word := range []string{"Descrizione", "Informazioni", "Indice", "Introduzione", "Description", "Information", "Index", "Introduction"} {
 			p.Stop[fold(word)] = true
 		}
 		p.StopPatterns = []*regexp.Regexp{regexp.MustCompile(`(?i)^Sezione \d+$`), regexp.MustCompile(`(?i)^Section \d+$`)}
