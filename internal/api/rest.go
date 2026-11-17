@@ -66,6 +66,7 @@ type ingestResponse struct {
 }
 
 type documentDTO struct {
+	Domain     string    `json:"domain"`
 	ID         string    `json:"id"`
 	SourceKind string    `json:"source_kind"`
 	Source     string    `json:"source"`
@@ -96,6 +97,7 @@ type deleteResponse struct {
 }
 
 type hitDTO struct {
+	Domain     string  `json:"domain"`
 	Kind       string  `json:"kind"`
 	ID         string  `json:"id"`
 	Title      string  `json:"title"`
@@ -301,15 +303,12 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	status := r.URL.Query().Get("status")
-	var docs []graph.Document
-	var err error
-	if status != "" {
-		// Filter in the query, not after the row limit, so a page of
-		// non-matching newer documents cannot hide matching ones.
-		docs, err = s.store.DocumentsWithStatus(r.Context(), graph.Status(status), limit)
-	} else {
-		docs, err = s.store.Documents(r.Context(), limit)
+	slug := r.URL.Query().Get("domain")
+	if slug != "" && !graph.ValidDomain(slug) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid domain slug")
+		return
 	}
+	docs, err := s.store.DocumentsIn(r.Context(), graph.Status(status), slug, limit)
 	if err != nil {
 		writeStoreError(w, err, "documents")
 		return
@@ -379,9 +378,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Query string `json:"query"`
-		Kind  string `json:"kind"`
-		Limit int    `json:"limit"`
+		Domain string `json:"domain"`
+		Query  string `json:"query"`
+		Kind   string `json:"kind"`
+		Limit  int    `json:"limit"`
 	}
 	if !readJSON(w, r, jsonBodyCap, &req) {
 		return
@@ -407,7 +407,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if limit > 100 {
 		limit = 100
 	}
-	hits, err := search.Query(r.Context(), s.store, s.emb, req.Query, kind, limit)
+	if req.Domain != "" && !graph.ValidDomain(req.Domain) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid domain slug")
+		return
+	}
+	hits, err := search.Query(r.Context(), s.store, s.emb, req.Query, kind, limit, search.InDomain(req.Domain))
 	if err != nil {
 		writeStoreError(w, err, "search")
 		return
@@ -563,6 +567,7 @@ func queryBool(r *http.Request, name string) bool {
 
 func toDocumentDTO(d graph.Document) documentDTO {
 	return documentDTO{
+		Domain:     d.Domain,
 		ID:         d.ID,
 		SourceKind: d.SourceKind,
 		Source:     d.Source,
@@ -580,7 +585,7 @@ func toDocumentDTO(d graph.Document) documentDTO {
 func toHitDTOs(hits []search.Hit) []hitDTO {
 	out := make([]hitDTO, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, hitDTO{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID})
+		out = append(out, hitDTO{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID, Domain: h.Domain})
 	}
 	return out
 }
@@ -662,4 +667,16 @@ func toTraverseResponse(sub graph.Subgraph) traverseResponse {
 		hidden = &sub.Hidden
 	}
 	return traverseResponse{Nodes: nodes, Edges: edges, Hidden: hidden}
+}
+
+func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
+	if !s.storeOr503(w) {
+		return
+	}
+	rows, err := s.store.ListDomains(r.Context())
+	if err != nil {
+		writeStoreError(w, err, "domains")
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
 }

@@ -120,6 +120,33 @@
     }
   }
 
+  const domainNames = new Map();
+  const domainName = (id) => domainNames.get(id) || id;
+  async function loadDomains() {
+    try {
+      const domains = await api("/v1/domains");
+      domainNames.clear();
+      for (const d of (Array.isArray(domains) ? domains : [])) {
+        domainNames.set(d.id, d.name || d.id);
+      }
+      for (const id of ["search-domain", "ask-domain"]) {
+        const picker = $(id);
+        const selected = picker.value;
+        const all = el("option", "", "All domains");
+        all.value = "";
+        picker.replaceChildren(all);
+        for (const [key, name] of domainNames) {
+          const option = el("option", "", name);
+          option.value = key;
+          picker.append(option);
+        }
+        picker.value = domainNames.has(selected) ? selected : "";
+      }
+    } catch (_) {
+      // Search remains available when the picker cannot load.
+    }
+  }
+
   // ---- search -------------------------------------------------------------
 
   async function search(query) {
@@ -129,7 +156,7 @@
     try {
       data = await api("/v1/search", {
         method: "POST",
-        json: { query: query, kind: "auto", limit: 20 },
+        json: { query: query, kind: "auto", limit: 20, domain: $("search-domain").value },
       });
     } catch (err) {
       fail(list, err);
@@ -146,6 +173,9 @@
       const head = el("div");
       head.append(el("span", "badge", hit.kind || "hit"));
       head.append(document.createTextNode(hit.title || hit.id || ""));
+      if (hit.domain) {
+        head.append(el("span", "badge", domainName(hit.domain)));
+      }
       item.append(head);
       if (hit.snippet) item.append(el("div", "snippet", hit.snippet));
       if (hit.kind === "entity") {
@@ -183,7 +213,7 @@
     title.append(el("strong", null, view.name || view.id));
     if (view.type) title.append(el("span", "badge", view.type));
     box.append(title);
-    if (view.key && !view.key.startsWith("#")) {
+    if (view.key && !view.key.startsWith("#") && !view.key.startsWith("@")) {
       box.append(el("p", "muted", view.key));
     }
     if (view.aliases && view.aliases.length) {
@@ -584,7 +614,7 @@
     const res = await fetch("/v1/agent/ask/stream", {
       method: "POST",
       headers,
-      body: JSON.stringify({ question: question }),
+      body: JSON.stringify({ question: question, domain: $("ask-domain").value }),
     });
     if (res.status === 401) {
       throw unauthorized(res);
@@ -676,7 +706,7 @@
       }
       const res = await api("/v1/agent/ask", {
         method: "POST",
-        json: { question: question },
+        json: { question: question, domain: $("ask-domain").value },
       });
       statusNode.textContent = "";
       renderAnswer(res);
@@ -717,6 +747,9 @@
       const head = el("div");
       head.append(statusBadge(d.status));
       head.append(document.createTextNode(d.title || d.source || d.id));
+      if (d.domain) {
+        head.append(el("span", "badge", domainName(d.domain)));
+      }
       const del = el("button", "mini doc-del", "✕");
       del.type = "button";
       del.title = "delete this document";
@@ -876,6 +909,9 @@
     }
     const doc = (data && data.document) || {};
     title.textContent = doc.title || doc.source || doc.id || id;
+    if (doc.domain) {
+      meta.append(el("span", "badge", domainName(doc.domain)));
+    }
     meta.append(
       document.createTextNode(
         (doc.source_kind || "?") + " · " + (doc.id || id) + " · ",
@@ -961,12 +997,14 @@
       $("status").textContent = "";
       loadDocuments().catch(() => {});
       probeAgent();
+      loadDomains();
     });
     $("auth-forget").addEventListener("click", forgetSavedKey);
     $("auth-forget").hidden = !apiKey;
     $("status").textContent = apiKey ? "using a saved API key" : "";
     loadDocuments().catch(() => {});
     probeAgent();
+    loadDomains();
   }
 
   if (document.readyState === "loading") {

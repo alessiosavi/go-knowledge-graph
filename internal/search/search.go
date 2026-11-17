@@ -22,6 +22,7 @@ type QueryEmbedder interface {
 
 // Hit is one search result.
 type Hit struct {
+	Domain  string
 	Kind    string // entity | chunk
 	ID      string
 	DocID   string // chunk hits only: the owning document id
@@ -59,7 +60,22 @@ func FuseRanks(legs [][]string) map[string]float64 {
 // Query searches entities, chunks or both. Entity search fuses text hits
 // with vector hits when an embedder is configured — a vector miss never
 // drops text recall. Chunks are text-only in v0.
-func Query(ctx context.Context, st *graph.Store, emb QueryEmbedder, q, kind string, limit int) ([]Hit, error) {
+type options struct{ domain string }
+
+// Option configures a search.
+type Option func(*options)
+
+// InDomain scopes both text and vector hits to a domain; empty selects all.
+func InDomain(d string) Option { return func(o *options) { o.domain = d } }
+
+func Query(ctx context.Context, st *graph.Store, emb QueryEmbedder, q, kind string, limit int, opts ...Option) ([]Hit, error) {
+	opt := options{}
+	for _, apply := range opts {
+		apply(&opt)
+	}
+	if opt.domain != "" && !graph.ValidDomain(opt.domain) {
+		return nil, fmt.Errorf("search: invalid domain slug %q", opt.domain)
+	}
 	if strings.TrimSpace(q) == "" {
 		return nil, fmt.Errorf("search: empty query")
 	}
@@ -79,15 +95,15 @@ func Query(ctx context.Context, st *graph.Store, emb QueryEmbedder, q, kind stri
 	}
 	switch kind {
 	case "entity":
-		return entityHits(ctx, st, emb, q, limit)
+		return entityHits(ctx, st, emb, q, limit, opt.domain)
 	case "chunk":
-		return chunkHits(ctx, st, q, limit)
+		return chunkHits(ctx, st, q, limit, opt.domain)
 	case "auto":
-		ents, err := entityHits(ctx, st, emb, q, limit)
+		ents, err := entityHits(ctx, st, emb, q, limit, opt.domain)
 		if err != nil {
 			return nil, err
 		}
-		chunks, err := chunkHits(ctx, st, q, limit)
+		chunks, err := chunkHits(ctx, st, q, limit, opt.domain)
 		if err != nil {
 			return nil, err
 		}
@@ -98,24 +114,28 @@ func Query(ctx context.Context, st *graph.Store, emb QueryEmbedder, q, kind stri
 }
 
 type entityRow struct {
-	id, name, typ string
+	id, name, typ, domain string
 }
 
-func entityHits(ctx context.Context, st *graph.Store, emb QueryEmbedder, q string, limit int) ([]Hit, error) {
-	recs, err := st.EntityTextSearch(ctx, q, limit)
+func entityHits(ctx context.Context, st *graph.Store, emb QueryEmbedder, q string, limit int, slug string) ([]Hit, error) {
+	recs, err := st.EntityTextSearchIn(ctx, q, slug, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search: entity text leg: %w", err)
 	}
 	rows := make(map[string]entityRow, len(recs))
 	textLeg := make([]string, 0, len(recs))
 	for _, r := range recs {
-		rows[r.ID] = entityRow{id: r.ID, name: r.Name, typ: r.Type}
+		rows[r.ID] = entityRow{id: r.ID, name: r.Name, typ: r.Type, domain: r.Domain}
 		textLeg = append(textLeg, r.ID)
 	}
 
 	legs := [][]string{textLeg}
 	if emb != nil {
-		if vecLeg, ok := vectorLeg(ctx, st, emb, q, limit); ok {
+		vectorLimit := limit
+		if slug != "" {
+			vectorLimit *= 5
+		}
+		if vecLeg, ok := vectorLeg(ctx, st, emb, q, vectorLimit); ok {
 			// A vector entry whose entity no longer resolves cannot be
 			// rendered as a hit: drop it rather than emitting an id-only
 			// ghost. Legacy stale entries usually fail the CALL itself
@@ -126,10 +146,16 @@ func entityHits(ctx context.Context, st *graph.Store, emb QueryEmbedder, q strin
 			for _, id := range vecLeg {
 				if _, known := rows[id]; !known {
 					if r, err := st.EntityRef(ctx, id); err == nil {
-						rows[id] = entityRow{id: r.ID, name: r.Name, typ: r.Type}
+						if slug != "" && r.Domain != slug {
+							continue
+						}
+						rows[id] = entityRow{id: r.ID, name: r.Name, typ: r.Type, domain: r.Domain}
 					} else {
 						continue
 					}
+				}
+				if len(kept) >= limit {
+					break
 				}
 				kept = append(kept, id)
 			}
@@ -145,7 +171,7 @@ func entityHits(ctx context.Context, st *graph.Store, emb QueryEmbedder, q strin
 		if !known {
 			title = id
 		}
-		hits = append(hits, Hit{Kind: "entity", ID: id, Title: title, Score: score, Snippet: row.typ})
+		hits = append(hits, Hit{Domain: row.domain, Kind: "entity", ID: id, Title: title, Score: score, Snippet: row.typ})
 	}
 	return topHits(hits, limit), nil
 }
@@ -170,8 +196,8 @@ func vectorLeg(ctx context.Context, st *graph.Store, emb QueryEmbedder, q string
 	return ids, true
 }
 
-func chunkHits(ctx context.Context, st *graph.Store, q string, limit int) ([]Hit, error) {
-	recs, err := st.ChunkTextSearch(ctx, q, limit)
+func chunkHits(ctx context.Context, st *graph.Store, q string, limit int, slug string) ([]Hit, error) {
+	recs, err := st.ChunkTextSearchIn(ctx, q, slug, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search: chunk text leg: %w", err)
 	}
@@ -180,6 +206,7 @@ func chunkHits(ctx context.Context, st *graph.Store, q string, limit int) ([]Hit
 	for _, r := range recs {
 		leg = append(leg, r.ID)
 		byID[r.ID] = Hit{
+			Domain:  r.Domain,
 			Kind:    "chunk",
 			ID:      r.ID,
 			DocID:   r.DocID,

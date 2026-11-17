@@ -20,9 +20,9 @@ The tool set is the same on both transports:
 | `status`         | pipeline status of one document, or the most recent documents           |
 | `search`         | text search over entity names and chunks (vector fusion when enabled)   |
 | `get_entity`     | entity, aliases, `together` co-mentions (with shared chunk counts) and evidenced facts |
-| `get_chunks`     | full chunk text by id, optionally with up to two neighbours from the same document |
+| `get_chunks`     | chunk text, up to 4 KiB per chunk; `truncated` marks a cut; optionally up to two neighbours |
 | `traverse`       | walk fact edges up to two hops with direction/relation filters          |
-| `list_documents` | documents with metadata, filterable by status                           |
+| `list_documents` | documents with metadata, filterable by status and domain                           |
 | `cypher`         | guarded read-only Cypher with row cap and timeout                       |
 
 Low-confidence facts are excluded unless the tool call opts in with
@@ -212,3 +212,20 @@ client: OpenCode or Claude Desktop with the configuration above, running
 `search` and `get_entity`. The script covers the automated slice (stdio
 `tools/list` + `search`); the desktop-client run stays a manual step
 outside the script.
+
+### Domain scope
+
+MCP read tools `search`, `get_entity`, `get_chunks`, `traverse`,
+`list_documents` and `status` accept an optional `domain` slug. Empty selects
+all. Search hits and document views include `domain`. `GET /v1/domains`
+provides domain names and done-document counts for the web UI's search and
+ask pickers. MCP has no `ask` tool.
+
+REST ask and stream accept `domain` in the question body. That request scope
+applies to all answer tools, regardless of model arguments. Out-of-scope
+entities/traversal starts are not found; chunks are `missing`; lists filter
+before their limit. Cypher is not domain-enforced; the system prompt states
+the scope. At v4, `get_entity` names use `EntityKey` folding (possessives,
+edge punctuation), including document-scoped entities; older graphs keep
+case folding. Unscoped ambiguous names return `candidates`, one per domain.
+Scoped vector search over-fetches 5× then filters, which can yield fewer hits.

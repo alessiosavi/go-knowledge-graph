@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 )
 
 // PathEdge is one traversed fact edge with provenance and evidence; From
@@ -57,9 +59,15 @@ func (s *Store) TraverseOpts(ctx context.Context, startID, rel, direction string
 		limit = 50
 	}
 
+	if opt.Domain != "" && !ValidDomain(opt.Domain) {
+		return Subgraph{}, fmt.Errorf("graph: invalid domain slug %q", opt.Domain)
+	}
 	start, err := s.resolveEntityRef(ctx, startID)
 	if err != nil {
 		return Subgraph{}, err
+	}
+	if opt.Domain != "" && start.Domain != opt.Domain {
+		return Subgraph{}, fmt.Errorf("graph: entity %s: %w", startID, ErrNotFound)
 	}
 	sub := Subgraph{Nodes: []EntityRef{start}}
 	sub.Hidden, err = s.hiddenCounts(ctx, start.Key)
@@ -123,10 +131,11 @@ func (s *Store) resolveEntityRef(ctx context.Context, idOrKey string) (EntityRef
 		return EntityRef{}, fmt.Errorf("graph: entity %s: %w", idOrKey, ErrNotFound)
 	}
 	return EntityRef{
-		ID:   getString(recs[0], "id"),
-		Key:  getString(recs[0], "key"),
-		Name: getString(recs[0], "name"),
-		Type: getString(recs[0], "type"),
+		ID:     getString(recs[0], "id"),
+		Key:    getString(recs[0], "key"),
+		Name:   getString(recs[0], "name"),
+		Type:   getString(recs[0], "type"),
+		Domain: getString(recs[0], "domain"),
 	}, nil
 }
 
@@ -247,33 +256,43 @@ LIMIT $limit`
 
 // EntitySearchRow is one entity text-search hit.
 type EntitySearchRow struct {
-	ID   string
-	Name string
-	Type string
+	Domain string
+	ID     string
+	Name   string
+	Type   string
 }
 
 // EntityTextSearch runs the Tantivy entity_text_v2 index. Entity search is
 // name-only by design; aliases are excluded (docs/known-limitations.md).
 func (s *Store) EntityTextSearch(ctx context.Context, q string, limit int) ([]EntitySearchRow, error) {
-	q, ok := textQuery(q)
+	return s.EntityTextSearchIn(ctx, q, "", limit)
+}
+
+func (s *Store) EntityTextSearchIn(ctx context.Context, q, slug string, limit int) ([]EntitySearchRow, error) {
+	call, q, err := scopedTextQuery("entity_text_v2", "name", q, slug)
+	if err != nil {
+		return nil, err
+	}
+	ok := q != ""
 	if !ok {
 		return nil, nil
 	}
 	recs, err := s.runRead(ctx, `
-CALL text_search.search_all('entity_text_v2', $q) YIELD node, score
-RETURN node.id AS id, node.name AS name, node.type AS type
+`+call+`
+RETURN node.id AS id, node.name AS name, node.type AS type, node.domain AS domain
 ORDER BY score DESC
 LIMIT $limit`,
-		map[string]any{"q": q, "limit": limit})
+		map[string]any{"q": q, "limit": limit, "domain": slug})
 	if err != nil {
 		return nil, fmt.Errorf("graph: entity text search: %w", err)
 	}
 	out := make([]EntitySearchRow, 0, len(recs))
 	for _, r := range recs {
 		out = append(out, EntitySearchRow{
-			ID:   getString(r, "id"),
-			Name: getString(r, "name"),
-			Type: getString(r, "type"),
+			ID:     getString(r, "id"),
+			Name:   getString(r, "name"),
+			Type:   getString(r, "type"),
+			Domain: getString(r, "domain"),
 		})
 	}
 	return out, nil
@@ -281,39 +300,49 @@ LIMIT $limit`,
 
 // ChunkSearchRow is one chunk text-search hit with its document title.
 type ChunkSearchRow struct {
-	ID    string
-	DocID string
-	Title string
-	Text  string
+	Domain string
+	ID     string
+	DocID  string
+	Title  string
+	Text   string
 }
 
 // ChunkTextSearch runs the Tantivy chunk index. The hits are cut to limit
 // before the Document join: the index can return up to 1,000 hits, and
 // joining all of them first made a chunk search take seconds.
 func (s *Store) ChunkTextSearch(ctx context.Context, q string, limit int) ([]ChunkSearchRow, error) {
-	q, ok := textQuery(q)
+	return s.ChunkTextSearchIn(ctx, q, "", limit)
+}
+
+func (s *Store) ChunkTextSearchIn(ctx context.Context, q, slug string, limit int) ([]ChunkSearchRow, error) {
+	call, q, err := scopedTextQuery("chunk_text_v2", "text", q, slug)
+	if err != nil {
+		return nil, err
+	}
+	ok := q != ""
 	if !ok {
 		return nil, nil
 	}
 	recs, err := s.runRead(ctx, `
-CALL text_search.search_all('chunk_text_v2', $q) YIELD node, score
+`+call+`
 WITH node, score
 ORDER BY score DESC
 LIMIT $limit
 OPTIONAL MATCH (d:Document {id: node.doc_id})
-RETURN node.id AS id, node.doc_id AS doc_id, node.text AS text, coalesce(d.title, '') AS title, score
+RETURN node.id AS id, node.doc_id AS doc_id, node.text AS text, node.domain AS domain, coalesce(d.title, '') AS title, score
 ORDER BY score DESC`,
-		map[string]any{"q": q, "limit": limit})
+		map[string]any{"q": q, "limit": limit, "domain": slug})
 	if err != nil {
 		return nil, fmt.Errorf("graph: chunk text search: %w", err)
 	}
 	out := make([]ChunkSearchRow, 0, len(recs))
 	for _, r := range recs {
 		out = append(out, ChunkSearchRow{
-			ID:    getString(r, "id"),
-			DocID: getString(r, "doc_id"),
-			Title: getString(r, "title"),
-			Text:  getString(r, "text"),
+			ID:     getString(r, "id"),
+			DocID:  getString(r, "doc_id"),
+			Title:  getString(r, "title"),
+			Text:   getString(r, "text"),
+			Domain: getString(r, "domain"),
 		})
 	}
 	return out, nil
@@ -341,7 +370,7 @@ ORDER BY distance ASC`,
 func (s *Store) EntityRef(ctx context.Context, id string) (EntityRef, error) {
 	recs, err := s.runRead(ctx, `
 MATCH (e:Entity {id: $id})
-RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type`,
+RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type, e.domain AS domain`,
 		map[string]any{"id": id})
 	if err != nil {
 		return EntityRef{}, fmt.Errorf("graph: entity ref: %w", err)
@@ -350,9 +379,30 @@ RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type`,
 		return EntityRef{}, fmt.Errorf("graph: entity %s: %w", id, ErrNotFound)
 	}
 	return EntityRef{
-		ID:   getString(recs[0], "id"),
-		Key:  getString(recs[0], "key"),
-		Name: getString(recs[0], "name"),
-		Type: getString(recs[0], "type"),
+		ID:     getString(recs[0], "id"),
+		Key:    getString(recs[0], "key"),
+		Name:   getString(recs[0], "name"),
+		Type:   getString(recs[0], "type"),
+		Domain: getString(recs[0], "domain"),
 	}, nil
+}
+
+// scopedTextQuery restricts Tantivy before its internal 1,000-hit cap, then
+// checks the exact slug. Unscoped search retains search_all's name-only semantics.
+func scopedTextQuery(index, field, q, slug string) (string, string, error) {
+	if slug != "" && !ValidDomain(slug) {
+		return "", "", fmt.Errorf("graph: invalid domain slug %q", slug)
+	}
+	terms := strings.Fields(TextQueryTerms(q))
+	if len(terms) == 0 {
+		return "", "", nil
+	}
+	if slug == "" {
+		return "CALL text_search.search_all('" + index + "', $q) YIELD node, score", strings.Join(terms, " "), nil
+	}
+	for i := range terms {
+		terms[i] = "data." + field + ":" + terms[i]
+	}
+	query := `data.domain_tok:"` + domain.DomainToken(slug) + `" AND (` + strings.Join(terms, " ") + `)`
+	return "CALL text_search.search('" + index + "', $q) YIELD node, score WITH node, score WHERE node.domain = $domain", query, nil
 }

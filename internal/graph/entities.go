@@ -658,12 +658,12 @@ SET e.aliases = $aliases`,
 const entityByIDQuery = `
 MATCH (e:Entity {id: $q})
 RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type,
-       coalesce(e.aliases, []) AS aliases, coalesce(e.mention_count, 0) AS mention_count`
+       e.domain AS domain, coalesce(e.aliases, []) AS aliases, coalesce(e.mention_count, 0) AS mention_count`
 
 const entityByKeyQuery = `
 MATCH (e:Entity {key: $q})
 RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type,
-       coalesce(e.aliases, []) AS aliases, coalesce(e.mention_count, 0) AS mention_count`
+       e.domain AS domain, coalesce(e.aliases, []) AS aliases, coalesce(e.mention_count, 0) AS mention_count`
 
 // EntityView returns an entity with its aliases, mention count and facts,
 // grouped by (relation, other entity) with larger groups first;
@@ -677,6 +677,9 @@ func (s *Store) EntityView(ctx context.Context, idOrKey string, includeLowConfid
 
 // EntityViewOpts additionally exposes candidate facts when explicitly requested.
 func (s *Store) EntityViewOpts(ctx context.Context, idOrKey string, opt ViewOptions) (EntityView, error) {
+	if opt.Domain != "" && !ValidDomain(opt.Domain) {
+		return EntityView{}, fmt.Errorf("graph: invalid domain slug %q", opt.Domain)
+	}
 	params := map[string]any{"q": idOrKey}
 	recs, err := s.runRead(ctx, entityByIDQuery, params)
 	if err == nil && len(recs) == 0 {
@@ -689,12 +692,16 @@ func (s *Store) EntityViewOpts(ctx context.Context, idOrKey string, opt ViewOpti
 		return EntityView{}, fmt.Errorf("graph: entity %s: %w", idOrKey, ErrNotFound)
 	}
 	r := recs[0]
+	if opt.Domain != "" && getString(r, "domain") != opt.Domain {
+		return EntityView{}, fmt.Errorf("graph: entity %s: %w", idOrKey, ErrNotFound)
+	}
 	view := EntityView{
 		EntityRef: EntityRef{
-			ID:   getString(r, "id"),
-			Key:  getString(r, "key"),
-			Name: getString(r, "name"),
-			Type: getString(r, "type"),
+			Domain: getString(r, "domain"),
+			ID:     getString(r, "id"),
+			Key:    getString(r, "key"),
+			Name:   getString(r, "name"),
+			Type:   getString(r, "type"),
 		},
 		Aliases:      getStringSlice(r, "aliases"),
 		MentionCount: getInt(r, "mention_count"),
@@ -851,31 +858,52 @@ RETURN '' AS judge, count(DISTINCT [f.head_key, f.rel, f.tail_key]) AS n, true A
 	return counts, nil
 }
 
-// EntityByName returns the entity whose stored name matches the argument
-// exactly after trimming and case folding. Several entities may fold to the
-// same name (for example, with scoped keys): the most mentioned one wins,
-// with the id as the deterministic tie-breaker. ErrNotFound when nothing
-// matches — this is an exact lookup, not a fuzzy text search.
+// EntityByName preserves the single-result contract: highest mention count, then id.
 func (s *Store) EntityByName(ctx context.Context, name string) (EntityRef, error) {
-	recs, err := s.runRead(ctx, `
-MATCH (e:Entity)
-WHERE toLower(trim(e.name)) = toLower(trim($name))
-RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type
-ORDER BY coalesce(e.mention_count, 0) DESC, e.id ASC
-LIMIT 1`,
-		map[string]any{"name": name})
+	refs, err := s.EntityCandidatesByName(ctx, name, "")
 	if err != nil {
-		return EntityRef{}, fmt.Errorf("graph: entity by name: %w", err)
+		return EntityRef{}, err
 	}
-	if len(recs) == 0 {
+	if len(refs) == 0 {
 		return EntityRef{}, fmt.Errorf("graph: entity %q: %w", name, ErrNotFound)
 	}
-	return EntityRef{
-		ID:   getString(recs[0], "id"),
-		Key:  getString(recs[0], "key"),
-		Name: getString(recs[0], "name"),
-		Type: getString(recs[0], "type"),
-	}, nil
+	return refs[0], nil
+}
+
+// EntityCandidatesByName matches EntityKey folding at v4 (including punctuation
+// and possessives), using indexed name_key even for document-scoped entities.
+// Legacy graphs retain their case-folded display-name scan.
+func (s *Store) EntityCandidatesByName(ctx context.Context, name, slug string) ([]EntityRef, error) {
+	if slug != "" && !ValidDomain(slug) {
+		return nil, fmt.Errorf("graph: invalid domain slug %q", slug)
+	}
+	version, err := s.SchemaVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+	where := "toLower(trim(e.name)) = toLower(trim($name))"
+	if version >= SchemaVersionV4 {
+		where = "e.name_key = $k"
+	}
+	if slug != "" {
+		where += " AND e.domain = $domain"
+	}
+	// One candidate per domain (the most-mentioned), and a hard cap: at v4 a
+	// name_key is shared by every domain and by every document-scoped key.
+	recs, err := s.runRead(ctx, `MATCH (e:Entity) WHERE `+where+`
+ WITH e ORDER BY coalesce(e.mention_count,0) DESC, e.id ASC
+ WITH coalesce(e.domain,'') AS dom, collect(e)[0] AS e
+ RETURN e.id AS id,e.key AS key,e.name AS name,e.type AS type,e.domain AS domain
+ ORDER BY coalesce(e.mention_count,0) DESC,e.id ASC
+ LIMIT 100`, map[string]any{"name": name, "k": EntityKey(name), "domain": slug})
+	if err != nil {
+		return nil, fmt.Errorf("graph: entity candidates by name: %w", err)
+	}
+	refs := make([]EntityRef, 0, len(recs))
+	for _, r := range recs {
+		refs = append(refs, EntityRef{ID: getString(r, "id"), Key: getString(r, "key"), Name: getString(r, "name"), Type: getString(r, "type"), Domain: getString(r, "domain")})
+	}
+	return refs, nil
 }
 
 // ExcerptWindow returns up to width bytes of text centred near byte offset

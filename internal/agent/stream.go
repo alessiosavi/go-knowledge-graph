@@ -34,11 +34,11 @@ func (s *Server) StreamHandler() http.Handler {
 			writeError(w, http.StatusNotImplemented, "agent_disabled", "the ask agent is not enabled on this server")
 			return
 		}
-		question, ok := decodeAskQuestion(w, r)
+		req, ok := decodeAskQuestion(w, r)
 		if !ok {
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
+		ctx, cancel := context.WithTimeout(withDomain(r.Context(), req.Domain), s.timeout)
 		defer cancel()
 
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -55,7 +55,7 @@ func (s *Server) StreamHandler() http.Handler {
 		events := make(chan streamEvent, streamEventsBuf)
 		done := make(chan askResult, 1)
 		go func() {
-			resp, err := s.run(ctx, question, func(ev streamEvent) error {
+			resp, err := s.run(ctx, req.Question, func(ev streamEvent) error {
 				select {
 				case events <- ev:
 					return nil

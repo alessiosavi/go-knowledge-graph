@@ -534,7 +534,7 @@ func makeVariable(t *testing.T, name string, dir ...string) string {
 	}
 	// A second makefile on stdin, not --eval: make 3.81 (macOS) lacks --eval.
 	cmd := exec.Command("make", "-s", "-C", root, "-f", "Makefile", "-f", "-", "print-var")
-	cmd.Env = minimalEnv()
+	cmd.Env = append(minimalEnv(), "TMPDIR="+t.TempDir())
 	cmd.Stdin = strings.NewReader("print-var: ; @printf '%s' '$(" + name + ")'\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

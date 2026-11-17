@@ -50,6 +50,9 @@ type Store interface {
 }
 
 func Read(ctx context.Context, st Store, req Request) (Result, error) {
+	if req.Domain != "" && !graph.ValidDomain(req.Domain) {
+		return Result{}, errors.New("invalid domain slug")
+	}
 	if len(req.IDs) < 1 || len(req.IDs) > MaxIDs {
 		return Result{}, errors.New("ids must hold 1–20 chunk ids")
 	}
@@ -67,7 +70,7 @@ func Read(ctx context.Context, st Store, req Request) (Result, error) {
 	}
 	seen, requested := map[string]bool{}, map[string]bool{}
 	add := func(c graph.Chunk, neighbourOf string) {
-		if seen[c.ID] {
+		if (req.Domain != "" && c.Domain != req.Domain) || seen[c.ID] {
 			return
 		}
 		seen[c.ID] = true
@@ -94,6 +97,10 @@ func Read(ctx context.Context, st Store, req Request) (Result, error) {
 		}
 		if err != nil {
 			return Result{}, fmt.Errorf("read chunk %s: %w", id, err)
+		}
+		if req.Domain != "" && center.Domain != req.Domain {
+			result.Meta.Missing = append(result.Meta.Missing, id)
+			continue
 		}
 		add(center, "")
 		for _, c := range around {

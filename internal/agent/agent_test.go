@@ -6,22 +6,25 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 func TestSystemPromptSchema(t *testing.T) {
 	for _, want := range []string{
-		"Document{id, source, title, status, labels}",
-		"Chunk{id, doc_id, seq, text}",
-		"Entity{id, key, name, type, mention_count}",
+		"Document{id, source, title, status, labels, domain}",
+		"Chunk{id, doc_id, seq, text, domain}",
+		"Entity{id, key, name, type, mention_count, domain}",
 		"(:Document)-[:HAS_CHUNK]->(:Chunk)",
 		"(:Chunk)-[:MENTIONS]->(:Entity)",
 		"typed fact edges connect entities",
@@ -76,6 +79,22 @@ func TestSystemPromptPropertiesExist(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 	t.Cleanup(func() { _ = st.DeleteDocument(context.Background(), res.DocumentID) })
+	// Domain assignment normally precedes processing under the v4 write gate.
+	drv, err := neo4j.NewDriver(os.Getenv(graphtest.URIEnv), neo4j.NoAuth())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer drv.Close(ctx)
+	session := drv.NewSession(ctx, neo4j.SessionConfig{})
+	defer session.Close(ctx)
+	rows, err := session.Run(ctx, `MATCH (d:Document {id:$id}) SET d.domain='zorbo',d.domain_tok=$token`, map[string]any{"id": res.DocumentID, "token": domain.DomainToken("zorbo")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rows.Consume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.SetWriteMode(ingest.WriteMode{Domains: true})
 	if err := p.Process(ctx, res.DocumentID); err != nil {
 		t.Fatalf("Process: %v", err)
 	}

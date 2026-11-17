@@ -14,7 +14,7 @@ func TestExportedAsk(t *testing.T) {
 	cfg.Agent.BaseURL = stub.srv.URL
 	cfg.Agent.Model = "stub-model"
 	s := NewServer(cfg, nil, nil)
-	if _, err := s.Ask(context.Background(), AskRequest{Question: "Who?", Domain: "quillon"}); err == nil || err.Error() != "domain scope not supported yet" {
+	if _, err := s.Ask(context.Background(), AskRequest{Question: "Who?", Domain: "BAD"}); err == nil || !strings.Contains(err.Error(), "invalid domain") {
 		t.Fatalf("domain error=%v", err)
 	}
 	if len(stub.requests) != 0 {

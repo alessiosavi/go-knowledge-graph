@@ -49,9 +49,9 @@ Rules:
 - If the tools cannot answer the question, say so plainly instead of guessing.
 
 Graph schema for Cypher queries:
-Document{id, source, title, status, labels}
-Chunk{id, doc_id, seq, text}
-Entity{id, key, name, type, mention_count}
+Document{id, source, title, status, labels, domain}
+Chunk{id, doc_id, seq, text, domain}
+Entity{id, key, name, type, mention_count, domain}
 Entity.key is case-folded; match on id or name.
 Relationships: (:Document)-[:HAS_CHUNK]->(:Chunk), (:Chunk)-[:MENTIONS]->(:Entity); typed fact edges connect entities and carry confidence, doc_id, chunk_id.
 Chunk search hits carry document_id, the owning Chunk.doc_id; entity hits carry none.
@@ -136,9 +136,10 @@ type AskRequest struct{ Question, Domain string }
 
 // Ask runs the configured provider with the same deadline as the HTTP surface.
 func (s *Server) Ask(ctx context.Context, req AskRequest) (AskResponse, error) {
-	if req.Domain != "" {
-		return AskResponse{}, errors.New("domain scope not supported yet")
+	if req.Domain != "" && !graph.ValidDomain(req.Domain) {
+		return AskResponse{}, errors.New("invalid domain slug")
 	}
+	ctx = withDomain(ctx, req.Domain)
 	if strings.TrimSpace(req.Question) == "" {
 		return AskResponse{}, errors.New("question is required")
 	}
@@ -184,7 +185,7 @@ func (s *Server) ask(ctx context.Context, question string) (AskResponse, error) 
 // the same request.
 func (s *Server) run(ctx context.Context, question string, emit func(streamEvent) error) (AskResponse, error) {
 	msgs := []chatMessage{
-		{Role: "system", Content: systemPrompt},
+		{Role: "system", Content: scopedPrompt(ctx, systemPrompt)},
 		{Role: "user", Content: question},
 	}
 	ev := make([]EvidenceItem, 0, s.maxSteps)
@@ -344,7 +345,7 @@ func streamFallbackEligible(err error) bool {
 // path, so it streams when streaming is available.
 func (s *Server) askWithPlan(ctx context.Context, question string, emit func(streamEvent) error) (AskResponse, error) {
 	msgs := []chatMessage{
-		{Role: "system", Content: planSystemPrompt},
+		{Role: "system", Content: scopedPrompt(ctx, planSystemPrompt)},
 		{Role: "user", Content: question},
 	}
 	reply, err := s.llm.chat(ctx, chatRequest{
@@ -464,4 +465,21 @@ func (s *Server) budgetFinalAnswer(ctx context.Context, msgs []chatMessage, ev [
 		reply.Content = ""
 	}
 	return answerResponse(reply.Content, ev, steps), nil
+}
+
+type domainScopeKey struct{}
+
+func withDomain(ctx context.Context, d string) context.Context {
+	return context.WithValue(ctx, domainScopeKey{}, d)
+}
+func requestDomain(ctx context.Context) string {
+	d, _ := ctx.Value(domainScopeKey{}).(string)
+	return d
+}
+func scopedPrompt(ctx context.Context, prompt string) string {
+	d := requestDomain(ctx)
+	if d == "" {
+		return prompt
+	}
+	return prompt + "\nDomain scope: " + d + ". Answer tools enforce request scope; model arguments cannot widen it. Cypher is not domain-enforced; apply the stated domain yourself."
 }

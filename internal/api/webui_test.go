@@ -128,7 +128,7 @@ function el(tag, className, text) {
   querySelectorAll() { return this.links; },
  };
 }
-const nodes = {"ask-answer":el("div"), "ask-evidence":el("ul"), "ask-status":el("span")};
+const nodes = {"ask-answer":el("div"), "ask-evidence":el("ul"), "ask-status":el("span"), "ask-domain":{value:"a"}};
 const context = {el, $:id => nodes[id], apiKey:"", TextDecoder};
 vm.createContext(context);
 vm.runInContext(process.argv[1] + "\nthis.render = renderAnswer; this.stream = askViaStream;", context);
@@ -146,7 +146,9 @@ assert.equal(body.textContent, "<plain>");
 assert.equal(body.html, undefined);
 let reads = 0;
 const frame = (name, data) => new TextEncoder().encode("event: " + name + "\ndata: " + JSON.stringify(data) + "\n\n");
-context.fetch = async () => ({ok:true,status:200,body:{getReader() { return {async read() {
+context.fetch = async (path, options) => {
+ assert.equal(JSON.parse(options.body).domain, "a");
+ return {ok:true,status:200,body:{getReader() { return {async read() {
  reads++;
  if (reads === 1) return {value:frame("delta", {text:"# Progress"})};
  if (reads === 2) {
@@ -157,7 +159,7 @@ context.fetch = async () => ({ok:true,status:200,body:{getReader() { return {asy
  // The done frame must replace the progressive text before EOF.
  assert.equal(nodes["ask-answer"].children[0].html, html);
  return {done:true};
-}}; }}});
+}}; }}}; };
 context.stream("question", nodes["ask-status"]).catch(err => { console.error(err); process.exitCode = 1; });
 `, app[start:end])
 	if out, err := cmd.CombinedOutput(); err != nil {
