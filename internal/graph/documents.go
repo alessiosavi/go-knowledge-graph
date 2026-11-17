@@ -400,9 +400,10 @@ func (s *Store) DeleteChain(ctx context.Context, id string) (int, error) {
 }
 
 // txDeleteDocument deletes one document's mentions, fact edges, chunks,
-// cached judge verdicts and node inside an existing transaction, clears
-// supersedes pointers that reference it, refreshes the mention counts of
-// the touched entities and prunes the ones left without relationships.
+// cached judge verdicts, rejected-fact audits and node inside an existing
+// transaction, clears supersedes pointers that reference it, refreshes the
+// mention counts of the touched entities and prunes the ones left without
+// relationships.
 func txDeleteDocument(ctx context.Context, tx neo4j.ManagedTransaction, id string) error {
 	if _, err := txDocumentStatus(ctx, tx, id); err != nil {
 		return err
@@ -418,10 +419,15 @@ func txDeleteDocument(ctx context.Context, tx neo4j.ManagedTransaction, id strin
 		map[string]any{"id": id}); err != nil {
 		return fmt.Errorf("graph: delete document: %w", err)
 	}
-	// Cached judge verdicts hold text derived from the document's evidence.
+	// Cached judge verdicts and rejected-fact audits hold text derived from
+	// the document's evidence (reasons), so they go with it.
 	if err := txRun(ctx, tx, `MATCH (v:JudgeVerdict {doc_id: $id}) DELETE v`,
 		map[string]any{"id": id}); err != nil {
 		return fmt.Errorf("graph: delete judge verdicts: %w", err)
+	}
+	if err := txRun(ctx, tx, `MATCH (r:RejectedFact {doc_id: $id}) DETACH DELETE r`,
+		map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("graph: delete rejected-fact audits: %w", err)
 	}
 	if err := txRun(ctx, tx, `MATCH (f:FactCandidate {doc_id: $id}) DELETE f`,
 		map[string]any{"id": id}); err != nil {
