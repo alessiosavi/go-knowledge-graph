@@ -2310,7 +2310,12 @@ echo 'Snapshot created'
 				if err != nil {
 					t.Fatal(err)
 				}
-				os.Symlink(path, filepath.Join(h.dir, "real-"+name))
+				// A wrapper, not a renamed symlink: multi-call coreutils
+				// (uutils on CI) refuse to run under a foreign argv[0].
+				wrapper := fmt.Sprintf("#!/bin/sh\nexec %q \"$@\"\n", path)
+				if err := os.WriteFile(filepath.Join(h.dir, "real-"+name), []byte(wrapper), 0700); err != nil {
+					t.Fatal(err)
+				}
 				os.Remove(filepath.Join(h.bin, name))
 				stub, _ := os.ReadFile(filepath.Join(h.bin, "aws"))
 				os.WriteFile(filepath.Join(h.bin, name), stub, 0700)
