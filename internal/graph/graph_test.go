@@ -68,6 +68,18 @@ func TestBootstrapIdempotent(t *testing.T) {
 	if !rawIndexExists(t, uri, "Chunk", "exact_key") {
 		t.Error("index on :Chunk(exact_key) missing after Bootstrap")
 	}
+	// Memgraph unique constraints create no index: the hot lookup
+	// properties need their own, or every lookup is a label scan.
+	for _, ix := range []struct{ label, prop string }{
+		{"Document", "id"},
+		{"Chunk", "id"},
+		{"Entity", "id"},
+		{"Entity", "key"},
+	} {
+		if !rawIndexExists(t, uri, ix.label, ix.prop) {
+			t.Errorf("index on :%s(%s) missing after Bootstrap", ix.label, ix.prop)
+		}
+	}
 }
 
 // TestBootstrapIgnoresNonUniqueConstraint pins that an EXISTS constraint on

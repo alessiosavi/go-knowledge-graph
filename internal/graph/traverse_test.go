@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
@@ -317,4 +318,48 @@ func rawTextIndexExists(t *testing.T, uri, label string, props []string) bool {
 		}
 	}
 	return false
+}
+
+// TestChunkTextSearchLimitAndOrder pins that the hit list is cut to limit
+// by score (the cut now happens before the Document join) and that the
+// join still fills the title.
+func TestChunkTextSearchLimitAndOrder(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	docID := testUpsert(t, st, "file", uniqueSource(t), "hash-a").ID
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, docID); err != nil {
+			t.Error(err)
+		}
+	})
+	token := fmt.Sprintf("quarkchunk%d", time.Now().UnixNano())
+	filler := strings.Repeat("Background filler sentence about something else. ", 6)
+	texts := []string{
+		filler + token + " appears once here.",
+		token + " " + token + " " + token,
+		filler + token + " appears once again.",
+		filler + "and " + token + " once more.",
+	}
+	chunks := make([]graph.Chunk, len(texts))
+	for i, text := range texts {
+		chunks[i] = graph.Chunk{Seq: i, Text: text, Start: 0, End: len(text)}
+	}
+	if err := st.PutChunks(ctx, docID, chunks); err != nil {
+		t.Fatalf("PutChunks: %v", err)
+	}
+	rows, err := st.ChunkTextSearch(ctx, token, 2)
+	if err != nil {
+		t.Fatalf("ChunkTextSearch: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d (%+v), want 2", len(rows), rows)
+	}
+	if want := docID + "-c1"; rows[0].ID != want {
+		t.Errorf("top hit = %s, want the densest chunk %s", rows[0].ID, want)
+	}
+	for _, r := range rows {
+		if r.DocID != docID || r.Title != "title" {
+			t.Errorf("row %+v: want doc %s with title %q", r, docID, "title")
+		}
+	}
 }
