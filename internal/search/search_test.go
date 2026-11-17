@@ -258,3 +258,57 @@ func TestSearchUsesQueryEmbedderWhenEnabled(t *testing.T) {
 		t.Errorf("hits = %+v, want the vector-seeded entity %s", hits, fx.entityID)
 	}
 }
+
+// countingEmbedder records whether the vector leg asked for an embedding.
+type countingEmbedder struct{ calls *int }
+
+func (c countingEmbedder) EmbedQuery(context.Context, string) ([]float64, error) {
+	*c.calls++
+	return []float64{1}, nil
+}
+
+// TestQueryWithoutWordsSkipsEveryLeg covers a query of punctuation only: it
+// matches nothing, and the vector leg must not return embedding neighbours
+// of punctuation. A nil store proves no leg touched the database.
+func TestQueryWithoutWordsSkipsEveryLeg(t *testing.T) {
+	calls := 0
+	for _, q := range []string{"*", "!!!", "':()+-/", "💡"} {
+		for _, kind := range []string{"entity", "chunk", "auto"} {
+			hits, err := search.Query(context.Background(), nil, countingEmbedder{&calls}, q, kind, 5)
+			if err != nil || hits == nil || len(hits) != 0 {
+				t.Errorf("Query(%q, %s) = %v, %v; want [], nil", q, kind, hits, err)
+			}
+		}
+	}
+	if calls != 0 {
+		t.Errorf("embedder called %d times, want 0", calls)
+	}
+}
+
+// TestChunkSnippetCentresOnLongestWord pins snippetQuery: the raw query
+// "l'<word>-Max" never occurs verbatim, and its shortest word "l" occurs
+// early in unrelated text, so the snippet must centre on the unique word.
+func TestChunkSnippetCentresOnLongestWord(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	docID := upsertDoc(t, st, uniqueSearchSource(t))
+	t.Cleanup(func() { _ = st.DeleteDocument(ctx, docID) })
+	word := uniqueToken(t)
+	text := "Leading filler line that mentions lots of letters l and l again. " + strings.Repeat("padding words here ", 20) + "The l'" + word + "-Max engine starts."
+	if err := st.PutChunks(ctx, docID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := search.Query(ctx, st, nil, "l'"+word+"-Max", "chunk", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.ID == docID+"-c0" {
+			if !strings.Contains(h.Snippet, word) {
+				t.Errorf("snippet %q does not contain the longest search word", h.Snippet)
+			}
+			return
+		}
+	}
+	t.Fatalf("fixture chunk not found in %d hits", len(hits))
+}
