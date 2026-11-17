@@ -6,11 +6,123 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
+	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 )
+
+func TestSystemPromptSchema(t *testing.T) {
+	for _, want := range []string{
+		"Document{id, source, title, status, labels}",
+		"Chunk{id, doc_id, seq, text}",
+		"Entity{id, key, name, type, mention_count}",
+		"(:Document)-[:HAS_CHUNK]->(:Chunk)",
+		"(:Chunk)-[:MENTIONS]->(:Entity)",
+		"typed fact edges connect entities",
+		"Chunk search hits carry document_id, the owning Chunk.doc_id; entity hits carry none.",
+	} {
+		if !strings.Contains(systemPrompt, want) {
+			t.Errorf("system prompt missing %q", want)
+		}
+	}
+	_, strategy, ok := strings.Cut(systemPrompt, "Strategy: ")
+	if !ok {
+		t.Fatal("system prompt missing strategy sentence")
+	}
+	strategy, _, _ = strings.Cut(strategy, "\n")
+	search := strings.Index(strategy, "search")
+	chunks := strings.Index(strategy, "get_chunks")
+	cypher := strings.Index(strategy, "cypher")
+	if search < 0 || chunks < 0 || cypher < 0 || search >= chunks || chunks >= cypher {
+		t.Errorf("strategy = %q, want search before get_chunks before cypher", strategy)
+	}
+	// Every tool the strategy names must be one the model can call.
+	defined := map[string]bool{}
+	for _, d := range toolDefs() {
+		defined[d.Function.Name] = true
+	}
+	for _, name := range []string{"search", "get_chunks", "cypher"} {
+		if !defined[name] {
+			t.Errorf("strategy names %q, which toolDefs does not define", name)
+		}
+	}
+}
+
+func TestSystemPromptPropertiesExist(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	cfg.Ingest.SpoolDir = t.TempDir()
+	p := ingest.NewPipeline(cfg, st, &extract.Mock{}, nil, func(_ context.Context, in ingest.Input) (ingest.Loaded, error) {
+		return ingest.Loaded{Text: in.Text, Title: in.Title}, nil
+	})
+	// Unique entity names: entities merge globally by key, so a shared name
+	// would reuse a node that other writers may have given more properties.
+	tag := time.Now().UnixNano()
+	res, err := p.Submit(ctx, ingest.Input{
+		Kind: "text", Source: fmt.Sprintf("text:prompt-schema-%d", tag),
+		Title: "Zorbo guide", Text: fmt.Sprintf("Zorbo%d uses Acme%d", tag, tag),
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	t.Cleanup(func() { _ = st.DeleteDocument(context.Background(), res.DocumentID) })
+	if err := p.Process(ctx, res.DocumentID); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	// Parse the advertised properties so a nonexistent property added to the
+	// prompt fails against real nodes from this ingestion, not unrelated data.
+	declarations := regexp.MustCompile(`(?m)^(Document|Chunk|Entity)\{([^}]+)\}$`).FindAllStringSubmatch(systemPrompt, -1)
+	if len(declarations) != 3 {
+		t.Fatalf("prompt schema declarations = %d, want 3", len(declarations))
+	}
+	queries := map[string]string{
+		"Document": "MATCH (n:Document {id: $doc}) RETURN keys(n) AS properties",
+		"Chunk":    "MATCH (:Document {id: $doc})-[:HAS_CHUNK]->(n:Chunk) RETURN keys(n) AS properties",
+		"Entity":   "MATCH (:Document {id: $doc})-[:HAS_CHUNK]->(:Chunk)-[:MENTIONS]->(n:Entity) RETURN keys(n) AS properties",
+	}
+	for _, decl := range declarations {
+		t.Run(decl[1], func(t *testing.T) {
+			result, err := st.RunReadQuery(ctx, queries[decl[1]], map[string]any{"doc": res.DocumentID}, 0)
+			if err != nil {
+				t.Fatalf("keys(n): %v", err)
+			}
+			if len(result.Rows) == 0 {
+				t.Fatalf("no %s nodes for ingested document", decl[1])
+			}
+			properties := make(map[string]bool)
+			for _, row := range result.Rows {
+				keys, ok := row["properties"].([]any)
+				if !ok {
+					t.Fatalf("keys(n) = %T, want []any", row["properties"])
+				}
+				for _, key := range keys {
+					name, ok := key.(string)
+					if !ok {
+						t.Fatalf("property key = %T, want string", key)
+					}
+					properties[name] = true
+				}
+			}
+			for _, property := range strings.Split(decl[2], ",") {
+				property = strings.TrimSpace(property)
+				if !properties[property] {
+					t.Errorf("prompt advertises %s.%s, absent from keys(n)", decl[1], property)
+				}
+			}
+		})
+	}
+}
 
 // scriptedCall is one tool call inside a multi-call reply.
 type scriptedCall struct{ id, name, args string }
