@@ -41,7 +41,8 @@ RETURN v.key AS key, v.status AS status, v.reason AS reason, v.model AS model,
 }
 
 // PutJudgeVerdict merges a successful verdict by its complete request key.
-// The first writer's DocID is kept.
+// The first writer's DocID is kept; a DocID naming a missing document
+// writes nothing.
 func (s *Store) PutJudgeVerdict(ctx context.Context, v JudgeVerdict) error {
 	if v.Key == "" {
 		return fmt.Errorf("graph: judge verdict key is empty")
@@ -53,7 +54,12 @@ func (s *Store) PutJudgeVerdict(ctx context.Context, v JudgeVerdict) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A verdict for a document that no longer exists (deleted while its
+	// judge call was in flight) is not written: nothing could delete it.
+	// Store.mu orders this write against DeleteDocument in this process.
 	if err := s.runWrite(ctx, `
+OPTIONAL MATCH (d:Document {id: $doc_id})
+WITH d WHERE $doc_id = '' OR d IS NOT NULL
 MERGE (v:JudgeVerdict {key: $key})
 SET v.status = $status, v.reason = $reason, v.model = $model, v.confidence = $confidence,
     v.prompt_version = $prompt_version, v.at = $at, v.doc_id = coalesce(v.doc_id, $doc_id)`, map[string]any{

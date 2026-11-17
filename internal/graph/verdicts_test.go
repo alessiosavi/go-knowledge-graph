@@ -83,35 +83,43 @@ func TestJudgeVerdictWithoutTime(t *testing.T) {
 }
 
 // TestDeleteDocumentRemovesItsVerdicts keeps deletion permanent: a verdict
-// cached for a document's request is removed with that document, while
-// verdicts first written for other documents stay.
+// cached for a document's request is removed with that document, verdicts
+// first written for other documents stay, and a verdict that arrives after
+// its document was deleted (a judge call in flight) is never written.
 func TestDeleteDocumentRemovesItsVerdicts(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := t.Context()
 	uri := os.Getenv(graphtest.URIEnv)
 	tag := time.Now().UnixNano()
-	res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "text", Source: fmt.Sprintf("text/zorbo-verdict-doc-%d", tag), Hash: "h"})
-	if err != nil {
-		t.Fatal(err)
+	doc := func(name string) string {
+		res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "text", Source: fmt.Sprintf("text/zorbo-verdict-%s-%d", name, tag), Hash: "h"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.ID
 	}
+	docA, docB := doc("a"), doc("b")
 	mine := fmt.Sprintf("zorbo-mine-%d", tag)
 	other := fmt.Sprintf("zorbo-other-%d", tag)
+	late := fmt.Sprintf("zorbo-late-%d", tag)
 	t.Cleanup(func() {
-		rawRun(t, uri, fmt.Sprintf(`MATCH (v:JudgeVerdict) WHERE v.key IN ['%s', '%s'] DELETE v`, mine, other))
+		_ = st.DeleteDocument(context.Background(), docB)
+		rawRun(t, uri, fmt.Sprintf(`MATCH (v:JudgeVerdict) WHERE v.key IN ['%s', '%s', '%s'] DELETE v`, mine, other, late))
 	})
-	for key, doc := range map[string]string{mine: res.ID, other: "someotherdoc"} {
-		if err := st.PutJudgeVerdict(ctx, graph.JudgeVerdict{Key: key, Status: "confirmed", Model: "m", PromptVersion: "1", DocID: doc, At: time.Now().UTC()}); err != nil {
+	put := func(key, docID string) {
+		t.Helper()
+		if err := st.PutJudgeVerdict(ctx, graph.JudgeVerdict{Key: key, Status: "confirmed", Model: "m", PromptVersion: "1", DocID: docID, At: time.Now().UTC()}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	put(mine, docA)
+	put(other, docB)
 	// A later identical request from another document keeps the first owner.
-	if err := st.PutJudgeVerdict(ctx, graph.JudgeVerdict{Key: mine, Status: "confirmed", Model: "m", PromptVersion: "1", DocID: "laterdoc", At: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
+	put(mine, docB)
+	if got, _, err := st.JudgeVerdict(ctx, mine); err != nil || got.DocID != docA {
+		t.Fatalf("owner = %q err=%v, want the first writer %q", got.DocID, err, docA)
 	}
-	if got, _, err := st.JudgeVerdict(ctx, mine); err != nil || got.DocID != res.ID {
-		t.Fatalf("owner = %q err=%v, want the first writer %q", got.DocID, err, res.ID)
-	}
-	if err := st.DeleteDocument(ctx, res.ID); err != nil {
+	if err := st.DeleteDocument(ctx, docA); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := st.JudgeVerdict(ctx, mine); err != nil || ok {
@@ -119,6 +127,11 @@ func TestDeleteDocumentRemovesItsVerdicts(t *testing.T) {
 	}
 	if _, ok, err := st.JudgeVerdict(ctx, other); err != nil || !ok {
 		t.Fatalf("another document's verdict lost: ok=%v err=%v", ok, err)
+	}
+	// The judge call that was in flight during the delete returns now.
+	put(late, docA)
+	if _, ok, err := st.JudgeVerdict(ctx, late); err != nil || ok {
+		t.Fatalf("verdict written for a deleted document: ok=%v err=%v", ok, err)
 	}
 	if !rawIndexExists(t, uri, "JudgeVerdict", "doc_id") {
 		t.Error("JudgeVerdict(doc_id) index missing")
