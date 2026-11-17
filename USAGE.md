@@ -363,6 +363,83 @@ and a Wilson 95% interval; skipped and unlabelled rows do not enter the denomina
 If no rows are scored, the command prints `no scored rows` and exits 2.
 Audit files contain graph-derived text; store them with the source data.
 
+### Graph quality report
+
+```sh
+gkg quality --json
+gkg quality --domain acme --seed domains.json
+gkg quality --json --seed - < domains.json
+gkg quality --hygiene-sample 50 --sample-seed 1 --out hygiene-sample.json
+```
+
+`quality` reads done documents and their derived data in batches of 5,000,
+without Bootstrap, graph writes, or provider calls. JSON uses `metrics: 1`;
+undefined metrics are `null` (`n/a` in text). Candidate counts are `null`
+before extraction schema v4. `--seed` uses the longest matching prefix of the
+full document source, overriding its stored domain when matched. A domain
+filter applies to documents before metrics are computed.
+
+All populations below are selected done documents and their derived data.
+Typed facts are stored entity-to-entity edges with valid document and chunk
+provenance; a triple is a distinct directed (head, relation, tail).
+Duplicate groups use NFKD, lowercase, alphanumerics, and company-suffix removal,
+within domains and, for document-scoped keys, within documents.
+
+| Report key | Definition and denominator |
+| --- | --- |
+| `metrics` | Metric definition version, currently 1; no denominator. |
+| `documents` | Selected done documents; count. |
+| `chunks` | Distinct chunks of selected documents; count. |
+| `entities` | Entities mentioned in selected chunks or incident to selected typed facts; count. |
+| `mentions` | Distinct entity–chunk pairs in selected chunks; count. |
+| `isolated_share` | Entities with no incident typed fact / `entities`. |
+| `singleton_share` | Entities mentioned in exactly one distinct chunk / `entities`. |
+| `single_document_share` | Entities supported by mentions or typed facts in exactly one selected document / `entities`. |
+| `mention_gini` | Gini of distinct chunk counts per entity, including zeros: sum of absolute pairwise differences / (2 × `entities` × `mentions`). |
+| `top1pct_mention_share` | Mentions of the top ceil(1% × `entities`) entities / `mentions`. |
+| `cross_domain_entities` | Count of entities supported in multiple resolved domains; divide by `entities` for a share. Null under `--domain` or when no selected document has a resolved domain; unresolved documents are excluded from this metric. |
+| `domain_coverage` | Selected documents with a resolved stored or seed domain / `documents`; null when there are no documents. |
+| `fact_components` | Undirected connected components among endpoints of typed facts, including self-loops; count. |
+| `giant_share_of_fact_nodes` | Entities in the largest fact component / distinct typed-fact endpoints. |
+| `giant_share_of_entities` | Entities in the largest fact component / `entities`. |
+| `facts` | Object containing the following stored fact counts; no denominator. |
+| `facts.typed` | Stored typed fact edges, including repeated triples; count. |
+| `facts.candidates_unjudged` | FactCandidate nodes with no judge verdict in selected documents; count, null before v4. |
+| `facts.candidates_unclear` | FactCandidate nodes with judge verdict `unclear` in selected documents; count, null before v4. |
+| `facts.rejected` | RejectedFact nodes in selected documents; count. |
+| `low_confidence_share` | Typed edges whose stored `low_confidence` flag is true / `facts.typed`, independent of numeric confidence. |
+| `confidence_lt_0_4_share` | Typed edges whose numeric confidence is strictly below 0.4 (missing confidence treated as 0) / `facts.typed`. |
+| `support` | Object describing support per distinct triple; no denominator. |
+| `support.triples` | Distinct directed (head, relation, tail) triples; count. |
+| `support.one_chunk_share` | Triples supported by exactly one distinct chunk / `support.triples`. |
+| `support.multi_document_share` | Triples supported by at least two distinct documents / `support.triples`. |
+| `relation_types` | Distinct relation types among typed facts; count. |
+| `relation_entropy_bits` | Shannon entropy −Σ p log₂ p in bits, with p = stored edges of a type / `facts.typed`. |
+| `max_entropy_bits` | log₂(`relation_types`), the maximum relation entropy; null with no types. |
+| `multi_type_pairs` | Unordered entity pairs {head, tail} with more than one relation type over distinct triples; count, including self-pairs. |
+| `inverse_pairs` | Distinct triples (h,r,t) with a reverse (t,r,h), counted once with h < t; count. |
+| `self_loops` | Distinct triples (h,r,h); count, regardless of repeated supporting edges. |
+| `duplicate_groups` | Folded-name groups containing at least two distinct entities within their domain/document scope; count. |
+| `duplicate_entities` | Distinct entities belonging to any duplicate group, counted once across groups; count. |
+| `cross_type_groups` | Duplicate groups containing more than one entity type; count. |
+| `noise_rule_share` | Entities whose name the hygiene policy drops / `entities`. |
+| `co_mention` | Object describing unordered entity pairs sharing a chunk; no denominator. |
+| `co_mention.nodes` | Entities incident to at least one co-mention pair; count. |
+| `co_mention.edges` | Distinct unordered co-mention pairs, weighted by distinct shared chunks; count. |
+| `co_mention.weight1_share` | Co-mention pairs sharing exactly one distinct chunk / `co_mention.edges`. |
+| `co_mention.giant_share` | Nodes in the largest undirected co-mention component / `co_mention.nodes`. |
+| `hygiene_policy` | Text identifying the hygiene policy used for noise and samples; no denominator. |
+
+Co-mention pairs are uncapped; memory grows with Σ(entities per chunk)².
+
+Noise and hygiene samples use the **built-in hygiene preset** plus the configured
+`ingest.stoplist_file` overlay, passing each entity's `type` as its label. The
+built-in preset has no value labels, so type exemptions do not apply to
+`noise_rule_share`. This policy is recorded in the report. Sampling is
+deterministic for the seed and writes up to N dropped and N renamed names, with original name, normalized name,
+and rule (`normalize` for renamed names). The sample file records available
+counts and uses mode 0600. Names go only to `--out`; stdout contains aggregates.
+
 ## 7. Operations
 
 - Health: `GET /healthz`, `GET /readyz`; metrics: `GET /metrics`
