@@ -888,9 +888,14 @@ func (s *Store) EntityCandidatesByName(ctx context.Context, name, slug string) (
 	if slug != "" {
 		where += " AND e.domain = $domain"
 	}
+	// One candidate per domain (the most-mentioned), and a hard cap: at v4 a
+	// name_key is shared by every domain and by every document-scoped key.
 	recs, err := s.runRead(ctx, `MATCH (e:Entity) WHERE `+where+`
+ WITH e ORDER BY coalesce(e.mention_count,0) DESC, e.id ASC
+ WITH coalesce(e.domain,'') AS dom, collect(e)[0] AS e
  RETURN e.id AS id,e.key AS key,e.name AS name,e.type AS type,e.domain AS domain
- ORDER BY coalesce(e.mention_count,0) DESC,e.id ASC`, map[string]any{"name": name, "k": EntityKey(name), "domain": slug})
+ ORDER BY coalesce(e.mention_count,0) DESC,e.id ASC
+ LIMIT 100`, map[string]any{"name": name, "k": EntityKey(name), "domain": slug})
 	if err != nil {
 		return nil, fmt.Errorf("graph: entity candidates by name: %w", err)
 	}
