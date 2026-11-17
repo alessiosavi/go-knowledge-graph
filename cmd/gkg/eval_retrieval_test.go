@@ -122,7 +122,13 @@ func TestEvalRetrievalCLI(t *testing.T) {
 	t.Setenv("GKG_AGENT_ENABLED", "false")
 	// Like every other graph command, eval-retrieval bootstraps the store:
 	// a graph without the text indexes must not fail the first question.
-	migrationQuery(t, "DROP TEXT INDEX chunk_text", nil)
+	migrationQuery(t, "DROP TEXT INDEX chunk_text_v2", nil)
+	for _, row := range migrationQuery(t, "SHOW INDEX INFO", nil) {
+		typ, _ := row.Get("index type")
+		if strings.Contains(fmt.Sprint(typ), "name: chunk_text_v2)") {
+			t.Fatal("chunk_text_v2 still exists: bootstrap recovery precondition not exercised")
+		}
+	}
 	path := filepath.Join(dir, "report.json")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"eval-retrieval", "--questions", questions, "--k", "1,5", "--out", path}, &stdout, &stderr); code != 0 {

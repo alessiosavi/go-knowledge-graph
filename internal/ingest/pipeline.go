@@ -357,6 +357,10 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		return fmt.Errorf("ingest: %s: %w", stage, err)
 	}
 
+	if p.writeMode.Domains && doc.Domain == "" {
+		return fail("domain", errors.New("not assigned"))
+	}
+
 	st := doc.Status
 	if st == graph.StatusReceived || st == graph.StatusFetched || st == graph.StatusFailed {
 		if err := p.setStatus(ctx, docID, graph.StatusFetched, ""); err != nil {
@@ -1181,6 +1185,8 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r hygiene
 		}
 		if docScoped[m.Label] {
 			key = graph.ScopedEntityKey(doc.ID, m.Name)
+		} else if p.writeMode.Domains {
+			key = graph.DomainKey(doc.Domain, key)
 		}
 		keys[i] = key
 		e, ok := ents[key]

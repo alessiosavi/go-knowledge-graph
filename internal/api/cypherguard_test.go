@@ -11,7 +11,7 @@ func TestCypherGuardAllowsReads(t *testing.T) {
 		"MATCH (n:Entity) RETURN n LIMIT 5",
 		"MATCH (n)-[r]->(m) RETURN n, r, m",
 		"CALL vector_search.search('entity_vec', 10, $vec) YIELD node RETURN node",
-		"CALL text_search.search_all('entity_text', $q) YIELD node, score RETURN node, score",
+		"CALL text_search.search_all('entity_text_v2', $q) YIELD node, score RETURN node, score",
 		"SHOW INDEX INFO",
 	}
 	for _, q := range ok {

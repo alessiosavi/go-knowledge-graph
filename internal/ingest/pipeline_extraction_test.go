@@ -195,3 +195,32 @@ func TestLabelsForRejectsUnknownScope(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildExtractionDomainKeys(t *testing.T) {
+	for _, domains := range []bool{false, true} {
+		t.Run(fmt.Sprintf("domains=%v", domains), func(t *testing.T) {
+			p := &Pipeline{writeMode: WriteMode{Domains: domains}}
+			r := extract.ChunkResult{Mentions: []extract.Mention{
+				{Text: "@@", Label: "organization"}, {Text: "Acme", Label: "organization"}, {Text: "2026", Label: "date"},
+			}, Candidates: []extract.Candidate{{Label: "dated", Head: 1, Tail: 2, Score: 0.9}, {Label: "uses", Head: 0, Tail: 1, Score: 0.9}}}
+			ents, facts, audits := p.buildExtraction(&graph.Document{ID: "doc", Domain: "a"}, graph.Chunk{ID: "chunk"}, rawExtraction(r), "test", map[string]bool{"date": true})
+			key := "acme"
+			if domains {
+				key = "@a:acme"
+			}
+			if len(ents) != 2 {
+				t.Fatalf("entities=%+v", ents)
+			}
+			keys := map[string]bool{}
+			for _, e := range ents {
+				keys[e.Key] = true
+			}
+			if !keys[key] || !keys["#doc:2026"] {
+				t.Errorf("entity keys=%v", keys)
+			}
+			if len(facts) != 1 || facts[0].HeadKey != key || facts[0].TailKey != "#doc:2026" || len(audits) != 0 {
+				t.Errorf("facts=%+v, audits=%+v", facts, audits)
+			}
+		})
+	}
+}

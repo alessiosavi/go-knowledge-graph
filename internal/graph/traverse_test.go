@@ -331,8 +331,8 @@ func TestEnsureTextIndexesIdempotent(t *testing.T) {
 		label string
 		props []string
 	}{
-		{"Entity", []string{"name", "aliases"}},
-		{"Chunk", []string{"text"}},
+		{"Entity", []string{"name", "domain_tok"}},
+		{"Chunk", []string{"text", "domain_tok"}},
 	} {
 		if !rawTextIndexExists(t, uri, ix.label, ix.props) {
 			t.Errorf("text index on :%s(%v) missing", ix.label, ix.props)

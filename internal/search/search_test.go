@@ -143,10 +143,8 @@ func TestAutoReturnsBothLabeled(t *testing.T) {
 	}
 }
 
-// TestSearchAliasesAreNotIndexed pins the documented limitation: Memgraph
-// text indexes do not index list properties, so the aliases half of
-// entity_text is inert — name search is authoritative, alias-only lookups
-// miss. If upstream adds list indexing, this test must flip.
+// TestSearchAliasesAreNotIndexed pins name-only entity search by design:
+// aliases are excluded from entity_text_v2, so alias-only lookups miss.
 func TestSearchAliasesAreNotIndexed(t *testing.T) {
 	fx := newSearchFixture(t)
 	alias := uniqueToken(t)
@@ -159,7 +157,7 @@ func TestSearchAliasesAreNotIndexed(t *testing.T) {
 	}
 	for _, h := range hits {
 		if h.ID == fx.entityID {
-			t.Fatalf("alias token matched although list properties are not indexed upstream: %+v", h)
+			t.Fatalf("alias token matched although aliases are excluded from entity_text_v2: %+v", h)
 		}
 	}
 	// The name leg still works.

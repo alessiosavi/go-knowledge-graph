@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -302,4 +303,90 @@ func assertExtractionSchemaMarker(t *testing.T, uri string) {
 	if len(recs) != 1 || testInt64(recs[0], "n") != int64(graph.ExtractionSchemaVersion) {
 		t.Fatalf("extraction schema marker = %+v, want version %d", recs, graph.ExtractionSchemaVersion)
 	}
+}
+
+// TestTextIndexesV2 covers upgrading an existing graph as well as a repeat
+// bootstrap. The synthetic corpus also measures startup index build cost.
+func TestTextIndexesV2(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		if err := st.Bootstrap(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	uri := os.Getenv(graphtest.URIEnv)
+	doc, cid := entitiesTestDoc(t, st, "Acme-Max in Zorbo.")
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, doc); err != nil {
+			t.Error(err)
+		}
+	})
+	// Exercise replacement with existing indexed data, including legacy indexes.
+	for _, name := range []string{"chunk_text_v2", "entity_text_v2"} {
+		if rawNamedTextIndex(t, uri, name) {
+			rawRun(t, uri, "DROP TEXT INDEX "+name)
+		}
+	}
+	for _, ix := range []struct{ name, label, props string }{{"chunk_text", "Chunk", "text"}, {"entity_text", "Entity", "name, aliases"}} {
+		if !rawNamedTextIndex(t, uri, ix.name) {
+			rawRun(t, uri, fmt.Sprintf("CREATE TEXT INDEX %s ON :%s(%s)", ix.name, ix.label, ix.props))
+		}
+	}
+	rawRun(t, uri, fmt.Sprintf(`MATCH (d:Document {id:'%s'}) UNWIND range(1,10999) AS i CREATE (c:Chunk {id:d.id+'-c'+toString(i),doc_id:d.id,seq:i,text:'Acme-Max builds Quillon tools in Zorbo.',domain:'a',domain_tok:'dkca978112ca1bbdca'}) CREATE (d)-[:HAS_CHUNK {seq:i}]->(c)`, doc))
+	if n := rawCount(t, uri, fmt.Sprintf(`MATCH (:Document {id:'%s'})-[:HAS_CHUNK]->(c) RETURN count(c) AS n`, doc)); n != 11000 {
+		t.Fatalf("synthetic chunks=%d, want 11000", n)
+	}
+	if err := st.UpsertExtraction(ctx, doc, cid, "mock:1", []graph.EntityUpsert{{Key: "acme-" + doc, Name: "Acme-Max", Mentions: []graph.MentionSpan{{Start: 0, End: 8}}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := st.EnsureTextIndexes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("v2 text index build on 11000 synthetic chunks: %s", time.Since(start))
+	for i := 0; i < 2; i++ {
+		if err := st.Bootstrap(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"chunk_text_v2", "entity_text_v2"} {
+		if !rawNamedTextIndex(t, uri, name) {
+			t.Errorf("missing %s", name)
+		}
+	}
+	for _, name := range []string{"chunk_text", "entity_text"} {
+		if rawNamedTextIndex(t, uri, name) {
+			t.Errorf("legacy index %s remains", name)
+		}
+	}
+	if !rawTextIndexExists(t, uri, "Chunk", []string{"text", "domain_tok"}) || !rawTextIndexExists(t, uri, "Entity", []string{"name", "domain_tok"}) {
+		t.Error("v2 index fields differ")
+	}
+	for _, ix := range []struct{ label, prop string }{{"Document", "domain"}, {"Chunk", "domain"}, {"Entity", "name_key"}, {"Domain", "id"}} {
+		if !rawIndexExists(t, uri, ix.label, ix.prop) {
+			t.Errorf("missing index %s(%s)", ix.label, ix.prop)
+		}
+	}
+	if !rawUniqueConstraintExists(t, uri, "Domain", "id") {
+		t.Error("missing Domain(id) constraint")
+	}
+	// V2 entity/chunk unscoped search still quotes punctuation and operator words.
+	if hits, err := st.ChunkTextSearch(ctx, "Acme-Max", 1); err != nil || len(hits) != 1 {
+		t.Errorf("chunk search=%+v,%v", hits, err)
+	}
+	if hits, err := st.EntityTextSearch(ctx, "Acme-Max", 1); err != nil || len(hits) != 1 {
+		t.Errorf("entity search=%+v,%v", hits, err)
+	}
+}
+
+func rawNamedTextIndex(t *testing.T, uri, name string) bool {
+	t.Helper()
+	for _, r := range rawRecords(t, uri, "SHOW INDEX INFO") {
+		typ, _ := r.Get("index type")
+		if strings.Contains(fmt.Sprint(typ), "name: "+name+")") {
+			return true
+		}
+	}
+	return false
 }

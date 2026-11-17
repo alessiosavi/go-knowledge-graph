@@ -37,6 +37,7 @@ const timeLayout = "2006-01-02T15:04:05.000000000Z"
 
 // Document is one content version of one source.
 type Document struct {
+	Domain     string
 	ID         string
 	SourceKind string
 	Source     string
@@ -56,6 +57,7 @@ type Document struct {
 // empty list as a non-nil empty slice; use len() == 0, not == nil, when
 // testing them.
 type Chunk struct {
+	Domain           string
 	ID               string
 	DocID            string
 	Seq              int
@@ -72,6 +74,10 @@ type Chunk struct {
 
 // DocumentInput is the identity and content handle of a submitted document.
 type DocumentInput struct {
+	// Domain applies when a document version is created (new or changed content).
+	// Force and Noop leave an existing document's domain untouched; assigning
+	// domains to existing documents belongs to task 37.14b.
+	Domain   string
 	Kind     string
 	Source   string
 	FinalURL string

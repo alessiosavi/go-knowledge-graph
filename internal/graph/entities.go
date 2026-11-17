@@ -16,6 +16,8 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 )
 
 // EntityID returns the entity node id for a normalized entity key.
@@ -28,6 +30,12 @@ func EntityID(key string) string {
 func EntityKey(name string) string {
 	return NormalizeSurface(name)
 }
+
+// ValidDomain reports whether s is a valid domain slug.
+func ValidDomain(s string) bool { return domain.ValidDomain(s) }
+
+// DomainKey prefixes a normalized entity key with its domain.
+func DomainKey(domain, key string) string { return "@" + domain + ":" + key }
 
 // ScopedEntityKey builds an entity key scoped to a document. The leading #
 // cannot occur in an unscoped key because edge punctuation is stripped.
@@ -168,14 +176,11 @@ func mentionEdges(ents []EntityUpsert, facts []FactUpsert) []mentionEdge {
 }
 
 // WriteOptions controls extraction writes. FactsAsCandidates stores facts as
-// nodes until confirmed. Domain-scoped writes are not implemented yet.
+// nodes until confirmed. Domain assigns entities and candidates to a domain.
 type WriteOptions struct {
 	FactsAsCandidates bool
 	Domain            string
 }
-
-// ErrWriteOptionsUnsupported reports a write option this version cannot honour.
-var ErrWriteOptionsUnsupported = errors.New("graph: domain-scoped writes are not supported by this version")
 
 // ErrMissingJudgeInput reports a candidate fact without its canonical judge request.
 var ErrMissingJudgeInput = errors.New("graph: fact candidate requires judge input")
@@ -199,8 +204,8 @@ func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorV
 // same entity key abort at commit with a unique-constraint violation that
 // the driver does not retry (single-process scope, like UpsertDocument).
 func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extractorVersion string, ents []EntityUpsert, facts []FactUpsert, opt WriteOptions) error {
-	if opt.Domain != "" {
-		return ErrWriteOptionsUnsupported
+	if opt.Domain != "" && !ValidDomain(opt.Domain) {
+		return fmt.Errorf("graph: invalid domain slug %q", opt.Domain)
 	}
 	for _, f := range facts {
 		if opt.FactsAsCandidates && len(f.JudgeInput) == 0 {
@@ -255,7 +260,7 @@ func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extrac
 		}
 		entRows = append(entRows, map[string]any{
 			"key": e.Key, "id": EntityID(e.Key), "name": e.Name, "type": e.Type,
-			"aliases": e.Aliases,
+			"aliases": e.Aliases, "name_key": EntityKey(e.Name),
 		})
 	}
 	factRows := make([]map[string]any, 0, len(facts))
@@ -375,9 +380,11 @@ func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extrac
 UNWIND $ents AS ent
 MERGE (e:Entity {key: ent.key})
 ON CREATE SET e.id = ent.id, e.mention_count = 0, e.type = ent.type
-SET e.name = ent.name,
+SET e.name = ent.name, e.name_key = ent.name_key,
+    e.domain = CASE WHEN $domain <> '' THEN $domain ELSE e.domain END,
+    e.domain_tok = CASE WHEN $domain <> '' THEN $domain_tok ELSE e.domain_tok END,
     e.aliases = CASE WHEN size(ent.aliases) > 0 THEN ent.aliases ELSE coalesce(e.aliases, []) END`,
-				map[string]any{"ents": entRows}); err != nil {
+				map[string]any{"ents": entRows, "domain": opt.Domain, "domain_tok": domainTokenOrNil(opt.Domain)}); err != nil {
 				return fmt.Errorf("graph: merge entities: %w", err)
 			}
 		}
@@ -391,9 +398,9 @@ SET c.head_key = f.head, c.rel = f.rel, c.tail_key = f.tail,
     c.head_start = f.hs, c.head_end = f.he, c.tail_start = f.ts, c.tail_end = f.te,
     c.judge = '', c.judge_input = f.input, c.input_hash = f.hash,
     c.doc_id = $doc, c.chunk_id = $cid, c.extractor_version = $ver,
-    c.domain = $domain, c.created_at = $now`,
+    c.domain = $domain, c.domain_tok = $domain_tok, c.created_at = $now`,
 					map[string]any{"facts": factRows, "ver": extractorVersion, "doc": docID, "cid": chunkID,
-						"domain": opt.Domain, "now": time.Now().UTC().Format(timeLayout)}); err != nil {
+						"domain": opt.Domain, "domain_tok": domainTokenOrNil(opt.Domain), "now": time.Now().UTC().Format(timeLayout)}); err != nil {
 					return fmt.Errorf("graph: create fact candidates: %w", err)
 				}
 			} else if _, err := txWriteFactEdge(ctx, tx, factRows, extractorVersion, docID, chunkID, ""); err != nil {
@@ -440,6 +447,14 @@ RETURN count(r) AS n`,
 		return 0, fmt.Errorf("graph: create facts: %w", err)
 	}
 	return getInt(recs[0], "n"), nil
+}
+
+// domainTokenOrNil keeps unassigned nodes free of a token for the empty slug.
+func domainTokenOrNil(slug string) any {
+	if slug == "" {
+		return nil
+	}
+	return domain.DomainToken(slug)
 }
 
 // CandidateID uses the same identity as the corresponding audit row.
