@@ -191,6 +191,14 @@ func (s *Store) DeleteChunksFrom(ctx context.Context, docID string, fromSeq int)
 		if err := txRun(ctx, tx, `
 MATCH (:Document {id: $docID})-[:HAS_CHUNK]->(stale:Chunk)
 WHERE stale.seq >= $from
+WITH stale.id AS cid
+MATCH (f:FactCandidate {chunk_id: cid}) DELETE f`,
+			map[string]any{"docID": docID, "from": fromSeq}); err != nil {
+			return fmt.Errorf("graph: prune stale fact candidates: %w", err)
+		}
+		if err := txRun(ctx, tx, `
+MATCH (:Document {id: $docID})-[:HAS_CHUNK]->(stale:Chunk)
+WHERE stale.seq >= $from
 DETACH DELETE stale`,
 			map[string]any{"docID": docID, "from": fromSeq}); err != nil {
 			return fmt.Errorf("graph: prune stale chunks: %w", err)
@@ -252,6 +260,7 @@ RETURN a.key AS head, b.key AS tail`, params)
 			`MATCH (:Document {id: $doc})-[:HAS_CHUNK]->(:Chunk)-[m:MENTIONS]->(:Entity) DELETE m`,
 			`MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = $doc DELETE r`,
 			`MATCH (r:RejectedFact {doc_id: $doc}) DETACH DELETE r`,
+			`MATCH (f:FactCandidate {doc_id: $doc}) DELETE f`,
 		} {
 			if err := txRun(ctx, tx, query, params); err != nil {
 				return fmt.Errorf("graph: reset extraction: %w", err)
@@ -414,6 +423,10 @@ func txDeleteDocument(ctx context.Context, tx neo4j.ManagedTransaction, id strin
 		map[string]any{"id": id}); err != nil {
 		return fmt.Errorf("graph: delete judge verdicts: %w", err)
 	}
+	if err := txRun(ctx, tx, `MATCH (f:FactCandidate {doc_id: $id}) DELETE f`,
+		map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("graph: delete fact candidates: %w", err)
+	}
 	if err := txRun(ctx, tx, `MATCH (d:Document) WHERE d.supersedes = $id SET d.supersedes = ''`,
 		map[string]any{"id": id}); err != nil {
 		return fmt.Errorf("graph: clear supersedes pointers: %w", err)
@@ -473,6 +486,10 @@ MATCH (:Document {id: $doc})-[:HAS_CHUNK]->(:Chunk)-[m:MENTIONS]->(:Entity) DELE
 MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = $doc DELETE r`,
 		map[string]any{"doc": docID}); err != nil {
 		return fmt.Errorf("graph: delete facts: %w", err)
+	}
+	if err := txRun(ctx, tx, `MATCH (f:FactCandidate {doc_id: $doc}) DELETE f`,
+		map[string]any{"doc": docID}); err != nil {
+		return fmt.Errorf("graph: delete fact candidates: %w", err)
 	}
 	if err := txRun(ctx, tx, `
 MATCH (:Document {id: $doc})-[:HAS_CHUNK]->(c:Chunk) DETACH DELETE c`,

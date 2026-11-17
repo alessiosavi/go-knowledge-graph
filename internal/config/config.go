@@ -291,6 +291,9 @@ func Load(path string) (Config, error) {
 	if mp <= 0 || math.IsNaN(mp) || math.IsInf(mp, 0) || mp >= float64(math.MaxInt64)/1e6 {
 		return Config{}, errors.New("config: GKG_CONVERTER_MAX_IMAGE_MP must be positive, finite and fit an int64 pixel count")
 	}
+	if cfg.Facts.RequireConfirmation && cfg.Judge.Mode != "all" {
+		return Config{}, errors.New("facts.require_confirmation needs judge.mode=all")
+	}
 	return cfg, nil
 }
 

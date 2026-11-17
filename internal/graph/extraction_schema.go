@@ -109,6 +109,12 @@ func (s *Store) MigrateExtractionSchema(ctx context.Context) (MigrationResult, e
 			return result, fmt.Errorf("graph: inspect extraction audits: %w", err)
 		}
 	}
+	if len(recs) == 0 {
+		recs, err = s.runRead(ctx, `MATCH (c:FactCandidate) RETURN c LIMIT 1`, nil)
+		if err != nil {
+			return result, fmt.Errorf("graph: inspect fact candidates: %w", err)
+		}
+	}
 	if len(recs) > 0 {
 		// Requeue before deleting entities: if startup fails after the last
 		// entity batch, the next startup's no-entities path is still safe.
@@ -125,6 +131,7 @@ RETURN count(*) AS n`)
 			`MATCH ()-[m:MENTIONS]->() WITH m LIMIT $batch DELETE m RETURN count(*) AS n`,
 			`MATCH (:Entity)-[r]->(:Entity) WITH r LIMIT $batch DELETE r RETURN count(*) AS n`,
 			`MATCH (r:RejectedFact) WITH r LIMIT $batch DETACH DELETE r RETURN count(*) AS n`,
+			`MATCH (c:FactCandidate) WITH c LIMIT $batch DELETE c RETURN count(*) AS n`,
 		} {
 			if _, err := s.extractionMigrationBatches(ctx, query); err != nil {
 				return result, fmt.Errorf("graph: clear extraction data: %w", err)
@@ -163,6 +170,7 @@ func (s *Store) markEmptyExtractionSchema(ctx context.Context) error {
 	for _, query := range []string{
 		`MATCH (e:Entity) RETURN e.key LIMIT 1`,
 		`MATCH (r:RejectedFact) RETURN r.id LIMIT 1`,
+		`MATCH (c:FactCandidate) RETURN c.id LIMIT 1`,
 	} {
 		recs, err := s.runRead(ctx, query, nil)
 		if err != nil {

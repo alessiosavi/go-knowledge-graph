@@ -20,8 +20,7 @@ import (
 )
 
 // TestUpsertExtractionWrapper pins the delegation: the legacy entry point
-// and UpsertExtractionOpts with zero options write identical data. Non-zero
-// options are rejected until candidate facts and domains are implemented.
+// and UpsertExtractionOpts with zero options write identical data.
 func TestUpsertExtractionWrapper(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()
@@ -1171,7 +1170,10 @@ func TestUpsertExtractionOptsRejectsUnimplemented(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	for _, opt := range []graph.WriteOptions{{FactsAsCandidates: true}, {Domain: "a"}} {
+	if err := st.UpsertExtractionOpts(ctx, docID, chunkID, "mock:1", nil, nil, graph.WriteOptions{FactsAsCandidates: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, opt := range []graph.WriteOptions{{Domain: "a"}, {FactsAsCandidates: true, Domain: "a"}} {
 		err := st.UpsertExtractionOpts(ctx, docID, chunkID, "mock:1", nil, nil, opt)
 		if !errors.Is(err, graph.ErrWriteOptionsUnsupported) {
 			t.Errorf("UpsertExtractionOpts(%+v) error = %v; want ErrWriteOptionsUnsupported", opt, err)

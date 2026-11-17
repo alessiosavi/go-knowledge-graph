@@ -17,6 +17,7 @@ var uniqueConstraints = []struct {
 	{"Entity", "key"},
 	{"GkgMeta", "id"},
 	{"JudgeVerdict", "key"},
+	{"FactCandidate", "id"},
 }
 
 // secondaryIndexes are non-unique label-property indexes bootstrapped for
@@ -41,6 +42,9 @@ var secondaryIndexes = []struct {
 	{"Entity", []string{"key"}},
 	{"JudgeVerdict", []string{"key"}},
 	{"JudgeVerdict", []string{"doc_id"}},
+	{"FactCandidate", []string{"id"}},
+	{"FactCandidate", []string{"doc_id"}},
+	{"FactCandidate", []string{"chunk_id"}},
 }
 
 // textIndexes are the Tantivy text indexes backing search.Query.
