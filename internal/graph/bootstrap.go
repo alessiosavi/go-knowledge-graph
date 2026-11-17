@@ -18,16 +18,26 @@ var uniqueConstraints = []struct {
 	{"GkgMeta", "id"},
 }
 
-// secondaryIndexes are non-unique label indexes bootstrapped for query
-// performance (document identity, chunk exact-key lookups, entity id
+// secondaryIndexes are non-unique label-property indexes bootstrapped for
+// query performance (document identity, chunk exact-key lookups, entity id
 // lookups from the embedding write path).
+//
+// Memgraph unique constraints do not create an index, unlike Neo4j: every
+// `{id: $id}` / `{key: $key}` lookup on a constrained property is a label
+// scan unless it has its own index. Document(id), Chunk(id), Entity(key)
+// and Chunk(doc_id) are the hot lookup properties (search joins, entity
+// views, traversal evidence, per-document chunk reads).
 var secondaryIndexes = []struct {
 	Label string
 	Props []string
 }{
 	{"Document", []string{"source_kind", "source"}},
+	{"Document", []string{"id"}},
 	{"Chunk", []string{"exact_key"}},
+	{"Chunk", []string{"id"}},
+	{"Chunk", []string{"doc_id"}},
 	{"Entity", []string{"id"}},
+	{"Entity", []string{"key"}},
 }
 
 // textIndexes are the Tantivy text indexes backing search.Query.

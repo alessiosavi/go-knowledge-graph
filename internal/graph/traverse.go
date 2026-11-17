@@ -240,14 +240,18 @@ type ChunkSearchRow struct {
 	Text  string
 }
 
-// ChunkTextSearch runs the Tantivy chunk index.
+// ChunkTextSearch runs the Tantivy chunk index. The hits are cut to limit
+// before the Document join: the index can return up to 1,000 hits, and
+// joining all of them first made a chunk search take seconds.
 func (s *Store) ChunkTextSearch(ctx context.Context, q string, limit int) ([]ChunkSearchRow, error) {
 	recs, err := s.runRead(ctx, `
 CALL text_search.search_all('chunk_text', $q) YIELD node, score
-OPTIONAL MATCH (d:Document {id: node.doc_id})
-RETURN node.id AS id, node.doc_id AS doc_id, node.text AS text, coalesce(d.title, '') AS title
+WITH node, score
 ORDER BY score DESC
-LIMIT $limit`,
+LIMIT $limit
+OPTIONAL MATCH (d:Document {id: node.doc_id})
+RETURN node.id AS id, node.doc_id AS doc_id, node.text AS text, coalesce(d.title, '') AS title, score
+ORDER BY score DESC`,
 		map[string]any{"q": q, "limit": limit})
 	if err != nil {
 		return nil, fmt.Errorf("graph: chunk text search: %w", err)
