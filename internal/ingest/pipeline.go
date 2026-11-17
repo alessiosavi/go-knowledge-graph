@@ -485,7 +485,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		var profile domain.Profile
 		if p.writeMode.Domains {
 			if doc.Domain == "" {
-				if err := p.detectDomain(ctx, doc, chunks, cleaned, roots); err != nil {
+				if err := p.detectDomain(ctx, doc, chunks, cleaned, roots, docScoped); err != nil {
 					return fail("domain", err)
 				}
 			}
@@ -508,7 +508,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 				return fail("extract", err)
 			}
 			cleanResults(secondResults)
-			profile, _, err = p.nameProfile(ctx, chunks, cleaned, roots, doc.Domain)
+			profile, _, err = p.nameProfile(ctx, chunks, cleaned, roots, doc.Domain, docScoped)
 			if err != nil {
 				return fail("domain", err)
 			}
@@ -1258,7 +1258,10 @@ func (p *Pipeline) extractChunks(ctx context.Context, req extract.Request) ([]ex
 	return results, err
 }
 
-func (p *Pipeline) nameProfile(ctx context.Context, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk, onlyDomain string) (domain.Profile, map[string]string, error) {
+// nameProfile builds the domain profile from global entity names only:
+// document-scoped labels (dates, amounts) are values, not domain vocabulary,
+// and would make unrelated documents look alike.
+func (p *Pipeline) nameProfile(ctx context.Context, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk, onlyDomain string, docScoped map[string]bool) (domain.Profile, map[string]string, error) {
 	var ids []string
 	seen := make(map[string]bool)
 	for _, c := range chunks {
@@ -1290,6 +1293,9 @@ func (p *Pipeline) nameProfile(ctx context.Context, chunks []graph.Chunk, cleane
 				id = roots[c.ID].ID
 			}
 			for _, m := range cleaned[id].Mentions {
+				if docScoped[m.Label] {
+					continue
+				}
 				names = append(names, m.Name)
 			}
 		}
@@ -1321,7 +1327,7 @@ func domainParams(cfg config.DomainConfig) domain.Params {
 	return p
 }
 
-func (p *Pipeline) detectDomain(ctx context.Context, doc *graph.Document, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk) error {
+func (p *Pipeline) detectDomain(ctx context.Context, doc *graph.Document, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk, docScoped map[string]bool) error {
 	p.domainMu.Lock()
 	defer p.domainMu.Unlock()
 	olds, err := p.store.OlderLiveVersions(ctx, doc.ID)
@@ -1345,7 +1351,7 @@ func (p *Pipeline) detectDomain(ctx context.Context, doc *graph.Document, chunks
 	}
 	// Foreign roots will be extracted locally after assignment. Until then,
 	// an inherited document can borrow only names from its final domain.
-	profile, originals, err := p.nameProfile(ctx, chunks, cleaned, roots, inherited)
+	profile, originals, err := p.nameProfile(ctx, chunks, cleaned, roots, inherited, docScoped)
 	if err != nil {
 		return err
 	}

@@ -364,10 +364,7 @@ func TestBrokenDuplicateRootsExtracted(t *testing.T) {
 			}
 			chunks := []graph.Chunk{{Seq: 0, Text: "Acme-Max visits Quillon and Zorbo.", DuplicateOf: root}}
 			if kind == "cycle" {
-				back := ""
-				if kind == "cycle" {
-					back = id + "-c0"
-				}
+				back := id + "-c0"
 				chunks = append(chunks, graph.Chunk{Seq: 1, Text: "Quillon visits Acme-Max and Zorbo.", DuplicateOf: back})
 			}
 			if err := env.st.PutChunks(context.Background(), id, chunks); err != nil {
@@ -597,5 +594,60 @@ func TestConcurrentDuplicateNewCorpus(t *testing.T) {
 	}
 	if len(prov.ids) != 2 {
 		t.Fatalf("unfinished duplicate skipped: %v", prov.ids)
+	}
+}
+
+// datedProvider gives two unrelated documents disjoint organization names
+// that share one document-scoped date value.
+type datedProvider struct{}
+
+func (datedProvider) Name() string    { return "dated-test" }
+func (datedProvider) Version() string { return "dated-test:1" }
+func (datedProvider) Extract(_ context.Context, req extract.Request) ([]extract.ChunkResult, error) {
+	var out []extract.ChunkResult
+	for _, c := range req.Chunks {
+		orgs := []string{"Alphawick", "Alphorne", "Alvenmoor"}
+		if strings.Contains(c.Text, "Brindle") {
+			orgs = []string{"Brindlecor", "Brostavik", "Burlewen"}
+		}
+		r := extract.ChunkResult{ChunkID: c.ID}
+		for _, name := range orgs {
+			r.Mentions = append(r.Mentions, extract.Mention{Text: name, Label: "organization", Score: .9, End: len(name)})
+		}
+		r.Mentions = append(r.Mentions, extract.Mention{Text: "2026", Label: "date", Score: .9, End: 4})
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// TestProfileSkipsDocumentScopedValues: document-scoped values (dates,
+// amounts) are not domain vocabulary, so two unrelated documents that share
+// only a date must not land in the same domain, and the stored profile has
+// no date.
+func TestProfileSkipsDocumentScopedValues(t *testing.T) {
+	env, _ := detectionEnv(t, nil)
+	env.p = ingest.NewPipeline(env.cfg, env.st, datedProvider{}, env.ix, textLoader)
+	env.p.SetWriteMode(ingest.WriteMode{Domains: true, Hygiene: true})
+	ctx := context.Background()
+	uri := os.Getenv(graphtest.URIEnv)
+	var domains []string
+	for i, text := range []string{"Alphawick meets Alphorne in 2026.", "Brindlecor meets Brostavik in 2026."} {
+		res, err := env.p.Submit(ctx, ingest.Input{Kind: "text", Source: fmt.Sprintf("%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), i), Text: text, Labels: "mail"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = env.st.DeleteDocument(context.Background(), res.DocumentID)
+			rawRecords(t, uri, fmt.Sprintf(`MATCH (n:DomainDecision {doc_id:'%s'}) DETACH DELETE n RETURN count(*)`, res.DocumentID))
+			rawRecords(t, uri, fmt.Sprintf(`MATCH (n:Domain {id:'%s'}) DETACH DELETE n RETURN count(*)`, domain.NewDomainID(res.DocumentID)))
+		})
+		d := detectProcess(t, env, res.DocumentID)
+		domains = append(domains, d.Domain)
+		if p := storedProfile(t, env, res.DocumentID); p["2026"] != nil {
+			t.Errorf("profile of %s holds the document-scoped date: %v", text, p)
+		}
+	}
+	if domains[0] == domains[1] {
+		t.Fatalf("documents sharing only a date attached to one domain %q", domains[0])
 	}
 }

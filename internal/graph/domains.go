@@ -22,9 +22,11 @@ type DecisionRecord struct {
 // Assignment publishes the domain, profile and decision together.
 type Assignment struct {
 	DocID, Domain, DomainName, CreatedBy string
-	NewDomain                            bool
-	Profile                              domain.Profile
-	Decision                             DecisionRecord
+	// NewDomain is informational for the caller (it picks DomainName for a
+	// new domain); AssignDomain itself creates the Domain node by MERGE.
+	NewDomain bool
+	Profile   domain.Profile
+	Decision  DecisionRecord
 }
 
 // DomainProfiles reads only persisted profiles. Unfinished assignments count:
@@ -169,7 +171,7 @@ func (s *Store) MentionNamesForChunks(ctx context.Context, chunkIDs []string) (m
 	if len(chunkIDs) == 0 {
 		return out, nil
 	}
-	rows, err := s.runRead(ctx, `UNWIND $ids AS id MATCH (c:Chunk {id:id})-[:MENTIONS]->(e:Entity) RETURN DISTINCT c.id AS id,e.name AS name ORDER BY id,name`, map[string]any{"ids": chunkIDs})
+	rows, err := s.runRead(ctx, `UNWIND $ids AS id MATCH (c:Chunk {id:id})-[:MENTIONS]->(e:Entity) WHERE NOT e.key STARTS WITH '#' RETURN DISTINCT c.id AS id,e.name AS name ORDER BY id,name`, map[string]any{"ids": chunkIDs})
 	if err != nil {
 		return nil, fmt.Errorf("graph: duplicate mention names: %w", err)
 	}
