@@ -24,6 +24,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/chunk"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/dedup"
+	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
@@ -138,6 +139,11 @@ type pipelineStore interface {
 	SameIdentityDocumentIDs(context.Context, string, string) (map[string]bool, error)
 	ChunkRefsByExactKey(context.Context, string, []string, string) ([]graph.ChunkRef, error)
 	ChunkByID(context.Context, string) (graph.Chunk, error)
+	DomainProfiles(context.Context, string) ([]domain.DocProfile, error)
+	AssignDomain(context.Context, graph.Assignment) error
+	UpdateNameProfile(context.Context, string, domain.Profile) error
+	MentionNamesForChunks(context.Context, []string) (map[string][]string, error)
+	ClearDuplicateOf(context.Context, []string) error
 }
 
 // Metrics receives the pipeline counters and latencies; nil means
@@ -206,7 +212,8 @@ type Pipeline struct {
 	pending  map[string]submission
 	queueCtx context.Context // worker/server lifetime, never a request context
 
-	procLocks sync.Map // docID → *sync.Mutex, serializes Process per document
+	procLocks sync.Map   // docID → *sync.Mutex, serializes Process per document
+	domainMu  sync.Mutex // profile read, detection and assignment are one critical section
 
 	judge     FactJudge
 	emb       Embedder
@@ -357,10 +364,6 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		return fmt.Errorf("ingest: %s: %w", stage, err)
 	}
 
-	if p.writeMode.Domains && doc.Domain == "" {
-		return fail("domain", errors.New("not assigned"))
-	}
-
 	st := doc.Status
 	if st == graph.StatusReceived || st == graph.StatusFetched || st == graph.StatusFailed {
 		if err := p.setStatus(ctx, docID, graph.StatusFetched, ""); err != nil {
@@ -441,42 +444,73 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 				docScoped[l.Name] = true
 			}
 		}
+		var roots map[string]graph.Chunk
+		if p.writeMode.Domains {
+			roots, err = p.duplicateRoots(ctx, chunks)
+			if err != nil {
+				return fail("domain", err)
+			}
+		}
 		req := extract.Request{Chunks: make([]extract.RequestChunk, 0, len(chunks)), Entities: ents, Relations: rels}
 		for _, c := range chunks {
 			if c.DuplicateOf == "" {
 				req.Chunks = append(req.Chunks, extract.RequestChunk{ID: c.ID, Text: c.Text})
 			}
 		}
-		var results []extract.ChunkResult
-		if len(req.Chunks) > 0 {
-			start := time.Now()
-			results, err = p.prov.Extract(ctx, req)
-			if p.metrics != nil {
-				p.metrics.ExtractSeconds(time.Since(start).Seconds())
-				if err != nil {
-					p.metrics.ExtractorError()
-				}
-			}
-			if err != nil {
-				return fail("extract", err)
-			}
+		results, err := p.extractChunks(ctx, req)
+		if err != nil {
+			return fail("extract", err)
 		}
 		cleaned := make(map[string]hygiene.Result, len(results))
+		var preset hygiene.Preset
 		if p.writeMode.Hygiene {
-			preset, err := hygiene.LoadPreset(p.cfg.Labels.PresetsDir, p.labelName(doc), p.cfg.Ingest.StoplistFile)
+			preset, err = hygiene.LoadPreset(p.cfg.Labels.PresetsDir, p.labelName(doc), p.cfg.Ingest.StoplistFile)
 			if err != nil {
 				return fail("hygiene", err)
 			}
-			textByID := make(map[string]string, len(chunks))
-			for _, c := range chunks {
-				textByID[c.ID] = c.Text
-			}
-			for _, r := range results {
-				cleaned[r.ChunkID] = hygiene.Apply(r, textByID[r.ChunkID], preset)
-			}
-		} else {
+		}
+		textByID := make(map[string]string, len(chunks))
+		for _, c := range chunks {
+			textByID[c.ID] = c.Text
+		}
+		cleanResults := func(results []extract.ChunkResult) {
 			for _, r := range results {
 				cleaned[r.ChunkID] = rawExtraction(r)
+				if p.writeMode.Hygiene {
+					cleaned[r.ChunkID] = hygiene.Apply(r, textByID[r.ChunkID], preset)
+				}
+			}
+		}
+		cleanResults(results)
+		var profile domain.Profile
+		if p.writeMode.Domains {
+			if doc.Domain == "" {
+				if err := p.detectDomain(ctx, doc, chunks, cleaned, roots); err != nil {
+					return fail("domain", err)
+				}
+			}
+			// Duplicates can only borrow extraction inside their assigned domain.
+			second := extract.Request{Entities: ents, Relations: rels}
+			var clear []string
+			for i := range chunks {
+				c := &chunks[i]
+				if c.DuplicateOf != "" && roots[c.ID].DocID != doc.ID && roots[c.ID].Domain != doc.Domain {
+					clear = append(clear, c.ID)
+					c.DuplicateOf = ""
+					second.Chunks = append(second.Chunks, extract.RequestChunk{ID: c.ID, Text: c.Text})
+				}
+			}
+			if err := p.store.ClearDuplicateOf(ctx, clear); err != nil {
+				return fail("domain", err)
+			}
+			secondResults, err := p.extractChunks(ctx, second)
+			if err != nil {
+				return fail("extract", err)
+			}
+			cleanResults(secondResults)
+			profile, _, err = p.nameProfile(ctx, chunks, cleaned, roots, doc.Domain)
+			if err != nil {
+				return fail("domain", err)
 			}
 		}
 		if err := p.setStatus(ctx, docID, graph.StatusExtracted, ""); err != nil {
@@ -531,6 +565,11 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 			// before collecting judge candidates.
 			for _, f := range dedupeFactCandidates(facts) {
 				judgeCandidates = append(judgeCandidates, judgeCandidate{fact: f, chunkText: c.Text, chunkID: c.ID})
+			}
+		}
+		if p.writeMode.Domains {
+			if err := p.store.UpdateNameProfile(ctx, docID, profile); err != nil {
+				return fail("domain", err)
 			}
 		}
 		if p.writeMode.Hygiene {
@@ -1151,6 +1190,197 @@ func (p *Pipeline) buildChunks(ctx context.Context, doc *graph.Document, text st
 		seenExact[c.ExactKey] = cid
 	}
 	return chunks, nil
+}
+
+// duplicateRoots validates the complete chain before extraction. Broken chains,
+// cycles and roots being processed by another document cannot supply names safely.
+func (p *Pipeline) duplicateRoots(ctx context.Context, chunks []graph.Chunk) (map[string]graph.Chunk, error) {
+	roots := make(map[string]graph.Chunk)
+	var clear []string
+	for i := range chunks {
+		c := &chunks[i]
+		if c.DuplicateOf == "" {
+			continue
+		}
+		seen := map[string]bool{c.ID: true}
+		next := c.DuplicateOf
+		valid := false
+		for next != "" && !seen[next] {
+			seen[next] = true
+			root, err := p.store.ChunkByID(ctx, next)
+			if errors.Is(err, graph.ErrNotFound) {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			if root.DuplicateOf != "" {
+				next = root.DuplicateOf
+				continue
+			}
+			doc, err := p.store.Document(ctx, root.DocID)
+			if errors.Is(err, graph.ErrNotFound) {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			if root.DocID == c.DocID || doc.Status == graph.StatusDone {
+				root.Domain = doc.Domain
+				roots[c.ID] = root
+				valid = true
+			}
+			break
+		}
+		if !valid {
+			clear = append(clear, c.ID)
+			c.DuplicateOf = ""
+		}
+	}
+	if err := p.store.ClearDuplicateOf(ctx, clear); err != nil {
+		return nil, err
+	}
+	return roots, nil
+}
+
+func (p *Pipeline) extractChunks(ctx context.Context, req extract.Request) ([]extract.ChunkResult, error) {
+	if len(req.Chunks) == 0 {
+		return nil, nil
+	}
+	start := time.Now()
+	results, err := p.prov.Extract(ctx, req)
+	if p.metrics != nil {
+		p.metrics.ExtractSeconds(time.Since(start).Seconds())
+		if err != nil {
+			p.metrics.ExtractorError()
+		}
+	}
+	return results, err
+}
+
+func (p *Pipeline) nameProfile(ctx context.Context, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk, onlyDomain string) (domain.Profile, map[string]string, error) {
+	var ids []string
+	seen := make(map[string]bool)
+	for _, c := range chunks {
+		if c.DuplicateOf != "" {
+			root := roots[c.ID]
+			if root.DocID == c.DocID || (onlyDomain != "" && root.Domain != onlyDomain) {
+				continue
+			}
+			id := root.ID
+			if !seen[id] {
+				ids = append(ids, id)
+				seen[id] = true
+			}
+		}
+	}
+	borrowed, err := p.store.MentionNamesForChunks(ctx, ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	chunkNames := make(map[string][]string, len(chunks))
+	originals := make(map[string]string)
+	for _, c := range chunks {
+		var names []string
+		if c.DuplicateOf != "" && roots[c.ID].DocID != c.DocID {
+			names = borrowed[roots[c.ID].ID]
+		} else {
+			id := c.ID
+			if c.DuplicateOf != "" {
+				id = roots[c.ID].ID
+			}
+			for _, m := range cleaned[id].Mentions {
+				names = append(names, m.Name)
+			}
+		}
+		chunkNames[c.ID] = names
+		for _, name := range names {
+			key := domain.Fold(name)
+			if old, ok := originals[key]; !ok || name < old {
+				originals[key] = name
+			}
+		}
+	}
+	return domain.BuildProfile(chunkNames), originals, nil
+}
+
+// Partial programmatic configs use the defaults for each zero field, matching
+// config.Load's defaults. In particular, an unset override must not accept a
+// zero-score alternative to a unanimous prefix prior.
+func domainParams(cfg config.DomainConfig) domain.Params {
+	p := domain.DefaultParams()
+	if cfg.Tau != 0 {
+		p.Tau = cfg.Tau
+	}
+	if cfg.Delta != 0 {
+		p.Delta = cfg.Delta
+	}
+	if cfg.TauOverride != 0 {
+		p.TauOverride = cfg.TauOverride
+	}
+	return p
+}
+
+func (p *Pipeline) detectDomain(ctx context.Context, doc *graph.Document, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk) error {
+	p.domainMu.Lock()
+	defer p.domainMu.Unlock()
+	olds, err := p.store.OlderLiveVersions(ctx, doc.ID)
+	if err != nil {
+		return err
+	}
+	// The store returns oldest first; inheritance uses the newest live domain.
+	var inherited string
+	for i := len(olds) - 1; i >= 0; i-- {
+		old, err := p.store.Document(ctx, olds[i])
+		if errors.Is(err, graph.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if old.Domain != "" {
+			inherited = old.Domain
+			break
+		}
+	}
+	// Foreign roots will be extracted locally after assignment. Until then,
+	// an inherited document can borrow only names from its final domain.
+	profile, originals, err := p.nameProfile(ctx, chunks, cleaned, roots, inherited)
+	if err != nil {
+		return err
+	}
+	corpus, err := p.store.DomainProfiles(ctx, doc.ID)
+	if err != nil {
+		return err
+	}
+	params := domainParams(p.cfg.Domain)
+	target := domain.DocProfile{DocID: doc.ID, Source: doc.Source, Profile: profile}
+	decision := domain.Decide(target, corpus, params)
+	record := graph.DecisionRecord{DocID: doc.ID, Domain: decision.Domain, Action: decision.Action, By: "auto", Top: decision.Top, Params: decision.Params, Note: decision.Note}
+	a := graph.Assignment{DocID: doc.ID, Domain: decision.Domain, CreatedBy: "auto", NewDomain: decision.Action == "new", Profile: profile, Decision: record}
+	if inherited != "" {
+		a.Domain, a.NewDomain = inherited, false
+		a.Decision.Domain, a.Decision.Action = inherited, "inherit"
+	} else if a.NewDomain {
+		a.DomainName = domain.DomainName(target, originals, corpus)
+	}
+	if err := p.store.AssignDomain(ctx, a); err != nil {
+		return err
+	}
+	doc.Domain = a.Domain
+	if inherited != "" && decision.Domain != inherited {
+		for _, score := range decision.Top {
+			if score.Domain == decision.Domain && score.Score >= params.TauOverride {
+				a.Decision = record
+				a.Decision.Action, a.Decision.PreviousDomain = "proposed-move", inherited
+				if err := p.store.AssignDomain(ctx, a); err != nil {
+					slog.Warn("ingest: could not record proposed-move", "doc", doc.ID, "err", err)
+				}
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // rawExtraction adapts provider results without applying hygiene when the gate is off.

@@ -144,7 +144,7 @@ func TestHygieneWithConfirmation(t *testing.T) {
 	}
 }
 
-func TestDomainsRequireAssignment(t *testing.T) {
+func TestDomainsDetectAssignment(t *testing.T) {
 	env := domainPipeline(t, ingest.WriteMode{Domains: true})
 	ctx := context.Background()
 	res, err := env.p.Submit(ctx, ingest.Input{Kind: "text", Source: t.Name(), Text: "Acme in Zorbo for 2026.", Labels: "domain-test"})
@@ -155,17 +155,20 @@ func TestDomainsRequireAssignment(t *testing.T) {
 		if err := env.st.DeleteDocument(ctx, res.DocumentID); err != nil {
 			t.Error(err)
 		}
+		uri := os.Getenv(graphtest.URIEnv)
+		rawRecords(t, uri, fmt.Sprintf(`MATCH (r:DomainDecision {doc_id:'%s'}) DELETE r RETURN count(*)`, res.DocumentID))
+		rawRecords(t, uri, fmt.Sprintf(`MATCH (n:Domain {id:'%s'}) DELETE n RETURN count(*)`, domain.NewDomainID(res.DocumentID)))
 	})
 	err = env.p.Process(ctx, res.DocumentID)
-	if err == nil || !strings.Contains(err.Error(), "domain: not assigned") {
-		t.Fatalf("Process=%v, want domain: not assigned", err)
+	if err != nil {
+		t.Fatalf("Process=%v", err)
 	}
 	doc, err := env.st.Document(ctx, res.DocumentID)
-	if err != nil || doc.Status != graph.StatusFailed || !strings.Contains(doc.Error, "domain: not assigned") {
-		t.Errorf("failed document=%+v,%v", doc, err)
+	if err != nil || doc.Status != graph.StatusDone || doc.Domain == "" {
+		t.Errorf("detected document=%+v,%v", doc, err)
 	}
-	if n := rawCount(t, os.Getenv(graphtest.URIEnv), fmt.Sprintf(`MATCH (c:Chunk {doc_id:'%s'})-[:MENTIONS]->(e:Entity) RETURN count(e) AS n`, res.DocumentID)); n != 0 {
-		t.Errorf("unassigned domain wrote %d mentions", n)
+	if n := rawCount(t, os.Getenv(graphtest.URIEnv), fmt.Sprintf(`MATCH (c:Chunk {doc_id:'%s'})-[:MENTIONS]->(e:Entity) RETURN count(e) AS n`, res.DocumentID)); n != 3 {
+		t.Errorf("detected domain wrote %d mentions, want 3", n)
 	}
 }
 

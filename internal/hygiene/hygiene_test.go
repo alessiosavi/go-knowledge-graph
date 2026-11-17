@@ -149,6 +149,9 @@ func TestNormalize(t *testing.T) {
 		// A possessive company form keys like its plain form.
 		{"Quillon Ltd's", "Quillon", []string{"Quillon Ltd's"}},
 		{"Quillon Ltd’s", "Quillon", []string{"Quillon Ltd's"}},
+		{"`Quillon Ltd`", "Quillon", []string{"`Quillon Ltd`"}},
+		{"**Quillon Ltd**", "Quillon", []string{"**Quillon Ltd**"}},
+		{"Quillon Ltd,", "Quillon", []string{"Quillon Ltd,"}},
 	}
 	for _, prefix := range []string{"un'", "d'", "dell'", "dall'", "all'", "nell'", "sull'", "dagl'", "degl'", "negl'", "sugl'", "quell'"} {
 		tests = append(tests, struct {
@@ -165,9 +168,17 @@ func TestNormalize(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.raw, func(t *testing.T) {
+			// Raw code-like mentions remain disallowed outside the code preset.
+			p := p
+			if strings.Contains(tt.raw, "`") {
+				p = testPreset(t, "code")
+			}
 			name, aliases, rule := NameOnly(tt.raw, "organization", p)
 			if name != tt.want || !reflect.DeepEqual(aliases, tt.aliases) || rule != "" {
 				t.Errorf("NameOnly=%q %v %q; want %q %v kept", name, aliases, rule, tt.want, tt.aliases)
+			}
+			if strings.Contains(tt.raw, "Quillon") && graph.EntityKey(name) != "quillon" {
+				t.Errorf("normalized key=%q, want quillon", graph.EntityKey(name))
 			}
 			raw := extract.Mention{Text: tt.raw, Label: "organization", Start: 4, End: 4 + len(tt.raw), Score: .9}
 			got := Apply(extract.ChunkResult{ChunkID: "c", Mentions: []extract.Mention{raw}}, "about "+tt.raw, p)

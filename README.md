@@ -108,6 +108,11 @@ when false the parameter is ignored and `unverified_ignored` is set),
 `GKG_EMBEDDER_ENABLED`, `GKG_EMBEDDER_PROVIDER=openai|furls`,
 `GKG_API_KEY` (gkg's bearer; required by the edge, which injects it), `GKG_LIMITS_CYPHER_ROWS`.
 
+Automatic domain detection uses `GKG_DOMAIN_TAU=0.05`, `GKG_DOMAIN_DELTA=0.02`
+and `GKG_DOMAIN_TAU_OVERRIDE=0.15` (zero or unset values use these defaults);
+`GKG_DOMAIN_SEED_FILE` supplies the private seed mapping read by the v4 migration
+(task 37.18).
+
 ## Development
 
 ```sh
