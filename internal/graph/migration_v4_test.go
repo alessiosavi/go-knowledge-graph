@@ -19,8 +19,8 @@ func v4Fixture(t *testing.T) *graph.Store {
 	t.Helper()
 	st := graphtest.MigrationStore(t)
 	uri := os.Getenv(graphtest.URIEnv)
-	rawRun(t, uri, `MATCH (n) DETACH DELETE n`)
-	t.Cleanup(func() { rawRun(t, uri, `MATCH (n) DETACH DELETE n`) })
+	wipeGraph(t, uri)
+	t.Cleanup(func() { wipeGraph(t, uri) })
 	rawRun(t, uri, `CREATE (:GkgMeta {id:'extraction_schema',value:3})`)
 	for i := 0; i < 5; i++ {
 		rawRun(t, uri, fmt.Sprintf(`CREATE (d:Document {id:'acme-%d',source:'https://acme.invalid/%d',status:'done'}),
@@ -300,7 +300,7 @@ func TestMigrationInterruptedRestart(t *testing.T) {
 func TestMigrationV4Empty(t *testing.T) {
 	st := v4Fixture(t)
 	uri := os.Getenv(graphtest.URIEnv)
-	rawRun(t, uri, `MATCH (n) DETACH DELETE n`)
+	wipeGraph(t, uri)
 	r, err := st.MigrateExtractionSchema(context.Background())
 	if err != nil || !r.Migrated || r.From != 1 || r.To != 4 {
 		t.Fatalf("empty migration=%+v err=%v", r, err)
@@ -310,7 +310,7 @@ func TestMigrationV4Empty(t *testing.T) {
 func TestBootstrapDocumentOnlyNeedsMigration(t *testing.T) {
 	st := v4Fixture(t)
 	uri := os.Getenv(graphtest.URIEnv)
-	rawRun(t, uri, `MATCH (n) DETACH DELETE n`)
+	wipeGraph(t, uri)
 	rawRun(t, uri, `CREATE (:Document {id:'quillon',source:'https://quillon.invalid/',status:'done'})`)
 	if err := st.Bootstrap(context.Background()); err != nil {
 		t.Fatal(err)
@@ -322,4 +322,14 @@ func TestBootstrapDocumentOnlyNeedsMigration(t *testing.T) {
 	if !errors.Is(err, graph.ErrSeedRequired) {
 		t.Fatalf("migration=%v", err)
 	}
+}
+
+// wipeGraph empties the shared test graph. Entity embeddings are nulled
+// first: Memgraph's vector index otherwise keeps deleted nodes and later
+// vector searches fail with "Trying to get a property from a deleted object"
+// (the product's delete paths do the same).
+func wipeGraph(t *testing.T, uri string) {
+	t.Helper()
+	rawRun(t, uri, `MATCH (e:Entity) WHERE e.embedding IS NOT NULL SET e.embedding = null`)
+	rawRun(t, uri, `MATCH (n) DETACH DELETE n`)
 }

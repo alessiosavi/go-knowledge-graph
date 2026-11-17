@@ -22,7 +22,7 @@ func adminEnv(t *testing.T) pipelineEnv {
 	uri := os.Getenv(graphtest.URIEnv)
 	rawRecords(t, uri, `MERGE (m:GkgMeta {id:'extraction_schema'}) SET m.value=4 RETURN m`)
 	t.Cleanup(func() {
-		rawRecords(t, uri, `MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=3 RETURN m`)
+		rawRecords(t, uri, fmt.Sprintf(`MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=%d RETURN m`, graph.ExtractionSchemaVersion))
 		rawRecords(t, uri, `MATCH (n:Domain) WHERE n.created_by='admin' DETACH DELETE n RETURN count(*)`)
 		rawRecords(t, uri, `MATCH (n:DomainOp) DETACH DELETE n RETURN count(*)`)
 	})

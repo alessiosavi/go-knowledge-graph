@@ -27,17 +27,7 @@ func validateStoplistOverlay(cfg config.Config) error {
 // migrationParams applies per-field defaults, as runtime detection does (a
 // zero field takes its default), so the migration and ingest decide alike.
 func migrationParams(cfg config.Config) domain.Params {
-	params := domain.DefaultParams()
-	if cfg.Domain.Tau != 0 {
-		params.Tau = cfg.Domain.Tau
-	}
-	if cfg.Domain.Delta != 0 {
-		params.Delta = cfg.Domain.Delta
-	}
-	if cfg.Domain.TauOverride != 0 {
-		params.TauOverride = cfg.Domain.TauOverride
-	}
-	return params
+	return domain.ParamsFromConfig(cfg.Domain.Tau, cfg.Domain.Delta, cfg.Domain.TauOverride)
 }
 
 func migrationOptions(cfg config.Config) (graph.MigrationOptions, error) {

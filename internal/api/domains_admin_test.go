@@ -90,6 +90,7 @@ func TestDomainAdminGraphGuards(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.DeleteDocument(context.Background(), doc.ID) })
 	body := fmt.Sprintf(`{"document_ids":["%s"],"domain":"zorbo","op_id":"api-acme-move"}`, doc.ID)
+	adminGraphWrite(t, `MERGE (m:GkgMeta {id:'extraction_schema'}) SET m.value=3`)
 	w := call("move", body)
 	if w.Code != 409 || !bytes.Contains(w.Body.Bytes(), []byte("schema_not_v4")) {
 		t.Fatalf("v3 code=%d body=%s", w.Code, w.Body)
@@ -106,7 +107,7 @@ func TestDomainAdminGraphGuards(t *testing.T) {
 	}
 	adminGraphWrite(t, `MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=4`)
 	t.Cleanup(func() {
-		adminGraphWrite(t, `MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=3`)
+		adminGraphWrite(t, fmt.Sprintf(`MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=%d`, graph.ExtractionSchemaVersion))
 		adminGraphWrite(t, `MATCH (o:DomainOp) WHERE o.op_id STARTS WITH 'api-acme-' DELETE o`)
 	})
 	w = call("move", body)

@@ -16,6 +16,23 @@ type Params struct {
 // otherwise attach every document at score 0.
 func DefaultParams() Params { return Params{Tau: 0.05, Delta: 0.02, TauOverride: 0.15} }
 
+// ParamsFromConfig resolves configured thresholds: each zero field takes its
+// DefaultParams value on its own. Ingest detection, `gkg domain evaluate` and
+// the v4 migration all use it, so they cannot decide with different values.
+func ParamsFromConfig(tau, delta, tauOverride float64) Params {
+	p := DefaultParams()
+	if tau != 0 {
+		p.Tau = tau
+	}
+	if delta != 0 {
+		p.Delta = delta
+	}
+	if tauOverride != 0 {
+		p.TauOverride = tauOverride
+	}
+	return p
+}
+
 func (p Params) orDefault() Params {
 	if p == (Params{}) {
 		return DefaultParams()
