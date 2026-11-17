@@ -24,8 +24,24 @@ func validateStoplistOverlay(cfg config.Config) error {
 	return nil
 }
 
+// migrationParams applies per-field defaults, as runtime detection does (a
+// zero field takes its default), so the migration and ingest decide alike.
+func migrationParams(cfg config.Config) domain.Params {
+	params := domain.DefaultParams()
+	if cfg.Domain.Tau != 0 {
+		params.Tau = cfg.Domain.Tau
+	}
+	if cfg.Domain.Delta != 0 {
+		params.Delta = cfg.Domain.Delta
+	}
+	if cfg.Domain.TauOverride != 0 {
+		params.TauOverride = cfg.Domain.TauOverride
+	}
+	return params
+}
+
 func migrationOptions(cfg config.Config) (graph.MigrationOptions, error) {
-	opt := graph.MigrationOptions{Params: domain.Params{Tau: cfg.Domain.Tau, Delta: cfg.Domain.Delta, TauOverride: cfg.Domain.TauOverride}}
+	opt := graph.MigrationOptions{Params: migrationParams(cfg)}
 	switch cfg.Domain.SeedFile {
 	case "":
 	case "detect-all":
@@ -53,11 +69,30 @@ func migrateSchema(ctx context.Context, st *graph.Store, cfg config.Config) (gra
 	if current {
 		return st.MigrateExtractionSchema(ctx)
 	}
+	// Once the assign phase is durable the store needs no seed; loading it
+	// here would refuse a migration that preflight correctly called ready.
+	assigned, err := assignedPhase(ctx, st)
+	if err != nil {
+		return graph.MigrationResult{}, err
+	}
+	if assigned {
+		return st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{Params: migrationParams(cfg)})
+	}
 	opt, err := migrationOptions(cfg)
 	if err != nil {
 		return graph.MigrationResult{}, err
 	}
 	return st.MigrateExtractionSchemaOpts(ctx, opt)
+}
+
+// assignedPhase reports the restart state after an interrupted v4 migration:
+// marker 3 with its assign phase complete.
+func assignedPhase(ctx context.Context, st *graph.Store) (bool, error) {
+	phase, err := st.RunReadQuery(ctx, `MATCH (m:GkgMeta {id:'extraction_schema',value:3,v4_phase:'assigned'}) RETURN m.id AS id`, nil, 1)
+	if err != nil {
+		return false, err
+	}
+	return len(phase.Rows) > 0, nil
 }
 
 // runPreflight never bootstraps, builds a pipeline, or opens the spool. Deploy
@@ -90,6 +125,12 @@ func runPreflight(args []string, _ io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	if current {
+		// A current graph still starts the pipeline, which refuses an
+		// unreadable overlay: fail here before the deploy touches the stack.
+		if err := validateStoplistOverlay(cfg); err != nil {
+			fmt.Fprintf(stderr, "gkg preflight: %v\n", err)
+			return 3
+		}
 		return 0
 	}
 	ready := func() int {
@@ -99,12 +140,12 @@ func runPreflight(args []string, _ io.Writer, stderr io.Writer) int {
 		}
 		return 10
 	}
-	phase, err := st.RunReadQuery(ctx, `MATCH (m:GkgMeta {id:'extraction_schema',value:3,v4_phase:'assigned'}) RETURN m.id AS id`, nil, 1)
+	assigned, err := assignedPhase(ctx, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg preflight: %v\n", err)
 		return 1
 	}
-	if len(phase.Rows) > 0 {
+	if assigned {
 		return ready()
 	}
 	documents, err := st.RunReadQuery(ctx, `MATCH (d:Document)

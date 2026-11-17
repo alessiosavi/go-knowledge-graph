@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 )
 
 func stoplistOverlayFixture(t *testing.T, kind string) (path, diagnostic string) {
@@ -136,5 +137,47 @@ func TestPreflightAssignedRestart(t *testing.T) {
 				t.Error("preflight changed the restart marker")
 			}
 		})
+	}
+}
+
+// TestSchemaOnlyAssignedRestartWithoutSeed: once the assign phase is
+// durable, the migration needs no seed, so a seed that became unreadable
+// must not block `migrate --schema-only` after preflight said 10.
+func TestSchemaOnlyAssignedRestartWithoutSeed(t *testing.T) {
+	st := preflightCommandStore(t)
+	migrationCommandDocument(t, st, "done")
+	migrationQuery(t, `CREATE (:GkgMeta {id:'extraction_schema',value:3,v4_phase:'assigned'})`, nil)
+	t.Setenv("GKG_DOMAIN_SEED_FILE", filepath.Join(t.TempDir(), "gone.json"))
+	t.Setenv("GKG_INGEST_STOPLIST_FILE", "")
+	var out, errb bytes.Buffer
+	if code := run([]string{"migrate", "--schema-only"}, &out, &errb); code != 0 {
+		t.Fatalf("exit=%d stderr=%q; want 0 without a seed in the assigned phase", code, &errb)
+	}
+}
+
+// TestPreflightCurrentStoplistOverlay: a current graph with an unreadable
+// overlay fails preflight (3) instead of letting serve fail after the deploy.
+func TestPreflightCurrentStoplistOverlay(t *testing.T) {
+	preflightCommandStore(t)
+	migrationQuery(t, `CREATE (:GkgMeta {id:'extraction_schema',value:4})`, nil)
+	path, diagnostic := stoplistOverlayFixture(t, "missing")
+	t.Setenv("GKG_INGEST_STOPLIST_FILE", path)
+	var out, errb bytes.Buffer
+	if code := run([]string{"preflight"}, &out, &errb); code != 3 || !strings.Contains(errb.String(), diagnostic) {
+		t.Fatalf("exit=%d stderr=%q; want 3 with %q", code, &errb, diagnostic)
+	}
+}
+
+// TestMigrationParamsPerFieldDefaults: a zero field takes its default, as in
+// runtime detection, so the migration and ingest decide alike.
+func TestMigrationParamsPerFieldDefaults(t *testing.T) {
+	var cfg config.Config
+	cfg.Domain.Tau = 0.07
+	opt, err := migrationOptions(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (domain.Params{Tau: 0.07, Delta: 0.02, TauOverride: 0.15}); opt.Params != want {
+		t.Fatalf("params = %+v, want %+v", opt.Params, want)
 	}
 }
