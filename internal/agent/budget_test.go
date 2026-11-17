@@ -101,7 +101,7 @@ func TestContextBudgetStopsToolsAndKeepsEvidence(t *testing.T) {
 			cfg.Agent.ContextBudgetKB = 64
 			// Unknown tool dispatch never dereferences the store.
 			s := NewServer(cfg, &graph.Store{}, nil)
-			var resp askResponse
+			var resp AskResponse
 			var err error
 			if plan {
 				resp, err = s.askWithPlan(context.Background(), "q", nil)

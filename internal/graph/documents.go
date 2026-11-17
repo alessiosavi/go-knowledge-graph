@@ -742,3 +742,56 @@ ORDER BY ch.seq`, map[string]any{"id": id, "n": n})
 	}
 	return center, around, nil
 }
+
+// GoldChunk identifies an exact quote match in a completed document.
+type GoldChunk struct{ ChunkID, DocID, Source, Domain string }
+
+// ChunksContaining returns every case-sensitive substring match in done
+// documents. An empty domain searches all domains.
+func (s *Store) ChunksContaining(ctx context.Context, quote, domain string) ([]GoldChunk, error) {
+	recs, err := s.runRead(ctx, `
+MATCH (d:Document)-[:HAS_CHUNK]->(ch:Chunk)
+WHERE d.status = $done AND ch.text CONTAINS $quote
+  AND ($domain = '' OR d.domain = $domain)
+RETURN ch.id AS chunk_id, d.id AS doc_id, d.source AS source, d.domain AS domain
+ORDER BY ch.id`, map[string]any{"done": string(StatusDone), "quote": quote, "domain": domain})
+	if err != nil {
+		return nil, fmt.Errorf("graph: chunks containing: %w", err)
+	}
+	out := make([]GoldChunk, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, GoldChunk{ChunkID: getString(r, "chunk_id"), DocID: getString(r, "doc_id"), Source: getString(r, "source"), Domain: getString(r, "domain")})
+	}
+	return out, nil
+}
+
+// DoneChunkTexts visits completed-document texts in id order, retaining at
+// most 1,000 rows per batch. Callback and database failures stop the scan.
+func (s *Store) DoneChunkTexts(ctx context.Context, domain string, fn func(chunkID, text string) error) error {
+	last := ""
+	for {
+		recs, err := s.runRead(ctx, `
+MATCH (d:Document)-[:HAS_CHUNK]->(ch:Chunk)
+WHERE d.status = $done AND ch.id > $last
+  AND ($domain = '' OR d.domain = $domain)
+RETURN ch.id AS id, ch.text AS text
+ORDER BY ch.id LIMIT 1000`, map[string]any{"done": string(StatusDone), "domain": domain, "last": last})
+		if err != nil {
+			return fmt.Errorf("graph: done chunk texts: %w", err)
+		}
+		if len(recs) > 0 {
+			last = getString(recs[len(recs)-1], "id")
+			if last == "" {
+				return fmt.Errorf("graph: done chunk texts: empty chunk id at end of page")
+			}
+		}
+		for _, r := range recs {
+			if err := fn(getString(r, "id"), getString(r, "text")); err != nil {
+				return err
+			}
+		}
+		if len(recs) < 1000 {
+			return nil
+		}
+	}
+}

@@ -21,7 +21,7 @@ const streamEventsBuf = 64
 // StreamHandler serves POST /v1/agent/ask/stream: one question, one bounded
 // read-only agent run, rendered as Server-Sent Events — `tool` when a call
 // is about to execute, `delta` fragments of the answer, `done` with the
-// full askResponse (the authoritative payload), `error` classified — plus a
+// full AskResponse (the authoritative payload), `error` classified — plus a
 // periodic `: ping` heartbeat. The ask runs in one goroutine feeding an
 // event channel; this handler owns the response writer and serializes
 // events and heartbeats through one select loop, stopping on
@@ -49,7 +49,7 @@ func (s *Server) StreamHandler() http.Handler {
 		_ = rc.Flush()
 
 		type askResult struct {
-			resp askResponse
+			resp AskResponse
 			err  error
 		}
 		events := make(chan streamEvent, streamEventsBuf)
