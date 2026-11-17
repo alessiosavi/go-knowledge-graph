@@ -236,57 +236,62 @@ MATCH (d:Document {status: $done}) RETURN d.id AS id ORDER BY d.id`,
 // Empty labels preserve the document's current preset.
 func (s *Store) ResetExtraction(ctx context.Context, docID, labels string) error {
 	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
-		status, err := txDocumentStatus(ctx, tx, docID)
-		if err != nil {
-			return err
-		}
-		if status != StatusDone {
-			return fmt.Errorf("graph: reset document %s (%s): %w", docID, status, ErrNotDone)
-		}
-		touched, err := txMentionedKeys(ctx, tx, docID)
-		if err != nil {
-			return err
-		}
-		// Include legacy fact endpoints that may lack MENTIONS edges.
-		params := map[string]any{"doc": docID}
-		res, err := tx.Run(ctx, `
+		return txResetExtraction(ctx, tx, docID, labels)
+	})
+}
+
+// txResetExtraction shares the complete reset with an atomic admin move.
+func txResetExtraction(ctx context.Context, tx neo4j.ManagedTransaction, docID, labels string) error {
+	status, err := txDocumentStatus(ctx, tx, docID)
+	if err != nil {
+		return err
+	}
+	if status != StatusDone {
+		return fmt.Errorf("graph: reset document %s (%s): %w", docID, status, ErrNotDone)
+	}
+	touched, err := txMentionedKeys(ctx, tx, docID)
+	if err != nil {
+		return err
+	}
+	// Include legacy fact endpoints that may lack MENTIONS edges.
+	params := map[string]any{"doc": docID}
+	res, err := tx.Run(ctx, `
 MATCH (a:Entity)-[r]->(b:Entity) WHERE r.doc_id = $doc
 RETURN a.key AS head, b.key AS tail`, params)
-		if err != nil {
-			return fmt.Errorf("graph: reset fact keys: %w", err)
+	if err != nil {
+		return fmt.Errorf("graph: reset fact keys: %w", err)
+	}
+	recs, err := res.Collect(ctx)
+	if err != nil {
+		return err
+	}
+	for _, r := range recs {
+		touched = append(touched, getString(r, "head"), getString(r, "tail"))
+	}
+	slices.Sort(touched)
+	touched = slices.Compact(touched)
+	for _, query := range []string{
+		`MATCH (:Document {id: $doc})-[:HAS_CHUNK]->(:Chunk)-[m:MENTIONS]->(:Entity) DELETE m`,
+		`MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = $doc DELETE r`,
+		`MATCH (r:RejectedFact {doc_id: $doc}) DETACH DELETE r`,
+		`MATCH (f:FactCandidate {doc_id: $doc}) DELETE f`,
+	} {
+		if err := txRun(ctx, tx, query, params); err != nil {
+			return fmt.Errorf("graph: reset extraction: %w", err)
 		}
-		recs, err := res.Collect(ctx)
-		if err != nil {
-			return err
-		}
-		for _, r := range recs {
-			touched = append(touched, getString(r, "head"), getString(r, "tail"))
-		}
-		slices.Sort(touched)
-		touched = slices.Compact(touched)
-		for _, query := range []string{
-			`MATCH (:Document {id: $doc})-[:HAS_CHUNK]->(:Chunk)-[m:MENTIONS]->(:Entity) DELETE m`,
-			`MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = $doc DELETE r`,
-			`MATCH (r:RejectedFact {doc_id: $doc}) DETACH DELETE r`,
-			`MATCH (f:FactCandidate {doc_id: $doc}) DELETE f`,
-		} {
-			if err := txRun(ctx, tx, query, params); err != nil {
-				return fmt.Errorf("graph: reset extraction: %w", err)
-			}
-		}
-		if err := txRefreshMentionCounts(ctx, tx, touched); err != nil {
-			return err
-		}
-		if err := txGC(ctx, tx, touched); err != nil {
-			return err
-		}
-		return txRun(ctx, tx, `
+	}
+	if err := txRefreshMentionCounts(ctx, tx, touched); err != nil {
+		return err
+	}
+	if err := txGC(ctx, tx, touched); err != nil {
+		return err
+	}
+	return txRun(ctx, tx, `
 MATCH (d:Document {id: $doc})
 SET d.labels = CASE WHEN $labels = '' THEN coalesce(d.labels, '') ELSE $labels END,
     d.status = $chunked, d.updated_at = $now`, map[string]any{
-			"doc": docID, "labels": labels, "chunked": string(StatusChunked),
-			"now": time.Now().UTC().Format(timeLayout),
-		})
+		"doc": docID, "labels": labels, "chunked": string(StatusChunked),
+		"now": time.Now().UTC().Format(timeLayout),
 	})
 }
 

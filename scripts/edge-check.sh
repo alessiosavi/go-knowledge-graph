@@ -178,7 +178,7 @@ for mode in DetectionOnly On; do
   "${compose[@]}" logs --no-color --no-log-prefix gkg >"$tmp/gkg.log" 2>&1
   grep -F '"path":"/v1/domains"' "$tmp/gkg.log" >/dev/null || fail 'domains list reached upstream'
   grep -F '"path":"/v1/documents"' "$tmp/gkg.log" >/dev/null || fail 'upstream request log positive control'
-  if grep -E '"path":"(/metrics|/readyz|/v1/cypher|/v1/unknown|/ui/\.\./metrics)"|"method":"(PUT|OPTIONS)"' "$tmp/gkg.log" >/dev/null; then fail 'allowlist reached upstream'; fi
+  if grep -E '"path":"(/metrics|/readyz|/v1/cypher|/v1/admin/domains/(move|merge|rename|undo)|/v1/unknown|/ui/\.\./metrics)"|"method":"(PUT|OPTIONS)"' "$tmp/gkg.log" >/dev/null; then fail 'allowlist reached upstream'; fi
   ok 'allowlist absent from upstream logs'
   ok 'section hygiene'
   "${compose[@]}" logs --no-color --no-log-prefix >"$tmp/all.log" 2>&1

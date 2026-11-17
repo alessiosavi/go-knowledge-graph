@@ -212,8 +212,9 @@ type Pipeline struct {
 	pending  map[string]submission
 	queueCtx context.Context // worker/server lifetime, never a request context
 
-	procLocks sync.Map   // docID → *sync.Mutex, serializes Process per document
-	domainMu  sync.Mutex // profile read, detection and assignment are one critical section
+	procLocks   sync.Map   // docID → *sync.Mutex, serializes Process per document
+	domainOpsMu sync.Mutex // serializes resumable admin requests in serve
+	domainMu    sync.Mutex // profile read, detection and assignment are one critical section
 
 	judge     FactJudge
 	emb       Embedder

@@ -60,6 +60,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runMigrate(stdout, stderr)
 	case "eval":
 		return runEval(args[1:], stdout, stderr)
+	case "domain":
+		return runDomain(args[1:], stdout, stderr)
 	case "judge":
 		return runJudge(args[1:], stdout, stderr)
 	case "quality":
@@ -636,6 +638,7 @@ commands:
   ingest    ingest a file, URL or stdin into the knowledge graph (-source <s> overrides the identity)
   eval      run the golden-set evaluation harness
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
+  domain    list, inspect, evaluate and administer domains through serve
   judge     backfill unjudged candidates or sample and score a fact audit
   quality   report read-only graph quality metrics and optional private hygiene samples
   migrate   upgrade the Memgraph schema and re-extract in-flight documents

@@ -177,3 +177,85 @@ func TestDomainProfilesSynthetic600(t *testing.T) {
 	decision := domain.Decide(domain.DocProfile{DocID: "target", Source: "target", Profile: domain.Profile{"acmemax": 1, "quillon": 2, "zorbo": 1}}, profiles, domain.DefaultParams())
 	t.Logf("synthetic_documents=600 corpus_profiles=%d DomainProfiles=%s detection=%s action=%s", len(profiles), read, time.Since(start), decision.Action)
 }
+
+func TestFactAuditIDSanitizesRelation(t *testing.T) {
+	if graph.FactAuditID("acme", "Works At!", "zorbo", "quillon") != graph.FactAuditID("acme", "works_at_", "zorbo", "quillon") {
+		t.Fatal("raw ingest and sanitized backfill relation produce different audit IDs")
+	}
+}
+
+func TestMoveDocumentGuardsAndLedger(t *testing.T) {
+	st, a := domainAssignmentFixture(t)
+	ctx := t.Context()
+	uri := os.Getenv(graphtest.URIEnv)
+	if err := st.AssignDomain(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MoveDocument(ctx, a.DocID, "zorbo-admin", "move-acme", "move", "admin"); !errors.Is(err, graph.ErrSchemaNotV4) {
+		t.Fatalf("v3 move=%v", err)
+	}
+	rawRun(t, uri, `MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=4`)
+	t.Cleanup(func() {
+		rawRun(t, uri, `MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=3`)
+		rawRun(t, uri, `MATCH (n:Domain {id:'zorbo-admin'}) DELETE n`)
+	})
+	if err := st.MoveDocument(ctx, a.DocID, "zorbo-admin", "move-acme", "move", "admin"); !errors.Is(err, graph.ErrNotDone) {
+		t.Fatalf("unfinished move=%v", err)
+	}
+	d, _ := st.Document(ctx, a.DocID)
+	if d.Domain != a.Domain {
+		t.Fatal("unfinished move changed domain")
+	}
+	if err := st.SetStatus(ctx, a.DocID, graph.StatusDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MoveDocument(ctx, a.DocID, "zorbo-admin", "move-acme", "move", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	records, err := st.DomainDecisions(ctx, "move-acme")
+	if err != nil || len(records) != 1 || records[0].PreviousDomain != a.Domain {
+		t.Fatalf("records=%+v err=%v", records, err)
+	}
+	// A committed document is skipped even while re-extraction is pending.
+	if err := st.MoveDocument(ctx, a.DocID, "zorbo-admin", "move-acme", "move", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RenameDomain(ctx, "zorbo-admin", "Quillon Ltd"); err != nil {
+		t.Fatal(err)
+	}
+	domains, err := st.ListDomains(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range domains {
+		if d.ID == "zorbo-admin" {
+			found = true
+			if d.Name != "Quillon Ltd" || d.Documents != 0 {
+				t.Fatalf("domain=%+v", d)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("new domain missing")
+	}
+}
+
+func TestRefutationAuditUsesOneSanitizedID(t *testing.T) {
+	st, a := domainAssignmentFixture(t)
+	audit := graph.FactAudit{HeadKey: "acme", Rel: "Works At!", TailKey: "zorbo", DocID: a.DocID, ChunkID: a.DocID + "-c0", JudgeVerdict: "refuted"}
+	if err := st.WriteFactAudit(t.Context(), audit); err != nil {
+		t.Fatal(err)
+	}
+	audit.Rel = graph.SanitizeRel(audit.Rel)
+	if err := st.WriteFactAudit(t.Context(), audit); err != nil {
+		t.Fatal(err)
+	}
+	rows := rawRecords(t, os.Getenv(graphtest.URIEnv), fmt.Sprintf(`MATCH (r:RejectedFact {doc_id:'%s'}) RETURN r.rel AS rel`, a.DocID))
+	if len(rows) != 1 {
+		t.Fatalf("same fact produced %d audit rows", len(rows))
+	}
+	if rel, _ := rows[0].Get("rel"); rel != audit.Rel {
+		t.Fatalf("audit relation=%v", rel)
+	}
+}

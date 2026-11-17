@@ -237,8 +237,9 @@ is benign: the newer version completes normally.
 - **JSON bodies are capped at 4 MiB at the edge** (pasted text, MCP calls);
   files keep 20 MiB. In `DetectionOnly` mode the cap is not enforced
   (ModSecurity processes oversized bodies partially) — keep that mode short.
-- **Not exposed through the edge:** `/v1/admin/rebuild`, `/v1/cypher`, `/metrics`, `/readyz`; use
-  the `cypher` MCP tool or the loopback ports on the host.
+- **Not exposed through the edge:** `/v1/admin/rebuild`, `/v1/admin/domains/*`, `/v1/cypher`, `/metrics`, `/readyz`; use
+  the `cypher` MCP tool, the host loopback port for rebuild, and the
+  in-container CLI for domain mutations.
 - **Free-text fields are not WAF-inspected for attack payloads**: document
   text, search queries and agent questions are data to gkg (parameterized
   Cypher, no shell, sanitized rendering), so the SQLi/RCE/XSS/LFI/RFI/injection
@@ -269,3 +270,18 @@ guarded Cypher is not domain-enforced and relies on the stated prompt scope.
 Name lookup uses indexed `Entity.name_key` and `EntityKey` folding at v4
 (possessives and edge punctuation included); legacy graphs retain the
 case-folded name scan. Ambiguous unscoped names return one candidate per domain.
+
+## Admin reachability and historical audits
+
+`POST /v1/admin/rebuild` is protected by the configured internal bearer, the
+`127.0.0.1` port publish and the closed edge route map. It has no socket peer
+check, so the host curl in the quickstart works. Domain admin routes additionally
+require a loopback peer: host requests through the published port arrive from the
+Docker gateway and receive 403 `loopback_only`. Run `docker compose exec gkg gkg
+domain move|merge|rename|undo …` on the box from the deployment directory (or pass
+its existing Compose project name) so the CLI calls serve on `127.0.0.1` inside
+the container.
+
+Audit rows written before relation-ID sanitation retain their unsanitized
+relations and IDs; judging the same fact again can create a second audit row.
+The v4 rebuild resets these audits.

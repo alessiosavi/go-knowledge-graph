@@ -478,3 +478,51 @@ so it can return fewer than the requested number of hits.
 `gkg eval-retrieval --questions questions.json --domain zorbo` applies that
 scope to all questions, including gold resolution and null checks. Without
 `--domain`, each question's optional `domain` is used.
+
+## Domain administration
+
+Schema v4 domain mutations run inside `gkg serve` through loopback-only admin
+routes. They require the configured `GKG_API_KEY` bearer when set and are blocked
+at the edge. Read commands connect directly to the configured graph:
+
+```sh
+gkg domain list
+gkg domain show acme
+gkg domain evaluate
+# Run mutations inside the running gkg container, on the box using the same
+# Compose project as the deployed stack:
+docker compose exec gkg gkg domain rename acme "Acme-Max"
+docker compose exec gkg gkg domain move document-id zorbo --op-id acme-move
+docker compose exec gkg gkg domain merge acme zorbo --op-id acme-merge
+docker compose exec gkg gkg domain undo --op-id acme-move
+```
+
+Run Compose from the deployment directory, or pass its existing project name
+with `docker compose -p <project> exec …`. The CLI defaults to
+`http://127.0.0.1:<port in server.addr>` inside the container (`:8080` in Compose).
+`--server` overrides that URL. Host requests through the published loopback port
+arrive from the Docker gateway and are refused with HTTP 403 `loopback_only`.
+An unreachable serve returns exit 1.
+
+Moves may create a valid new domain slug. Merges require existing domains and
+remove the emptied source. Before any change, the operation checks every pending
+member: `done` documents have extraction reset and queued again, while judge
+verdict caches survive; `superseded` versions get only their domain properties
+updated and stay terminal. Failed or in-flight documents cause HTTP 409
+`not_done` listing their IDs, with nothing changed. Rename changes the display
+name and ledger without resetting extraction or requeueing documents.
+
+An operation interrupted after a committed move can partially progress: retry
+the same request and `--op-id` to continue without resetting documents already
+recorded in the ledger. A merge reports `incomplete` with `remaining` document
+IDs if concurrent ingestion keeps its source nonempty; retry the merge with the
+same `--op-id` to include those members. `completed` means every live reset was
+queued and the merge source was removed. Undo requires live members to be `done`
+again; superseded members are skipped and listed in `skipped`. It restores live
+members' prior partitions through re-extraction under a new operation ID.
+
+`list` includes completed document counts and the nearest other domain, averaging
+the existing top-three similarity score over the source domain's profiles.
+`show` includes its decision ledger. `evaluate` reports document-weighted
+leave-one-out top-choice accuracy, auto-attach share and unseen-domain false-attach
+share using stored profiles and configured domain thresholds; it calls no provider.
