@@ -63,6 +63,11 @@ func Query(ctx context.Context, st *graph.Store, emb QueryEmbedder, q, kind stri
 	if strings.TrimSpace(q) == "" {
 		return nil, fmt.Errorf("search: empty query")
 	}
+	switch kind {
+	case "entity", "chunk", "auto":
+	default:
+		return nil, fmt.Errorf("search: kind %q not in entity|chunk|auto", kind)
+	}
 	// A query with no searchable word (only punctuation or symbols) matches
 	// nothing: skip every leg, the vector leg included, rather than return
 	// embedding neighbours of punctuation.

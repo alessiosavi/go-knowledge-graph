@@ -7,23 +7,22 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// TextQueryWords splits plain text into the lowercase words a text-index
-// query searches for: the runs of Unicode letters and digits, after NFC
-// normalization so a decomposed "e" + U+0301 matches an indexed "é".
+// TextQueryWords splits plain text into the words a text-index query
+// searches for: runs of Unicode letters, numbers and combining marks, after
+// NFC normalization so a decomposed "e" + U+0301 matches an indexed "é".
+// Case is kept: the index tokenizer lowercases query terms the same way it
+// lowercased the indexed text (full Unicode rules: "İstanbul" only matches
+// when Tantivy, not Go, lowercases it).
 func TextQueryWords(q string) []string {
-	words := strings.FieldsFunc(norm.NFC.String(q), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	return strings.FieldsFunc(norm.NFC.String(q), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r)
 	})
-	for i, w := range words {
-		words[i] = strings.ToLower(w)
-	}
-	return words
 }
 
 // TextQueryTerms converts plain text to space-separated, quoted search
-// terms. Punctuation separates Unicode letter/digit runs; quoting keeps
-// words such as and, or and not from becoming Tantivy operators (Memgraph
-// upper-cases them in any case before parsing).
+// terms. Punctuation separates the words; quoting keeps words such as and,
+// or and not from becoming Tantivy operators (Memgraph upper-cases bare ones
+// in any case before parsing; a quoted "AND" stays a plain term).
 func TextQueryTerms(q string) string {
 	words := TextQueryWords(q)
 	for i, w := range words {

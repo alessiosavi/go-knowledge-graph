@@ -12,23 +12,25 @@ func TestTextQueryTerms(t *testing.T) {
 		query string
 		want  string
 	}{
-		{"l'Acme-Max", `"l" "acme" "max"`},
-		{"Zorbo's", `"zorbo" "s"`},
+		{"l'Acme-Max", `"l" "Acme" "Max"`},
+		{"Zorbo's", `"Zorbo" "s"`},
 		{"a:b", `"a" "b"`},
 		{"(x", `"x"`},
 		{`"x`, `"x"`},
-		{"x AND", `"x" "and"`},
-		{"Or not", `"or" "not"`},
+		{"x AND", `"x" "AND"`},
+		{"Or not", `"Or" "not"`},
 		{"*", ""},
-		{"  Caffè  Ünïcode ", `"caffè" "ünïcode"`},
-		{"C++ / Go", `"c" "go"`},
+		{"  Caffè  Ünïcode ", `"Caffè" "Ünïcode"`},
+		{"C++ / Go", `"C" "Go"`},
 		{"", ""},
 		{" \t\n", ""},
-		{"Go27_１２٣", `"go27" "１２٣"`},
+		{"Go27_１２٣", `"Go27" "１２٣"`},
 		{"x and", `"x" "and"`},
-		{"oR nOt", `"or" "not"`},
-		{"Zorbe\u0300llo", `"zorbèllo"`},
-		{"ZORBÈLLO", `"zorbèllo"`},
+		{"oR nOt", `"oR" "nOt"`},
+		{"Zorbe\u0300llo", `"Zorbèllo"`},
+		{"ZORBÈLLO", `"ZORBÈLLO"`},
+		{"İzorbul Ⅻ ½", `"İzorbul" "Ⅻ" "½"`},
+		{"i\u0307zorbul", "\"i\u0307zorbul\""},
 	} {
 		t.Run(tt.query, func(t *testing.T) {
 			if got := graph.TextQueryTerms(tt.query); got != tt.want {
