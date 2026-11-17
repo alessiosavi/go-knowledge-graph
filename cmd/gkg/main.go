@@ -320,6 +320,11 @@ func converterFromConfig(cfg config.Config) (convert.Converter, error) {
 // search endpoints' vector query leg, and records the embedding-space
 // marker (warn-only) when it is enabled.
 func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*ingest.Pipeline, embed.Provider, error) {
+	schemaVersion, err := st.SchemaVersion(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	v4 := schemaVersion >= graph.SchemaVersionV4
 	prov, err := providerFromConfig(cfg, "")
 	if err != nil {
 		return nil, nil, err
@@ -335,6 +340,7 @@ func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*in
 		return nil, nil, err
 	}
 	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg), conv))
+	pipe.SetWriteMode(ingest.WriteMode{Hygiene: v4, Domains: v4, RequireConfirmation: v4 && cfg.Facts.RequireConfirmation})
 	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
 		pipe.SetJudge(judge.NewClient(cfg))
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -166,7 +167,24 @@ func mentionEdges(ents []EntityUpsert, facts []FactUpsert) []mentionEdge {
 	return out
 }
 
-// UpsertExtraction replaces one chunk's mentions and fact edges inside a
+// WriteOptions controls extraction writes. Its fields are reserved for
+// candidate facts and domain-scoped entities, which this version does not
+// implement yet: UpsertExtractionOpts rejects any non-zero option with
+// ErrWriteOptionsUnsupported instead of silently writing legacy data.
+type WriteOptions struct {
+	FactsAsCandidates bool
+	Domain            string
+}
+
+// ErrWriteOptionsUnsupported reports a write option this version cannot honour.
+var ErrWriteOptionsUnsupported = errors.New("graph: candidate facts and domain-scoped writes are not supported by this version")
+
+// UpsertExtraction replaces one chunk's extraction using the default options.
+func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorVersion string, ents []EntityUpsert, facts []FactUpsert) error {
+	return s.UpsertExtractionOpts(ctx, docID, chunkID, extractorVersion, ents, facts, WriteOptions{})
+}
+
+// UpsertExtractionOpts replaces one chunk's mentions and fact edges inside a
 // single transaction: the chunk's MENTIONS and every fact edge carrying its
 // chunk_id are deleted, entities are merged by key, facts are recreated
 // (deduplicated by head+rel+tail keeping the highest confidence) and
@@ -179,7 +197,10 @@ func mentionEdges(ents []EntityUpsert, facts []FactUpsert) []mentionEdge {
 // Upserts are serialized per Store: concurrent transactions that MERGE the
 // same entity key abort at commit with a unique-constraint violation that
 // the driver does not retry (single-process scope, like UpsertDocument).
-func (s *Store) UpsertExtraction(ctx context.Context, docID, chunkID, extractorVersion string, ents []EntityUpsert, facts []FactUpsert) error {
+func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extractorVersion string, ents []EntityUpsert, facts []FactUpsert, opt WriteOptions) error {
+	if opt != (WriteOptions{}) {
+		return ErrWriteOptionsUnsupported
+	}
 	for _, f := range facts {
 		if strings.Trim(sanitizeRel(f.Rel), "_") == "" {
 			return fmt.Errorf("graph: fact %q -[%q]-> %q: relation label has no alphanumeric content", f.HeadKey, f.Rel, f.TailKey)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,11 +13,103 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
+
+func TestCommandsRefuseNewerSchema(t *testing.T) {
+	for _, args := range [][]string{{"migrate"}, {"ingest", "x.txt"}, {"mcp"}, {"serve"}} {
+		t.Run(args[0], func(t *testing.T) {
+			_, _, _ = migrationCommandFixture(t)
+			newer := graph.ExtractionSchemaVersion + 1
+			migrationQuery(t, `CREATE (:GkgMeta {id: 'extraction_schema', value: $version})`, map[string]any{"version": newer})
+			// Keep an accidental serve startup bounded; it must report the
+			// schema error before attempting to bind this occupied address.
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			t.Setenv("GKG_SERVER_ADDR", ln.Addr().String())
+			t.Setenv("GKG_MEMGRAPH_URI", os.Getenv(graphtest.URIEnv))
+			// An accidental MCP startup must also return instead of waiting
+			// for the test runner's stdin. No MCP transport should be opened.
+			stdin, err := os.Open(os.DevNull)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdin.Close()
+			previousStdin := os.Stdin
+			os.Stdin = stdin
+			defer func() { os.Stdin = previousStdin }()
+			queries := []string{
+				`MATCH (n) RETURN labels(n), properties(n) ORDER BY id(n)`,
+				`MATCH (a)-[r]->(b) RETURN id(a), type(r), properties(r), id(b) ORDER BY id(r)`,
+				`SHOW INDEX INFO`,
+				`SHOW CONSTRAINT INFO`,
+			}
+			before := make([][]*neo4j.Record, len(queries))
+			for i, query := range queries {
+				before[i] = migrationQuery(t, query, nil)
+			}
+			var out, errb bytes.Buffer
+			code := run(args, &out, &errb)
+			want := fmt.Sprintf("gkg %s: graph extraction schema v%d is newer than this binary (v%d); deploy a newer gkg or restore the pre-migration snapshot\n", args[0], newer, graph.ExtractionSchemaVersion)
+			if code != 1 || errb.String() != want || out.Len() != 0 {
+				t.Errorf("run(%v) = %d, stdout %q, stderr %q; want exit 1, empty stdout and %q", args, code, &out, &errb, want)
+			}
+			for i, query := range queries {
+				if after := migrationQuery(t, query, nil); !reflect.DeepEqual(before[i], after) {
+					t.Errorf("command modified store: %s", query)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPipelineWriteModeV3(t *testing.T) {
+	st := graphtest.Store(t)
+	if v, err := st.SchemaVersion(context.Background()); err != nil || v >= graph.SchemaVersionV4 {
+		t.Fatalf("precondition: schema marker = %d (%v); want below %d", v, err, graph.SchemaVersionV4)
+	}
+	for _, confirmation := range []bool{false, true} {
+		cfg := config.Config{
+			Extractor: config.ExtractorConfig{Mode: "mock"},
+			Facts:     config.FactsConfig{RequireConfirmation: confirmation},
+		}
+		pipe, _, err := buildPipeline(context.Background(), cfg, st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := pipe.WriteMode(); mode != (ingest.WriteMode{}) {
+			t.Errorf("v3 WriteMode (require_confirmation=%v) = %+v; want zero value", confirmation, mode)
+		}
+	}
+}
+
+func TestBuildPipelineWriteModeV4(t *testing.T) {
+	st := graphtest.MigrationStore(t)
+	// Exercise the future gate directly; startup still refuses v4 until
+	// the binary's migration version is raised in a later task.
+	migrationQuery(t, `MATCH (m:GkgMeta {id: 'extraction_schema'}) SET m.value = $version`, map[string]any{"version": graph.SchemaVersionV4})
+	for _, confirmation := range []bool{false, true} {
+		cfg := config.Config{
+			Extractor: config.ExtractorConfig{Mode: "mock"},
+			Facts:     config.FactsConfig{RequireConfirmation: confirmation},
+		}
+		pipe, _, err := buildPipeline(context.Background(), cfg, st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ingest.WriteMode{Hygiene: true, Domains: true, RequireConfirmation: confirmation}
+		if mode := pipe.WriteMode(); mode != want {
+			t.Errorf("v4 WriteMode = %+v; want %+v", mode, want)
+		}
+	}
+}
 
 func TestIngestRejectsOutdatedExtractionSchema(t *testing.T) {
 	st, id, _ := migrationCommandFixture(t)

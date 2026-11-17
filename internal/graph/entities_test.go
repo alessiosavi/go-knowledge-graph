@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,57 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 )
+
+// TestUpsertExtractionWrapper pins the delegation: the legacy entry point
+// and UpsertExtractionOpts with zero options write identical data. Non-zero
+// options are rejected until candidate facts and domains are implemented.
+func TestUpsertExtractionWrapper(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	uri := os.Getenv(graphtest.URIEnv)
+	docID, chunkID := entitiesTestDoc(t, st, "Zorbo joined Quillon Ltd.")
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, docID); err != nil {
+			t.Error(err)
+		}
+	})
+	ents := []graph.EntityUpsert{
+		{Key: "zorbo-" + docID, Name: "Zorbo", Type: "person", Aliases: []string{"Zorb"}, Mentions: []graph.MentionSpan{{Start: 0, End: 5, Type: "person"}}},
+		{Key: "quillon-" + docID, Name: "Quillon Ltd", Type: "organization", Mentions: []graph.MentionSpan{{Start: 13, End: 24, Type: "organization"}}},
+	}
+	facts := []graph.FactUpsert{{HeadKey: ents[0].Key, TailKey: ents[1].Key, Rel: "joined", Confidence: 0.9,
+		HeadMention: graph.Span{Start: 0, End: 5}, TailMention: graph.Span{Start: 13, End: 24}}}
+	if err := st.UpsertExtraction(ctx, docID, chunkID, "mock:1", ents, facts); err != nil {
+		t.Fatal(err)
+	}
+	queries := []string{
+		fmt.Sprintf(`MATCH (e:Entity) WHERE e.key IN ['%s', '%s'] RETURN properties(e) ORDER BY e.key`, ents[0].Key, ents[1].Key),
+		fmt.Sprintf(`MATCH (c:Chunk {id: '%s'})-[r:MENTIONS]->(e:Entity) RETURN e.key, properties(r) ORDER BY e.key`, chunkID),
+		fmt.Sprintf(`MATCH (a:Entity)-[r]->(b:Entity) WHERE r.chunk_id = '%s' RETURN a.key, type(r), b.key, properties(r) ORDER BY a.key, type(r), b.key`, chunkID),
+	}
+	before := make([]any, len(queries))
+	for i, query := range queries {
+		rows := rawRecords(t, uri, query)
+		wantRows := 2
+		if i == 2 {
+			wantRows = 1
+		}
+		if len(rows) != wantRows {
+			t.Fatalf("wrapper snapshot %d has %d rows; want %d", i, len(rows), wantRows)
+		}
+		before[i] = rows
+	}
+	// Recreate from a clean extraction so both APIs cover new entities.
+	rawRun(t, uri, fmt.Sprintf(`MATCH (e:Entity) WHERE e.key IN ['%s', '%s'] DETACH DELETE e`, ents[0].Key, ents[1].Key))
+	if err := st.UpsertExtractionOpts(ctx, docID, chunkID, "mock:1", ents, facts, graph.WriteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for i, query := range queries {
+		if after := rawRecords(t, uri, query); !reflect.DeepEqual(before[i], after) {
+			t.Errorf("wrapper and zero options differ for %s: before %+v, after %+v", query, before[i], after)
+		}
+	}
+}
 
 func TestEntityKeyNormalization(t *testing.T) {
 	same := [][2]string{
@@ -993,5 +1045,22 @@ func TestEntityByNameIsExactNotRanked(t *testing.T) {
 
 	if _, err := st.EntityByName(ctx, "missing-"+name); !errors.Is(err, graph.ErrNotFound) {
 		t.Errorf("unknown name error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpsertExtractionOptsRejectsUnimplemented(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	docID, chunkID := entitiesTestDoc(t, st, "Zorbo joined Quillon Ltd.")
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, docID); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, opt := range []graph.WriteOptions{{FactsAsCandidates: true}, {Domain: "a"}} {
+		err := st.UpsertExtractionOpts(ctx, docID, chunkID, "mock:1", nil, nil, opt)
+		if !errors.Is(err, graph.ErrWriteOptionsUnsupported) {
+			t.Errorf("UpsertExtractionOpts(%+v) error = %v; want ErrWriteOptionsUnsupported", opt, err)
+		}
 	}
 }
