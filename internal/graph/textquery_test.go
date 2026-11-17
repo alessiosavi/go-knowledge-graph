@@ -27,7 +27,7 @@ func TestTextQueryTerms(t *testing.T) {
 		{"Go27_１２٣", `"Go27" "１２٣"`},
 		{"x and", `"x" "and"`},
 		{"oR nOt", `"oR" "nOt"`},
-		{"Zorbe\u0300llo", `"Zorbèllo"`},
+		{"Zorbe\u0300llo", "\"Zorbe\u0300llo\""},
 		{"ZORBÈLLO", `"ZORBÈLLO"`},
 		{"İzorbul Ⅻ ½", `"İzorbul" "Ⅻ" "½"`},
 		{"i\u0307zorbul", "\"i\u0307zorbul\""},

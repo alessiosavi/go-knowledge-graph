@@ -3,18 +3,17 @@ package graph
 import (
 	"strings"
 	"unicode"
-
-	"golang.org/x/text/unicode/norm"
 )
 
 // TextQueryWords splits plain text into the words a text-index query
-// searches for: runs of Unicode letters, numbers and combining marks, after
-// NFC normalization so a decomposed "e" + U+0301 matches an indexed "é".
-// Case is kept: the index tokenizer lowercases query terms the same way it
-// lowercased the indexed text (full Unicode rules: "İstanbul" only matches
-// when Tantivy, not Go, lowercases it).
+// searches for: runs of Unicode letters, numbers and combining marks. The
+// words are otherwise passed through unchanged (no case mapping, no Unicode
+// normalization): the index stores text as written and its tokenizer applies
+// its own rules to both sides, so any query-only transformation would make
+// some indexed spellings unreachable ("İstanbul" lowercased by Go, or a
+// decomposed "è" composed, would no longer match the indexed bytes).
 func TextQueryWords(q string) []string {
-	return strings.FieldsFunc(norm.NFC.String(q), func(r rune) bool {
+	return strings.FieldsFunc(q, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r)
 	})
 }

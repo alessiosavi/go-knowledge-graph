@@ -264,7 +264,10 @@ func TestChunkTextSearchPunctuation(t *testing.T) {
 	// Hit assertions use invented words that no other fixture contains, so a
 	// shared test database cannot crowd the fixture out of the index's top
 	// 1,000 hits; queries made of common words only check for errors.
-	text := "The l'Acmezorb-Maxquill valve and Zorbquill's pump meet at a:b. Not here. Zorbèllo. İzorbul Ⅻ."
+	// The text holds a precomposed "è" (Zorbèllo) and a decomposed one
+	// (Quillore + U+0300 + x): queries are not normalized, so each is found
+	// by its own spelling.
+	text := "The l'Acmezorb-Maxquill valve and Zorbquill's pump meet at a:b. Not here. Zorbèllo. Quillore\u0300x. İzorbul Ⅻ."
 	if err := st.PutChunks(ctx, docID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
 		t.Fatalf("PutChunks: %v", err)
 	}
@@ -290,7 +293,7 @@ func TestChunkTextSearchPunctuation(t *testing.T) {
 		{"zorbquill or not", true},
 		{"Zorbèllo", true},
 		{"ZORBÈLLO", true},
-		{"Zorbe\u0300llo", true},
+		{"Quillore\u0300x", true},
 		{"İzorbul", true},
 		{"İZORBUL", true},
 		{"Ⅻ", true},
