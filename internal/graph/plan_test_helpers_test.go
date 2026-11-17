@@ -9,9 +9,13 @@ import (
 )
 
 // planOperators extracts operator names from Memgraph's EXPLAIN rows.
-func planOperators(t *testing.T, st *graph.Store, query string) []string {
+func planOperators(t *testing.T, st *graph.Store, query string, params ...map[string]any) []string {
 	t.Helper()
-	plan, err := st.RunReadQuery(context.Background(), "EXPLAIN "+query, map[string]any{"q": "zorbo"}, 0)
+	args := map[string]any{"q": "zorbo"}
+	if len(params) > 0 {
+		args = params[0]
+	}
+	plan, err := st.RunReadQuery(context.Background(), "EXPLAIN "+query, args, 0)
 	if err != nil {
 		t.Fatalf("EXPLAIN: %v", err)
 	}
@@ -20,6 +24,10 @@ func planOperators(t *testing.T, st *graph.Store, query string) []string {
 		line, ok := row["QUERY PLAN"].(string)
 		if !ok {
 			t.Fatalf("EXPLAIN row has no string QUERY PLAN: %+v", row)
+		}
+		// Branching plans also emit connector-only rows (for example " |\\ ").
+		if strings.Trim(line, " |\\/") == "" {
+			continue
 		}
 		_, operator, ok := strings.Cut(line, " * ")
 		if !ok || len(strings.Fields(operator)) == 0 {

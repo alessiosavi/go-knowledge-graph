@@ -405,6 +405,10 @@ paths:
           in: query
           description: '"true" or "1" includes facts below the assert floor; all other values are false'
           schema: { type: string, default: "false" }
+        - name: include_unverified
+          in: query
+          description: '"true" or "1" additionally includes marked candidates when facts.allow_unverified_reads is true (default false); otherwise the response sets unverified_ignored to true'
+          schema: { type: string, default: "false" }
       responses:
         "200":
           description: the entity view
@@ -966,6 +970,9 @@ components:
           $ref: "#/components/schemas/EntityRef"
         confidence: { type: number, format: double }
         judge: { type: string, enum: ["", confirmed, unclear] }
+        unverified:
+          type: boolean
+          description: True for an included candidate; judge is present (empty for unjudged). Omitted for typed edges.
         low_confidence: { type: boolean }
         outgoing: { type: boolean }
         doc_id: { type: string }
@@ -983,6 +990,11 @@ components:
           type: array
           items: { type: string }
         mention_count: { type: integer }
+        hidden:
+          $ref: "#/components/schemas/HiddenCounts"
+        unverified_ignored:
+          type: boolean
+          description: True only when include_unverified was requested but facts.allow_unverified_reads is false.
         facts:
           type: array
           items:
@@ -993,6 +1005,14 @@ components:
           description: co-mentioned entities, ordered by shared chunks descending, mention count descending, then key ascending
           items:
             $ref: "#/components/schemas/CoMention"
+    HiddenCounts:
+      type: object
+      description: Counts distinct (head_key, rel, tail_key) facts per state whose head_key or tail_key is the viewed entity key (the start entity for traversal), regardless of filters or inclusion options. Facts extracted from multiple chunks count once per state. Omitted when all counts are zero.
+      required: [unclear, unjudged, rejected]
+      properties:
+        unclear: { type: integer, minimum: 0 }
+        unjudged: { type: integer, minimum: 0 }
+        rejected: { type: integer, minimum: 0 }
     TraverseRequest:
       type: object
       required: [entity]
@@ -1019,6 +1039,11 @@ components:
         include_low_confidence:
           type: boolean
           default: false
+          description: Includes typed edges below the assert floor.
+        include_unverified:
+          type: boolean
+          default: false
+          description: Additionally includes marked candidate facts (including low-confidence facts) only when facts.allow_unverified_reads is true; otherwise unverified_ignored is true. Candidate facts appear at the depth where found, but their far endpoints are not enqueued for expansion. Rejected audits are never returned as edges.
     Edge:
       type: object
       required:
@@ -1029,6 +1054,9 @@ components:
         rel: { type: string }
         confidence: { type: number, format: double }
         judge: { type: string, enum: ["", confirmed, unclear] }
+        unverified:
+          type: boolean
+          description: True for an included candidate; judge is present (empty for unjudged). Omitted for typed edges.
         low_confidence: { type: boolean }
         doc_id: { type: string }
         chunk_id: { type: string }
@@ -1037,6 +1065,11 @@ components:
       type: object
       required: [nodes, edges]
       properties:
+        hidden:
+          $ref: "#/components/schemas/HiddenCounts"
+        unverified_ignored:
+          type: boolean
+          description: True only when include_unverified was requested but facts.allow_unverified_reads is false.
         nodes:
           type: array
           items:

@@ -142,6 +142,22 @@ type CoMention struct {
 	SharedChunks int
 }
 
+// ViewOptions controls opt-in fact visibility. Low confidence filters typed
+// edges; unverified additionally includes candidates, regardless of confidence.
+type ViewOptions struct {
+	IncludeLowConfidence bool
+	IncludeUnverified    bool
+}
+
+// HiddenCounts counts distinct (head_key, rel, tail_key) facts in each state
+// touching the viewed entity (the start entity for traversal), independently
+// of visibility options.
+type HiddenCounts struct {
+	Unclear  int `json:"unclear"`
+	Unjudged int `json:"unjudged"`
+	Rejected int `json:"rejected"`
+}
+
 // FactView is one fact edge as seen from the queried entity: Outgoing
 // reports whether the queried entity is the edge's head, and the excerpt is
 // anchored on the queried entity's own mention.
@@ -150,6 +166,7 @@ type FactView struct {
 	Other         EntityRef
 	Confidence    float64
 	Judge         string
+	Unverified    bool
 	LowConfidence bool
 	Outgoing      bool
 	DocID         string
@@ -164,4 +181,5 @@ type EntityView struct {
 	MentionCount int
 	Facts        []FactView
 	Together     []CoMention
+	Hidden       HiddenCounts
 }

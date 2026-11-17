@@ -124,7 +124,8 @@ type factDTO struct {
 	Rel           string       `json:"rel"`
 	Other         entityRefDTO `json:"other"`
 	Confidence    float64      `json:"confidence"`
-	Judge         string       `json:"judge,omitempty"`
+	Judge         *string      `json:"judge,omitempty"`
+	Unverified    bool         `json:"unverified,omitempty"`
 	LowConfidence bool         `json:"low_confidence"`
 	Outgoing      bool         `json:"outgoing"`
 	DocID         string       `json:"doc_id"`
@@ -133,14 +134,16 @@ type factDTO struct {
 }
 
 type entityDTO struct {
-	ID           string         `json:"id"`
-	Key          string         `json:"key"`
-	Name         string         `json:"name"`
-	Type         string         `json:"type"`
-	Aliases      []string       `json:"aliases"`
-	MentionCount int            `json:"mention_count"`
-	Facts        []factDTO      `json:"facts"`
-	Together     []coMentionDTO `json:"together"`
+	ID                string              `json:"id"`
+	Key               string              `json:"key"`
+	Name              string              `json:"name"`
+	Type              string              `json:"type"`
+	Aliases           []string            `json:"aliases"`
+	MentionCount      int                 `json:"mention_count"`
+	Facts             []factDTO           `json:"facts"`
+	Together          []coMentionDTO      `json:"together"`
+	Hidden            *graph.HiddenCounts `json:"hidden,omitempty"`
+	UnverifiedIgnored bool                `json:"unverified_ignored,omitempty"`
 }
 
 type edgeDTO struct {
@@ -148,7 +151,8 @@ type edgeDTO struct {
 	To            string  `json:"to"`
 	Rel           string  `json:"rel"`
 	Confidence    float64 `json:"confidence"`
-	Judge         string  `json:"judge,omitempty"`
+	Judge         *string `json:"judge,omitempty"`
+	Unverified    bool    `json:"unverified,omitempty"`
 	LowConfidence bool    `json:"low_confidence"`
 	DocID         string  `json:"doc_id"`
 	ChunkID       string  `json:"chunk_id"`
@@ -156,8 +160,10 @@ type edgeDTO struct {
 }
 
 type traverseResponse struct {
-	Nodes []entityRefDTO `json:"nodes"`
-	Edges []edgeDTO      `json:"edges"`
+	Nodes             []entityRefDTO      `json:"nodes"`
+	Edges             []edgeDTO           `json:"edges"`
+	Hidden            *graph.HiddenCounts `json:"hidden,omitempty"`
+	UnverifiedIgnored bool                `json:"unverified_ignored,omitempty"`
 }
 
 type cypherResponse struct {
@@ -410,17 +416,24 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleEntity returns one entity with its aliases and evidenced facts;
-// low-confidence facts need include_low_confidence=true.
+// low-confidence typed facts need include_low_confidence=true. Candidates need
+// include_unverified=true and the server's AllowUnverifiedReads setting.
 func (s *Server) handleEntity(w http.ResponseWriter, r *http.Request) {
 	if !s.storeOr503(w) {
 		return
 	}
-	view, err := s.store.EntityView(r.Context(), r.PathValue("id"), queryBool(r, "include_low_confidence"))
+	includeUnverified := queryBool(r, "include_unverified")
+	view, err := s.store.EntityViewOpts(r.Context(), r.PathValue("id"), graph.ViewOptions{
+		IncludeLowConfidence: queryBool(r, "include_low_confidence"),
+		IncludeUnverified:    includeUnverified && s.cfg.Facts.AllowUnverifiedReads,
+	})
 	if err != nil {
 		writeStoreError(w, err, "entity")
 		return
 	}
-	writeJSON(w, http.StatusOK, toEntityDTO(view))
+	out := toEntityDTO(view)
+	out.UnverifiedIgnored = includeUnverified && !s.cfg.Facts.AllowUnverifiedReads
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleTraverse walks fact edges from a start entity.
@@ -435,6 +448,7 @@ func (s *Server) handleTraverse(w http.ResponseWriter, r *http.Request) {
 		Depth                int    `json:"depth"`
 		Limit                int    `json:"limit"`
 		IncludeLowConfidence bool   `json:"include_low_confidence"`
+		IncludeUnverified    bool   `json:"include_unverified"`
 	}
 	if !readJSON(w, r, jsonBodyCap, &req) {
 		return
@@ -469,12 +483,17 @@ func (s *Server) handleTraverse(w http.ResponseWriter, r *http.Request) {
 	if limit > 200 {
 		limit = 200
 	}
-	sub, err := s.store.Traverse(r.Context(), req.Entity, req.Relation, direction, depth, limit, req.IncludeLowConfidence)
+	sub, err := s.store.TraverseOpts(r.Context(), req.Entity, req.Relation, direction, depth, limit, graph.ViewOptions{
+		IncludeLowConfidence: req.IncludeLowConfidence,
+		IncludeUnverified:    req.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
+	})
 	if err != nil {
 		writeStoreError(w, err, "traverse")
 		return
 	}
-	writeJSON(w, http.StatusOK, toTraverseResponse(sub))
+	out := toTraverseResponse(sub)
+	out.UnverifiedIgnored = req.IncludeUnverified && !s.cfg.Facts.AllowUnverifiedReads
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleCypher runs a guarded read-only query with the configured row cap
@@ -573,11 +592,16 @@ func toEntityDTO(v graph.EntityView) entityDTO {
 	}
 	facts := make([]factDTO, 0, len(v.Facts))
 	for _, f := range v.Facts {
+		var judge *string
+		if f.Judge != "" || f.Unverified {
+			judge = &f.Judge
+		}
 		facts = append(facts, factDTO{
 			Rel:           f.Rel,
 			Other:         entityRefDTO{ID: f.Other.ID, Key: f.Other.Key, Name: f.Other.Name, Type: f.Other.Type},
 			Confidence:    f.Confidence,
-			Judge:         f.Judge,
+			Judge:         judge,
+			Unverified:    f.Unverified,
 			LowConfidence: f.LowConfidence,
 			Outgoing:      f.Outgoing,
 			DocID:         f.DocID,
@@ -592,6 +616,10 @@ func toEntityDTO(v graph.EntityView) entityDTO {
 			SharedChunks: other.SharedChunks,
 		})
 	}
+	var hidden *graph.HiddenCounts
+	if v.Hidden != (graph.HiddenCounts{}) {
+		hidden = &v.Hidden
+	}
 	return entityDTO{
 		ID:           v.ID,
 		Key:          v.Key,
@@ -601,6 +629,7 @@ func toEntityDTO(v graph.EntityView) entityDTO {
 		MentionCount: v.MentionCount,
 		Facts:        facts,
 		Together:     together,
+		Hidden:       hidden,
 	}
 }
 
@@ -611,17 +640,26 @@ func toTraverseResponse(sub graph.Subgraph) traverseResponse {
 	}
 	edges := make([]edgeDTO, 0, len(sub.Edges))
 	for _, e := range sub.Edges {
+		var judge *string
+		if e.Judge != "" || e.Unverified {
+			judge = &e.Judge
+		}
 		edges = append(edges, edgeDTO{
 			From:          e.From,
 			To:            e.To,
 			Rel:           e.Rel,
 			Confidence:    e.Confidence,
-			Judge:         e.Judge,
+			Judge:         judge,
+			Unverified:    e.Unverified,
 			LowConfidence: e.LowConfidence,
 			DocID:         e.DocID,
 			ChunkID:       e.ChunkID,
 			Excerpt:       e.Excerpt,
 		})
 	}
-	return traverseResponse{Nodes: nodes, Edges: edges}
+	var hidden *graph.HiddenCounts
+	if sub.Hidden != (graph.HiddenCounts{}) {
+		hidden = &sub.Hidden
+	}
+	return traverseResponse{Nodes: nodes, Edges: edges, Hidden: hidden}
 }

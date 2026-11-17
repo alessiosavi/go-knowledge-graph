@@ -54,14 +54,15 @@ type factOut struct {
 }
 
 type entityOut struct {
-	ID           string         `json:"id"`
-	Key          string         `json:"key"`
-	Name         string         `json:"name"`
-	Type         string         `json:"type"`
-	Aliases      []string       `json:"aliases"`
-	MentionCount int            `json:"mention_count"`
-	Facts        []factOut      `json:"facts"`
-	Together     []coMentionOut `json:"together"`
+	ID           string              `json:"id"`
+	Key          string              `json:"key"`
+	Name         string              `json:"name"`
+	Type         string              `json:"type"`
+	Aliases      []string            `json:"aliases"`
+	MentionCount int                 `json:"mention_count"`
+	Facts        []factOut           `json:"facts"`
+	Together     []coMentionOut      `json:"together"`
+	Hidden       *graph.HiddenCounts `json:"hidden,omitempty"`
 }
 
 type edgeOut struct {
@@ -77,8 +78,9 @@ type edgeOut struct {
 }
 
 type traverseOut struct {
-	Nodes []entityRefOut `json:"nodes"`
-	Edges []edgeOut      `json:"edges"`
+	Nodes  []entityRefOut      `json:"nodes"`
+	Edges  []edgeOut           `json:"edges"`
+	Hidden *graph.HiddenCounts `json:"hidden,omitempty"`
 }
 
 type documentOut struct {
@@ -299,7 +301,7 @@ func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, e
 		}
 		id = ref.ID
 	}
-	view, err := s.store.EntityView(ctx, id, args.IncludeLowConfidence)
+	view, err := s.store.EntityViewOpts(ctx, id, graph.ViewOptions{IncludeLowConfidence: args.IncludeLowConfidence, IncludeUnverified: false})
 	if err != nil {
 		return nil, fmt.Errorf("entity %s: %w", id, err)
 	}
@@ -328,6 +330,10 @@ func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, e
 			SharedChunks: other.SharedChunks,
 		})
 	}
+	var hidden *graph.HiddenCounts
+	if view.Hidden != (graph.HiddenCounts{}) {
+		hidden = &view.Hidden
+	}
 	return entityOut{
 		ID:           view.ID,
 		Key:          view.Key,
@@ -337,6 +343,7 @@ func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, e
 		MentionCount: view.MentionCount,
 		Facts:        facts,
 		Together:     together,
+		Hidden:       hidden,
 	}, nil
 }
 
@@ -378,7 +385,7 @@ func (s *Server) toolTraverse(ctx context.Context, raw json.RawMessage) (any, er
 	if limit > traverseMaxLimit {
 		limit = traverseMaxLimit
 	}
-	sub, err := s.store.Traverse(ctx, args.Entity, args.Relation, direction, depth, limit, args.IncludeLowConfidence)
+	sub, err := s.store.TraverseOpts(ctx, args.Entity, args.Relation, direction, depth, limit, graph.ViewOptions{IncludeLowConfidence: args.IncludeLowConfidence, IncludeUnverified: false})
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +407,11 @@ func (s *Server) toolTraverse(ctx context.Context, raw json.RawMessage) (any, er
 			Excerpt:       e.Excerpt,
 		})
 	}
-	return traverseOut{Nodes: nodes, Edges: edges}, nil
+	var hidden *graph.HiddenCounts
+	if sub.Hidden != (graph.HiddenCounts{}) {
+		hidden = &sub.Hidden
+	}
+	return traverseOut{Nodes: nodes, Edges: edges, Hidden: hidden}, nil
 }
 
 func (s *Server) toolListDocuments(ctx context.Context, raw json.RawMessage) (any, error) {

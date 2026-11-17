@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // PathEdge is one traversed fact edge with provenance and evidence; From
@@ -13,6 +14,7 @@ type PathEdge struct {
 	Rel           string
 	Confidence    float64
 	Judge         string
+	Unverified    bool
 	LowConfidence bool
 	DocID         string
 	ChunkID       string
@@ -21,8 +23,9 @@ type PathEdge struct {
 
 // Subgraph is the nodes and edges reachable from a traversal start.
 type Subgraph struct {
-	Nodes []EntityRef
-	Edges []PathEdge
+	Nodes  []EntityRef
+	Edges  []PathEdge
+	Hidden HiddenCounts
 }
 
 // traverseDepthCap is the agent-tool ceiling for traversal depth.
@@ -33,6 +36,13 @@ const traverseDepthCap = 2
 // Low-confidence facts are excluded unless opted in. depth above the tool
 // cap is an error; limit caps the total edges returned.
 func (s *Store) Traverse(ctx context.Context, startID, rel, direction string, depth, limit int, includeLowConfidence bool) (Subgraph, error) {
+	return s.TraverseOpts(ctx, startID, rel, direction, depth, limit, ViewOptions{IncludeLowConfidence: includeLowConfidence})
+}
+
+// TraverseOpts can also include candidate facts, marked as unverified, without
+// expanding their far endpoints. Hidden counts always describe the start entity,
+// regardless of depth or filters.
+func (s *Store) TraverseOpts(ctx context.Context, startID, rel, direction string, depth, limit int, opt ViewOptions) (Subgraph, error) {
 	if depth < 1 || depth > traverseDepthCap {
 		return Subgraph{}, fmt.Errorf("graph: traverse: depth %d outside 1..%d", depth, traverseDepthCap)
 	}
@@ -52,7 +62,12 @@ func (s *Store) Traverse(ctx context.Context, startID, rel, direction string, de
 		return Subgraph{}, err
 	}
 	sub := Subgraph{Nodes: []EntityRef{start}}
+	sub.Hidden, err = s.hiddenCounts(ctx, start.Key)
+	if err != nil {
+		return Subgraph{}, err
+	}
 	visited := map[string]bool{start.ID: true}
+	enqueued := map[string]bool{start.ID: true}
 	frontier := []EntityRef{start}
 
 	for hop := 0; hop < depth && len(frontier) > 0; hop++ {
@@ -65,7 +80,7 @@ func (s *Store) Traverse(ctx context.Context, startID, rel, direction string, de
 			if len(sub.Edges) >= limit {
 				break
 			}
-			edges, nodes, err := s.traverseHop(ctx, node, rel, direction, limit-len(sub.Edges), includeLowConfidence)
+			edges, nodes, err := s.traverseHop(ctx, node, rel, direction, limit-len(sub.Edges), opt)
 			if err != nil {
 				return Subgraph{}, err
 			}
@@ -77,10 +92,15 @@ func (s *Store) Traverse(ctx context.Context, startID, rel, direction string, de
 				seenEdges[key] = true
 				sub.Edges = append(sub.Edges, e)
 			}
-			for _, n := range nodes {
+			for i, n := range nodes {
 				if !visited[n.ID] {
 					visited[n.ID] = true
 					sub.Nodes = append(sub.Nodes, n)
+				}
+				// Each returned node corresponds to the edge at the same index.
+				// A candidate may reveal a node, but only a typed edge can enqueue it.
+				if !edges[i].Unverified && !enqueued[n.ID] {
+					enqueued[n.ID] = true
 					next = append(next, n)
 				}
 			}
@@ -111,28 +131,28 @@ func (s *Store) resolveEntityRef(ctx context.Context, idOrKey string) (EntityRef
 }
 
 // traverseHop expands one node in one direction.
-func (s *Store) traverseHop(ctx context.Context, from EntityRef, rel, direction string, remaining int, includeLowConfidence bool) ([]PathEdge, []EntityRef, error) {
+func (s *Store) traverseHop(ctx context.Context, from EntityRef, rel, direction string, remaining int, opt ViewOptions) ([]PathEdge, []EntityRef, error) {
 	if remaining <= 0 {
 		return nil, nil, nil
 	}
 	if direction == "out" || direction == "both" {
-		edges, nodes, err := s.hopQuery(ctx, from, rel, false, remaining, includeLowConfidence)
+		edges, nodes, err := s.hopQuery(ctx, from, rel, false, remaining, opt)
 		if err != nil {
 			return nil, nil, err
 		}
 		if direction == "out" {
 			return edges, nodes, nil
 		}
-		in, inNodes, err := s.hopQuery(ctx, from, rel, true, remaining-len(edges), includeLowConfidence)
+		in, inNodes, err := s.hopQuery(ctx, from, rel, true, remaining-len(edges), opt)
 		if err != nil {
 			return nil, nil, err
 		}
 		return append(edges, in...), append(nodes, inNodes...), nil
 	}
-	return s.hopQuery(ctx, from, rel, true, remaining, includeLowConfidence)
+	return s.hopQuery(ctx, from, rel, true, remaining, opt)
 }
 
-func (s *Store) hopQuery(ctx context.Context, from EntityRef, rel string, incoming bool, limit int, includeLowConfidence bool) ([]PathEdge, []EntityRef, error) {
+func (s *Store) hopQuery(ctx context.Context, from EntityRef, rel string, incoming bool, limit int, opt ViewOptions) ([]PathEdge, []EntityRef, error) {
 	if limit <= 0 {
 		return nil, nil, nil
 	}
@@ -156,13 +176,32 @@ RETURN type(r) AS rel, a.id AS from_id, a.key AS from_key, a.name AS from_name, 
        coalesce(c.text, '') AS text
 ORDER BY rel, from_key, to_key, chunk_id
 LIMIT $limit`
-	params := map[string]any{"id": from.ID, "include": includeLowConfidence, "limit": limit}
+	params := map[string]any{"id": from.ID, "include": opt.IncludeLowConfidence, "limit": limit}
 	if rel != "" {
 		params["rel"] = sanitizeRel(rel)
 	}
 	recs, err := s.runRead(ctx, query, params)
 	if err != nil {
 		return nil, nil, fmt.Errorf("graph: traverse hop: %w", err)
+	}
+	if opt.IncludeUnverified && len(recs) < limit {
+		anchor := "head_key"
+		if incoming {
+			anchor = "tail_key"
+		}
+		candidatePattern := "MATCH (r:FactCandidate {" + anchor + ": $key})\n" +
+			"MATCH (a:Entity {key: r.head_key}), (b:Entity {key: r.tail_key})"
+		candidateQuery := strings.Replace(query, pattern, candidatePattern, 1)
+		candidateQuery = strings.ReplaceAll(candidateQuery, "type(r)", "r.rel")
+		candidateQuery = strings.Replace(candidateQuery, "($include OR coalesce(r.low_confidence, false) = false)", "coalesce(r.judge, '') IN ['', 'unclear']", 1)
+		candidateQuery = strings.Replace(candidateQuery, "RETURN r.rel AS rel,", "RETURN true AS unverified, r.rel AS rel,", 1)
+		params["key"] = from.Key
+		params["limit"] = limit - len(recs)
+		candidates, err := s.runRead(ctx, candidateQuery, params)
+		if err != nil {
+			return nil, nil, fmt.Errorf("graph: traverse candidates: %w", err)
+		}
+		recs = append(recs, candidates...)
 	}
 	edges := make([]PathEdge, 0, len(recs))
 	nodes := make([]EntityRef, 0, len(recs))
@@ -179,12 +218,14 @@ LIMIT $limit`
 			Rel:           getString(r, "rel"),
 			Confidence:    getFloat(r, "confidence"),
 			Judge:         getString(r, "judge"),
+			Unverified:    getBool(r, "unverified"),
 			LowConfidence: getBool(r, "low"),
 			DocID:         getString(r, "doc_id"),
 			ChunkID:       getString(r, "chunk_id"),
 			Excerpt:       ExcerptWindow(getString(r, "text"), center, 120),
 		})
-		// The neighbor to enqueue is the endpoint that is not the anchor.
+		// Return the far endpoint alongside its edge; the caller decides whether
+		// it can be enqueued based on the edge's verification state.
 		ref := EntityRef{
 			ID:   getString(r, "to_id"),
 			Key:  getString(r, "to_key"),

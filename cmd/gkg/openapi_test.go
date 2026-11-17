@@ -25,6 +25,42 @@ func TestOpenAPIRoutes(t *testing.T) {
 	}
 }
 
+func TestOpenAPIReadVisibility(t *testing.T) {
+	var spec struct {
+		Paths map[string]struct {
+			Get struct{ Parameters []struct{ Name, In string } }
+		}
+		Components struct {
+			Schemas map[string]struct{ Properties map[string]yaml.Node }
+		}
+	}
+	if err := yaml.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, p := range spec.Paths["/v1/entities/{id}"].Get.Parameters {
+		if p.Name == "include_unverified" && p.In == "query" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("entity include_unverified query parameter missing")
+	}
+	for schema, fields := range map[string][]string{
+		"TraverseRequest":  {"include_unverified", "include_low_confidence"},
+		"Entity":           {"hidden", "unverified_ignored"},
+		"TraverseResponse": {"hidden", "unverified_ignored"},
+		"Fact":             {"unverified", "judge"}, "Edge": {"unverified", "judge"},
+		"HiddenCounts": {"unclear", "unjudged", "rejected"},
+	} {
+		for _, field := range fields {
+			if _, ok := spec.Components.Schemas[schema].Properties[field]; !ok {
+				t.Errorf("%s.%s missing", schema, field)
+			}
+		}
+	}
+}
+
 func openAPIRouteFindings(patterns []string, data []byte) []string {
 	type operation struct {
 		Tags      []string             `yaml:"tags"`
