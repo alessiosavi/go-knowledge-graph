@@ -1,8 +1,8 @@
 // Package mcp exposes the gkg knowledge graph to MCP clients: eight tools
 // (ingest, status, search, get_entity, get_chunks, traverse, list_documents, cypher)
 // over stdio and streamable HTTP, thin over the search and traversal read
-// paths and the guarded read-only cypher surface. Low-confidence facts are
-// excluded unless the caller opts in.
+// paths and the guarded read-only cypher surface. Judge-confirmed typed facts
+// are visible at any confidence.
 package mcp
 
 import (
@@ -95,8 +95,9 @@ type getEntityArgs struct {
 	Domain               string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	ID                   string `json:"id,omitempty" jsonschema:"entity id"`
 	Name                 string `json:"name,omitempty" jsonschema:"entity name (EntityKey folding at v4 including possessives and edge punctuation; legacy case folding)"`
-	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include facts below the assert floor"`
+	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include all typed facts below the assert floor. Judge-confirmed facts already appear by default"`
 	IncludeUnverified    bool   `json:"include_unverified,omitempty" jsonschema:"include marked candidates only when facts.allow_unverified_reads is enabled; otherwise unverified_ignored is true"`
+	ConfirmedOnly        bool   `json:"confirmed_only,omitempty" jsonschema:"return only facts the judge confirmed"`
 }
 
 type getChunksArgs struct {
@@ -112,8 +113,9 @@ type traverseArgs struct {
 	Direction            string `json:"direction,omitempty" jsonschema:"out | in | both (default out)"`
 	Depth                int    `json:"depth,omitempty" jsonschema:"hops, 1 or 2 (default 1)"`
 	Limit                int    `json:"limit,omitempty" jsonschema:"maximum edges (default 50, capped at 200)"`
-	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include facts below the assert floor"`
+	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include all typed facts below the assert floor. Judge-confirmed facts already appear by default"`
 	IncludeUnverified    bool   `json:"include_unverified,omitempty" jsonschema:"include marked candidates only when facts.allow_unverified_reads is enabled; otherwise unverified_ignored is true"`
+	ConfirmedOnly        bool   `json:"confirmed_only,omitempty" jsonschema:"return only facts the judge confirmed"`
 }
 
 type listDocumentsArgs struct {
@@ -265,7 +267,7 @@ func registerTools(s *Server, sdk *mcpgo.Server) {
 	}, s.handleSearch)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "get_entity",
-		Description: "One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status). Low-confidence facts need include_low_confidence. At schema v4 name lookup uses EntityKey folding (possessives and edge punctuation), with legacy case folding below v4. Unscoped ambiguous names return candidates, one per domain.",
+		Description: "One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status). Low-confidence facts need include_low_confidence unless the judge confirmed them. At schema v4 name lookup uses EntityKey folding (possessives and edge punctuation), with legacy case folding below v4. Unscoped ambiguous names return candidates, one per domain.",
 	}, s.handleGetEntity)
 	mcpgo.AddTool(sdk, &mcpgo.Tool{
 		Name:        "get_chunks",
@@ -407,6 +409,7 @@ func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, 
 	view, err := s.store.EntityViewOpts(ctx, id, graph.ViewOptions{
 		Domain: args.Domain, IncludeLowConfidence: args.IncludeLowConfidence,
 		IncludeUnverified: args.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
+		ConfirmedOnly:     args.ConfirmedOnly,
 	})
 	if err != nil {
 		return nil, entityOut{}, fmt.Errorf("entity %s: %w", id, err)
@@ -450,6 +453,7 @@ func (s *Server) handleTraverse(ctx context.Context, _ *mcpgo.CallToolRequest, a
 	sub, err := s.store.TraverseOpts(ctx, entity, args.Relation, direction, depth, limit, graph.ViewOptions{
 		Domain: args.Domain, IncludeLowConfidence: args.IncludeLowConfidence,
 		IncludeUnverified: args.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
+		ConfirmedOnly:     args.ConfirmedOnly,
 	})
 	if err != nil {
 		return nil, traverseOut{}, err

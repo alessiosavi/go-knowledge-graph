@@ -133,10 +133,13 @@ The same data is browsable in the built-in viewer: open
 `http://localhost:8080/ui/` for search, entity cards with evidence,
 documents, ingest and a one-hop neighborhood graph — no extra service.
 
-Entity and traversal reads exclude low-confidence typed facts by default. Add
-`?include_low_confidence=true` to the entity URL (or the JSON boolean on
-`POST /v1/traverse`) to include them. The viewer's unchecked **Include
-low-confidence facts** checkbox applies to both the entity card and neighborhood.
+Entity and traversal reads show typed facts that meet the assert floor or that
+the judge confirmed. Add `?include_low_confidence=true` to the entity URL or
+`"include_low_confidence": true` to `POST /v1/traverse` to show all typed facts.
+The viewer's **Include low-confidence facts** checkbox applies to both the entity
+card and neighborhood. Use `confirmed_only` on either endpoint to show only
+judge-confirmed typed facts at any confidence. It takes precedence over
+`include_low_confidence` and `include_unverified` at every hop.
 
 With confirmation enabled, unjudged and unclear facts stay as candidates, outside
 the typed graph edges. The `hidden` response object counts `unclear`, `unjudged`
@@ -474,8 +477,9 @@ their own licenses — see the table in the [README](../README.md#license).
 Use the search/ask domain pickers in `/ui/` (default: all), or pass a `domain`
 slug in the JSON body of `/v1/search`, `/v1/agent/ask` or `/v1/agent/ask/stream`.
 `GET /v1/domains` lists `{id, name, documents}` with done-document counts.
-`GET /v1/documents?domain=zorbo` filters documents before the page limit;
-document list/detail responses and search hits include `domain`.
+`GET /v1/documents?domain=zorbo` filters documents before the page limit.
+Search hits, document list/detail responses, entity views, related entity
+references in facts, co-mentions, and traversal nodes carry `domain`.
 MCP read tools accept the same optional scope; see [agent setup](agent-setup.md#domain-scope).
 `gkg eval-retrieval --questions questions.json --domain zorbo` scopes search,
 gold and null checks; per-question `domain` is used without the flag.

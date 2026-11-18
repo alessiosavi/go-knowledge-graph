@@ -421,8 +421,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, searchResponse{Hits: toHitDTOs(hits)})
 }
 
-// handleEntity returns one entity with its aliases and evidenced facts;
-// low-confidence typed facts need include_low_confidence=true. Candidates need
+// handleEntity returns one entity with its aliases and evidenced facts.
+// Judge-confirmed typed facts are visible at any confidence. Candidates need
 // include_unverified=true and the server's AllowUnverifiedReads setting.
 func (s *Server) handleEntity(w http.ResponseWriter, r *http.Request) {
 	if !s.storeOr503(w) {
@@ -432,6 +432,7 @@ func (s *Server) handleEntity(w http.ResponseWriter, r *http.Request) {
 	view, err := s.store.EntityViewOpts(r.Context(), r.PathValue("id"), graph.ViewOptions{
 		IncludeLowConfidence: queryBool(r, "include_low_confidence"),
 		IncludeUnverified:    includeUnverified && s.cfg.Facts.AllowUnverifiedReads,
+		ConfirmedOnly:        queryBool(r, "confirmed_only"),
 	})
 	if err != nil {
 		writeStoreError(w, err, "entity")
@@ -455,6 +456,7 @@ func (s *Server) handleTraverse(w http.ResponseWriter, r *http.Request) {
 		Limit                int    `json:"limit"`
 		IncludeLowConfidence bool   `json:"include_low_confidence"`
 		IncludeUnverified    bool   `json:"include_unverified"`
+		ConfirmedOnly        bool   `json:"confirmed_only"`
 	}
 	if !readJSON(w, r, jsonBodyCap, &req) {
 		return
@@ -492,6 +494,7 @@ func (s *Server) handleTraverse(w http.ResponseWriter, r *http.Request) {
 	sub, err := s.store.TraverseOpts(r.Context(), req.Entity, req.Relation, direction, depth, limit, graph.ViewOptions{
 		IncludeLowConfidence: req.IncludeLowConfidence,
 		IncludeUnverified:    req.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
+		ConfirmedOnly:        req.ConfirmedOnly,
 	})
 	if err != nil {
 		writeStoreError(w, err, "traverse")

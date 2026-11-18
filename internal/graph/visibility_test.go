@@ -23,10 +23,10 @@ func TestEntityViewVisibilityOptions(t *testing.T) {
 		opt   graph.ViewOptions
 		count int
 	}{
-		{"default", graph.ViewOptions{}, 1},
-		{"low", graph.ViewOptions{IncludeLowConfidence: true}, 2},
-		{"unverified", graph.ViewOptions{IncludeUnverified: true}, 4},
-		{"both", graph.ViewOptions{IncludeLowConfidence: true, IncludeUnverified: true}, 5},
+		{"default", graph.ViewOptions{}, 2},
+		{"low", graph.ViewOptions{IncludeLowConfidence: true}, 3},
+		{"unverified", graph.ViewOptions{IncludeUnverified: true}, 5},
+		{"both", graph.ViewOptions{IncludeLowConfidence: true, IncludeUnverified: true}, 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v, err := f.Store.EntityViewOpts(ctx, f.ID, tc.opt)
@@ -49,7 +49,7 @@ func TestEntityViewVisibilityOptions(t *testing.T) {
 					if fact.Outgoing != (fact.Rel != "pending_in") {
 						t.Errorf("candidate direction=%+v", fact)
 					}
-				} else if fact.Judge != "confirmed" || (fact.LowConfidence && !tc.opt.IncludeLowConfidence) {
+				} else if fact.Judge != "confirmed" && (fact.Judge != "unclear" || !fact.LowConfidence || !tc.opt.IncludeLowConfidence) {
 					t.Errorf("typed fact=%+v", fact)
 				}
 			}
@@ -82,14 +82,14 @@ func TestTraverseVisibilityOptions(t *testing.T) {
 		depth, limit, edges, candidates int
 		opt                             graph.ViewOptions
 	}{
-		{"default", "both", "", 1, 50, 1, 0, graph.ViewOptions{}},
-		{"low", "both", "", 1, 50, 2, 0, graph.ViewOptions{IncludeLowConfidence: true}},
-		{"unverified", "both", "", 1, 50, 4, 3, graph.ViewOptions{IncludeUnverified: true}},
-		{"both", "both", "", 1, 50, 5, 3, graph.ViewOptions{IncludeLowConfidence: true, IncludeUnverified: true}},
+		{"default", "both", "", 1, 50, 2, 0, graph.ViewOptions{}},
+		{"low", "both", "", 1, 50, 3, 0, graph.ViewOptions{IncludeLowConfidence: true}},
+		{"unverified", "both", "", 1, 50, 5, 3, graph.ViewOptions{IncludeUnverified: true}},
+		{"both", "both", "", 1, 50, 6, 3, graph.ViewOptions{IncludeLowConfidence: true, IncludeUnverified: true}},
 		{"incoming", "in", "", 1, 50, 1, 1, graph.ViewOptions{IncludeUnverified: true}},
 		{"relation", "out", "pending out", 1, 50, 1, 1, graph.ViewOptions{IncludeUnverified: true}},
 		{"limit", "both", "", 2, 1, 1, 0, graph.ViewOptions{IncludeUnverified: true}},
-		{"two_hops", "both", "", 2, 50, 4, 3, graph.ViewOptions{IncludeUnverified: true}},
+		{"two_hops", "both", "", 2, 50, 5, 3, graph.ViewOptions{IncludeUnverified: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v, err := f.Store.TraverseOpts(ctx, f.Key, tc.rel, tc.direction, tc.depth, tc.limit, tc.opt)
@@ -125,6 +125,95 @@ func TestTraverseVisibilityOptions(t *testing.T) {
 				if !reflect.DeepEqual(old, v) {
 					t.Errorf("wrapper differs: %+v / %+v", old, v)
 				}
+			}
+		})
+	}
+}
+
+func TestConfirmedOnlyVisibilityOptions(t *testing.T) {
+	f := graphtest.MixedVisibility(t)
+	ctx := context.Background()
+	wantHidden := graph.HiddenCounts{Unclear: 1, Unjudged: 2, Rejected: 1}
+	for _, tc := range []struct {
+		name string
+		opt  graph.ViewOptions
+		want []string
+	}{
+		{"default", graph.ViewOptions{}, []string{"advises", "consults", "uses", "works_at"}},
+		{"include_low_confidence", graph.ViewOptions{IncludeLowConfidence: true}, []string{"advises", "consults", "evaluates", "uses", "works_at"}},
+		{"include_candidates", graph.ViewOptions{IncludeUnverified: true}, []string{"advises", "consults", "pending_in", "pending_out", "unclear", "uses", "works_at"}},
+		{"confirmed_only", graph.ViewOptions{ConfirmedOnly: true}, []string{"advises", "works_at"}},
+		{"confirmed_only_with_candidates", graph.ViewOptions{ConfirmedOnly: true, IncludeUnverified: true}, []string{"advises", "works_at"}},
+		{"confirmed_only_with_low_confidence", graph.ViewOptions{ConfirmedOnly: true, IncludeLowConfidence: true}, []string{"advises", "works_at"}},
+	} {
+		t.Run("entity/"+tc.name, func(t *testing.T) {
+			view, err := f.Store.EntityViewOpts(ctx, f.ID, tc.opt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if view.Hidden != wantHidden {
+				t.Errorf("hidden=%+v, want %+v", view.Hidden, wantHidden)
+			}
+			var rels []string
+			for _, fact := range view.Facts {
+				if tc.opt.ConfirmedOnly && (fact.Judge != "confirmed" || fact.Unverified) {
+					t.Errorf("non-confirmed fact=%+v", fact)
+				}
+				rels = append(rels, fact.Rel)
+			}
+			slices.Sort(rels)
+			if !slices.Equal(rels, tc.want) {
+				t.Errorf("fact relations=%v, want %v", rels, tc.want)
+			}
+		})
+		t.Run("traverse/"+tc.name, func(t *testing.T) {
+			sub, err := f.Store.TraverseOpts(ctx, f.ID, "", "both", 1, 50, tc.opt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sub.Hidden != wantHidden {
+				t.Errorf("hidden=%+v, want %+v", sub.Hidden, wantHidden)
+			}
+			var rels []string
+			for _, edge := range sub.Edges {
+				if tc.opt.ConfirmedOnly && (edge.Judge != "confirmed" || edge.Unverified) {
+					t.Errorf("non-confirmed edge=%+v", edge)
+				}
+				rels = append(rels, edge.Rel)
+			}
+			slices.Sort(rels)
+			if !slices.Equal(rels, tc.want) {
+				t.Errorf("edge relations=%v, want %v", rels, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfirmedOnlyTraversalDoesNotExpandThroughUnclearEdges(t *testing.T) {
+	f := graphtest.MixedVisibility(t)
+	for _, tc := range []struct {
+		name string
+		opt  graph.ViewOptions
+		want []string
+	}{
+		{"default", graph.ViewOptions{}, []string{"advises", "consults", "ships", "supplies", "uses", "works_at"}},
+		{"confirmed_only", graph.ViewOptions{ConfirmedOnly: true}, []string{"advises", "works_at"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sub, err := f.Store.TraverseOpts(context.Background(), f.ID, "", "out", 2, 50, tc.opt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rels []string
+			for _, edge := range sub.Edges {
+				rels = append(rels, edge.Rel)
+			}
+			slices.Sort(rels)
+			if !slices.Equal(rels, tc.want) {
+				t.Errorf("edge relations=%v, want %v", rels, tc.want)
+			}
+			if tc.opt.ConfirmedOnly && (len(sub.Nodes) != 2 || sub.Nodes[1].Key != f.OtherKey) {
+				t.Errorf("nodes=%+v, want only the start and its confirmed neighbour", sub.Nodes)
 			}
 		})
 	}

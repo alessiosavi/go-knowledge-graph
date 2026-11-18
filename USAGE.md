@@ -138,11 +138,18 @@ options:
 - **gkg REST**: `POST /v1/search` (entity + chunk hits), `GET /v1/entities/{id-or-key}`
   (entity card with evidenced facts), `POST /v1/traverse` (fact-edge walk),
   `POST /v1/cypher` (guarded read-only Cypher).
-  Entity/traversal reads exclude low-confidence typed facts by default; the
-  viewer checkbox opts in. Responses report nonzero `hidden` counts of distinct
-  facts per state. `include_unverified` additionally returns marked candidates only when
-  `facts.allow_unverified_reads` is enabled; otherwise `unverified_ignored:true`
-  explains the ignored request. See [visibility options](docs/quickstart.md).
+  By default, entity and traversal reads show typed facts that meet the assert
+  floor or that the judge confirmed. Set `include_low_confidence` or check
+  **Include low-confidence facts** in the viewer to show all typed facts.
+  For judge-confirmed facts only, send
+  `?confirmed_only=true` on the entity GET or `"confirmed_only": true` in the
+  traverse POST body. This applies at every hop, includes judge-confirmed facts
+  at any confidence, and takes precedence over both inclusion flags.
+  Otherwise, `include_unverified` adds marked candidates when
+  `facts.allow_unverified_reads` is enabled. When the server setting is disabled,
+  `unverified_ignored:true` explains the ignored request. Responses report
+  nonzero `hidden` counts of distinct facts per state.
+  See [visibility options](docs/quickstart.md).
 - **Memgraph Lab**: run `memgraph/lab`, point it at the Bolt endpoint
   (`bolt://localhost:7687`; credentials from your `.env`) and use the Query
   editor with the Graph view. Handy starting queries:
@@ -459,8 +466,9 @@ counts and uses mode 0600. Names go only to `--out`; stdout contains aggregates.
 
 `GET /v1/domains` returns `[{id, name, documents}]` for the UI pickers;
 `documents` counts done documents, and empty domains remain listed. Search and
-Ask offer independent domain pickers, defaulting to all domains. Hits and
-list/detail document views show their domain. The API accepts `domain` on
+Ask offer independent domain pickers, defaulting to all domains. Search hits,
+document list/detail responses, entity views, related entity references in facts,
+co-mentions, and traversal nodes carry `domain`. The API accepts `domain` on
 `POST /v1/search`, `POST /v1/agent/ask` and `/v1/agent/ask/stream`, and as a
 query parameter on `GET /v1/documents`. Slugs use `[a-z0-9-]{1,40}`; empty
 means all domains. MCP `search`, `get_entity`, `get_chunks`, `traverse`,

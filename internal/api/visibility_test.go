@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
@@ -65,7 +67,7 @@ func TestUnverifiedReadsREST(t *testing.T) {
 						if got, _ := out["unverified_ignored"].(bool); got != (include && !allow) {
 							t.Errorf("ignored=%v, want %v", out["unverified_ignored"], include && !allow)
 						}
-						want := 1
+						want := 2
 						if low {
 							want++
 						}
@@ -95,6 +97,50 @@ func TestUnverifiedReadsREST(t *testing.T) {
 					})
 				}
 			}
+		}
+	}
+}
+
+func TestConfirmedOnlyReadsREST(t *testing.T) {
+	f := graphtest.MixedVisibility(t)
+	cfg := config.Config{}
+	cfg.Facts.AllowUnverifiedReads = true
+	h := apiHandler(t, cfg, f.Store, nil)
+	for _, tc := range []struct {
+		name, query, bodyFields string
+		want                    []string
+	}{
+		{"default", "", "", []string{"advises", "consults", "uses", "works_at"}},
+		{"confirmed_only", "?confirmed_only=true&include_unverified=true", `,"confirmed_only":true,"include_unverified":true`, []string{"advises", "works_at"}},
+	} {
+		for _, field := range []string{"facts", "edges"} {
+			t.Run(tc.name+"/"+field, func(t *testing.T) {
+				var rr *httptest.ResponseRecorder
+				if field == "edges" {
+					rr = doJSON(t, h, http.MethodPost, "/v1/traverse", fmt.Sprintf(`{"entity":%q%s}`, f.ID, tc.bodyFields))
+				} else {
+					rr = do(t, h, http.MethodGet, "/v1/entities/"+f.ID+tc.query, nil, nil)
+				}
+				if rr.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+				}
+				out := decode[map[string]json.RawMessage](t, rr)
+				var rows []struct{ Rel, Judge string }
+				if err := json.Unmarshal(out[field], &rows); err != nil {
+					t.Fatal(err)
+				}
+				var rels []string
+				for _, row := range rows {
+					if row.Rel == "advises" && row.Judge != "confirmed" {
+						t.Errorf("advises judge=%q, want confirmed", row.Judge)
+					}
+					rels = append(rels, row.Rel)
+				}
+				slices.Sort(rels)
+				if !slices.Equal(rels, tc.want) {
+					t.Errorf("%s relations=%v, want %v", field, rels, tc.want)
+				}
+			})
 		}
 	}
 }

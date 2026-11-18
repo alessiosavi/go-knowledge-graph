@@ -596,11 +596,15 @@ paths:
           schema: { type: string }
         - name: include_low_confidence
           in: query
-          description: '"true" or "1" includes facts below the assert floor; all other values are false'
+          description: '"true" or "1" includes all typed facts when confirmed_only is false. Other values are false. By default, typed facts are visible if they meet the assert floor or the judge confirmed them.'
           schema: { type: string, default: "false" }
         - name: include_unverified
           in: query
           description: '"true" or "1" additionally includes marked candidates when facts.allow_unverified_reads is true (default false); otherwise the response sets unverified_ignored to true'
+          schema: { type: string, default: "false" }
+        - name: confirmed_only
+          in: query
+          description: '"true" or "1" returns only judge-confirmed typed facts at any confidence. This takes precedence over include_low_confidence and include_unverified, so candidates are excluded.'
           schema: { type: string, default: "false" }
       responses:
         "200":
@@ -1189,7 +1193,9 @@ components:
         unverified:
           type: boolean
           description: True for an included candidate; judge is present (empty for unjudged). Omitted for typed edges.
-        low_confidence: { type: boolean }
+        low_confidence:
+          type: boolean
+          description: Whether the extractor score was below the assert floor.
         outgoing: { type: boolean }
         doc_id: { type: string }
         chunk_id: { type: string }
@@ -1256,11 +1262,15 @@ components:
         include_low_confidence:
           type: boolean
           default: false
-          description: Includes typed edges below the assert floor.
+          description: Includes all typed edges when confirmed_only is false. By default, typed edges are visible if they meet the assert floor or the judge confirmed them.
         include_unverified:
           type: boolean
           default: false
           description: Additionally includes marked candidate facts (including low-confidence facts) only when facts.allow_unverified_reads is true; otherwise unverified_ignored is true. Candidate facts appear at the depth where found, but their far endpoints are not enqueued for expansion. Rejected audits are never returned as edges.
+        confirmed_only:
+          type: boolean
+          default: false
+          description: Traverses only judge-confirmed typed edges at any confidence on every hop. This takes precedence over include_low_confidence and include_unverified, so candidates are excluded.
     Edge:
       type: object
       required:
@@ -1274,7 +1284,9 @@ components:
         unverified:
           type: boolean
           description: True for an included candidate; judge is present (empty for unjudged). Omitted for typed edges.
-        low_confidence: { type: boolean }
+        low_confidence:
+          type: boolean
+          description: Whether the extractor score was below the assert floor.
         doc_id: { type: string }
         chunk_id: { type: string }
         excerpt: { type: string }

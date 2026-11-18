@@ -10,7 +10,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 )
 
-func TestAgentVisibilityKeepsLowConfidenceOptIn(t *testing.T) {
+func TestAgentVisibilityIncludesConfirmedByDefault(t *testing.T) {
 	f := graphtest.Visibility(t)
 	cfg := config.Config{}
 	cfg.Facts.AllowUnverifiedReads = true // Agent tools must still keep candidates hidden.
@@ -33,7 +33,7 @@ func TestAgentVisibilityKeepsLowConfidenceOptIn(t *testing.T) {
 					field = "edges"
 				}
 				rows := out[field].([]any)
-				want := 1
+				want := 2
 				if low {
 					want++
 				}
@@ -42,7 +42,11 @@ func TestAgentVisibilityKeepsLowConfidenceOptIn(t *testing.T) {
 				}
 				for _, row := range rows {
 					r := row.(map[string]any)
-					if r["judge"] != "confirmed" || r["unverified"] == true {
+					wantJudge := "confirmed"
+					if low && r["rel"] == "evaluates" {
+						wantJudge = "unclear"
+					}
+					if r["judge"] != wantJudge || r["unverified"] == true {
 						t.Errorf("unexpected fact=%v", r)
 					}
 				}
