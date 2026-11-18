@@ -72,7 +72,13 @@ case "$preflight" in
   0|2) ;;
   3) restore_revision; restore_image_tags; failed 'seed required; previous revision and image tags restored' ;;
   10)
-    "${compose[@]}" stop gkg >"$work/stop" 2>&1 || { restore_revision; restore_image_tags; failed 'stop gkg failed; previous revision and image tags restored'; }
+    "${compose[@]}" stop gkg >"$work/stop" 2>&1 || {
+      restore_revision
+      restore_image_tags
+      # A failed stop may already have stopped gkg; restart the restored image.
+      make up >"$work/rollback-up" 2>&1 || true
+      failed 'stop gkg failed; previous revision and image tags restored'
+    }
     "${compose[@]}" run --rm -T --no-deps gkg migrate --schema-only >"$work/migrate" 2>&1 || recovery_required 'schema migration failed' 'automatic rollback withheld after schema migration'
     migrated=1
     ;;

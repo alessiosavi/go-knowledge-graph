@@ -191,12 +191,13 @@ func TestMoveDocumentGuardsAndLedger(t *testing.T) {
 	if err := st.AssignDomain(ctx, a); err != nil {
 		t.Fatal(err)
 	}
+	rawRun(t, uri, `MERGE (m:GkgMeta {id:'extraction_schema'}) SET m.value=3`)
 	if err := st.MoveDocument(ctx, a.DocID, "zorbo-admin", "move-acme", "move", "admin"); !errors.Is(err, graph.ErrSchemaNotV4) {
 		t.Fatalf("v3 move=%v", err)
 	}
 	rawRun(t, uri, `MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=4`)
 	t.Cleanup(func() {
-		rawRun(t, uri, `MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=3`)
+		rawRun(t, uri, fmt.Sprintf(`MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=%d`, graph.ExtractionSchemaVersion))
 		rawRun(t, uri, `MATCH (n:Domain {id:'zorbo-admin'}) DELETE n`)
 	})
 	if err := st.MoveDocument(ctx, a.DocID, "zorbo-admin", "move-acme", "move", "admin"); !errors.Is(err, graph.ErrNotDone) {

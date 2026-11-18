@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -651,5 +652,13 @@ func TestMakeBoxRebuildOperations(t *testing.T) {
 	}
 	if strings.Contains(h.read("payload"), "no-rollback") {
 		t.Fatal("inherited NO_ROLLBACK disabled recovery")
+	}
+}
+
+func TestMinimalEnvPreservesTMPDIR(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	if !slices.Contains(minimalEnv(), "TMPDIR="+dir) {
+		t.Fatal("minimalEnv drops TMPDIR, so make -f - writes outside the configured scratch directory")
 	}
 }

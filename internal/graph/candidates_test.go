@@ -303,7 +303,7 @@ func TestCandidateCleanup(t *testing.T) {
 				err = st.Supersede(ctx, f.doc, other)
 			case "migration":
 				rawRun(t, os.Getenv(graphtest.URIEnv), "MATCH (m:GkgMeta {id: 'extraction_schema'}) SET m.value = 2")
-				_, err = st.MigrateExtractionSchema(ctx)
+				_, err = st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true})
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -320,7 +320,7 @@ func TestCandidateOnlyMigration(t *testing.T) {
 	ctx := context.Background()
 	uri := os.Getenv(graphtest.URIEnv)
 	rawRun(t, uri, "MATCH (m:GkgMeta {id: 'extraction_schema'}) DELETE m")
-	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
+	if _, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true}); err != nil {
 		t.Fatal(err)
 	}
 	doc, _ := entitiesTestDoc(t, st, "Stored candidate-only document.")
@@ -336,7 +336,7 @@ func TestCandidateOnlyMigration(t *testing.T) {
 	if v, err := st.SchemaVersion(ctx); err != nil || v != 1 {
 		t.Fatalf("bootstrap marked candidate-only store current: %d, %v", v, err)
 	}
-	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
+	if _, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true}); err != nil {
 		t.Fatal(err)
 	}
 	if n := rawCount(t, uri, "MATCH (n:FactCandidate) RETURN count(n) AS n"); n != 0 {

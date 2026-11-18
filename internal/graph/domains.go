@@ -46,18 +46,9 @@ ORDER BY d.id`, map[string]any{"exclude": excludeDocID, "superseded": string(Sta
 	}
 	out := make([]domain.DocProfile, 0, len(rows))
 	for _, r := range rows {
-		v, _ := r.Get("profile")
-		stored, ok := v.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("graph: document %s has invalid name profile", getString(r, "id"))
-		}
-		profile := make(domain.Profile, len(stored))
-		for name, v := range stored {
-			n, ok := v.(int64)
-			if !ok {
-				return nil, fmt.Errorf("graph: document %s has invalid name frequency for %q", getString(r, "id"), name)
-			}
-			profile[name] = int(n)
+		profile, err := storedProfile(r)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, domain.DocProfile{DocID: getString(r, "id"), Domain: getString(r, "domain"), Source: getString(r, "source"), Profile: profile})
 	}
@@ -79,6 +70,13 @@ func (s *Store) AssignDomain(ctx context.Context, a Assignment) error {
 }
 
 func (s *Store) assignDomain(ctx context.Context, a Assignment, beforeCommit func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.assignDomainUnlocked(ctx, a, beforeCommit)
+}
+
+// assignDomainUnlocked is also used while migration owns Store.mu.
+func (s *Store) assignDomainUnlocked(ctx context.Context, a Assignment, beforeCommit func() error) error {
 	if !ValidDomain(a.Domain) {
 		return fmt.Errorf("graph: invalid domain slug %q", a.Domain)
 	}
@@ -105,7 +103,7 @@ func (s *Store) assignDomain(ctx context.Context, a Assignment, beforeCommit fun
 	for _, score := range r.Top[:min(3, len(r.Top))] {
 		top = append(top, []any{score.Domain, score.Score})
 	}
-	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+	return s.runWriteTx(ctx, func(tx neo4j.ManagedTransaction) error {
 		status, err := txDocumentStatus(ctx, tx, a.DocID)
 		if err != nil {
 			return err
@@ -474,4 +472,59 @@ func (s *Store) RenameDomain(ctx context.Context, slug, name string) (DomainOp, 
 		return txRun(ctx, tx, `MATCH (n:Domain {id:$domain}) SET n.name=$name CREATE (:DomainDecision {op_id:$op,doc_id:'',domain:$domain,previous_domain:$domain,action:'rename',by:'admin',at:$at,note:$name,top:[],params:{}}) CREATE (:DomainOp {op_id:$op,action:'rename',state:'completed',docs:[],targets:{},at:$at})`, map[string]any{"domain": slug, "name": name, "op": op.OpID, "at": op.At.Format(timeLayout)})
 	})
 	return op, err
+}
+
+// ProfilesFromMentions reads every live document in id order. Persisted profiles
+// survive interrupted migrations; only missing profiles read legacy mentions.
+// Mention reads are bounded to one document at a time. BuildProfile folds names
+// and counts distinct chunks, including folded aliases.
+func (s *Store) ProfilesFromMentions(ctx context.Context) ([]domain.DocProfile, error) {
+	rows, err := s.runRead(ctx, `MATCH (d:Document)
+WHERE d.status IS NULL OR d.status <> 'superseded'
+RETURN d.id AS id,d.source AS source,d.domain AS domain,d.name_profile AS profile ORDER BY d.id`, nil)
+	if err != nil {
+		return nil, fmt.Errorf("graph: migration profiles: %w", err)
+	}
+	out := make([]domain.DocProfile, 0, len(rows))
+	for _, r := range rows {
+		p := domain.DocProfile{DocID: getString(r, "id"), Source: getString(r, "source"), Domain: getString(r, "domain")}
+		if v, _ := r.Get("profile"); v != nil {
+			p.Profile, err = storedProfile(r)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			mentions, err := s.runRead(ctx, `MATCH (d:Document {id:$id})-[:HAS_CHUNK]->(c:Chunk)-[:MENTIONS]->(e:Entity)
+WHERE NOT e.key STARTS WITH '#'
+RETURN c.id AS chunk,e.name AS name`, map[string]any{"id": p.DocID})
+			if err != nil {
+				return nil, fmt.Errorf("graph: migration mentions for %s: %w", p.DocID, err)
+			}
+			names := make(map[string][]string)
+			for _, mention := range mentions {
+				chunk := getString(mention, "chunk")
+				names[chunk] = append(names[chunk], getString(mention, "name"))
+			}
+			p.Profile = domain.BuildProfile(names)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func storedProfile(r *neo4j.Record) (domain.Profile, error) {
+	v, _ := r.Get("profile")
+	stored, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("graph: document %s has invalid name profile", getString(r, "id"))
+	}
+	profile := make(domain.Profile, len(stored))
+	for name, v := range stored {
+		n, ok := v.(int64)
+		if !ok {
+			return nil, fmt.Errorf("graph: document %s has invalid name frequency for %q", getString(r, "id"), name)
+		}
+		profile[name] = int(n)
+	}
+	return profile, nil
 }

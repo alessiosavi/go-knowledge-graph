@@ -60,7 +60,7 @@ func TestPipelineRecoversExtractionSchemaMigration(t *testing.T) {
 	rawRecords(t, uri, `MATCH (m:GkgMeta {id: 'extraction_schema'}) DELETE m RETURN count(*)`)
 	wantDocs := int(rawCount(t, uri, `MATCH (d:Document) WHERE d.status IN ['done', 'extracted', 'merged', 'verifying'] RETURN count(*) AS n`))
 	wantEntities := int(rawCount(t, uri, `MATCH (e:Entity) RETURN count(e) AS n`))
-	result, err := st.MigrateExtractionSchema(ctx)
+	result, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +80,7 @@ func TestPipelineRecoversExtractionSchemaMigration(t *testing.T) {
 	// A restarted pipeline has no submission cache, loader, or prior spool.
 	// Process must use only the existing chunk text, then finish superseding.
 	p := ingest.NewPipeline(testConfig(t), st, mock, nil, nil)
+	p.SetWriteMode(ingest.WriteMode{Hygiene: true, Domains: true})
 	for _, fx := range fixtures {
 		if queued[fx.newID] != graph.StatusChunked {
 			t.Fatalf("migration did not requeue %s as chunked: %+v", fx.newID, queued)
@@ -95,9 +96,9 @@ func TestPipelineRecoversExtractionSchemaMigration(t *testing.T) {
 		if err != nil || old.Status != graph.StatusSuperseded {
 			t.Errorf("old document = %+v, err %v; want superseded", old, err)
 		}
-		view, err := st.EntityView(ctx, graph.EntityKey(fx.name), false)
+		view, err := st.EntityView(ctx, "@"+doc.Domain+":"+graph.EntityKey(fx.name), false)
 		if err != nil || len(view.Facts) != 1 {
-			t.Errorf("name-only entity = %+v, err %v; want one fact", view, err)
+			t.Errorf("domain-scoped entity = %+v, err %v; want one fact", view, err)
 		}
 		if n := rawCount(t, uri, fmt.Sprintf(`MATCH (:Entity {key: 'person:%s'}) RETURN count(*) AS n`, graph.EntityKey(fx.name))); n != 0 {
 			t.Error("typed legacy key survived migration")

@@ -71,7 +71,8 @@ func TestCommandsRefuseNewerSchema(t *testing.T) {
 }
 
 func TestBuildPipelineWriteModeV3(t *testing.T) {
-	st := graphtest.Store(t)
+	st := graphtest.MigrationStore(t)
+	migrationQuery(t, `MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=3`, nil)
 	if v, err := st.SchemaVersion(context.Background()); err != nil || v >= graph.SchemaVersionV4 {
 		t.Fatalf("precondition: schema marker = %d (%v); want below %d", v, err, graph.SchemaVersionV4)
 	}
@@ -92,8 +93,7 @@ func TestBuildPipelineWriteModeV3(t *testing.T) {
 
 func TestBuildPipelineWriteModeV4(t *testing.T) {
 	st := graphtest.MigrationStore(t)
-	// Exercise the future gate directly; startup still refuses v4 until
-	// the binary's migration version is raised in a later task.
+	// A current marker activates every v4 write mode at the CLI boundary.
 	migrationQuery(t, `MATCH (m:GkgMeta {id: 'extraction_schema'}) SET m.value = $version`, map[string]any{"version": graph.SchemaVersionV4})
 	for _, confirmation := range []bool{false, true} {
 		cfg := config.Config{
@@ -235,7 +235,7 @@ func TestMigrateExtractorFailureKeepsRecoveryQueued(t *testing.T) {
 	assertMigratedCommandDocument(t, st, queued.DocumentID, queuedName)
 }
 
-func migrationCommandFixture(t *testing.T) (*graph.Store, string, string) {
+func migrationCommandStore(t *testing.T) *graph.Store {
 	t.Helper()
 	st := graphtest.MigrationStore(t)
 	t.Chdir(t.TempDir())
@@ -245,9 +245,16 @@ func migrationCommandFixture(t *testing.T) (*graph.Store, string, string) {
 		"GKG_EXTRACTOR_MODE": "mock", "GKG_CONVERTER_MODE": "off",
 		"GKG_EMBEDDER_ENABLED": "false", "GKG_JUDGE_MODE": "off",
 		"GKG_INGEST_SPOOL_DIR": t.TempDir(),
+		"GKG_DOMAIN_SEED_FILE": "detect-all",
 	} {
 		t.Setenv(key, value)
 	}
+	return st
+}
+
+func migrationCommandFixture(t *testing.T) (*graph.Store, string, string) {
+	t.Helper()
+	st := migrationCommandStore(t)
 	// Isolate foreign fixtures from this command's global recovery set;
 	// MigrationStore restores their statuses, errors and timestamps.
 	migrationQuery(t, `MATCH (d:Document) SET d.status = 'failed'`, nil)
@@ -290,9 +297,10 @@ func assertMigratedCommandDocument(t *testing.T, st *graph.Store, id, name strin
 	if err != nil || doc.Status != graph.StatusDone {
 		t.Fatalf("migrated document = %+v, %v; want done", doc, err)
 	}
-	view, err := st.EntityView(ctx, graph.EntityKey(name), false)
-	if err != nil || view.Key != graph.EntityKey(name) || len(view.Facts) != 1 {
-		t.Errorf("name-only entity = %+v, %v; want one fact", view, err)
+	key := "@" + doc.Domain + ":" + graph.EntityKey(name)
+	view, err := st.EntityView(ctx, key, false)
+	if err != nil || view.Key != key || len(view.Facts) != 1 {
+		t.Errorf("domain-scoped entity = %+v, %v; want one fact", view, err)
 	}
 	rows := migrationQuery(t, `MATCH (e:Entity {key: $key}) RETURN e.key`, map[string]any{"key": "person:" + graph.EntityKey(name)})
 	if len(rows) != 0 {

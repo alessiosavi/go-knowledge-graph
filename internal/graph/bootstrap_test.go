@@ -83,7 +83,7 @@ CREATE (a:Entity {key: 'person:ada lovelace %s'}), (b:Entity {key: 'work:notes %
 	rawRun(t, uri, `MATCH (m:GkgMeta {id: 'extraction_schema'}) DELETE m`)
 	wantDocs := int(rawCount(t, uri, `MATCH (d:Document) WHERE d.status IN ['done', 'extracted', 'merged', 'verifying'] RETURN count(*) AS n`))
 	wantEntities := int(rawCount(t, uri, `MATCH (e:Entity) RETURN count(e) AS n`))
-	result, err := st.MigrateExtractionSchema(ctx)
+	result, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ CREATE (a:Entity {key: 'person:ada lovelace %s'}), (b:Entity {key: 'work:notes %
 		t.Fatal(err)
 	}
 	before, _ := st.Document(ctx, id)
-	result, err = st.MigrateExtractionSchema(ctx)
+	result, err = st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,12 +173,12 @@ func TestMigrateExtractionSchemaV2(t *testing.T) {
 		t.Fatal(err)
 	}
 	rawRun(t, uri, `MATCH (m:GkgMeta {id: 'extraction_schema'}) SET m.value = 2`)
-	result, err := st.MigrateExtractionSchema(ctx)
+	result, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Migrated || result.From != 2 || result.To != 3 || result.DocumentsRequeued < 1 || result.EntitiesRemoved < 2 {
-		t.Errorf("v2 migration = %+v, want v2 to v3 with derived data cleared and documents requeued", result)
+	if !result.Migrated || result.From != 2 || result.To != graph.ExtractionSchemaVersion || result.DocumentsRequeued < 1 || result.EntitiesRemoved < 2 {
+		t.Errorf("v2 migration = %+v, want v2 to v4 with derived data cleared and documents requeued", result)
 	}
 	assertExtractionSchemaMarker(t, uri)
 	doc, err := st.Document(ctx, docID)
@@ -190,14 +190,14 @@ func TestMigrateExtractionSchemaV2(t *testing.T) {
 	}
 }
 
-func TestMigrateFreshStoreSetsMarker(t *testing.T) {
+func TestMigrateDocumentWithoutEntities(t *testing.T) {
 	st := graphtest.MigrationStore(t)
 	ctx := context.Background()
 	uri := os.Getenv(graphtest.URIEnv)
 	// Bring the disposable DB to the no-entities state, independent of test
 	// order or previous runs. MigrationStore restores foreign doc statuses.
 	rawRun(t, uri, `MATCH (m:GkgMeta {id: 'extraction_schema'}) DELETE m`)
-	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
+	if _, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true}); err != nil {
 		t.Fatal(err)
 	}
 	id, _ := entitiesTestDoc(t, st, "Stored text without entities.")
@@ -214,17 +214,18 @@ func TestMigrateFreshStoreSetsMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	rawRun(t, uri, `MATCH (m:GkgMeta {id: 'extraction_schema'}) DELETE m`)
-	result, err := st.MigrateExtractionSchema(ctx)
+	wantDocs := int(rawCount(t, uri, `MATCH (d:Document) WHERE d.status IN ['done', 'extracted', 'merged', 'verifying'] RETURN count(*) AS n`))
+	result, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (graph.MigrationResult{From: 1, To: graph.ExtractionSchemaVersion, Migrated: true}); result != want {
+	if want := (graph.MigrationResult{From: 1, To: graph.ExtractionSchemaVersion, DocumentsRequeued: wantDocs, Migrated: true}); result != want {
 		t.Errorf("empty migration result = %+v, want %+v", result, want)
 	}
 	assertExtractionSchemaMarker(t, uri)
 	after, err := st.Document(ctx, id)
-	if err != nil || !reflect.DeepEqual(before, after) {
-		t.Errorf("no-entities migration changed document: before %+v, after %+v, err %v", before, after, err)
+	if err != nil || after.Status != graph.StatusChunked || after.Domain == "" {
+		t.Errorf("document-only migration did not assign and requeue: before %+v, after %+v, err %v", before, after, err)
 	}
 	chunks, err := st.Chunks(ctx, id)
 	if err != nil || len(chunks) != 1 || chunks[0].Text != "Stored text without entities." {
@@ -238,9 +239,10 @@ func TestBootstrapMarksEmptyStore(t *testing.T) {
 	st := graphtest.MigrationStore(t)
 	ctx := context.Background()
 	uri := os.Getenv(graphtest.URIEnv)
-	// Clear derived data left by other tests on the disposable DB.
+	// A truly empty store has no Documents either.
+	rawRun(t, uri, `MATCH (n) DETACH DELETE n`)
 	rawRun(t, uri, `MATCH (m:GkgMeta {id: 'extraction_schema'}) DELETE m`)
-	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
+	if _, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true}); err != nil {
 		t.Fatal(err)
 	}
 	rawRun(t, uri, `MATCH (m:GkgMeta {id: 'extraction_schema'}) DELETE m`)
@@ -262,7 +264,7 @@ func TestMigrateRejectedFactOnly(t *testing.T) {
 	uri := os.Getenv(graphtest.URIEnv)
 	// Normalize derived data before setting up the audit-only legacy store.
 	rawRun(t, uri, `MATCH (m:GkgMeta {id: 'extraction_schema'}) DELETE m`)
-	if _, err := st.MigrateExtractionSchema(ctx); err != nil {
+	if _, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true}); err != nil {
 		t.Fatal(err)
 	}
 	id, _ := entitiesTestDoc(t, st, "Stored audit-only document.")
@@ -280,7 +282,7 @@ func TestMigrateRejectedFactOnly(t *testing.T) {
 		t.Fatalf("audit-only fixture has %d entities", n)
 	}
 	wantDocs := int(rawCount(t, uri, `MATCH (d:Document) WHERE d.status IN ['done', 'extracted', 'merged', 'verifying'] RETURN count(*) AS n`))
-	result, err := st.MigrateExtractionSchema(ctx)
+	result, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true})
 	if err != nil {
 		t.Fatal(err)
 	}

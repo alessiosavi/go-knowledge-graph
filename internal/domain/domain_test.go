@@ -421,3 +421,19 @@ func assertScores(t *testing.T, got, want []DomainScore) {
 		}
 	}
 }
+
+// TestParamsFromConfigPerField: each zero field takes its default on its
+// own, so ingest, evaluate and the migration resolve the same thresholds.
+func TestParamsFromConfigPerField(t *testing.T) {
+	d := DefaultParams()
+	for _, tc := range []struct{ in, want Params }{
+		{Params{}, d},
+		{Params{Tau: 0.07}, Params{Tau: 0.07, Delta: d.Delta, TauOverride: d.TauOverride}},
+		{Params{Delta: 0.01, TauOverride: 0.2}, Params{Tau: d.Tau, Delta: 0.01, TauOverride: 0.2}},
+		{Params{Tau: 0.1, Delta: 0.03, TauOverride: 0.3}, Params{Tau: 0.1, Delta: 0.03, TauOverride: 0.3}},
+	} {
+		if got := ParamsFromConfig(tc.in.Tau, tc.in.Delta, tc.in.TauOverride); got != tc.want {
+			t.Errorf("ParamsFromConfig(%+v) = %+v, want %+v", tc.in, got, tc.want)
+		}
+	}
+}

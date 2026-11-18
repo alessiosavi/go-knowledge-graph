@@ -154,7 +154,7 @@ func runDomain(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	if action == "evaluate" {
-		result := domain.Evaluate(profiles, domain.Params{Tau: cfg.Domain.Tau, Delta: cfg.Domain.Delta, TauOverride: cfg.Domain.TauOverride})
+		result := domain.Evaluate(profiles, domain.ParamsFromConfig(cfg.Domain.Tau, cfg.Domain.Delta, cfg.Domain.TauOverride))
 		_, err = fmt.Fprintf(stdout, "docs=%d top_choice_accuracy=%.6f auto_attach_share=%.6f unseen_false_attach_share=%.6f\n", result.Docs, result.TopChoiceAccuracy, result.AutoAttachShare, result.UnseenFalseAttachShare)
 		if err != nil {
 			return fail(err)

@@ -1315,17 +1315,7 @@ func (p *Pipeline) nameProfile(ctx context.Context, chunks []graph.Chunk, cleane
 // config.Load's defaults. In particular, an unset override must not accept a
 // zero-score alternative to a unanimous prefix prior.
 func domainParams(cfg config.DomainConfig) domain.Params {
-	p := domain.DefaultParams()
-	if cfg.Tau != 0 {
-		p.Tau = cfg.Tau
-	}
-	if cfg.Delta != 0 {
-		p.Delta = cfg.Delta
-	}
-	if cfg.TauOverride != 0 {
-		p.TauOverride = cfg.TauOverride
-	}
-	return p
+	return domain.ParamsFromConfig(cfg.Tau, cfg.Delta, cfg.TauOverride)
 }
 
 func (p *Pipeline) detectDomain(ctx context.Context, doc *graph.Document, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk, docScoped map[string]bool) error {

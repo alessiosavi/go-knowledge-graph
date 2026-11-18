@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "names": {"acme": "Acme-Max", "quillon": "Quillon Ltd"},
+  "rules": [
+    {"match": "https://acme.invalid/", "domain": "acme"},
+    {"match": "https://quillon.invalid/", "domain": "quillon"}
+  ]
+}

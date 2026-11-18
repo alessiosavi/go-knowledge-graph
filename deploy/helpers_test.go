@@ -30,7 +30,7 @@ func writeFixture(t *testing.T, lines ...string) string {
 
 func minimalEnv() []string {
 	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}
-	for _, key := range []string{"DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT"} {
+	for _, key := range []string{"DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "TMPDIR"} {
 		if value, ok := os.LookupEnv(key); ok {
 			env = append(env, key+"="+value)
 		}
