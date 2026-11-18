@@ -52,6 +52,10 @@ func Apply(r extract.ChunkResult, chunkText string, p Preset) Result {
 	for i, m := range r.Mentions {
 		indices[i] = -1
 		name, aliases, rule := cleanName(m.Text, m.Label, isHeadingLine(m.Text, chunkText, m.Start, m.End), p)
+		if rule == "" && m.Start >= 0 && m.End > m.Start && m.End <= len(chunkText) &&
+			chunkText[m.Start:m.End] == m.Text && SectionLabel(chunkText, m.Start, m.End, p) != "" {
+			rule = "section_label"
+		}
 		if rule != "" {
 			out.Dropped[rule]++
 			continue

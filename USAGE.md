@@ -584,3 +584,31 @@ and its lookup key only when the name still matches the one it read.
 If repair fails partway through, the error includes the partial counts on
 stderr. Rerunning the repair is safe and idempotent because it skips names
 that are already clean.
+
+### Repair stored section labels
+
+Run `gkg repair-labels -dry-run` to count section-label mentions and their
+dependent facts using stored chunk text and byte offsets. Run
+`gkg repair-labels` to remove them. The repair uses each document's hygiene
+preset allowlist and commits one chunk at a time. You can rerun it after an
+interruption. It requires no extraction or judge calls.
+
+Run the sweep with ingestion idle, then run `gkg repair-labels -dry-run`
+again for the same scope and expect `spans=0`. A server running an older
+binary can recreate the labels if it re-extracts a repaired document.
+The sweep skips documents with a status other than `done` and warns when it
+skips a document because its hygiene preset could not be loaded. Check
+`skipped_docs` alongside `spans` to see whether any documents with chunks
+were skipped.
+
+Use `-domain slug` to scan only documents in that domain. Add
+`-report path` to write a private JSONL file with each matching span's entity,
+rule and source line, capped at 200 bytes. The final record contains
+`skipped_docs`, the number of distinct documents skipped. The path must be new. With
+`-report`, apply writes the report before making graph changes.
+
+The summary reports scanned chunks, matched spans by rule, confirmed and
+other fact edges, candidates, rejected facts and entities removed. The dry-run
+entity count and the report's `entity_removed` flag indicate that every
+mention of the entity across the graph is selected for removal. Apply counts
+entities actually collected after all their relationships are gone.
