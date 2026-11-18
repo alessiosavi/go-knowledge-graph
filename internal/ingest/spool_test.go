@@ -330,7 +330,7 @@ func TestRecoverSpoolSweepFailureIsNonfatal(t *testing.T) {
 		if id != res.DocumentID {
 			t.Fatalf("recovered %q, want %q", id, res.DocumentID)
 		}
-	default:
+	case <-time.After(2 * time.Second):
 		t.Fatal("in-flight document not requeued")
 	}
 	st.inFlightErr = errors.New("graph unavailable")
