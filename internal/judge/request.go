@@ -31,7 +31,7 @@ type Request struct {
 	DocID        string  `json:"doc_id"`
 }
 
-// NewV2Profile builds the v2.1 profile using the definitions applicable to
+// NewV2Profile builds the current v2-schema profile (profileVersionV2) using the definitions applicable to
 // the run, indexed by preset and then relation.
 func NewV2Profile(model string, definitions map[string]map[string]string) Profile {
 	canonical := canonicalDefinitions(definitions)
