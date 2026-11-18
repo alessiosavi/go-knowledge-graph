@@ -24,8 +24,8 @@ const responseCap = 4 << 20
 
 // providerError classifies a provider failure: a transport failure carries
 // status 0, anything else the HTTP status. Its message never contains the
-// endpoint or the API key — the full transport error goes to the server log
-// only.
+// endpoint or the API key. Transport diagnostics are logged server-side with
+// the key redacted.
 type providerError struct {
 	status int
 	detail string
@@ -318,15 +318,15 @@ func (c *client) doStream(ctx context.Context, body []byte, onDelta func(string)
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return chatReply{}, err
 		}
-		slog.Warn("agent: provider stream request failed", "err", err)
+		slog.Warn("agent: provider stream request failed", "err", c.redactAPIKey(err.Error()))
 		return chatReply{}, &providerError{status: 0}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, responseCap+1))
-		return chatReply{}, &providerError{status: resp.StatusCode, detail: trimPreview(string(data))}
+		return chatReply{}, &providerError{status: resp.StatusCode, detail: trimPreview(c.redactAPIKey(string(data)))}
 	}
-	return readSSE(resp.Body, onDelta)
+	return readSSE(resp.Body, onDelta, c.redactAPIKey)
 }
 
 // streamWireChunk is one SSE frame of a chat-completions stream.
@@ -360,7 +360,7 @@ var streamRawCap = int64(responseCap * 2)
 // errStreamClosedBeforeEvent; a stream cut after events — including a
 // connection that ends mid-line — reports a classified premature-close
 // error instead of blaming the truncated frame.
-func readSSE(body io.Reader, onDelta func(string) error) (chatReply, error) {
+func readSSE(body io.Reader, onDelta func(string) error, redact func(string) string) (chatReply, error) {
 	limited := &io.LimitedReader{R: body, N: streamRawCap + 1}
 	reader := bufio.NewReader(limited)
 	var (
@@ -397,7 +397,7 @@ func readSSE(body io.Reader, onDelta func(string) error) (chatReply, error) {
 			} else {
 				frames++
 				if chunk.Error != nil {
-					return chatReply{}, &providerError{status: http.StatusBadGateway, detail: trimPreview(chunk.Error.Message)}
+					return chatReply{}, &providerError{status: http.StatusBadGateway, detail: trimPreview(redact(chunk.Error.Message))}
 				}
 				if len(chunk.Choices) > 0 {
 					delta := chunk.Choices[0].Delta
@@ -443,7 +443,7 @@ func readSSE(body io.Reader, onDelta func(string) error) (chatReply, error) {
 				}
 				return chatReply{}, errors.New("agent: stream ended before the completion marker")
 			}
-			slog.Warn("agent: provider stream read failed", "err", readErr)
+			slog.Warn("agent: provider stream read failed", "err", redact(readErr.Error()))
 			return chatReply{}, &providerError{status: 0}
 		}
 	}

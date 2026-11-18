@@ -2,14 +2,19 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
@@ -220,6 +225,68 @@ func TestStreamHandlerProviderError(t *testing.T) {
 	}
 	if strings.Contains(last.data, stub.srv.URL) || strings.Contains(last.data, "sekret-key") {
 		t.Errorf("error event leaks endpoint/key: %s", last.data)
+	}
+}
+
+func TestStreamHandlerProviderErrorsRedactAPIKey(t *testing.T) {
+	const keyPrefix = "fake-stream-key"
+	const key = keyPrefix + "<suffix>"
+	const escapedKey = keyPrefix + `\u003csuffix\u003e`
+	diagnostic := "rejected " + key + " " + escapedKey
+	// The third echo crosses the 200-byte preview boundary on both paths.
+	longDiagnostic := diagnostic + strings.Repeat(" ", 112) + escapedKey
+	transportErr := errors.New(diagnostic)
+
+	for _, tc := range []struct {
+		name                 string
+		status               int
+		body                 io.Reader
+		wantDetail           string
+		wantClientRedactions int
+		wantLogRedactions    int
+	}{
+		{"HTTP error body", http.StatusUnauthorized, strings.NewReader(`{"error":"` + longDiagnostic + `"}`), "HTTP 401", 3, 3},
+		{"SSE error chunk", http.StatusOK, strings.NewReader(sseError(longDiagnostic)), "HTTP 502", 3, 3},
+		{"request failure", 0, nil, "provider is unreachable", 0, 2},
+		{"read failure", http.StatusOK, iotest.ErrReader(transportErr), "provider is unreachable", 0, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			cfg := enabledCfg("http://provider.invalid")
+			cfg.Agent.APIKey = key
+			cfg.Agent.Stream = true
+			s := NewServer(cfg, nil, nil)
+			s.llm.backoff = nil
+			s.llm.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+				if tc.body == nil {
+					return nil, transportErr
+				}
+				return &http.Response{StatusCode: tc.status, Body: io.NopCloser(tc.body)}, nil
+			})
+
+			rr := postStream(t, s.StreamHandler(), "anything")
+			events := parseSSE(t, rr.Body.String())
+			if len(events) != 1 || events[0].name != "error" {
+				t.Fatalf("got %d SSE events, want one error event", len(events))
+			}
+			var payload errorBody
+			if err := json.Unmarshal([]byte(events[0].data), &payload); err != nil {
+				t.Fatal("could not decode the SSE error payload")
+			}
+			if payload.Error != "agent_error" || !strings.Contains(payload.Detail, tc.wantDetail) {
+				t.Errorf("client error must include agent_error and %q", tc.wantDetail)
+			}
+			if strings.Contains(payload.Detail, keyPrefix) || strings.Count(payload.Detail, "[redacted]") != tc.wantClientRedactions {
+				t.Errorf("client payload must contain %d redactions and no credential", tc.wantClientRedactions)
+			}
+			if got := logs.String(); strings.Contains(got, keyPrefix) || strings.Count(got, "[redacted]") != tc.wantLogRedactions {
+				t.Errorf("server log must contain %d redactions and no credential", tc.wantLogRedactions)
+			}
+		})
 	}
 }
 
