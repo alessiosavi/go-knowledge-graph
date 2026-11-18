@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 // unmarshalResult round-trips a tool result through its JSON encoding.
@@ -166,6 +168,59 @@ func TestToolTraverse(t *testing.T) {
 	}
 	if !foundEdge {
 		t.Errorf("edges = %+v, want the uses fact to the seeded engine", out.Edges)
+	}
+}
+
+func TestToolRelatedEntityDomainsJSON(t *testing.T) {
+	fx := newAgentFixture(t)
+	ctx := withDomain(context.Background(), "zorbo")
+	t.Cleanup(func() {
+		if err := fx.st.DeleteDocument(ctx, fx.docID); err != nil {
+			t.Error(err)
+		}
+	})
+	drv, err := neo4j.NewDriver(os.Getenv(graphtest.URIEnv), neo4j.NoAuth())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer drv.Close(ctx)
+	session := drv.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+	defer session.Close(ctx)
+	rows, err := session.Run(ctx, `MATCH (a:Entity {key:$head}), (b:Entity {key:$tail}) SET a.domain='zorbo', b.domain='quillon'`, map[string]any{"head": fx.entityKey, "tail": fx.otherKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rows.Consume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(config.Config{}, fx.st, nil)
+	res, err := s.execTool(ctx, "get_entity", json.RawMessage(fmt.Sprintf(`{"id":%q}`, fx.entityID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := unmarshalResult[entityOut](t, res)
+	if len(view.Facts) != 1 || len(view.Together) != 1 {
+		t.Fatalf("entity JSON=%+v, want one fact and one co-mention", view)
+	}
+	if ref := view.Facts[0].Other; ref.Key != fx.otherKey || ref.Domain != "quillon" {
+		t.Errorf("fact other JSON=%+v, want %s in quillon", ref, fx.otherKey)
+	}
+	if ref := view.Together[0]; ref.Key != fx.otherKey || ref.Domain != "quillon" {
+		t.Errorf("co-mention JSON=%+v, want %s in quillon", ref, fx.otherKey)
+	}
+	res, err = s.execTool(ctx, "traverse", json.RawMessage(fmt.Sprintf(`{"entity":%q,"direction":"out","depth":1}`, fx.entityID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := unmarshalResult[traverseOut](t, res)
+	if len(sub.Nodes) != 2 {
+		t.Fatalf("traversal JSON=%+v, want two nodes", sub)
+	}
+	domains := map[string]string{fx.entityKey: "zorbo", fx.otherKey: "quillon"}
+	for _, node := range sub.Nodes {
+		if want, ok := domains[node.Key]; !ok || node.Domain != want {
+			t.Errorf("traversal node JSON=%+v, want domain %q", node, want)
+		}
 	}
 }
 

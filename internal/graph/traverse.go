@@ -176,8 +176,8 @@ func (s *Store) hopQuery(ctx context.Context, from EntityRef, rel string, incomi
 	query := pattern + `
 WHERE ($include OR coalesce(r.low_confidence, false) = false)` + relFilter + `
 OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
-RETURN type(r) AS rel, a.id AS from_id, a.key AS from_key, a.name AS from_name, a.type AS from_type,
-       b.id AS to_id, b.key AS to_key, b.name AS to_name, b.type AS to_type,
+RETURN type(r) AS rel, a.id AS from_id, a.key AS from_key, a.name AS from_name, a.type AS from_type, a.domain AS from_domain,
+       b.id AS to_id, b.key AS to_key, b.name AS to_name, b.type AS to_type, b.domain AS to_domain,
        coalesce(r.confidence, 0) AS confidence, coalesce(r.judge, '') AS judge,
        coalesce(r.low_confidence, false) AS low, coalesce(r.doc_id, '') AS doc_id,
        coalesce(r.chunk_id, '') AS chunk_id, coalesce(r.head_key, '') AS head_key,
@@ -236,17 +236,19 @@ LIMIT $limit`
 		// Return the far endpoint alongside its edge; the caller decides whether
 		// it can be enqueued based on the edge's verification state.
 		ref := EntityRef{
-			ID:   getString(r, "to_id"),
-			Key:  getString(r, "to_key"),
-			Name: getString(r, "to_name"),
-			Type: getString(r, "to_type"),
+			ID:     getString(r, "to_id"),
+			Key:    getString(r, "to_key"),
+			Name:   getString(r, "to_name"),
+			Type:   getString(r, "to_type"),
+			Domain: getString(r, "to_domain"),
 		}
 		if incoming {
 			ref = EntityRef{
-				ID:   getString(r, "from_id"),
-				Key:  getString(r, "from_key"),
-				Name: getString(r, "from_name"),
-				Type: getString(r, "from_type"),
+				ID:     getString(r, "from_id"),
+				Key:    getString(r, "from_key"),
+				Name:   getString(r, "from_name"),
+				Type:   getString(r, "from_type"),
+				Domain: getString(r, "from_domain"),
 			}
 		}
 		nodes = append(nodes, ref)
