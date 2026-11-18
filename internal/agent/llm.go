@@ -29,6 +29,9 @@ const responseCap = 4 << 20
 type providerError struct {
 	status int
 	detail string
+	// permanent marks a request that can never be sent (an unparsable base
+	// URL): it reads as unreachable but is not retried.
+	permanent bool
 }
 
 func (e *providerError) Error() string {
@@ -45,7 +48,7 @@ func (e *providerError) Error() string {
 // retryable reports whether another attempt is worth it: transport
 // failures, 429 and 5xx.
 func (e *providerError) retryable() bool {
-	return e.status == 0 || e.status == http.StatusTooManyRequests || e.status >= 500
+	return !e.permanent && (e.status == 0 || e.status == http.StatusTooManyRequests || e.status >= 500)
 }
 
 // toolDef is one OpenAI-compatible function definition.
@@ -215,7 +218,7 @@ func (c *client) doChat(ctx context.Context, body []byte) (chatReply, error) {
 	if err != nil {
 		// The parse error quotes the endpoint, which may embed a credential.
 		slog.Warn("agent: provider request could not be built; check the agent base URL")
-		return chatReply{}, &providerError{status: 0}
+		return chatReply{}, &providerError{status: 0, permanent: true}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
@@ -311,7 +314,7 @@ func (c *client) doStream(ctx context.Context, body []byte, onDelta func(string)
 	if err != nil {
 		// The parse error quotes the endpoint, which may embed a credential.
 		slog.Warn("agent: provider request could not be built; check the agent base URL")
-		return chatReply{}, &providerError{status: 0}
+		return chatReply{}, &providerError{status: 0, permanent: true}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
