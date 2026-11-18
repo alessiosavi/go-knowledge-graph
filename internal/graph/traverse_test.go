@@ -617,6 +617,218 @@ func TestTraverseTopsUpCappedCandidates(t *testing.T) {
 	})
 }
 
+func TestTraverseBothTopsUpCappedCandidates(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	doc := testUpsert(t, st, "file", uniqueSource(t), "traverse-both-candidate-top-up").ID
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, doc); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := st.PutChunks(ctx, doc, []graph.Chunk{{Seq: 0, Text: "Typed evidence"}, {Seq: 1, Text: "Candidate evidence"}}); err != nil {
+		t.Fatal(err)
+	}
+	var ents []graph.EntityUpsert
+	entity := func(name string) string {
+		key := graph.EntityKey(name + "-" + doc)
+		ents = append(ents, graph.EntityUpsert{Key: key, Name: name, Type: "place"})
+		return key
+	}
+	root, a, b, spare := entity("root"), entity("a"), entity("b"), entity("spare")
+	outWitness, inWitness, bridge := entity("out-witness"), entity("in-witness"), entity("bridge")
+	typed := []graph.FactUpsert{
+		{HeadKey: root, TailKey: a, Rel: "links", Confidence: .95},
+		{HeadKey: root, TailKey: b, Rel: "links", Confidence: .9},
+		{HeadKey: root, TailKey: spare, Rel: "links", Confidence: .85},
+		{HeadKey: outWitness, TailKey: bridge, Rel: "links", Confidence: .9},
+		{HeadKey: bridge, TailKey: inWitness, Rel: "links", Confidence: .9},
+	}
+	candidate := func(head, tail string, confidence float64) graph.FactUpsert {
+		return graph.FactUpsert{HeadKey: head, TailKey: tail, Rel: "links", Confidence: confidence, JudgeInput: []byte("Candidate evidence")}
+	}
+	// Hop-one candidates expose the witnesses. Expanding either would reveal
+	// the bridge before the hop-two candidates fill the budget.
+	rootOut, rootIn := candidate(root, outWitness, .8), candidate(inWitness, root, .8)
+	shared := candidate(a, b, .95)
+	bOut := candidate(b, entity("b-out"), .8)
+	var outgoing, incoming []graph.FactUpsert
+	for i := range 6 {
+		outgoing = append(outgoing, candidate(a, entity(fmt.Sprintf("out-%02d", i)), .8))
+	}
+	for i := range 8 {
+		incoming = append(incoming, candidate(entity(fmt.Sprintf("in-%02d", i)), b, .8))
+	}
+	candidates := slices.Concat([]graph.FactUpsert{rootOut, rootIn, shared, bOut}, outgoing, incoming)
+	slices.Reverse(candidates) // Tied candidates rank by endpoint key.
+	if err := st.UpsertExtraction(ctx, doc, doc+"-c0", "mock:1", ents, typed); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertExtractionOpts(ctx, doc, doc+"-c1", "mock:1", ents, candidates, graph.WriteOptions{FactsAsCandidates: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	const depth, directions, limit = 2, 2, 20
+	var sub graph.Subgraph
+	queries := graph.CaptureReadQueries(st, func() {
+		var err error
+		sub, err = st.TraverseOpts(ctx, graph.EntityID(root), "links", "both", depth, limit, graph.ViewOptions{IncludeUnverified: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	if len(sub.Edges) != limit {
+		t.Fatalf("got %d edges, want %d", len(sub.Edges), limit)
+	}
+	assertUniqueTraverseEdges(t, sub.Edges)
+	assertTraverseEdgeOrder(t, sub.Edges[:3], typed[:3], false)
+	// Five hop-one edges leave 15 slots, five per frontier node. The shared
+	// edge uses an outgoing slot at A only, and B's one outgoing edge leaves
+	// four incoming slots. A can supply two of the five top-up rows.
+	wantCandidates := slices.Concat(
+		[]graph.FactUpsert{rootOut, rootIn},
+		[]graph.FactUpsert{shared}, outgoing[:4], []graph.FactUpsert{bOut}, incoming[:4],
+		outgoing[4:], incoming[4:7],
+	)
+	assertTraverseEdgeOrder(t, sub.Edges[3:], wantCandidates, true)
+	if slices.ContainsFunc(sub.Nodes, func(n graph.EntityRef) bool { return n.Key == bridge }) {
+		t.Error("traversal expanded through a candidate-only endpoint")
+	}
+
+	var expansionReads int
+	var topUps []graph.CapturedReadQuery
+	for _, q := range queries {
+		_, typed := q.Params["ids"]
+		_, candidate := q.Params["anchors"]
+		if typed || candidate {
+			expansionReads++
+		}
+		if _, topUp := q.Params["filled"]; candidate && topUp {
+			topUps = append(topUps, q)
+		}
+	}
+	if bound := depth * directions * 4; expansionReads > bound {
+		t.Errorf("got %d expansion reads, want at most %d", expansionReads, bound)
+	}
+	if len(topUps) != directions {
+		t.Fatalf("got %d candidate top-up reads, want one per direction", len(topUps))
+	}
+	for i, want := range []struct {
+		property string
+		key      string
+		offset   int
+	}{{"head_key", a, 5}, {"tail_key", b, 4}} {
+		q := topUps[i]
+		anchors, _ := q.Params["anchors"].([]map[string]any)
+		wantAnchor := map[string]any{"id": graph.EntityID(want.key), "key": want.key, "offset": want.offset, "share": 5}
+		if !strings.Contains(q.Query, "FactCandidate {"+want.property+":") || len(anchors) != 1 || !maps.Equal(anchors[0], wantAnchor) {
+			t.Errorf("candidate top-up %d anchors = %v, want %s lookup with %v", i, anchors, want.property, wantAnchor)
+		}
+	}
+}
+
+func TestTraverseInTopsUpCappedFrontier(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	doc := testUpsert(t, st, "file", uniqueSource(t), "traverse-in-top-up").ID
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, doc); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := st.PutChunks(ctx, doc, []graph.Chunk{{Seq: 0, Text: "Typed evidence"}}); err != nil {
+		t.Fatal(err)
+	}
+	var ents []graph.EntityUpsert
+	entity := func(name string) string {
+		key := graph.EntityKey(name + "-" + doc)
+		ents = append(ents, graph.EntityUpsert{Key: key, Name: name, Type: "place"})
+		return key
+	}
+	root, hub, a, b := entity("root"), entity("hub"), entity("a"), entity("b")
+	firstHop := []graph.FactUpsert{
+		{HeadKey: hub, TailKey: root, Rel: "links", Confidence: .95},
+		{HeadKey: a, TailKey: root, Rel: "links", Confidence: .9},
+		{HeadKey: b, TailKey: root, Rel: "links", Confidence: .85},
+	}
+	sparse := []graph.FactUpsert{
+		{HeadKey: entity("source-a"), TailKey: a, Rel: "links", Confidence: .9},
+		{HeadKey: entity("source-b"), TailKey: b, Rel: "links", Confidence: .9},
+	}
+	var ranked []graph.FactUpsert
+	for i := range 12 {
+		source := entity(fmt.Sprintf("hub-source-%02d", 11-i))
+		confidence := .9 - .01*float64(i)
+		low := i >= 7
+		if low {
+			// These have higher scores but rank after all ordinary evidence.
+			confidence = .99 - .01*float64(i-7)
+		}
+		ranked = append(ranked, graph.FactUpsert{HeadKey: source, TailKey: hub, Rel: "links", Confidence: confidence, LowConfidence: low})
+	}
+	facts := slices.Concat(firstHop, sparse, ranked)
+	slices.Reverse(facts)
+	if err := st.UpsertExtraction(ctx, doc, doc+"-c0", "mock:1", ents, facts); err != nil {
+		t.Fatal(err)
+	}
+
+	const limit = 15
+	var sub graph.Subgraph
+	queries := graph.CaptureReadQueries(st, func() {
+		var err error
+		sub, err = st.Traverse(ctx, graph.EntityID(root), "links", "in", 2, limit, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	if len(sub.Edges) != limit {
+		t.Fatalf("got %d edges, want %d", len(sub.Edges), limit)
+	}
+	assertUniqueTraverseEdges(t, sub.Edges)
+	// The hub and its two peers return seven rows in the first hop-two read.
+	// Five more come from the hub, crossing into low-confidence evidence.
+	assertTraverseEdgeOrder(t, sub.Edges, slices.Concat(firstHop, ranked[:5], sparse, ranked[5:10]), false)
+
+	var topUps int
+	for _, q := range queries {
+		if _, topUp := q.Params["filled"]; topUp {
+			topUps++
+			ids, _ := q.Params["ids"].([]string)
+			if !slices.Equal(ids, []string{graph.EntityID(hub)}) || q.Params["offset"] != 5 || q.Params["share"] != 5 {
+				t.Errorf("typed top-up ids = %v, offset = %v, share = %v, want only the hub with offset 5 and share 5", ids, q.Params["offset"], q.Params["share"])
+			}
+		}
+	}
+	if topUps != 1 {
+		t.Errorf("got %d typed top-up reads, want 1", topUps)
+	}
+}
+
+func assertTraverseEdgeOrder(t *testing.T, got []graph.PathEdge, want []graph.FactUpsert, unverified bool) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d edges, want %d", len(got), len(want))
+	}
+	for i, edge := range got {
+		fact := want[i]
+		if edge.From != fact.HeadKey || edge.To != fact.TailKey || edge.Rel != fact.Rel || edge.Unverified != unverified {
+			t.Errorf("edge %d = %+v, want %s -[%s]-> %s (unverified=%t)", i, edge, fact.HeadKey, fact.Rel, fact.TailKey, unverified)
+		}
+	}
+}
+
+func assertUniqueTraverseEdges(t *testing.T, edges []graph.PathEdge) {
+	t.Helper()
+	seen := make(map[[4]string]bool, len(edges))
+	for _, edge := range edges {
+		key := [4]string{edge.From, edge.Rel, edge.To, edge.ChunkID}
+		if seen[key] {
+			t.Errorf("duplicate edge key %q", key)
+		}
+		seen[key] = true
+	}
+}
+
 func TestChunkTextSearchPunctuation(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()
