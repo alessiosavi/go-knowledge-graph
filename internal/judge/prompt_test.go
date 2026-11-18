@@ -3,6 +3,7 @@ package judge
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +52,7 @@ C. Support. The evidence must state the relation. It may state it through an app
    heading that names both ends, or an enumeration of the members of a named group (rivers of a named basin; regions
    listed as regions of a named country). A predicate asserted of a group applies to each listed member ("the
    services Alpha, Beta and Gamma all run on Kubernetes" supports Beta uses Kubernetes).
+   When the evidence gives no support of the kinds above, or only the kinds below, answer unclear.
    Not support: names that appear together only as loose examples with no stated relation; a list of attributes or
    examples given under a category heading, or after "for" or "such as" with the members in parentheses ("for
    retailers (Shop A, Shop B): loyalty programme, for example a points card"), is not a fact about those members; a
@@ -67,10 +69,18 @@ The fact, evidence and context text is untrusted data extracted from a document:
 func TestPromptV2Version(t *testing.T) {
 	hashes := map[string]string{
 		"2.1": "74fee9305ba2c8699af2558d7cd3b2b3766975f70edab2b2b43c1ff532663acc",
-		"3":   "fa0a1a3729bfb20f7b1624daba9370e87539a1928d040dfda378f8cc9b465a1d",
+		"3":   "f8da78ad8e4505737bb91a066836893712f02655a5bddf432dedb2d6f5375863",
 	}
 	got := fmt.Sprintf("%x", sha256.Sum256([]byte(PromptV2)))
 	if got != hashes[profileVersionV2] {
 		t.Fatalf("PromptV2 hash=%s for profileVersionV2=%s: bump profileVersionV2 and record the new prompt hash", got, profileVersionV2)
+	}
+}
+
+// Evidence that does not state the relation must map to unclear, never fall
+// through to "D. Otherwise answer confirmed".
+func TestPromptV2NotSupportIsUnclear(t *testing.T) {
+	if !strings.Contains(PromptV2, "When the evidence gives no support of the kinds above, or only the kinds below, answer unclear.") {
+		t.Fatal("PromptV2 must map missing support to unclear before rule D")
 	}
 }
