@@ -91,15 +91,15 @@ var (
 		{Name: "document", Threshold: 0.35},
 	}
 	defaultRelationLabels = []extract.Label{
-		{Name: "works_at", Text: "works at", Threshold: 0.25},
-		{Name: "located_in", Text: "located in", Threshold: 0.25},
-		{Name: "part_of", Text: "part of", Threshold: 0.25},
-		{Name: "uses", Threshold: 0.25},
-		{Name: "wrote", Threshold: 0.25},
-		{Name: "depends_on", Text: "depends on", Threshold: 0.25},
-		{Name: "owned_by", Text: "owned by", Threshold: 0.25},
-		{Name: "member_of", Text: "member of", Threshold: 0.25},
-		{Name: "about", Threshold: 0.25},
+		{Name: "works_at", Text: "works at", Threshold: 0.25, Definition: "a person works for or is employed by an organization."},
+		{Name: "located_in", Text: "located in", Threshold: 0.25, Definition: "a place, venue, organization, event, tour or listing is situated in, or takes place in, a place."},
+		{Name: "part_of", Text: "part of", Threshold: 0.25, Definition: "the head is a component, sub-unit, sub-area or member item of the tail; not a designation, award or category."},
+		{Name: "uses", Threshold: 0.25, Definition: "the head itself employs the tail (a tool, technology, material, ingredient or service) to do something."},
+		{Name: "wrote", Threshold: 0.25, Definition: "a person or organization authored the tail, a named work."},
+		{Name: "depends_on", Text: "depends on", Threshold: 0.25, Definition: "the head needs the tail to function, happen or exist."},
+		{Name: "owned_by", Text: "owned by", Threshold: 0.25, Definition: "the head is owned or controlled by the tail."},
+		{Name: "member_of", Text: "member of", Threshold: 0.25, Definition: "a person or organization belongs to the tail (a group, team, fund, association or organization)."},
+		{Name: "about", Threshold: 0.25, Definition: "the head is content (a document, page, article, listing, product page, trip or tour page, identified by its title or slug) whose subject is the tail; a place, route or attraction is never about something"},
 	}
 )
 
@@ -210,7 +210,8 @@ type Pipeline struct {
 
 	mu       sync.Mutex
 	pending  map[string]submission
-	queueCtx context.Context // worker/server lifetime, never a request context
+	queueCtx context.Context     // worker/server lifetime, never a request context
+	deferred map[string]struct{} // non-nil while the enqueue drainer is active
 
 	procLocks   sync.Map   // docID → *sync.Mutex, serializes Process per document
 	domainOpsMu sync.Mutex // serializes resumable admin requests in serve
@@ -242,7 +243,10 @@ func NewPipeline(cfg config.Config, st *graph.Store, prov extract.Provider, ix *
 }
 
 // Submit resolves the identity, decodes the content, applies the hash no-op
-// (bypassed by Force) and queues the document for processing.
+// (bypassed by Force) and queues the document for processing. If the request
+// ends while the queue is full, the published document is handed to a
+// background drainer instead; past the drainer's cap, or when the server
+// stops first, restart recovery queues it.
 func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 	// Fail fast on an unusable label preset instead of failing the document
 	// later (the name is persisted with the document for recovery).
@@ -275,8 +279,90 @@ func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 		return res, err
 	}
 	// Release admission's locks before applying queue backpressure.
-	p.enqueue(ctx, res.DocumentID)
+	select {
+	case p.jobs <- res.DocumentID:
+		return res, nil
+	default:
+	}
+	select {
+	case p.jobs <- res.DocumentID:
+	case <-ctx.Done():
+		p.deferEnqueue(res.DocumentID, ctx.Err())
+	}
 	return res, nil
+}
+
+func (p *Pipeline) deferEnqueue(docID string, requestErr error) {
+	// A slot may have opened at the same time the request was cancelled.
+	select {
+	case p.jobs <- docID:
+		return
+	default:
+	}
+	p.mu.Lock()
+	if _, exists := p.deferred[docID]; exists {
+		p.mu.Unlock()
+		return
+	}
+	if len(p.deferred) >= cap(p.jobs) {
+		p.mu.Unlock()
+		slog.Warn("ingest: deferred enqueue backlog full; document left for restart recovery", "doc", docID)
+		return
+	}
+	queueCtx := p.queueCtx
+	if err := queueCtx.Err(); err != nil {
+		p.mu.Unlock()
+		slog.Warn("ingest: enqueue cancelled", "doc", docID, "err", err)
+		return
+	}
+	if p.deferred == nil {
+		p.deferred = make(map[string]struct{})
+		go p.drainDeferred(queueCtx)
+	}
+	p.deferred[docID] = struct{}{}
+	p.mu.Unlock()
+	slog.Info("ingest: deferring enqueue after request cancellation", "doc", docID, "err", requestErr)
+}
+
+func (p *Pipeline) drainDeferred(ctx context.Context) {
+	p.mu.Lock()
+	for len(p.deferred) != 0 && ctx.Err() == nil {
+		// Remove one id from the set while it waits for a slot. Only this
+		// send can queue ahead of a live submit already waiting for space.
+		var docID string
+		for docID = range p.deferred {
+			break
+		}
+		delete(p.deferred, docID)
+		p.mu.Unlock()
+
+		select {
+		case p.jobs <- docID:
+			p.mu.Lock()
+		case <-ctx.Done():
+			p.mu.Lock()
+			p.deferred[docID] = struct{}{}
+		}
+	}
+
+	deferred := p.deferred
+	queueCtx := p.queueCtx
+	// With IDs left, ctx has ended. A live queueCtx belongs to a replacement worker.
+	if len(deferred) != 0 && queueCtx.Err() == nil {
+		go p.drainDeferred(queueCtx)
+		p.mu.Unlock()
+		return
+	}
+	p.deferred = nil
+	p.mu.Unlock()
+
+	if len(deferred) == 0 {
+		return
+	}
+	slog.Warn("ingest: dropped deferred enqueues that will be recovered at the next start", "dropped", len(deferred), "err", ctx.Err())
+	for docID := range deferred {
+		slog.Debug("ingest: dropped deferred enqueue", "doc", docID)
+	}
 }
 
 func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submission, force bool) (Result, error) {
@@ -1006,9 +1092,7 @@ func (p *Pipeline) docLock(docID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// enqueue pushes a document id for the worker pool, applying backpressure
-// when the queue is full (bounded by ctx) so an accepted submission is
-// never silently parked until restart.
+// enqueue waits for space in the worker queue until ctx is cancelled.
 func (p *Pipeline) enqueue(ctx context.Context, docID string) {
 	select {
 	case p.jobs <- docID:

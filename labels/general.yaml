@@ -12,15 +12,54 @@ entities:
   - { name: project, threshold: 0.35 }
   - { name: document, threshold: 0.35 }
 relations:
-  - { name: works_at, text: works at, threshold: 0.25 }
-  - { name: located_in, text: located in, threshold: 0.25 }
-  - { name: part_of, text: part of, threshold: 0.25 }
-  - { name: uses, threshold: 0.25 }
-  - { name: wrote, threshold: 0.25 }
-  - { name: depends_on, text: depends on, threshold: 0.25 }
-  - { name: owned_by, text: owned by, threshold: 0.25 }
-  - { name: member_of, text: member of, threshold: 0.25 }
-  - { name: about, threshold: 0.25 }
+  - name: works_at
+    text: works at
+    threshold: 0.25
+    definition: >-
+      a person works for or is employed by an organization.
+  - name: located_in
+    text: located in
+    threshold: 0.25
+    definition: >-
+      a place, venue, organization, event, tour or listing is situated in, or takes place in, a
+      place.
+  - name: part_of
+    text: part of
+    threshold: 0.25
+    definition: >-
+      the head is a component, sub-unit, sub-area or member item of the tail; not a designation,
+      award or category.
+  - name: uses
+    threshold: 0.25
+    definition: >-
+      the head itself employs the tail (a tool, technology, material, ingredient or service) to do
+      something.
+  - name: wrote
+    threshold: 0.25
+    definition: >-
+      a person or organization authored the tail, a named work.
+  - name: depends_on
+    text: depends on
+    threshold: 0.25
+    definition: >-
+      the head needs the tail to function, happen or exist.
+  - name: owned_by
+    text: owned by
+    threshold: 0.25
+    definition: >-
+      the head is owned or controlled by the tail.
+  - name: member_of
+    text: member of
+    threshold: 0.25
+    definition: >-
+      a person or organization belongs to the tail (a group, team, fund, association or
+      organization).
+  - name: about
+    threshold: 0.25
+    definition: >-
+      the head is content (a document, page, article, listing, product page, trip or tour page,
+      identified by its title or slug) whose subject is the tail; a place, route or attraction is
+      never about something
 
 # Generic entity-name hygiene. Private boilerplate belongs in the overlay file.
 allowlist: [AI, EU, UK, US, UE, IT]

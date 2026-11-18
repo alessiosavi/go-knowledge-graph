@@ -42,7 +42,7 @@ func NewCached(inner ingest.FactJudge, st VerdictStore, model string) *Cached {
 }
 
 // SetCacheMetrics attaches the counter of cache results (hit, miss,
-// read_error, write_error). Attach it before the first VerifyFact.
+// read_error, write_error). Attach it before the first verification.
 func (c *Cached) SetCacheMetrics(m ingest.JudgeCacheMetrics) { c.metrics = m }
 
 func (c *Cached) count(result string) {
@@ -61,21 +61,51 @@ func (c *Cached) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 	if payload == nil {
 		return ingest.Verdict{}, fmt.Errorf("judge: encode payload: confidence must be finite")
 	}
-	key := RequestKey(payload, c.model)
+	return c.verify(ctx, RequestKey(payload, c.model), PromptVersion, in.DocID, false, func() (ingest.Verdict, error) {
+		return c.inner.VerifyFact(ctx, in)
+	})
+}
+
+// VerifyRequest checks the frozen profile against the current definitions
+// before using the strict cache. A lookup error prevents a provider call. A
+// write error returns the paid verdict with the error so the caller can record
+// it before stopping.
+func (c *Cached) VerifyRequest(ctx context.Context, req Request, definitions map[string]map[string]string) (ingest.Verdict, error) {
+	if _, err := req.validate(c.model, definitions); err != nil {
+		return ingest.Verdict{}, err
+	}
+	key := RequestKeyV2(req.RequestBytes, req.Profile.Fingerprint)
+	return c.verify(ctx, key, req.Profile.Fingerprint, req.DocID, true, func() (ingest.Verdict, error) {
+		inner, ok := c.inner.(interface {
+			VerifyRequest(context.Context, Request, map[string]map[string]string) (ingest.Verdict, error)
+		})
+		if !ok {
+			return ingest.Verdict{}, fmt.Errorf("judge: wrapped provider does not support VerifyRequest")
+		}
+		return inner.VerifyRequest(ctx, req, definitions)
+	})
+}
+
+func (c *Cached) verify(ctx context.Context, key, promptVersion, docID string, strict bool, call func() (ingest.Verdict, error)) (ingest.Verdict, error) {
 	v, ok, err := c.store.JudgeVerdict(ctx, key)
 	switch {
 	case err != nil && ctx.Err() != nil:
 		return ingest.Verdict{}, ctx.Err()
 	case err != nil:
-		slog.Warn("judge: verdict cache read failed, asking the provider", "key", key, "err", err)
+		if !strict {
+			slog.Warn("judge: verdict cache read failed, asking the provider", "key", key, "err", err)
+		}
 		c.count("read_error")
+		if strict {
+			return ingest.Verdict{}, fmt.Errorf("judge: read verdict cache: %w", err)
+		}
 	case ok:
 		c.count("hit")
 		return ingest.Verdict{Status: v.Status, Confidence: v.Confidence, Reason: v.Reason}, nil
 	default:
 		c.count("miss")
 	}
-	verdict, err := c.inner.VerifyFact(ctx, in)
+	verdict, err := call()
 	if err != nil {
 		return ingest.Verdict{}, err
 	}
@@ -86,10 +116,15 @@ func (c *Cached) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 	}
 	if err := c.store.PutJudgeVerdict(ctx, graph.JudgeVerdict{
 		Key: key, Status: verdict.Status, Confidence: verdict.Confidence, Reason: verdict.Reason,
-		Model: c.model, PromptVersion: PromptVersion, DocID: in.DocID, At: time.Now().UTC(),
+		Model: c.model, PromptVersion: promptVersion, DocID: docID, At: time.Now().UTC(),
 	}); err != nil {
-		slog.Warn("judge: verdict cache write failed, verdict applied uncached", "key", key, "err", err)
+		if !strict {
+			slog.Warn("judge: verdict cache write failed, verdict applied uncached", "key", key, "err", err)
+		}
 		c.count("write_error")
+		if strict {
+			return verdict, fmt.Errorf("judge: write verdict cache: %w", err)
+		}
 	}
 	return verdict, nil
 }

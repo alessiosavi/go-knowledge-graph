@@ -1,15 +1,19 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
@@ -158,6 +162,20 @@ func submitSpool(t *testing.T, p *Pipeline, in Input) Result {
 	}
 	return res
 }
+
+func submitCancelledSpool(t *testing.T, p *Pipeline, st *spoolStore, text string) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	st.beforeUpsert = func(graph.DocumentInput) { cancel() }
+	res, err := p.Submit(ctx, Input{Kind: "text", Source: "notes", Text: text})
+	st.beforeUpsert = nil
+	if err != nil || res.Noop || res.DocumentID == "" {
+		t.Fatalf("cancelled Submit = %+v, %v", res, err)
+	}
+	return res.DocumentID
+}
+
 func absentSpool(t *testing.T, p *Pipeline, id string) {
 	t.Helper()
 	if _, err := os.Stat(spoolPath(p, id)); !errors.Is(err, os.ErrNotExist) {
@@ -189,6 +207,288 @@ func TestSubmitSpoolsBeforeGraphAndQueue(t *testing.T) {
 	if id := <-p.jobs; id != res.DocumentID {
 		t.Fatalf("queued %q", id)
 	}
+}
+
+func TestSubmitFullQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		cancelRequest bool
+		stopWorker    bool
+		retry         bool
+	}{
+		{name: "live request waits for space"},
+		{name: "cancelled request hands off", cancelRequest: true},
+		{name: "shutdown releases handoff", cancelRequest: true, stopWorker: true},
+		{name: "identical retry while handoff is pending is a noop", cancelRequest: true, retry: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				p, st := spoolPipeline(t)
+				p.jobs = make(chan string, 1)
+				p.jobs <- "blocker"
+				queueCtx, stopWorker := context.WithCancel(t.Context())
+				defer stopWorker()
+				p.queueCtx = queueCtx
+				requestCtx, cancelRequest := context.WithCancel(t.Context())
+				defer cancelRequest()
+				in := Input{Kind: "text", Source: "notes", Text: "Queue this note."}
+				id := graph.DocumentID(in.Kind, in.Source, sha256Hex(in.Text))
+				type outcome struct {
+					res Result
+					err error
+				}
+				done := make(chan outcome, 1)
+				go func() {
+					res, err := p.Submit(requestCtx, in)
+					done <- outcome{res, err}
+				}()
+
+				synctest.Wait()
+				doc, err := st.Document(t.Context(), id)
+				if err != nil || doc.Status != graph.StatusReceived {
+					t.Fatalf("document was not published in received state: %+v, %v", doc, err)
+				}
+				select {
+				case <-done:
+					t.Fatal("Submit returned while the request was live and the queue full")
+				default:
+				}
+
+				if tc.cancelRequest {
+					cancelRequest()
+				} else {
+					<-p.jobs
+				}
+				synctest.Wait()
+				select {
+				case out := <-done:
+					if out.err != nil || out.res != (Result{DocumentID: id}) {
+						t.Fatalf("Submit = %+v, %v", out.res, out.err)
+					}
+				default:
+					t.Fatal("Submit did not return after cancellation or after space became available")
+				}
+
+				if tc.stopWorker {
+					stopWorker()
+					// Leave the queue full. Synctest requires the handoff goroutine to exit.
+					return
+				}
+				if tc.retry {
+					if res := submitSpool(t, p, in); res != (Result{DocumentID: id, Noop: true}) {
+						t.Fatalf("identical retry = %+v, want Noop for %q", res, id)
+					}
+				}
+				if tc.cancelRequest {
+					<-p.jobs
+				}
+				synctest.Wait()
+				select {
+				case got := <-p.jobs:
+					if got != id {
+						t.Fatalf("queued %q, want %q", got, id)
+					}
+				default:
+					t.Fatal("published document was not enqueued after a slot opened")
+				}
+				synctest.Wait()
+				if len(p.jobs) != 0 {
+					t.Fatal("document was queued more than once")
+				}
+			})
+		})
+	}
+
+	t.Run("cancelled backlog is bounded and yields to a live submit", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			p, st := spoolPipeline(t)
+			p.jobs = make(chan string, 1)
+			p.jobs <- "blocker"
+			queueCtx, stopWorker := context.WithCancel(t.Context())
+			defer stopWorker()
+			p.queueCtx = queueCtx
+
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			abandoned := make(map[string]struct{})
+			// Force the second document once more while it is in the deferred set.
+			for i, version := range []int{0, 1, 1, 2, 3, 4, 5, 6, 7} {
+				ctx, cancel := context.WithCancel(t.Context())
+				st.beforeUpsert = func(graph.DocumentInput) { cancel() }
+				res, err := p.Submit(ctx, Input{
+					Kind: "text", Source: "abandoned", Text: fmt.Sprintf("Abandoned note %d.", version), Force: i == 2,
+				})
+				cancel()
+				if err != nil || res.Noop || res.DocumentID == "" {
+					t.Fatalf("cancelled Submit %d = %+v, %v", i, res, err)
+				}
+				abandoned[res.DocumentID] = struct{}{}
+				synctest.Wait()
+			}
+			st.beforeUpsert = nil
+			// With the queue still full, the drainer is blocked in its send.
+			stacks := make([]byte, 64<<10)
+			n := runtime.Stack(stacks, true)
+			if got := bytes.Count(stacks[:n], []byte(".(*Pipeline).drainDeferred(")); got != 1 {
+				t.Errorf("blocked drainer goroutines = %d, want 1", got)
+			}
+
+			live := Input{Kind: "text", Source: "live", Text: "Live note."}
+			liveID := graph.DocumentID(live.Kind, live.Source, sha256Hex(live.Text))
+			liveDone := make(chan error, 1)
+			go func() {
+				_, err := p.Submit(queueCtx, live)
+				liveDone <- err
+			}()
+			synctest.Wait()
+			<-p.jobs // blocker
+			var queued []string
+			for {
+				synctest.Wait()
+				if len(p.jobs) == 0 {
+					break
+				}
+				queued = append(queued, <-p.jobs)
+			}
+			if err := <-liveDone; err != nil {
+				t.Fatalf("live Submit: %v", err)
+			}
+			if len(queued) == 0 || (queued[0] != liveID && (len(queued) < 2 || queued[1] != liveID)) {
+				t.Errorf("live submission was not among the first two queued ids: %v", queued)
+			}
+			if got, want := len(queued)-1, cap(p.jobs)+1; got != want {
+				t.Errorf("queued %d abandoned ids, want %d", got, want)
+			}
+			for _, id := range queued {
+				if id != liveID {
+					if _, ok := abandoned[id]; !ok {
+						t.Fatalf("unexpected or duplicate queued id %q", id)
+					}
+					delete(abandoned, id)
+				}
+			}
+			if got := strings.Count(logs.String(), "level=WARN"); got != len(abandoned) {
+				t.Errorf("overflow warnings = %d, want %d", got, len(abandoned))
+			}
+			for id := range abandoned {
+				doc, err := st.Document(t.Context(), id)
+				if err != nil || doc.Status != graph.StatusReceived {
+					t.Fatalf("overflow document %s = %+v, %v", id, doc, err)
+				}
+				if _, err := p.spool.load(doc); err != nil {
+					t.Fatalf("overflow document %s has no recoverable payload: %v", id, err)
+				}
+			}
+		})
+	})
+
+	t.Run("cancelled request enqueues directly when space is free", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			p, st := spoolPipeline(t)
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			for range 20 {
+				ctx, cancel := context.WithCancel(t.Context())
+				st.beforeUpsert = func(graph.DocumentInput) { cancel() }
+				res, err := p.Submit(ctx, Input{Kind: "text", Source: "notes", Text: "Queue directly.", Force: true})
+				cancel()
+				if err != nil || res.DocumentID == "" {
+					t.Fatalf("Submit = %+v, %v", res, err)
+				}
+				if len(p.jobs) == 0 {
+					t.Error("Submit returned before enqueueing into an open slot")
+					synctest.Wait()
+				}
+				if len(p.jobs) != 1 {
+					t.Fatalf("queue contains %d entries, want 1", len(p.jobs))
+				}
+				if id := <-p.jobs; id != res.DocumentID {
+					t.Fatalf("queued %q, want %q", id, res.DocumentID)
+				}
+			}
+			if logs.Len() != 0 {
+				t.Errorf("open queue emitted handoff logs: %s", &logs)
+			}
+		})
+	})
+}
+
+func TestSubmitFullQueueRestartsDrainer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p, st := spoolPipeline(t)
+		p.jobs = make(chan string, 1)
+		p.jobs <- "blocker"
+		oldCtx, stopOld := context.WithCancel(t.Context())
+		defer stopOld()
+		p.queueCtx = oldCtx
+
+		first := submitCancelledSpool(t, p, st, "Before worker restart.")
+		synctest.Wait() // The old drainer is blocked sending the first ID.
+		newCtx, stopNew := context.WithCancel(t.Context())
+		defer stopNew()
+		p.mu.Lock()
+		p.queueCtx = newCtx
+		p.mu.Unlock()
+		second := submitCancelledSpool(t, p, st, "After worker restart.")
+		stopOld()
+		synctest.Wait()
+
+		<-p.jobs // blocker
+		want := map[string]bool{first: true, second: true}
+		for range 2 {
+			synctest.Wait()
+			select {
+			case id := <-p.jobs:
+				if !want[id] {
+					t.Fatalf("unexpected or duplicate queued ID %q", id)
+				}
+				delete(want, id)
+			default:
+				t.Fatalf("replacement drainer did not queue IDs %v", want)
+			}
+		}
+	})
+}
+
+func TestSubmitFullQueueWarnsOnShutdown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p, st := spoolPipeline(t)
+		p.jobs = make(chan string, 1)
+		p.jobs <- "blocker"
+		queueCtx, stopWorker := context.WithCancel(t.Context())
+		defer stopWorker()
+		p.queueCtx = queueCtx
+
+		var logs bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		inFlight := submitCancelledSpool(t, p, st, "Blocked on the queue.")
+		synctest.Wait()
+		parked := submitCancelledSpool(t, p, st, "Waiting in the deferred set.")
+		stopWorker()
+		synctest.Wait()
+
+		output := logs.String()
+		_, warning, _ := strings.Cut(output, "level=WARN ")
+		warning, _, _ = strings.Cut(warning, "\n")
+		if strings.Count(output, "level=WARN ") != 1 ||
+			!strings.Contains(warning, "recovered at the next start") || !strings.Contains(warning, " dropped=2 ") {
+			t.Errorf("want one warning for 2 dropped IDs and restart recovery, got:\n%s", output)
+		}
+		for _, id := range []string{inFlight, parked} {
+			if !strings.Contains(output, `level=DEBUG msg="ingest: dropped deferred enqueue" doc=`+id) {
+				t.Errorf("missing Debug log for dropped ID %q", id)
+			}
+		}
+	})
 }
 
 func (s *submissionSpool) loadForTest(path string) (spoolEntry, error) {

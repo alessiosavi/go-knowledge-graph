@@ -4,6 +4,7 @@
 package chunk
 
 import (
+	"iter"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -46,6 +47,17 @@ var weakAbbreviations = map[string]bool{"no": true, "ca": true, "art": true, "es
 type sentence struct {
 	start, end int
 	heading    bool
+}
+
+// SentenceBounds yields trimmed sentence byte ranges in document order.
+func SentenceBounds(text string) iter.Seq2[int, int] {
+	return func(yield func(int, int) bool) {
+		for _, sentence := range splitSentences(text) {
+			if !yield(sentence.start, sentence.end) {
+				return
+			}
+		}
+	}
 }
 
 // Split cuts text into sentence-aware chunks. Headings (Markdown "#…" lines
