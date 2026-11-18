@@ -48,7 +48,7 @@ type failedQualityReportWriter struct{}
 func (failedQualityReportWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func TestQualityDuplicateCensus(t *testing.T) {
-	st := graphtest.MigrationStore(t)
+	graphtest.MigrationStore(t)
 	migrationQuery(t, `MATCH (m:GkgMeta {id:'extraction_schema'}) DELETE m`, nil)
 	tag := fmt.Sprintf("gkg-census-%d", time.Now().UnixNano())
 	key := func(suffix string) string { return graph.DomainKey("census-keys", tag+suffix) }
@@ -92,7 +92,7 @@ func TestQualityDuplicateCensus(t *testing.T) {
 	}
 	t.Setenv("GKG_CONFIG", cfg)
 	t.Setenv("GKG_MEMGRAPH_URI", os.Getenv(graphtest.URIEnv))
-	before := censusGraphSnapshot(t, st)
+	before := graphtest.Snapshot(t)
 
 	seed := filepath.Join(dir, "seed.json")
 	seedJSON := fmt.Sprintf(`{"schema":1,"rules":[{"match":%q,"domain":"census-selected"}]}`, tag)
@@ -106,7 +106,7 @@ func TestQualityDuplicateCensus(t *testing.T) {
 	if code := run(args, &out, &stderr); code != 0 {
 		t.Fatalf("census exit=%d stderr=%s", code, &stderr)
 	}
-	if !strings.Contains(out.String(), "duplicate census groups A=1 other=1, members A=2 other=2, edges per group max=17 p95=17\n") {
+	if !strings.Contains(out.String(), "duplicate census groups A=1 other=1, members A=2 other=2, group size max=17 p95=17\n") {
 		t.Fatalf("missing or incorrect census summary:\n%s", &out)
 	}
 	if strings.Contains(out.String()+stderr.String(), "Kathmand") || strings.Contains(out.String()+stderr.String(), "Alpha") {
@@ -212,30 +212,5 @@ func TestQualityDuplicateCensus(t *testing.T) {
 			t.Errorf("report failure left a census file: %v", err)
 		}
 	})
-	if after := censusGraphSnapshot(t, st); !reflect.DeepEqual(before, after) {
-		t.Fatal("census changed graph data, schema, indexes or constraints")
-	}
-}
-
-func censusGraphSnapshot(t *testing.T, st *graph.Store) [][]string {
-	t.Helper()
-	queries := []string{`MATCH (n) RETURN id(n),labels(n),properties(n)`, `MATCH (a)-[r]->(b) RETURN id(r),id(a),type(r),properties(r),id(b)`, `SHOW INDEX INFO`, `SHOW CONSTRAINT INFO`}
-	var snapshot [][]string
-	for _, q := range queries {
-		result, err := st.RunReadQuery(t.Context(), q, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		rows := make([]string, 0, len(result.Rows))
-		for _, row := range result.Rows {
-			data, err := json.Marshal(row)
-			if err != nil {
-				t.Fatal(err)
-			}
-			rows = append(rows, string(data))
-		}
-		slices.Sort(rows)
-		snapshot = append(snapshot, rows)
-	}
-	return snapshot
+	before.AssertUnchanged(t, "quality census")
 }

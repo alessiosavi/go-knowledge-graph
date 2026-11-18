@@ -431,7 +431,7 @@ edges, candidates and rejected facts, and up to two evidence sentences from
 selected documents, capped at 200 bytes each. Edge counts cover all stored
 incident data for each member. A link between two members contributes to both
 counts. The stdout summary gives tier counts and the maximum and nearest-rank p95 of
-per-group edge totals. With `--json`, the summary is the `duplicate_census`
+per-group sizes (mentions, typed edges, candidates and rejected facts). With `--json`, the summary is the `duplicate_census`
 field of the single-line JSON report.
 
 | Report key | Definition and denominator |
