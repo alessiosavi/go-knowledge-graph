@@ -147,13 +147,14 @@ func appendTraverseKeys(keys []string, rows map[string][]traverseRow) []string {
 }
 
 // traverseHop fills in frontier order, taking out rows before in rows on each
-// pass. The typed pass, optional top-up, and optional candidate pass give a
-// traversal at most depth × directions × 3 expansion reads.
+// pass. The typed and candidate passes can each top up once per direction,
+// giving a traversal at most depth × directions × 4 expansion reads.
 func (s *Store) traverseHop(ctx context.Context, frontier []EntityRef, rel, direction string, remaining int, opt ViewOptions, seenEdges map[string]bool) ([]traverseRow, error) {
 	type batch struct {
-		incoming bool
-		capped   []string
-		excluded []string
+		incoming         bool
+		capped           []string
+		cappedCandidates []map[string]any
+		excluded         []string
 	}
 	batches := []batch{{incoming: direction == "in"}}
 	if direction == "both" {
@@ -233,7 +234,8 @@ func (s *Store) traverseHop(ctx context.Context, frontier []EntityRef, rel, dire
 	if len(kept) < remaining && opt.IncludeUnverified && !opt.ConfirmedOnly {
 		candidates := make(map[string][]traverseRow)
 		excluded = slices.Collect(maps.Keys(seenEdges))
-		for i, b := range batches {
+		for i := range batches {
+			b := &batches[i]
 			var anchors []map[string]any
 			for _, node := range frontier {
 				// The unused share after distinct typed rows is shared across
@@ -245,25 +247,62 @@ func (s *Store) traverseHop(ctx context.Context, frontier []EntityRef, rel, dire
 			if len(anchors) == 0 {
 				break
 			}
-			if err := s.readTraverseRows(ctx, candidates, rel, b.incoming, true, map[string]any{"anchors": anchors, "excluded": excluded}); err != nil {
+			b.excluded = excluded
+			batchCandidates := make(map[string][]traverseRow)
+			if err := s.readTraverseRows(ctx, batchCandidates, rel, b.incoming, true, map[string]any{"anchors": anchors, "excluded": b.excluded}); err != nil {
 				return nil, fmt.Errorf("graph: traverse candidates: %w", err)
+			}
+			for _, node := range frontier {
+				id := node.ID
+				read := batchCandidates[id]
+				if len(read) == 0 {
+					continue
+				}
+				if len(read) == share-typedCounts[id]-len(candidates[id]) {
+					b.cappedCandidates = append(b.cappedCandidates, map[string]any{"id": id, "key": node.Key, "offset": len(read)})
+				}
+				candidates[id] = append(candidates[id], read...)
 			}
 			if i+1 < len(batches) {
 				excluded = appendTraverseKeys(excluded, candidates)
 			}
 		}
 		fill(candidates)
+		if len(kept) == remaining {
+			return kept, nil
+		}
+
+		candidateTopUp := make(map[string][]traverseRow)
+		filled := slices.Collect(maps.Keys(seenEdges))
+		for _, b := range batches {
+			if len(b.cappedCandidates) == 0 {
+				continue
+			}
+			for _, anchor := range b.cappedCandidates {
+				anchor["share"] = remaining - len(kept)
+			}
+			params := map[string]any{"anchors": b.cappedCandidates, "excluded": b.excluded, "filled": filled}
+			if err := s.readTraverseRows(ctx, candidateTopUp, rel, b.incoming, true, params); err != nil {
+				return nil, fmt.Errorf("graph: traverse candidates top-up: %w", err)
+			}
+		}
+		fill(candidateTopUp)
 	}
 	return kept, nil
 }
 
 func (s *Store) readTraverseRows(ctx context.Context, rows map[string][]traverseRow, rel string, incoming, unverified bool, params map[string]any) error {
+	_, topUp := params["filled"]
+	offset := "0"
+	if topUp {
+		offset = "$offset"
+	}
 	pattern := `UNWIND $ids AS id
-WITH id, $share AS share
+WITH id, $share AS share, ` + offset + ` AS row_offset
 MATCH (expanded:Entity {id: id})-[r]->(other:Entity)`
 	if incoming {
 		pattern = `UNWIND $ids AS id
-WITH id, $share AS share
+WITH id, $share AS share, ` + offset + ` AS row_offset
 MATCH (expanded:Entity {id: id})<-[r]-(other:Entity)`
 	}
 	visibility, relation := typedFactVisibility, "type(r)"
@@ -272,12 +311,15 @@ MATCH (expanded:Entity {id: id})<-[r]-(other:Entity)`
 		if incoming {
 			anchor, endpoint = endpoint, anchor
 		}
+		if topUp {
+			offset = "anchor.offset"
+		}
 		// Bind the candidate before joining its endpoints so the planner can
 		// use the candidate and entity indexes without starting from an entity scan.
 		pattern = `UNWIND $anchors AS anchor
-WITH anchor.id AS id, anchor.key AS key, anchor.share AS share
+WITH anchor.id AS id, anchor.key AS key, anchor.share AS share, ` + offset + ` AS row_offset
 MATCH (r:FactCandidate {` + anchor + `: key})
-WITH id, key, share, r
+WITH id, key, share, row_offset, r
 MATCH (expanded:Entity {key: key}), (other:Entity {key: r.` + endpoint + `})`
 		visibility, relation = "coalesce(r.judge, '') IN ['', 'unclear']", "r.rel"
 	}
@@ -291,22 +333,22 @@ MATCH (expanded:Entity {key: key}), (other:Entity {key: r.` + endpoint + `})`
 	}
 	edgeKey := fmt.Sprintf("coalesce(%s, '') + '|' + coalesce(%s, '') + '|' + coalesce(%s, '') + '|' + coalesce(r.chunk_id, '')", fromKey, relation, toKey)
 	page := `WITH id, edges[..share] AS kept`
-	if _, topUp := params["offset"]; topUp {
+	if topUp {
 		// Keep the same ranked prefix as the first read when applying the
 		// offset, then remove any rows already filled by the other direction.
-		page = `WITH id, share, edges[$offset..] AS rest
+		page = `WITH id, share, edges[row_offset..] AS rest
 WITH id, [edge IN rest WHERE NOT edge.key IN $filled][..share] AS kept
 WHERE size(kept) > 0`
 	}
 	// Keep the ordered prefix per source before joining chunks. Carry its rank
 	// through UNWIND and the join so the result order is explicit.
 	query := pattern + "\nWHERE " + visibility + `
-WITH id, share, expanded, other, r, ` + relation + ` AS rel, ` + edgeKey + ` AS edge_key
+WITH id, share, row_offset, expanded, other, r, ` + relation + ` AS rel, ` + edgeKey + ` AS edge_key
 WHERE NOT edge_key IN $excluded
-WITH id, share, expanded, other, r, rel, edge_key
+WITH id, share, row_offset, expanded, other, r, rel, edge_key
 ORDER BY coalesce(r.judge, '') = 'confirmed' DESC, coalesce(r.low_confidence, false),
          coalesce(r.confidence, 0) DESC, rel, other.key, coalesce(r.chunk_id, '')
-WITH id, share, collect({source_key: expanded.key, other: other, fact: r, rel: rel, key: edge_key}) AS edges
+WITH id, share, row_offset, collect({source_key: expanded.key, other: other, fact: r, rel: rel, key: edge_key}) AS edges
 ` + page + `
 UNWIND range(0, size(kept) - 1) AS rank
 WITH id, rank, kept[rank] AS edge

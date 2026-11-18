@@ -412,8 +412,9 @@ func TestTraverseBatchesSecondHop(t *testing.T) {
 	})
 
 	t.Run("query count", func(t *testing.T) {
+		const depth, directions, maxReadsPerDirection = 2, 2, 4
 		queries := graph.CaptureReadQueries(st, func() {
-			_, err := st.TraverseOpts(ctx, start, "", "both", 2, 35, graph.ViewOptions{IncludeUnverified: true})
+			_, err := st.TraverseOpts(ctx, start, "", "both", depth, 35, graph.ViewOptions{IncludeUnverified: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -426,6 +427,9 @@ func TestTraverseBatchesSecondHop(t *testing.T) {
 			if anchors, ok := q.Params["anchors"].([]map[string]any); ok {
 				candidateSizes = append(candidateSizes, len(anchors))
 			}
+		}
+		if expansionReads := len(typedSizes) + len(candidateSizes); expansionReads > depth*directions*maxReadsPerDirection {
+			t.Errorf("%d expansion reads exceed the bound of %d", expansionReads, depth*directions*maxReadsPerDirection)
 		}
 		wantTyped, wantCandidates := []int{1, 1, 3, 3, 1}, []int{1, 1, 2, 2}
 		if len(queries) != 11 || !slices.Equal(typedSizes, wantTyped) || !slices.Equal(candidateSizes, wantCandidates) {
@@ -523,6 +527,94 @@ func TestTraverseTopsUpCappedFrontier(t *testing.T) {
 			t.Fatalf("top-up edge %d ends at %q, want %q", i, e.To, want)
 		}
 	}
+}
+
+func TestTraverseTopsUpCappedCandidates(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	doc := testUpsert(t, st, "file", uniqueSource(t), "traverse-candidate-top-up").ID
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, doc); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := st.PutChunks(ctx, doc, []graph.Chunk{{Seq: 0, Text: "Typed evidence"}, {Seq: 1, Text: "Candidate evidence"}}); err != nil {
+		t.Fatal(err)
+	}
+	var ents []graph.EntityUpsert
+	entity := func(name string) string {
+		key := graph.EntityKey(name + "-" + doc)
+		ents = append(ents, graph.EntityUpsert{Key: key, Name: name, Type: "place"})
+		return key
+	}
+	root, a, b := entity("root"), entity("a"), entity("b")
+	var candidates []graph.FactUpsert
+	for i := range 100 {
+		leaf := entity(fmt.Sprintf("leaf-%02d", i))
+		candidates = append(candidates, graph.FactUpsert{HeadKey: a, TailKey: leaf, Rel: "links", Confidence: .8, JudgeInput: []byte("Candidate evidence")})
+	}
+	bridge := entity("bridge")
+	facts := []graph.FactUpsert{
+		{HeadKey: root, TailKey: a, Rel: "links", Confidence: .95},
+		{HeadKey: root, TailKey: b, Rel: "links", Confidence: .9},
+		{HeadKey: candidates[5].TailKey, TailKey: bridge, Rel: "links", Confidence: .9},
+	}
+	if err := st.UpsertExtraction(ctx, doc, doc+"-c0", "mock:1", ents, facts); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertExtractionOpts(ctx, doc, doc+"-c1", "mock:1", ents, candidates, graph.WriteOptions{FactsAsCandidates: true}); err != nil {
+		t.Fatal(err)
+	}
+	opt := graph.ViewOptions{IncludeUnverified: true}
+	t.Run("fills the budget from a capped anchor", func(t *testing.T) {
+		var sub graph.Subgraph
+		queries := graph.CaptureReadQueries(st, func() {
+			var err error
+			sub, err = st.TraverseOpts(ctx, graph.EntityID(root), "links", "out", 2, 12, opt)
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+		if len(sub.Edges) != 12 {
+			t.Fatalf("got %d edges, want 12", len(sub.Edges))
+		}
+		for i, to := range []string{a, b} {
+			if edge := sub.Edges[i]; edge.Unverified || edge.From != root || edge.To != to {
+				t.Fatalf("typed edge %d = %+v, want %s -> %s", i, edge, root, to)
+			}
+		}
+		// Distinct, ranked endpoints prove the second read continued after the first five.
+		for i, edge := range sub.Edges[2:] {
+			if want := candidates[i].TailKey; !edge.Unverified || edge.From != a || edge.To != want {
+				t.Fatalf("candidate edge %d = %+v, want %s -> %s", i, edge, a, want)
+			}
+		}
+		var candidateBatches [][]map[string]any
+		for _, q := range queries {
+			if anchors, ok := q.Params["anchors"].([]map[string]any); ok {
+				candidateBatches = append(candidateBatches, anchors)
+			}
+		}
+		if len(candidateBatches) != 3 {
+			t.Fatalf("got %d candidate reads, want one per hop and one top-up", len(candidateBatches))
+		}
+		want := map[string]any{"id": graph.EntityID(a), "key": a, "offset": 5, "share": 5}
+		if topUp := candidateBatches[2]; len(topUp) != 1 || !maps.Equal(topUp[0], want) {
+			t.Errorf("top-up anchors = %v, want [%v]", topUp, want)
+		}
+	})
+	t.Run("candidate endpoints do not expand", func(t *testing.T) {
+		// Start at A and leave one slot for the typed bridge if its source is enqueued.
+		sub, err := st.TraverseOpts(ctx, graph.EntityID(a), "links", "out", 2, 101, opt)
+		if err != nil || len(sub.Edges) != 100 {
+			t.Fatalf("got %d edges, want 100 candidates, err = %v", len(sub.Edges), err)
+		}
+		for _, edge := range sub.Edges {
+			if !edge.Unverified {
+				t.Fatalf("traversal expanded a candidate endpoint: %+v", edge)
+			}
+		}
+	})
 }
 
 func TestChunkTextSearchPunctuation(t *testing.T) {
