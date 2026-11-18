@@ -246,16 +246,23 @@ func TestVisibilityReadPlansUseIndexes(t *testing.T) {
 				}
 			})
 			checked := 0
+			typedBatches := 0
 			for _, q := range queries {
-				if !strings.Contains(q.Query, ":FactCandidate") && !strings.Contains(q.Query, ":RejectedFact") {
+				typedBatch := strings.HasPrefix(q.Query, "UNWIND $ids AS id")
+				if !typedBatch && !strings.Contains(q.Query, ":FactCandidate") && !strings.Contains(q.Query, ":RejectedFact") {
 					continue
 				}
-				// Candidate opt-ins also run hiddenCounts; pin every such read.
 				checked++
 				operators := planOperators(t, f.Store, q.Query, q.Params)
 				t.Logf("query %d operators: %v", checked, operators)
 				if !slices.Contains(operators, "ScanAllByLabelProperties") || slices.Contains(operators, "ScanAll") {
 					t.Errorf("query %d operators = %v, want ScanAllByLabelProperties and no ScanAll", checked, operators)
+				}
+				if typedBatch {
+					typedBatches++
+					if slices.Contains(operators, "ScanAllByLabel") {
+						t.Errorf("typed query %d operators = %v, want no ScanAllByLabel", checked, operators)
+					}
 				}
 			}
 			want := 1
@@ -263,6 +270,12 @@ func TestVisibilityReadPlansUseIndexes(t *testing.T) {
 				want = 2
 				if tc.traverse {
 					want = 3
+				}
+			}
+			if tc.traverse {
+				want += 2
+				if typedBatches != 2 {
+					t.Errorf("checked %d typed batches, want 2", typedBatches)
 				}
 			}
 			if checked != want {

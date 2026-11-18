@@ -2,9 +2,11 @@ package graph_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -279,6 +281,340 @@ func TestTraverseMissingStartErrors(t *testing.T) {
 	if _, err := st.Traverse(context.Background(), "no-such-entity", "", "out", 1, 10, false); err == nil {
 		t.Fatal("missing start entity: want error")
 	}
+}
+
+func TestTraverseRanksEvidenceBeforeTakingShare(t *testing.T) {
+	f := graphtest.MixedVisibility(t)
+	// The low-confidence row has the highest numeric score. The new uses rows
+	// tie the existing one on confidence and relation, but have an earlier key.
+	rawRun(t, os.Getenv(graphtest.URIEnv), fmt.Sprintf(`MATCH (a:Entity {key:'%s'}), (b:Entity {key:'%s'})
+CREATE (a)-[:a_low {doc_id:'%s', chunk_id:'%s', confidence:0.99, low_confidence:true}]->(b),
+       (a)-[:uses {doc_id:'%s', chunk_id:'%s-c1', confidence:0.8}]->(b),
+       (a)-[:uses {doc_id:'%s', chunk_id:'%s', confidence:0.8}]->(b)`,
+		f.Key, f.ThirdKey, f.DocID, f.ChunkID, f.DocID, f.DocID, f.DocID, f.ChunkID))
+	want := []string{"works_at", "advises", "consults", "uses", "uses", "uses", "a_low", "evaluates"}
+	for _, limit := range []int{5, 50} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			sub, err := f.Store.Traverse(context.Background(), f.ID, "", "out", 1, limit, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rels []string
+			for _, e := range sub.Edges {
+				rels = append(rels, e.Rel)
+			}
+			if expected := want[:min(limit, len(want))]; !slices.Equal(rels, expected) {
+				t.Fatalf("ranked relations = %v, want %v", rels, expected)
+			}
+			for i, chunkID := range []string{f.ChunkID, f.DocID + "-c1"} {
+				if e := sub.Edges[3+i]; e.To != f.ThirdKey || e.ChunkID != chunkID {
+					t.Errorf("tied edge %d = %+v, want endpoint %s and chunk %s", i, e, f.ThirdKey, chunkID)
+				}
+			}
+		})
+	}
+}
+
+func TestTraverseBatchesSecondHop(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	const scope = "traverse-scope"
+	const otherDomain = "traverse-other"
+	doc := testUpsert(t, st, "file", uniqueSource(t), "traverse-batch").ID
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, doc); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := st.PutChunks(ctx, doc, []graph.Chunk{{Seq: 0, Text: "Typed evidence"}, {Seq: 1, Text: "Candidate evidence"}}); err != nil {
+		t.Fatal(err)
+	}
+	var ents []graph.EntityUpsert
+	entity := func(name string) string {
+		key := graph.DomainKey(scope, name+"-"+doc)
+		ents = append(ents, graph.EntityUpsert{Key: key, Name: name, Type: "place"})
+		return key
+	}
+	root := entity("root")
+	branches := []string{entity("z-hub"), entity("a-branch"), entity("b-branch")}
+	candidate, candidateLeaf := entity("candidate"), entity("candidate-leaf")
+	facts := []graph.FactUpsert{
+		{HeadKey: root, TailKey: branches[0], Rel: "links", Confidence: .95},
+		{HeadKey: root, TailKey: branches[1], Rel: "links", Confidence: .85},
+		{HeadKey: branches[2], TailKey: root, Rel: "links", Confidence: 1},
+	}
+	for i, leaves := range []int{12, 9, 8} {
+		for j := range leaves {
+			leaf := entity(fmt.Sprintf("leaf-%d-%02d", i, j))
+			facts = append(facts, graph.FactUpsert{HeadKey: branches[i], TailKey: leaf, Rel: "links", Confidence: .9})
+		}
+	}
+	facts = append(facts, graph.FactUpsert{HeadKey: candidate, TailKey: candidateLeaf, Rel: "candidate_bridge", Confidence: .9})
+	if err := st.UpsertExtractionOpts(ctx, doc, doc+"-c0", "mock:1", ents, facts, graph.WriteOptions{Domain: scope}); err != nil {
+		t.Fatal(err)
+	}
+	var candidates []graph.FactUpsert
+	for _, from := range []string{root, branches[1], branches[2]} {
+		candidates = append(candidates, graph.FactUpsert{HeadKey: from, TailKey: candidate, Rel: "pending", Confidence: .8, JudgeInput: []byte("Candidate evidence")})
+	}
+	if err := st.UpsertExtractionOpts(ctx, doc, doc+"-c1", "mock:1", ents, candidates, graph.WriteOptions{Domain: scope, FactsAsCandidates: true}); err != nil {
+		t.Fatal(err)
+	}
+	rawRun(t, os.Getenv(graphtest.URIEnv), fmt.Sprintf(`MATCH (n:Entity {key:'%s'}) SET n.domain='%s'`, branches[0], otherDomain))
+
+	start := graph.EntityID(root)
+	t.Run("fair budget", func(t *testing.T) {
+		for _, tc := range []struct {
+			limit  int
+			counts []int
+		}{
+			{15, []int{5, 5, 2}}, // ceil(12 / 3) raised to the minimum of five.
+			{22, []int{7, 7, 5}}, // ceil(19 / 3) rounded up to seven.
+		} {
+			sub, err := st.TraverseOpts(ctx, start, "links", "both", 2, tc.limit, graph.ViewOptions{Domain: scope})
+			if err != nil || len(sub.Edges) != tc.limit {
+				t.Fatalf("limit %d: got %d edges, err = %v", tc.limit, len(sub.Edges), err)
+			}
+			if got := []string{sub.Edges[0].To, sub.Edges[1].To, sub.Edges[2].From}; !slices.Equal(got, branches) {
+				t.Errorf("first hop neighbours = %v, want %v", got, branches)
+			}
+			var got, want []string
+			for _, e := range sub.Edges[len(branches):] {
+				got = append(got, e.From)
+			}
+			for i, count := range tc.counts {
+				for range count {
+					want = append(want, branches[i])
+				}
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("limit %d: second hop expanded %v, want %v", tc.limit, got, want)
+			}
+		}
+	})
+
+	t.Run("back edge leaves a full share", func(t *testing.T) {
+		// The incoming first-hop edge from b-branch ranks first in its
+		// outgoing second-hop rows. All three branches should still get five.
+		sub, err := st.Traverse(ctx, start, "links", "both", 2, 18, false)
+		if err != nil || len(sub.Edges) != 18 {
+			t.Fatalf("got %d edges, want 18, err = %v", len(sub.Edges), err)
+		}
+		var fromB int
+		for _, e := range sub.Edges[3:] {
+			if e.From == branches[2] {
+				fromB++
+			}
+		}
+		if fromB != 5 {
+			t.Errorf("second hop returned %d new b-branch edges, want 5", fromB)
+		}
+	})
+
+	t.Run("query count", func(t *testing.T) {
+		const depth, directions, maxReadsPerDirection = 2, 2, 4
+		queries := graph.CaptureReadQueries(st, func() {
+			_, err := st.TraverseOpts(ctx, start, "", "both", depth, 35, graph.ViewOptions{IncludeUnverified: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+		var typedSizes, candidateSizes []int
+		for _, q := range queries {
+			if ids, ok := q.Params["ids"].([]string); ok {
+				typedSizes = append(typedSizes, len(ids))
+			}
+			if anchors, ok := q.Params["anchors"].([]map[string]any); ok {
+				candidateSizes = append(candidateSizes, len(anchors))
+			}
+		}
+		if expansionReads := len(typedSizes) + len(candidateSizes); expansionReads > depth*directions*maxReadsPerDirection {
+			t.Errorf("%d expansion reads exceed the bound of %d", expansionReads, depth*directions*maxReadsPerDirection)
+		}
+		wantTyped, wantCandidates := []int{1, 1, 3, 3, 1}, []int{1, 1, 2, 2}
+		if len(queries) != 11 || !slices.Equal(typedSizes, wantTyped) || !slices.Equal(candidateSizes, wantCandidates) {
+			t.Errorf("reads = %d, typed batch sizes = %v, candidate batch sizes = %v; want 2 setup reads, typed batches %v and candidate batches %v",
+				len(queries), typedSizes, candidateSizes, wantTyped, wantCandidates)
+		}
+	})
+
+	t.Run("candidate slots and domain", func(t *testing.T) {
+		// Four first-hop rows leave 30 slots. The typed passes use 29 of
+		// them, so the first eligible branch gets the remaining candidate slot.
+		opt := graph.ViewOptions{Domain: scope, IncludeUnverified: true}
+		sub, err := st.TraverseOpts(ctx, start, "", "both", 2, 34, opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sub.Hidden != (graph.HiddenCounts{Unjudged: 1}) {
+			t.Errorf("start hidden counts = %+v, want one unjudged fact", sub.Hidden)
+		}
+		if len(sub.Edges) < 4 || sub.Edges[2].From != branches[2] || sub.Edges[2].To != root || !sub.Edges[3].Unverified {
+			t.Fatalf("first hop edges = %+v, want the incoming typed edge before candidates", sub.Edges[:min(4, len(sub.Edges))])
+		}
+		var candidateSources []string
+		for _, e := range sub.Edges {
+			if e.Unverified {
+				candidateSources = append(candidateSources, e.From)
+			}
+		}
+		if want := []string{root, branches[1]}; !slices.Equal(candidateSources, want) {
+			t.Errorf("candidate sources = %v, want %v", candidateSources, want)
+		}
+		nodes := make(map[string]string, len(sub.Nodes))
+		for _, n := range sub.Nodes {
+			nodes[n.Key] = n.Domain
+		}
+		if nodes[candidate] != scope || nodes[branches[0]] != otherDomain {
+			t.Errorf("candidate and hub domains = %q, %q; want %q, %q", nodes[candidate], nodes[branches[0]], scope, otherDomain)
+		}
+		if _, ok := nodes[candidateLeaf]; ok {
+			t.Error("traversal expanded through a candidate-only endpoint")
+		}
+		opt.Domain = otherDomain
+		if _, err := st.TraverseOpts(ctx, start, "", "both", 2, 34, opt); !errors.Is(err, graph.ErrNotFound) {
+			t.Errorf("mismatched start domain: got %v, want ErrNotFound", err)
+		}
+	})
+}
+
+func TestTraverseTopsUpCappedFrontier(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	doc := testUpsert(t, st, "file", uniqueSource(t), "traverse-top-up").ID
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, doc); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := st.PutChunks(ctx, doc, []graph.Chunk{{Seq: 0, Text: "Typed evidence"}}); err != nil {
+		t.Fatal(err)
+	}
+	var ents []graph.EntityUpsert
+	entity := func(name string) string {
+		key := graph.EntityKey(name + "-" + doc)
+		ents = append(ents, graph.EntityUpsert{Key: key, Name: name, Type: "place"})
+		return key
+	}
+	root := entity("root")
+	var facts []graph.FactUpsert
+	var hubLeaves []string
+	for i := range 10 {
+		branch := entity(fmt.Sprintf("branch-%02d", i))
+		facts = append(facts, graph.FactUpsert{HeadKey: root, TailKey: branch, Rel: "links", Confidence: .9})
+		leaves := 1
+		if i == 0 {
+			leaves = 100
+		}
+		for j := range leaves {
+			leaf := entity(fmt.Sprintf("leaf-%02d-%02d", i, j))
+			facts = append(facts, graph.FactUpsert{HeadKey: branch, TailKey: leaf, Rel: "links", Confidence: .9})
+			if i == 0 {
+				hubLeaves = append(hubLeaves, leaf)
+			}
+		}
+	}
+	if err := st.UpsertExtraction(ctx, doc, doc+"-c0", "mock:1", ents, facts); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := st.Traverse(ctx, graph.EntityID(root), "links", "out", 2, 50, false)
+	if err != nil || len(sub.Edges) != 50 {
+		t.Fatalf("got %d edges, want 50, err = %v", len(sub.Edges), err)
+	}
+	// Ten first-hop rows and 14 first-pass rows leave 26 top-up slots.
+	for i, e := range sub.Edges[24:] {
+		if want := hubLeaves[5+i]; e.To != want {
+			t.Fatalf("top-up edge %d ends at %q, want %q", i, e.To, want)
+		}
+	}
+}
+
+func TestTraverseTopsUpCappedCandidates(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	doc := testUpsert(t, st, "file", uniqueSource(t), "traverse-candidate-top-up").ID
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, doc); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := st.PutChunks(ctx, doc, []graph.Chunk{{Seq: 0, Text: "Typed evidence"}, {Seq: 1, Text: "Candidate evidence"}}); err != nil {
+		t.Fatal(err)
+	}
+	var ents []graph.EntityUpsert
+	entity := func(name string) string {
+		key := graph.EntityKey(name + "-" + doc)
+		ents = append(ents, graph.EntityUpsert{Key: key, Name: name, Type: "place"})
+		return key
+	}
+	root, a, b := entity("root"), entity("a"), entity("b")
+	var candidates []graph.FactUpsert
+	for i := range 100 {
+		leaf := entity(fmt.Sprintf("leaf-%02d", i))
+		candidates = append(candidates, graph.FactUpsert{HeadKey: a, TailKey: leaf, Rel: "links", Confidence: .8, JudgeInput: []byte("Candidate evidence")})
+	}
+	bridge := entity("bridge")
+	facts := []graph.FactUpsert{
+		{HeadKey: root, TailKey: a, Rel: "links", Confidence: .95},
+		{HeadKey: root, TailKey: b, Rel: "links", Confidence: .9},
+		{HeadKey: candidates[5].TailKey, TailKey: bridge, Rel: "links", Confidence: .9},
+	}
+	if err := st.UpsertExtraction(ctx, doc, doc+"-c0", "mock:1", ents, facts); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertExtractionOpts(ctx, doc, doc+"-c1", "mock:1", ents, candidates, graph.WriteOptions{FactsAsCandidates: true}); err != nil {
+		t.Fatal(err)
+	}
+	opt := graph.ViewOptions{IncludeUnverified: true}
+	t.Run("fills the budget from a capped anchor", func(t *testing.T) {
+		var sub graph.Subgraph
+		queries := graph.CaptureReadQueries(st, func() {
+			var err error
+			sub, err = st.TraverseOpts(ctx, graph.EntityID(root), "links", "out", 2, 12, opt)
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+		if len(sub.Edges) != 12 {
+			t.Fatalf("got %d edges, want 12", len(sub.Edges))
+		}
+		for i, to := range []string{a, b} {
+			if edge := sub.Edges[i]; edge.Unverified || edge.From != root || edge.To != to {
+				t.Fatalf("typed edge %d = %+v, want %s -> %s", i, edge, root, to)
+			}
+		}
+		// Distinct, ranked endpoints prove the second read continued after the first five.
+		for i, edge := range sub.Edges[2:] {
+			if want := candidates[i].TailKey; !edge.Unverified || edge.From != a || edge.To != want {
+				t.Fatalf("candidate edge %d = %+v, want %s -> %s", i, edge, a, want)
+			}
+		}
+		var candidateBatches [][]map[string]any
+		for _, q := range queries {
+			if anchors, ok := q.Params["anchors"].([]map[string]any); ok {
+				candidateBatches = append(candidateBatches, anchors)
+			}
+		}
+		if len(candidateBatches) != 3 {
+			t.Fatalf("got %d candidate reads, want one per hop and one top-up", len(candidateBatches))
+		}
+		want := map[string]any{"id": graph.EntityID(a), "key": a, "offset": 5, "share": 5}
+		if topUp := candidateBatches[2]; len(topUp) != 1 || !maps.Equal(topUp[0], want) {
+			t.Errorf("top-up anchors = %v, want [%v]", topUp, want)
+		}
+	})
+	t.Run("candidate endpoints do not expand", func(t *testing.T) {
+		// Start at A and leave one slot for the typed bridge if its source is enqueued.
+		sub, err := st.TraverseOpts(ctx, graph.EntityID(a), "links", "out", 2, 101, opt)
+		if err != nil || len(sub.Edges) != 100 {
+			t.Fatalf("got %d edges, want 100 candidates, err = %v", len(sub.Edges), err)
+		}
+		for _, edge := range sub.Edges {
+			if !edge.Unverified {
+				t.Fatalf("traversal expanded a candidate endpoint: %+v", edge)
+			}
+		}
+	})
 }
 
 func TestChunkTextSearchPunctuation(t *testing.T) {
