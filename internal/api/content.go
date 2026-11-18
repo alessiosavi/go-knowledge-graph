@@ -28,12 +28,12 @@ func (s *Server) handleDocumentContent(w http.ResponseWriter, r *http.Request) {
 	}
 	doc, err := s.store.Document(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeStoreError(w, err, "document")
+		writeReadError(w, r.Context(), err, "document")
 		return
 	}
 	chunks, err := s.store.Chunks(r.Context(), doc.ID)
 	if err != nil {
-		writeStoreError(w, err, "chunks")
+		writeReadError(w, r.Context(), err, "chunks")
 		return
 	}
 	html, err := markdownHTML(foldChunks(chunks))

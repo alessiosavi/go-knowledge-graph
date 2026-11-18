@@ -3,6 +3,7 @@ package graph_test
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +12,34 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 )
+
+func TestEntitySearchRowsByID(t *testing.T) {
+	st := graphtest.Store(t)
+	uri := os.Getenv(graphtest.URIEnv)
+	prefix := fmt.Sprintf("batch-read-%d", time.Now().UnixNano())
+	first, second := prefix+"-first", prefix+"-second"
+	rawRun(t, uri, fmt.Sprintf(`CREATE (:Entity {id:%q, key:%q, name:'First entity', type:'person', domain:'alpha', mention_count:3}),
+	                                  (:Entity {id:%q, key:%q, name:'Second entity', type:'place', domain:'beta', mention_count:7})`, first, first, second, second))
+	t.Cleanup(func() {
+		rawRun(t, uri, fmt.Sprintf(`MATCH (e:Entity) WHERE e.id IN [%q, %q] DETACH DELETE e`, first, second))
+	})
+
+	rows, err := st.EntitySearchRowsByID(t.Context(), []string{prefix + "-missing", first, second, first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[graph.EntitySearchRow]int)
+	for _, row := range rows {
+		got[row]++
+	}
+	want := map[graph.EntitySearchRow]int{
+		{ID: first, Name: "First entity", Type: "person", Domain: "alpha", MentionCount: 3}: 2,
+		{ID: second, Name: "Second entity", Type: "place", Domain: "beta", MentionCount: 7}: 1,
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("EntitySearchRowsByID row counts = %+v, want %+v", got, want)
+	}
+}
 
 // traverseFixture builds A -wrote-> B -visited-> C inside one document
 // with evidence spans, returning the entity keys.

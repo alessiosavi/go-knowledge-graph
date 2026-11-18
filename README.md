@@ -108,6 +108,11 @@ when false the parameter is ignored and `unverified_ignored` is set),
 `GKG_EMBEDDER_ENABLED`, `GKG_EMBEDDER_PROVIDER=openai|furls`,
 `GKG_API_KEY` (gkg's bearer; required by the edge, which injects it), `GKG_LIMITS_CYPHER_ROWS`.
 
+Set `limits.read_timeout_ms` or `GKG_LIMITS_READ_TIMEOUT_MS` to cap REST
+reads and MCP and agent read tools at 15000 ms by default. Values of zero
+or less use the default. Cypher uses its own `limits.cypher_timeout_ms`
+(`GKG_LIMITS_CYPHER_TIMEOUT_MS`, default 10000 ms).
+
 Set `server.pprof_addr` in YAML or `GKG_SERVER_PPROF_ADDR` in the environment
 to serve Go profiles from a separate loopback listener, for example
 `127.0.0.1:6060` or `[::1]:6060`. `localhost` binds to `127.0.0.1`.

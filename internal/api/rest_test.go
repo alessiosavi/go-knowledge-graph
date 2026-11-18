@@ -790,6 +790,57 @@ func TestCypherEndpointTimeoutMapsTo504(t *testing.T) {
 	}
 }
 
+type timedOutReadStore struct {
+	*graph.Store
+	budget time.Duration
+}
+
+func (timedOutReadStore) RunReadQuery(context.Context, string, map[string]any, int) (graph.QueryResult, error) {
+	return graph.QueryResult{}, fmt.Errorf("read query: %w", graph.ErrQueryTimeout)
+}
+
+func (s timedOutReadStore) Document(ctx context.Context, _ string) (*graph.Document, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil, errors.New("document store received no deadline")
+	}
+	if remaining := time.Until(deadline); remaining > s.budget {
+		return nil, fmt.Errorf("document store received %v, want a deadline within %v", remaining, s.budget)
+	}
+	return nil, fmt.Errorf("read document: %w", graph.ErrQueryTimeout)
+}
+
+func TestReadRoutesMapStoreTimeoutTo504(t *testing.T) {
+	const budgetMS = 1200
+	cfg := config.Config{}
+	cfg.Limits.ReadTimeoutMS = budgetMS
+	s := NewServer(cfg, nil, nil)
+	s.store = timedOutReadStore{budget: budgetMS * time.Millisecond}
+	s.SetMetrics(obs.New())
+	h := s.Handler()
+	for _, tc := range []struct {
+		method, path, body, pattern string
+	}{
+		{"POST", "/v1/cypher", `{"query":"RETURN 1"}`, "POST /v1/cypher"},
+		{"GET", "/v1/documents/test-id", "", "GET /v1/documents/{id}"},
+	} {
+		t.Run(tc.pattern, func(t *testing.T) {
+			rr := doJSON(t, h, tc.method, tc.path, tc.body)
+			if rr.Code != http.StatusGatewayTimeout {
+				t.Fatalf("status = %d, want 504; body %s", rr.Code, rr.Body.String())
+			}
+			if body := decode[errorBody](t, rr); body.Error != "query_timeout" {
+				t.Errorf("error = %q, want query_timeout", body.Error)
+			}
+			scrape := do(t, h, http.MethodGet, "/metrics", nil, nil).Body.String()
+			want := fmt.Sprintf("gkg_request_duration_seconds_count{op=%q,outcome=\"error\",surface=\"rest\"} 1\n", tc.pattern)
+			if !strings.Contains(scrape, want) {
+				t.Errorf("scrape missing %s", want)
+			}
+		})
+	}
+}
+
 // stubEmbedder returns a fixed vector for every query (query-leg stub).
 type stubEmbedder struct{ vec []float64 }
 

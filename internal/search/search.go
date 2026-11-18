@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
@@ -19,6 +20,14 @@ import (
 // providers); nil means text-only search.
 type QueryEmbedder interface {
 	EmbedQuery(ctx context.Context, text string) ([]float64, error)
+}
+
+// Store provides the text, vector and batched entity lookups used by search.
+type Store interface {
+	EntityTextSearchIn(ctx context.Context, q, slug string, limit int) ([]graph.EntitySearchRow, error)
+	ChunkTextSearchIn(ctx context.Context, q, slug string, limit int) ([]graph.ChunkSearchRow, error)
+	EntityVectorSearch(ctx context.Context, vec []float64, limit int) ([]string, error)
+	EntitySearchRowsByID(ctx context.Context, ids []string) ([]graph.EntitySearchRow, error)
 }
 
 // Hit is one search result.
@@ -60,9 +69,6 @@ func FuseRanks(legs [][]string) map[string]float64 {
 	return out
 }
 
-// Query searches entities, chunks or both. Entity search fuses text hits
-// with vector hits when an embedder is configured — a vector miss never
-// drops text recall. Chunks are text-only in v0.
 type options struct{ domain string }
 
 // Option configures a search.
@@ -71,7 +77,9 @@ type Option func(*options)
 // InDomain scopes both text and vector hits to a domain; empty selects all.
 func InDomain(d string) Option { return func(o *options) { o.domain = d } }
 
-func Query(ctx context.Context, st *graph.Store, emb QueryEmbedder, q, kind string, limit int, opts ...Option) ([]Hit, error) {
+// Query searches entities, chunks or both. With an embedder, entity search
+// fuses text and vector hits. Chunks use text search.
+func Query(ctx context.Context, st Store, emb QueryEmbedder, q, kind string, limit int, opts ...Option) ([]Hit, error) {
 	opt := options{}
 	for _, apply := range opts {
 		apply(&opt)
@@ -117,15 +125,9 @@ func Query(ctx context.Context, st *graph.Store, emb QueryEmbedder, q, kind stri
 	}
 }
 
-type entitySearchStore interface {
-	EntityTextSearchIn(ctx context.Context, q, slug string, limit int) ([]graph.EntitySearchRow, error)
-	EntityVectorSearch(ctx context.Context, vec []float64, limit int) ([]string, error)
-	EntitySearchRowsByID(ctx context.Context, ids []string) ([]graph.EntitySearchRow, error)
-}
-
 // entityCandidates keeps both legs' hits until the final ranking, which can
 // also include chunks in auto mode.
-func entityCandidates(ctx context.Context, st entitySearchStore, emb QueryEmbedder, q string, limit int, slug string) ([]Hit, error) {
+func entityCandidates(ctx context.Context, st Store, emb QueryEmbedder, q string, limit int, slug string) ([]Hit, error) {
 	recs, err := st.EntityTextSearchIn(ctx, q, slug, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search: entity text leg: %w", err)
@@ -143,7 +145,11 @@ func entityCandidates(ctx context.Context, st entitySearchStore, emb QueryEmbedd
 		if slug != "" {
 			vectorLimit *= 5
 		}
-		if vecLeg, ok := vectorLeg(ctx, st, emb, q, vectorLimit); ok {
+		vecLeg, err := vectorLeg(ctx, st, emb, q, vectorLimit)
+		if err != nil {
+			return nil, err
+		}
+		if len(vecLeg) > 0 {
 			var unknown []string
 			for _, id := range vecLeg {
 				if _, known := rows[id]; !known {
@@ -153,6 +159,9 @@ func entityCandidates(ctx context.Context, st entitySearchStore, emb QueryEmbedd
 			if len(unknown) > 0 {
 				resolved, err := st.EntitySearchRowsByID(ctx, unknown)
 				if err != nil {
+					if _, timed := ctx.Deadline(); timed && graph.IsQueryTimeout(ctx, err) {
+						return nil, fmt.Errorf("search: vector entity lookup: %w", err)
+					}
 					slog.Warn("search: vector entity lookup failed", "err", err)
 				} else {
 					for _, r := range resolved {
@@ -190,26 +199,47 @@ func entityCandidates(ctx context.Context, st entitySearchStore, emb QueryEmbedd
 }
 
 // vectorLeg embeds the query and returns entity ids ordered by vector
-// distance. Any failure (no embedder output, missing vector index) skips
-// the leg — text recall is never dropped by a vector problem.
-func vectorLeg(ctx context.Context, st entitySearchStore, emb QueryEmbedder, q string, limit int) ([]string, bool) {
-	vec, err := emb.EmbedQuery(ctx, q)
+// distance. Failures skip the leg unless the search reaches its deadline.
+func vectorLeg(ctx context.Context, st Store, emb QueryEmbedder, q string, limit int) ([]string, error) {
+	embedCtx := ctx
+	cancel := func() {}
+	if deadline, ok := ctx.Deadline(); ok {
+		now := time.Now()
+		embedCtx, cancel = context.WithDeadline(ctx, now.Add(deadline.Sub(now)/2))
+	}
+	vec, err := emb.EmbedQuery(embedCtx, q)
+	shareExpired := embedCtx.Err() == context.DeadlineExceeded
+	if err == nil && shareExpired {
+		err = context.DeadlineExceeded
+	}
+	cancel()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("search: embedding: %w", context.DeadlineExceeded)
+	}
 	if err != nil {
-		slog.Warn("search: embedding failed, text-only results", "err", err)
-		return nil, false
+		if shareExpired {
+			// By design, not an outage: a slow embedder leaves the read budget to the text leg.
+			slog.Warn("search: embedding exceeded its share of the read budget, text-only results", "err", err)
+		} else {
+			slog.Warn("search: embedding failed, text-only results", "err", err)
+		}
+		return nil, nil
 	}
 	if len(vec) == 0 {
-		return nil, false
+		return nil, nil
 	}
 	ids, err := st.EntityVectorSearch(ctx, vec, limit)
 	if err != nil {
+		if _, timed := ctx.Deadline(); timed && graph.IsQueryTimeout(ctx, err) {
+			return nil, fmt.Errorf("search: entity vector leg: %w", err)
+		}
 		slog.Warn("search: vector index unavailable, text-only results", "err", err)
-		return nil, false
+		return nil, nil
 	}
-	return ids, true
+	return ids, nil
 }
 
-func chunkHits(ctx context.Context, st *graph.Store, q string, limit int, slug string) ([]Hit, error) {
+func chunkHits(ctx context.Context, st Store, q string, limit int, slug string) ([]Hit, error) {
 	recs, err := st.ChunkTextSearchIn(ctx, q, slug, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search: chunk text leg: %w", err)

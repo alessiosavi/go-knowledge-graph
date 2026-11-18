@@ -231,7 +231,16 @@ func (s *Server) execTool(ctx context.Context, name string, args json.RawMessage
 	if run == nil {
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
-	return run(ctx, args)
+	if name == "cypher" {
+		return run(ctx, args)
+	}
+	readCtx, cancel := context.WithTimeout(ctx, s.cfg.Limits.ReadTimeout())
+	defer cancel()
+	result, err := run(readCtx, args)
+	if graph.IsQueryTimeout(readCtx, err) {
+		return nil, graph.ErrQueryTimeout
+	}
+	return result, err
 }
 
 func (s *Server) toolGetChunks(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -524,8 +533,8 @@ func (s *Server) toolCypher(ctx context.Context, raw json.RawMessage) (any, erro
 	defer cancel()
 	res, err := s.store.RunReadQuery(qctx, rewritten, nil, rows)
 	if err != nil {
-		if errors.Is(qctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, errors.New("query timed out")
+		if graph.IsQueryTimeout(qctx, err) {
+			return nil, graph.ErrQueryTimeout
 		}
 		var qerr *graph.QueryError
 		if errors.As(err, &qerr) {

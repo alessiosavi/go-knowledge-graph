@@ -273,6 +273,19 @@ func TestComposeMemoryBudget(t *testing.T) {
 	}
 }
 
+func TestComposeGOMEMLIMITOverridable(t *testing.T) {
+	for _, tc := range []struct {
+		extra []string
+		want  string
+	}{
+		{nil, "640MiB"},
+		{[]string{"GOMEMLIMIT=512MiB"}, "512MiB"},
+	} {
+		lines := append([]string{"MEMGRAPH_PASSWORD=test-only", "GKG_API_KEY=synthetic-test-key"}, tc.extra...)
+		wantEnv(t, renderCompose(t, writeFixture(t, lines...)).Services["gkg"], "GOMEMLIMIT", tc.want)
+	}
+}
+
 func TestComposeImagesPinned(t *testing.T) {
 	model := defaultCompose(t)
 	for _, name := range []string{"memgraph", "docling", "edge-init", "edge"} {

@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/chunkread"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/markdown"
@@ -73,10 +74,21 @@ const NoAnswerText = "I could not reach a final answer within the step budget; t
 // responseBodyCap bounds the ask request body.
 const responseBodyCap = 1 << 20
 
+type graphStore interface {
+	search.Store
+	chunkread.Store
+	Document(context.Context, string) (*graph.Document, error)
+	DocumentsIn(context.Context, graph.Status, string, int) ([]graph.Document, error)
+	EntityCandidatesByName(context.Context, string, string) ([]graph.EntityRef, error)
+	EntityViewOpts(context.Context, string, graph.ViewOptions) (graph.EntityView, error)
+	RunReadQuery(context.Context, string, map[string]any, int) (graph.QueryResult, error)
+	TraverseOpts(context.Context, string, string, string, int, int, graph.ViewOptions) (graph.Subgraph, error)
+}
+
 // Server owns the ask loop and its HTTP surface.
 type Server struct {
 	cfg      config.Config
-	store    *graph.Store
+	store    graphStore
 	emb      search.QueryEmbedder
 	llm      *client
 	maxSteps int
@@ -87,14 +99,17 @@ type Server struct {
 // NewServer wires the agent over the open graph store; emb feeds the search
 // tool's vector leg (nil keeps it text-only).
 func NewServer(cfg config.Config, store *graph.Store, emb search.QueryEmbedder) *Server {
-	return &Server{
+	s := &Server{
 		cfg:      cfg,
-		store:    store,
 		emb:      emb,
 		llm:      newClient(cfg.Agent),
 		maxSteps: clampSteps(cfg.Agent.MaxSteps),
 		timeout:  agentTimeout(cfg.Agent),
 	}
+	if store != nil {
+		s.store = store
+	}
+	return s
 }
 
 // SetMetrics attaches the metrics registry before serving asks.

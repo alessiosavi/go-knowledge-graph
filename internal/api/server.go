@@ -38,11 +38,25 @@ type Rebuilder interface {
 // own config-driven cap (Ingest.MaxUploadMB).
 const jsonBodyCap = 1 << 20
 
+type graphStore interface {
+	search.Store
+	Chunks(context.Context, string) ([]graph.Chunk, error)
+	DeleteChain(context.Context, string) (int, error)
+	DeleteDocument(context.Context, string) error
+	Document(context.Context, string) (*graph.Document, error)
+	DocumentsIn(context.Context, graph.Status, string, int) ([]graph.Document, error)
+	EntityViewOpts(context.Context, string, graph.ViewOptions) (graph.EntityView, error)
+	ListDomains(context.Context) ([]graph.DomainCount, error)
+	RenameDomain(context.Context, string, string) (graph.DomainOp, error)
+	RunReadQuery(context.Context, string, map[string]any, int) (graph.QueryResult, error)
+	TraverseOpts(context.Context, string, string, string, int, int, graph.ViewOptions) (graph.Subgraph, error)
+}
+
 // Server serves the /v1 REST surface over a graph store and an ingestion
 // submission sink.
 type Server struct {
 	cfg     config.Config
-	store   *graph.Store
+	store   graphStore
 	in      Submitter
 	emb     search.QueryEmbedder
 	extra   []mount
@@ -59,7 +73,11 @@ type mount struct {
 // NewServer wires the REST surface. store is the open graph store; in
 // accepts ingestion submissions (nil answers 501 on POST /v1/ingest).
 func NewServer(cfg config.Config, store *graph.Store, in Submitter) *Server {
-	return &Server{cfg: cfg, store: store, in: in}
+	s := &Server{cfg: cfg, in: in}
+	if store != nil {
+		s.store = store
+	}
+	return s
 }
 
 // Mount registers an extra handler under pattern (e.g. the MCP streamable
@@ -127,7 +145,7 @@ func (s *Server) routes() []mount {
 		{"GET /readyz", http.HandlerFunc(s.handleReadyz)},
 		{"POST /v1/ingest", http.HandlerFunc(s.handleIngest)},
 		{"POST /v1/admin/rebuild", http.HandlerFunc(s.handleAdminRebuild)},
-		{"GET /v1/domains", http.HandlerFunc(s.handleDomains)},
+		{"GET /v1/domains", s.withReadTimeout(s.handleDomains)},
 		{"POST /v1/admin/domains/move", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r.SetPathValue("action", "move")
 			s.handleDomainAdmin(w, r)
@@ -144,14 +162,14 @@ func (s *Server) routes() []mount {
 			r.SetPathValue("action", "undo")
 			s.handleDomainAdmin(w, r)
 		})},
-		{"GET /v1/documents", http.HandlerFunc(s.handleDocuments)},
-		{"GET /v1/documents/{id}", http.HandlerFunc(s.handleDocument)},
-		{"GET /v1/documents/{id}/status", http.HandlerFunc(s.handleStatus)},
+		{"GET /v1/documents", s.withReadTimeout(s.handleDocuments)},
+		{"GET /v1/documents/{id}", s.withReadTimeout(s.handleDocument)},
+		{"GET /v1/documents/{id}/status", s.withReadTimeout(s.handleStatus)},
 		{"DELETE /v1/documents/{id}", http.HandlerFunc(s.handleDocumentDelete)},
-		{"GET /v1/documents/{id}/content", http.HandlerFunc(s.handleDocumentContent)},
-		{"POST /v1/search", http.HandlerFunc(s.handleSearch)},
-		{"GET /v1/entities/{id}", http.HandlerFunc(s.handleEntity)},
-		{"POST /v1/traverse", http.HandlerFunc(s.handleTraverse)},
+		{"GET /v1/documents/{id}/content", s.withReadTimeout(s.handleDocumentContent)},
+		{"POST /v1/search", s.withReadTimeout(s.handleSearch)},
+		{"GET /v1/entities/{id}", s.withReadTimeout(s.handleEntity)},
+		{"POST /v1/traverse", s.withReadTimeout(s.handleTraverse)},
 		{"POST /v1/cypher", http.HandlerFunc(s.handleCypher)},
 		{"GET /ui", http.RedirectHandler("/ui/", http.StatusMovedPermanently)},
 		{"GET /ui/", http.StripPrefix("/ui/", webui.Handler())},
@@ -162,6 +180,14 @@ func (s *Server) routes() []mount {
 		routes = append(routes, mount{"GET /metrics", s.metrics.Handler()})
 	}
 	return append(routes, s.extra...)
+}
+
+func (s *Server) withReadTimeout(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), s.cfg.Limits.ReadTimeout())
+		defer cancel()
+		next(w, r.WithContext(ctx))
+	})
 }
 
 // handleHealthz is the process liveness probe.
@@ -246,6 +272,20 @@ func writeError(w http.ResponseWriter, code int, kind, detail string) {
 // writeStoreError maps a store error onto a status and writes the body.
 func writeStoreError(w http.ResponseWriter, err error, what string) {
 	writeError(w, storeErrStatus(err), "store_error", fmt.Sprintf("%s: %v", what, err))
+}
+
+func writeReadError(w http.ResponseWriter, ctx context.Context, err error, what string) {
+	if !writeQueryTimeout(w, ctx, err) {
+		writeStoreError(w, err, what)
+	}
+}
+
+func writeQueryTimeout(w http.ResponseWriter, ctx context.Context, err error) bool {
+	if !graph.IsQueryTimeout(ctx, err) {
+		return false
+	}
+	writeError(w, http.StatusGatewayTimeout, "query_timeout", graph.ErrQueryTimeout.Error())
+	return true
 }
 
 // storeErrStatus maps store errors onto HTTP statuses.

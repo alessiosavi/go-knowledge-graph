@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
@@ -115,7 +116,9 @@ func TestEntityHitsKeepsKnownIDsAfterBatchError(t *testing.T) {
 		vector: []string{"unknown-a", "known", "unknown-b"},
 		err:    errors.New("lookup failed"),
 	}
-	hits, err := entityCandidates(context.Background(), st, fixedQueryVector{}, "query", 3, "scope")
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	hits, err := entityCandidates(ctx, st, fixedQueryVector{}, "query", 3, "scope")
 	want := []Hit{{Domain: "scope", Kind: "entity", ID: "known", Title: "Known", Score: RRF(0) + RRF(0), mentions: 3}}
 	if err != nil || !slices.Equal(hits, want) {
 		t.Fatalf("entityCandidates = %+v, %v, want %+v, nil", hits, err, want)
@@ -126,9 +129,29 @@ func TestEntityHitsKeepsKnownIDsAfterBatchError(t *testing.T) {
 	st.vector = []string{"known"}
 	st.lookups = nil
 	logs.Reset()
-	hits, err = entityCandidates(context.Background(), st, fixedQueryVector{}, "query", 3, "scope")
+	hits, err = entityCandidates(ctx, st, fixedQueryVector{}, "query", 3, "scope")
 	if err != nil || !slices.Equal(hits, want) || len(st.lookups) != 0 || logs.Len() != 0 {
 		t.Fatalf("known-only vector hits = %+v, %v, lookups = %v, logs = %q, want %+v, nil and no lookups or logs", hits, err, st.lookups, logs.String(), want)
+	}
+}
+
+func TestEntityHitsPropagatesBatchTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	st := &countingEntityStore{
+		text:   []graph.EntitySearchRow{{ID: "known", Name: "Known"}},
+		vector: []string{"unknown", "known"},
+	}
+	for _, cause := range []error{graph.ErrQueryTimeout, context.DeadlineExceeded} {
+		st.err = fmt.Errorf("batch lookup: %w", cause)
+		hits, err := entityCandidates(ctx, st, fixedQueryVector{}, "query", 3, "")
+		if hits != nil || !errors.Is(err, cause) {
+			t.Errorf("entityCandidates returned %v, %v, want only an error wrapping %v", hits, err, cause)
+		}
+	}
+	hits, err := entityCandidates(t.Context(), st, fixedQueryVector{}, "query", 3, "")
+	if err != nil || len(hits) != 1 || hits[0].ID != "known" || hits[0].Score != 2*RRF(0) {
+		t.Errorf("batch timeout without a search deadline returned %v, %v, want the fused known hit", hits, err)
 	}
 }
 
@@ -139,6 +162,7 @@ func (fixedQueryVector) EmbedQuery(context.Context, string) ([]float64, error) {
 }
 
 type countingEntityStore struct {
+	Store
 	text        []graph.EntitySearchRow
 	vector      []string
 	rows        []graph.EntitySearchRow

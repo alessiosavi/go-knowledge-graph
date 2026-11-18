@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v4"
 )
@@ -162,10 +163,22 @@ type LabelsConfig struct {
 	PresetsDir string `yaml:"presets_dir"`
 }
 
-// LimitsConfig caps the read-only cypher surface.
+const defaultReadTimeoutMS = 15000
+
+// LimitsConfig caps request-path reads.
 type LimitsConfig struct {
 	CypherRows      int `yaml:"cypher_rows"`
 	CypherTimeoutMS int `yaml:"cypher_timeout_ms"`
+	ReadTimeoutMS   int `yaml:"read_timeout_ms"`
+}
+
+// ReadTimeout is the effective timeout for non-Cypher reads.
+func (c LimitsConfig) ReadTimeout() time.Duration {
+	ms := int64(c.ReadTimeoutMS)
+	if ms <= 0 {
+		ms = defaultReadTimeoutMS
+	}
+	return time.Duration(min(ms, math.MaxInt64/int64(time.Millisecond))) * time.Millisecond
 }
 
 func defaults() Config {
@@ -224,7 +237,7 @@ func defaults() Config {
 			MaxRedirects:     5,
 		},
 		Labels: LabelsConfig{PresetsDir: "labels"},
-		Limits: LimitsConfig{CypherRows: 1000, CypherTimeoutMS: 10000},
+		Limits: LimitsConfig{CypherRows: 1000, CypherTimeoutMS: 10000, ReadTimeoutMS: defaultReadTimeoutMS},
 	}
 }
 
