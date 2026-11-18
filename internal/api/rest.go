@@ -111,10 +111,11 @@ type searchResponse struct {
 }
 
 type entityRefDTO struct {
-	ID   string `json:"id"`
-	Key  string `json:"key"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID     string `json:"id"`
+	Key    string `json:"key"`
+	Name   string `json:"name"`
+	Type   string `json:"type"`
+	Domain string `json:"domain"`
 }
 
 type coMentionDTO struct {
@@ -140,6 +141,7 @@ type entityDTO struct {
 	Key               string              `json:"key"`
 	Name              string              `json:"name"`
 	Type              string              `json:"type"`
+	Domain            string              `json:"domain"`
 	Aliases           []string            `json:"aliases"`
 	MentionCount      int                 `json:"mention_count"`
 	Facts             []factDTO           `json:"facts"`
@@ -603,7 +605,7 @@ func toEntityDTO(v graph.EntityView) entityDTO {
 		}
 		facts = append(facts, factDTO{
 			Rel:           f.Rel,
-			Other:         entityRefDTO{ID: f.Other.ID, Key: f.Other.Key, Name: f.Other.Name, Type: f.Other.Type},
+			Other:         entityRefDTO{ID: f.Other.ID, Key: f.Other.Key, Name: f.Other.Name, Type: f.Other.Type, Domain: f.Other.Domain},
 			Confidence:    f.Confidence,
 			Judge:         judge,
 			Unverified:    f.Unverified,
@@ -617,7 +619,7 @@ func toEntityDTO(v graph.EntityView) entityDTO {
 	together := make([]coMentionDTO, 0, len(v.Together))
 	for _, other := range v.Together {
 		together = append(together, coMentionDTO{
-			entityRefDTO: entityRefDTO{ID: other.ID, Key: other.Key, Name: other.Name, Type: other.Type},
+			entityRefDTO: entityRefDTO{ID: other.ID, Key: other.Key, Name: other.Name, Type: other.Type, Domain: other.Domain},
 			SharedChunks: other.SharedChunks,
 		})
 	}
@@ -630,6 +632,7 @@ func toEntityDTO(v graph.EntityView) entityDTO {
 		Key:          v.Key,
 		Name:         v.Name,
 		Type:         v.Type,
+		Domain:       v.Domain,
 		Aliases:      aliases,
 		MentionCount: v.MentionCount,
 		Facts:        facts,
@@ -641,7 +644,7 @@ func toEntityDTO(v graph.EntityView) entityDTO {
 func toTraverseResponse(sub graph.Subgraph) traverseResponse {
 	nodes := make([]entityRefDTO, 0, len(sub.Nodes))
 	for _, n := range sub.Nodes {
-		nodes = append(nodes, entityRefDTO{ID: n.ID, Key: n.Key, Name: n.Name, Type: n.Type})
+		nodes = append(nodes, entityRefDTO{ID: n.ID, Key: n.Key, Name: n.Name, Type: n.Type, Domain: n.Domain})
 	}
 	edges := make([]edgeDTO, 0, len(sub.Edges))
 	for _, e := range sub.Edges {

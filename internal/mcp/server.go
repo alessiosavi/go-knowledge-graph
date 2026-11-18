@@ -200,6 +200,7 @@ type entityOut struct {
 	Key               string              `json:"key"`
 	Name              string              `json:"name"`
 	Type              string              `json:"type"`
+	Domain            string              `json:"domain"`
 	Aliases           []string            `json:"aliases"`
 	MentionCount      int                 `json:"mention_count"`
 	Facts             []factOut           `json:"facts"`
@@ -612,6 +613,7 @@ func toEntityOut(view graph.EntityView) entityOut {
 		Key:          view.Key,
 		Name:         view.Name,
 		Type:         view.Type,
+		Domain:       view.Domain,
 		Aliases:      aliases,
 		MentionCount: view.MentionCount,
 		Facts:        facts,

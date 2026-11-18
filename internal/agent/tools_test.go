@@ -194,9 +194,12 @@ func TestToolRelatedEntityDomainsJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewServer(config.Config{}, fx.st, nil)
-	res, err := s.execTool(ctx, "get_entity", json.RawMessage(fmt.Sprintf(`{"id":%q}`, fx.entityID)))
+	res, err := s.execTool(context.Background(), "get_entity", json.RawMessage(fmt.Sprintf(`{"id":%q}`, fx.entityID)))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := unmarshalResult[map[string]any](t, res)["domain"]; got != "zorbo" {
+		t.Errorf("viewed entity domain = %v, want zorbo", got)
 	}
 	view := unmarshalResult[entityOut](t, res)
 	if len(view.Facts) != 1 || len(view.Together) != 1 {

@@ -62,6 +62,30 @@ func TestOpenAPIReadVisibility(t *testing.T) {
 	}
 }
 
+func TestOpenAPIEntityDomains(t *testing.T) {
+	var spec struct {
+		Components struct {
+			Schemas map[string]struct {
+				Required   []string
+				Properties map[string]struct{ Type, Description string }
+			}
+		}
+	}
+	if err := yaml.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Entity", "EntityRef"} {
+		schema := spec.Components.Schemas[name]
+		field, ok := schema.Properties["domain"]
+		if !ok || field.Type != "string" || field.Description == "" {
+			t.Errorf("%s.domain = %+v, want a documented string property", name, field)
+		}
+		if !slices.Contains(schema.Required, "domain") {
+			t.Errorf("%s.domain must be required: REST always emits it", name)
+		}
+	}
+}
+
 func openAPIRouteFindings(patterns []string, data []byte) []string {
 	type operation struct {
 		Tags      []string             `yaml:"tags"`

@@ -11,8 +11,8 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 )
 
-// Default wire responses must remain byte-identical for legacy typed facts,
-// including the omission of an empty judge status and zero visibility fields.
+// Legacy typed facts emit an empty domain when absent, while omitting an empty
+// judge status and zero visibility fields.
 func TestLegacyReadJSONUnchanged(t *testing.T) {
 	v := graph.EntityView{EntityRef: graph.EntityRef{ID: "x", Key: "zorbo", Name: "Zorbo", Type: "person"},
 		Facts: []graph.FactView{{Rel: "uses", Other: graph.EntityRef{ID: "y", Key: "acme", Name: "Acme-Max", Type: "product"}, Confidence: .9, Outgoing: true, DocID: "d", ChunkID: "c", Excerpt: "Zorbo uses Acme-Max."}}}
@@ -22,8 +22,8 @@ func TestLegacyReadJSONUnchanged(t *testing.T) {
 		value any
 		want  string
 	}{
-		{"entity", toEntityDTO(v), `{"id":"x","key":"zorbo","name":"Zorbo","type":"person","aliases":[],"mention_count":0,"facts":[{"rel":"uses","other":{"id":"y","key":"acme","name":"Acme-Max","type":"product"},"confidence":0.9,"low_confidence":false,"outgoing":true,"doc_id":"d","chunk_id":"c","excerpt":"Zorbo uses Acme-Max."}],"together":[]}`},
-		{"traverse", toTraverseResponse(sub), `{"nodes":[{"id":"x","key":"zorbo","name":"Zorbo","type":"person"}],"edges":[{"from":"zorbo","to":"acme","rel":"uses","confidence":0.9,"low_confidence":false,"doc_id":"d","chunk_id":"c","excerpt":"Zorbo uses Acme-Max."}]}`},
+		{"entity", toEntityDTO(v), `{"id":"x","key":"zorbo","name":"Zorbo","type":"person","domain":"","aliases":[],"mention_count":0,"facts":[{"rel":"uses","other":{"id":"y","key":"acme","name":"Acme-Max","type":"product","domain":""},"confidence":0.9,"low_confidence":false,"outgoing":true,"doc_id":"d","chunk_id":"c","excerpt":"Zorbo uses Acme-Max."}],"together":[]}`},
+		{"traverse", toTraverseResponse(sub), `{"nodes":[{"id":"x","key":"zorbo","name":"Zorbo","type":"person","domain":""}],"edges":[{"from":"zorbo","to":"acme","rel":"uses","confidence":0.9,"low_confidence":false,"doc_id":"d","chunk_id":"c","excerpt":"Zorbo uses Acme-Max."}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := json.Marshal(tc.value)
