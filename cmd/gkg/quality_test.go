@@ -24,7 +24,7 @@ func TestQualityFlags(t *testing.T) {
 	if code := run([]string{"quality", "--help"}, &out, &stderr); code != 0 {
 		t.Fatalf("help exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, word := range []string{"-domain", "-seed", "-json", "-hygiene-sample", "-sample-seed", "-out", "built-in", "type", "read-only"} {
+	for _, word := range []string{"-domain", "-seed", "-json", "-hygiene-sample", "-sample-seed", "-out", "-duplicates-out", "built-in", "type", "read-only"} {
 		if !strings.Contains(stderr.String(), word) {
 			t.Errorf("help missing %s", word)
 		}

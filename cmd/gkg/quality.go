@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -27,8 +28,9 @@ func runQuality(args []string, stdout, stderr io.Writer) int {
 	sampleN := fs.Int("hygiene-sample", 0, "sample up to N dropped and N renamed names; requires --out")
 	sampleSeed := fs.Uint64("sample-seed", 1, "deterministic hygiene sample seed")
 	outPath := fs.String("out", "", "private hygiene sample file (mode 0600); requires --hygiene-sample")
+	duplicatesPath := fs.String("duplicates-out", "", "new private duplicate census JSONL file (mode 0600)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: gkg quality [--domain d] [--seed <file>|-] [--json] [--hygiene-sample N --sample-seed s --out <file>]")
+		fmt.Fprintln(stderr, "usage: gkg quality [--domain d] [--seed <file>|-] [--json] [--hygiene-sample N --sample-seed s --out <file>] [--duplicates-out <file>]")
 		fmt.Fprintln(stderr, "Report read-only metrics over done documents and their derived data; no graph writes or Bootstrap DDL.")
 		fmt.Fprintln(stderr, "Noise and samples use the built-in hygiene preset plus ingest.stoplist_file, with entity.type as the label.")
 		fs.PrintDefaults()
@@ -46,6 +48,17 @@ func runQuality(args []string, stdout, stderr io.Writer) int {
 	if *scope != "" && !domain.ValidDomain(*scope) {
 		fmt.Fprintln(stderr, "gkg quality: invalid domain slug")
 		return 2
+	}
+	if *duplicatesPath != "" && *outPath != "" {
+		same, err := sameOutputPath(*duplicatesPath, *outPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "gkg quality: output paths: %v\n", err)
+			return 2
+		}
+		if same {
+			fmt.Fprintln(stderr, "gkg quality: --duplicates-out and --out require different files")
+			return 2
+		}
 	}
 	opt := quality.Options{Domain: *scope, HygieneSample: *sampleN, SampleSeed: *sampleSeed}
 	if *seedPath != "" {
@@ -71,6 +84,16 @@ func runQuality(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg quality: %v\n", err)
 		return 1
 	}
+	var censusFile *os.File
+	if *duplicatesPath != "" {
+		censusFile, err = stageQualityCensus(*duplicatesPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "gkg quality: %v\n", err)
+			return 1
+		}
+		defer os.Remove(censusFile.Name())
+		defer censusFile.Close()
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	st, err := graph.Open(ctx, cfg)
@@ -81,7 +104,16 @@ func runQuality(args []string, stdout, stderr io.Writer) int {
 	defer st.Close(context.Background())
 	// Compute reads SchemaVersion directly. Bootstrap would modify even an empty
 	// database, so this read-only command deliberately does not call it.
-	report, err := quality.Compute(ctx, st, opt)
+	var report quality.Report
+	var census quality.DuplicateSummary
+	if censusFile == nil {
+		report, err = quality.Compute(ctx, st, opt)
+	} else {
+		report, census, err = quality.ComputeWithDuplicates(ctx, st, opt, censusFile)
+		if err == nil {
+			err = censusFile.Close()
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg quality: %v\n", err)
 		return 1
@@ -97,16 +129,99 @@ func runQuality(args []string, stdout, stderr io.Writer) int {
 	}
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		err = enc.Encode(report)
+		if *duplicatesPath == "" {
+			enc.SetIndent("", "  ")
+			err = enc.Encode(report)
+		} else {
+			err = enc.Encode(struct {
+				quality.Report
+				DuplicateCensus quality.DuplicateSummary `json:"duplicate_census"`
+			}{report, census})
+		}
 	} else {
 		err = writeQualityText(stdout, report)
+		if err == nil && *duplicatesPath != "" {
+			_, err = fmt.Fprintf(stdout, "duplicate census groups A=%d other=%d, members A=%d other=%d, group size max=%d p95=%d\n",
+				census.Groups.A, census.Groups.Other, census.Members.A, census.Members.Other, census.MaxGroupSize, census.P95GroupSize)
+		}
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg quality: report: %v\n", err)
 		return 1
 	}
+	if censusFile != nil {
+		// Publish only after the other outputs succeed. Link refuses to replace
+		// a destination created while the report was running.
+		if err := os.Link(censusFile.Name(), *duplicatesPath); err != nil {
+			fmt.Fprintf(stderr, "gkg quality: publish census: %v\n", err)
+			return 1
+		}
+	}
 	return 0
+}
+
+func stageQualityCensus(path string) (*os.File, error) {
+	if _, err := os.Lstat(path); err == nil {
+		return nil, &os.PathError{Op: "write census", Path: path, Err: os.ErrExist}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".gkg-duplicates-*")
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Chmod(0600); err != nil {
+		file.Close()
+		os.Remove(file.Name())
+		return nil, err
+	}
+	return file, nil
+}
+
+func sameOutputPath(census, sample string) (bool, error) {
+	censusAbs, err := filepath.Abs(census)
+	if err != nil {
+		return false, err
+	}
+	for range 40 {
+		sampleAbs, err := filepath.Abs(sample)
+		if err != nil {
+			return false, err
+		}
+		if censusAbs == sampleAbs {
+			return true, nil
+		}
+		// A symlinked parent can alias a path even when the file is absent.
+		if filepath.Base(census) == filepath.Base(sample) {
+			censusDir, censusErr := os.Stat(filepath.Dir(census))
+			sampleDir, sampleErr := os.Stat(filepath.Dir(sample))
+			if censusErr == nil && sampleErr == nil && os.SameFile(censusDir, sampleDir) {
+				return true, nil
+			}
+		}
+		// The sample writer follows symlinks, including a link to a target
+		// that will be created. Resolve it before publishing either output.
+		info, err := os.Lstat(sample)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return false, nil
+		}
+		target, err := os.Readlink(sample)
+		if err != nil {
+			return false, err
+		}
+		if !filepath.IsAbs(target) {
+			dir, _ := filepath.Split(sample)
+			target = dir + target
+		}
+		sample = target
+	}
+	return false, errors.New("too many symbolic links in --out path")
 }
 
 func writeHygieneSample(path string, sample quality.HygieneSample) error {

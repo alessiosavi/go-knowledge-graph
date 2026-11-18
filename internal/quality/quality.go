@@ -5,6 +5,7 @@ package quality
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
@@ -123,11 +124,23 @@ type dataset struct {
 }
 
 func Compute(ctx context.Context, st *graph.Store, opt Options) (Report, error) {
+	report, _, err := computeReport(ctx, st, opt, nil)
+	return report, err
+}
+
+// ComputeWithDuplicates computes the usual report and writes the private JSONL
+// census to out. The returned summary contains only aggregate counts.
+func ComputeWithDuplicates(ctx context.Context, st *graph.Store, opt Options, out io.Writer) (Report, DuplicateSummary, error) {
+	return computeReport(ctx, st, opt, out)
+}
+
+func computeReport(ctx context.Context, st *graph.Store, opt Options, duplicates io.Writer) (Report, DuplicateSummary, error) {
+	var summary DuplicateSummary
 	if opt.HygieneSample < 0 {
-		return Report{}, fmt.Errorf("quality: hygiene sample must be nonnegative")
+		return Report{}, summary, fmt.Errorf("quality: hygiene sample must be nonnegative")
 	}
 	if opt.Domain != "" && !domain.ValidDomain(opt.Domain) {
-		return Report{}, fmt.Errorf("quality: invalid domain slug")
+		return Report{}, summary, fmt.Errorf("quality: invalid domain slug")
 	}
 	// Match the CLI's config lookup while preserving the pinned Options API.
 	path := os.Getenv("GKG_CONFIG")
@@ -138,22 +151,32 @@ func Compute(ctx context.Context, st *graph.Store, opt Options) (Report, error) 
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
-		return Report{}, err
+		return Report{}, summary, err
 	}
 	preset, err := hygiene.LoadPreset(cfg.Labels.PresetsDir, "", cfg.Ingest.StoplistFile)
 	if err != nil {
-		return Report{}, err
+		return Report{}, summary, err
 	}
 	data, err := load(ctx, st, opt)
 	if err != nil {
-		return Report{}, err
+		return Report{}, summary, err
 	}
 	if err := ctx.Err(); err != nil {
-		return Report{}, err
+		return Report{}, summary, err
 	}
-	report := compute(data, opt, preset)
+	var report Report
+	if duplicates == nil {
+		report = compute(data, opt, preset)
+	} else {
+		var groups map[string][]duplicateGroup
+		report, groups = computeWithCensus(data, opt, preset, true)
+		summary, err = writeDuplicates(ctx, st, duplicates, groups)
+		if err != nil {
+			return Report{}, DuplicateSummary{}, err
+		}
+	}
 	if err := ctx.Err(); err != nil {
-		return Report{}, err
+		return Report{}, DuplicateSummary{}, err
 	}
-	return report, nil
+	return report, summary, nil
 }
