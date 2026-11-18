@@ -237,6 +237,15 @@ func TestDisplayName(t *testing.T) {
 
 func TestDisplayNameEdgeMarkup(t *testing.T) {
 	cases := map[string]string{
+		"**Agent":                            "Agent",
+		"*Agent":                             "Agent",
+		"Agent**":                            "Agent",
+		"**_private":                         "**_private",
+		"** _private":                        "_private",
+		"*nix":                               "*nix",
+		"char*":                              "char*",
+		"Price*":                             "Price*",
+		"Quillon Ltd*":                       "Quillon Ltd*",
 		"**Zorbo Business Agent":             "Zorbo Business Agent",
 		"Zorbo GEO.**":                       "Zorbo GEO",
 		"**acme.org":                         "acme.org",

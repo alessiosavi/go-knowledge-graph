@@ -44,6 +44,11 @@ func runRepairNames(args []string, stdout, stderr io.Writer) int {
 	}
 	defer st.Close(context.Background())
 
+	// Repair supports older schemas and uses the standard error for newer ones.
+	if _, err := st.ExtractionSchemaCurrent(ctx); err != nil {
+		return fail(err)
+	}
+
 	scanned, changed, err := st.RepairEntityNames(ctx, *dryRun)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg repair-names: %v (scanned=%d changed=%d)\n", err, scanned, changed)

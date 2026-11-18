@@ -114,17 +114,25 @@ func trimNameEdges(s string) string {
 	}
 }
 
-var nameIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var leadingStarIdentifier = regexp.MustCompile(`^[a-z_][A-Za-z0-9_]*$`)
 
 func trimUnbalancedStars(s string) string {
-	if strings.HasPrefix(s, "*") == strings.HasSuffix(s, "*") {
+	leading := strings.HasPrefix(s, "*")
+	trailing := strings.HasSuffix(s, "*")
+	if leading == trailing {
 		return s
 	}
-	inner := strings.TrimSpace(strings.Trim(s, "*"))
-	if nameIdentifier.MatchString(inner) {
-		return s
+	if leading {
+		inner := strings.TrimLeft(s, "*")
+		if leadingStarIdentifier.MatchString(inner) {
+			return s
+		}
+		return strings.TrimSpace(inner)
 	}
-	return inner
+	if strings.HasSuffix(s, "**") {
+		return strings.TrimSpace(strings.TrimRight(s, "*"))
+	}
+	return s
 }
 
 func trimNameParentheses(s string) string {

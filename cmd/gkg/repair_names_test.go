@@ -21,18 +21,19 @@ CREATE (:Entity {id: 'fill-' + toString(n), key: 'fill-' + toString(n), name: 'Z
  (:Entity {id: 'uneven', key: 'x', name: '*x**:', name_key: 'x', type: 'code'}),
  (:Entity {id: 'period', key: 'args', name: '*args.', name_key: 'args', type: 'code'}),
  (:Entity {id: 'geo', key: 'zorbo geo', name: 'Zorbo GEO.**', name_key: 'zorbo geo'}),
+ (:Entity {id: 'agent', key: 'agent', name: '**Agent', name_key: 'agent'}),
  (:Entity {id: 'operator', key: 'call operator', name: '()', name_key: '', type: 'code'}),
  (:Chunk {id: 'zorbo-chunk'})-[:MENTIONS {start: 0, end: 13}]->(m),
  (m)-[:joined {judge: 'confirmed'}]->(q)`, nil)
 	const entities = `MATCH (e:Entity)
-WHERE e.id IN ['first', 'last', 'clean', 'literal', 'legacy', 'colon', 'uneven', 'period', 'geo', 'operator']
+WHERE e.id IN ['first', 'last', 'clean', 'literal', 'legacy', 'colon', 'uneven', 'period', 'geo', 'agent', 'operator']
 RETURN properties(e) AS props ORDER BY e.id`
 	const relationships = `MATCH (a)-[r]->(b:Entity) RETURN a.id, type(r), properties(r), b.id ORDER BY a.id`
 	const possessiveInTextIndex = `CALL text_search.search('entity_text_v2', 'data.name:"s"')
 YIELD node WHERE node.id = 'first' RETURN node.id`
 	before := migrationQuery(t, entities, nil)
 	edges := migrationQuery(t, relationships, nil)
-	if len(before) != 10 || len(edges) != 2 {
+	if len(before) != 11 || len(edges) != 2 {
 		t.Fatalf("fixture: %d entities, %d relationships", len(before), len(edges))
 	}
 	if hits := migrationQuery(t, possessiveInTextIndex, nil); len(hits) != 1 {
@@ -45,11 +46,11 @@ YIELD node WHERE node.id = 'first' RETURN node.id`
 			t.Errorf("repair-names %v = %d, stdout %q, stderr %q; want stdout %q", flags, code, &out, &errb, want)
 		}
 	}
-	check("scanned=1010 would_change=6\n", "-dry-run")
+	check("scanned=1011 would_change=7\n", "-dry-run")
 	if got := migrationQuery(t, entities, nil); !reflect.DeepEqual(got, before) {
 		t.Fatal("dry run modified entities")
 	}
-	check("scanned=1010 changed=6\n")
+	check("scanned=1011 changed=7\n")
 	after := migrationQuery(t, entities, nil)
 	if len(after) != len(before) {
 		t.Fatalf("repair changed entity count from %d to %d", len(before), len(after))
@@ -70,6 +71,8 @@ YIELD node WHERE node.id = 'first' RETURN node.id`
 			props["name"] = "*args"
 		case "geo":
 			props["name"] = "Zorbo GEO"
+		case "agent":
+			props["name"] = "Agent"
 		}
 		if got, _ := after[i].Get("props"); !reflect.DeepEqual(got, props) {
 			t.Errorf("entity %s after repair = %v, want %v", props["id"], got, props)
@@ -81,7 +84,7 @@ YIELD node WHERE node.id = 'first' RETURN node.id`
 	if hits := migrationQuery(t, possessiveInTextIndex, nil); len(hits) != 0 {
 		t.Errorf("text index still matches the removed possessive token: %v", hits)
 	}
-	check("scanned=1010 changed=0\n")
+	check("scanned=1011 changed=0\n")
 }
 
 func TestRepairNamesCLIPartialCounts(t *testing.T) {
