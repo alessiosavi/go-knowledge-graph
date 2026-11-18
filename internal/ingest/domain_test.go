@@ -303,6 +303,37 @@ func TestDuplicateChainRoot(t *testing.T) {
 	}
 }
 
+func TestBorrowedDuplicateProfileExcludesDocumentScopedDate(t *testing.T) {
+	env, prov := detectionEnv(t, nil)
+	ctx := context.Background()
+	const text = "Acme-Max explores Zorbo with Quillon on 2042-03-04."
+	root := detectSubmit(t, env, "root", text, "")
+	rootDoc := detectProcess(t, env, root)
+	// Replace the root extraction with a global name and a document-scoped
+	// date, as a preset with scope: document would write them.
+	ents := []graph.EntityUpsert{
+		{Key: graph.DomainKey(rootDoc.Domain, graph.EntityKey("Acme-Max")), Name: "Acme-Max", Type: "organization", Mentions: []graph.MentionSpan{{Start: 0, End: 8}}},
+		{Key: graph.ScopedEntityKey(root, "2042-03-04"), Name: "2042-03-04", Type: "date", Mentions: []graph.MentionSpan{{Start: 40, End: 50}}},
+	}
+	if err := env.st.UpsertExtractionOpts(ctx, root, root+"-c0", "mock:1", ents, nil, graph.WriteOptions{Domain: rootDoc.Domain}); err != nil {
+		t.Fatal(err)
+	}
+	borrower := detectSubmit(t, env, "borrower", text, "")
+	if d := detectProcess(t, env, borrower); d.Domain != rootDoc.Domain {
+		t.Errorf("borrower domain=%q, want %q", d.Domain, rootDoc.Domain)
+	}
+	chunks, err := env.st.Chunks(ctx, borrower)
+	if err != nil || len(chunks) != 1 || chunks[0].DuplicateOf != root+"-c0" {
+		t.Fatalf("borrower chunks=%+v err=%v, want borrowed root", chunks, err)
+	}
+	if !reflect.DeepEqual(prov.ids, []string{root + "-c0"}) {
+		t.Errorf("provider chunks=%v, want extraction of root only", prov.ids)
+	}
+	if got, want := storedProfile(t, env, borrower), (map[string]any{"acmemax": int64(1)}); !reflect.DeepEqual(got, want) {
+		t.Errorf("borrower profile=%v, want %v (no document-scoped date)", got, want)
+	}
+}
+
 func TestSecondPassHygiene(t *testing.T) {
 	env, prov := detectionEnv(t, nil)
 	text := "Acme-Max explores Zorbo with Quillon in the archive."

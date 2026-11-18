@@ -712,7 +712,7 @@ func (s *Store) EntityViewOpts(ctx context.Context, idOrKey string, opt ViewOpti
 MATCH (e:Entity {key: $key})-[r]-(o:Entity)
 WHERE $include OR coalesce(r.low_confidence, false) = false
 OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
-RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
+RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type, o.domain AS domain,
        coalesce(r.confidence, 0) AS confidence, coalesce(r.judge, '') AS judge,
        coalesce(r.low_confidence, false) AS low, coalesce(r.doc_id, '') AS doc_id,
        coalesce(r.chunk_id, '') AS chunk_id,
@@ -726,7 +726,7 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
 	if opt.IncludeUnverified {
 		const projection = `
 OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
-RETURN r.rel AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
+RETURN r.rel AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type, o.domain AS domain,
        coalesce(r.confidence, 0) AS confidence, coalesce(r.judge, '') AS judge, true AS unverified,
        coalesce(r.low_confidence, false) AS low, coalesce(r.doc_id, '') AS doc_id,
        coalesce(r.chunk_id, '') AS chunk_id,
@@ -757,10 +757,11 @@ MATCH (o:Entity {key: r.head_key})`+projection, map[string]any{"key": view.Key})
 		fv := FactView{
 			Rel: getString(fr, "rel"),
 			Other: EntityRef{
-				ID:   getString(fr, "id"),
-				Key:  getString(fr, "key"),
-				Name: getString(fr, "name"),
-				Type: getString(fr, "type"),
+				ID:     getString(fr, "id"),
+				Key:    getString(fr, "key"),
+				Name:   getString(fr, "name"),
+				Type:   getString(fr, "type"),
+				Domain: getString(fr, "domain"),
 			},
 			Confidence:    getFloat(fr, "confidence"),
 			Judge:         getString(fr, "judge"),
@@ -801,7 +802,7 @@ MATCH (o:Entity {key: r.head_key})`+projection, map[string]any{"key": view.Key})
 MATCH (e:Entity {key: $key})<-[:MENTIONS]-(c:Chunk)-[:MENTIONS]->(o:Entity)
 WHERE o <> e
 WITH o, count(DISTINCT c) AS shared_chunks
-RETURN o.id AS id, o.key AS key, o.name AS name, o.type AS type, shared_chunks
+RETURN o.id AS id, o.key AS key, o.name AS name, o.type AS type, o.domain AS domain, shared_chunks
 ORDER BY shared_chunks DESC, coalesce(o.mention_count, 0) DESC, o.key ASC
 LIMIT 10`, map[string]any{"key": view.Key})
 	if err != nil {
@@ -811,10 +812,11 @@ LIMIT 10`, map[string]any{"key": view.Key})
 	for _, r := range recs {
 		view.Together = append(view.Together, CoMention{
 			EntityRef: EntityRef{
-				ID:   getString(r, "id"),
-				Key:  getString(r, "key"),
-				Name: getString(r, "name"),
-				Type: getString(r, "type"),
+				ID:     getString(r, "id"),
+				Key:    getString(r, "key"),
+				Name:   getString(r, "name"),
+				Type:   getString(r, "type"),
+				Domain: getString(r, "domain"),
 			},
 			SharedChunks: getInt(r, "shared_chunks"),
 		})

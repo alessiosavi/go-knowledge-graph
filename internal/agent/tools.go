@@ -325,7 +325,7 @@ func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, e
 	for _, f := range view.Facts {
 		facts = append(facts, factOut{
 			Rel:           f.Rel,
-			Other:         entityRefOut{ID: f.Other.ID, Key: f.Other.Key, Name: f.Other.Name, Type: f.Other.Type},
+			Other:         entityRefOut{ID: f.Other.ID, Key: f.Other.Key, Name: f.Other.Name, Type: f.Other.Type, Domain: f.Other.Domain},
 			Confidence:    f.Confidence,
 			Judge:         f.Judge,
 			LowConfidence: f.LowConfidence,
@@ -342,7 +342,7 @@ func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, e
 	together := make([]coMentionOut, 0, len(view.Together))
 	for _, other := range view.Together {
 		together = append(together, coMentionOut{
-			entityRefOut: entityRefOut{ID: other.ID, Key: other.Key, Name: other.Name, Type: other.Type},
+			entityRefOut: entityRefOut{ID: other.ID, Key: other.Key, Name: other.Name, Type: other.Type, Domain: other.Domain},
 			SharedChunks: other.SharedChunks,
 		})
 	}
@@ -407,7 +407,7 @@ func (s *Server) toolTraverse(ctx context.Context, raw json.RawMessage) (any, er
 	}
 	nodes := make([]entityRefOut, 0, len(sub.Nodes))
 	for _, n := range sub.Nodes {
-		nodes = append(nodes, entityRefOut{ID: n.ID, Key: n.Key, Name: n.Name, Type: n.Type})
+		nodes = append(nodes, entityRefOut{ID: n.ID, Key: n.Key, Name: n.Name, Type: n.Type, Domain: n.Domain})
 	}
 	edges := make([]edgeOut, 0, len(sub.Edges))
 	for _, e := range sub.Edges {

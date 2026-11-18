@@ -37,6 +37,38 @@ func domainAssignmentFixture(t *testing.T) (*graph.Store, graph.Assignment) {
 	return st, graph.Assignment{DocID: res.ID, Domain: slug, DomainName: "Quillon", CreatedBy: "auto", NewDomain: true, Profile: domain.Profile{"quillon": 2, "acmemax": 1}, Decision: graph.DecisionRecord{OpID: t.Name(), DocID: res.ID, Domain: slug, Action: "new", By: "auto", Params: domain.DefaultParams(), Top: []domain.DomainScore{{Domain: "a", Score: .01}}, At: time.Now().UTC()}}
 }
 
+func TestMentionNamesForChunksExcludesDocumentScopedDate(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	doc, chunk := entitiesTestDoc(t, st, "Acme-Max on 2042-03-04.")
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(ctx, doc); err != nil {
+			t.Error(err)
+		}
+	})
+	ents := []graph.EntityUpsert{
+		{Key: graph.DomainKey("zorbo", "acme-"+doc), Name: "Acme-Max", Type: "organization", Mentions: []graph.MentionSpan{{Start: 0, End: 8}}},
+		{Key: graph.ScopedEntityKey(doc, "2042-03-04"), Name: "2042-03-04", Type: "date", Mentions: []graph.MentionSpan{{Start: 12, End: 22}}},
+	}
+	if err := st.UpsertExtractionOpts(ctx, doc, chunk, "mock:1", ents, nil, graph.WriteOptions{Domain: "zorbo"}); err != nil {
+		t.Fatal(err)
+	}
+	date, err := st.EntityViewOpts(ctx, graph.ScopedEntityKey(doc, "2042-03-04"), graph.ViewOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if date.MentionCount != 1 {
+		t.Fatalf("document-scoped date mention_count=%d, want 1", date.MentionCount)
+	}
+	names, err := st.MentionNamesForChunks(ctx, []string{chunk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string][]string{chunk: {"Acme-Max"}}; !reflect.DeepEqual(names, want) {
+		t.Errorf("borrowed root names=%v, want %v (no document-scoped date)", names, want)
+	}
+}
+
 func TestAssignAtomic(t *testing.T) {
 	st, a := domainAssignmentFixture(t)
 	synthetic := errors.New("synthetic failure inside assignment transaction")
