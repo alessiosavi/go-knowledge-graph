@@ -56,8 +56,9 @@ When conversion is off (including light mode), PDF text extraction uses
   payloads fail rather than ingesting under a stale identity.
 - The private spool is removed once chunks are durable, or the document
   fails or is superseded. Startup sweeps orphan payloads and abandoned
-  temporary files after requeueing in-flight documents. Retain Compose's
-  `gkg-data` volume as well as Memgraph's volume across redeploys.
+  temporary files before requeueing in-flight documents in the background.
+  Retain Compose's `gkg-data` volume as well as Memgraph's volume across
+  redeploys.
 - **Extraction-schema upgrades:** v2 introduced name-only entity identity;
   v3 links every extracted mention to its chunk and sets entity types by a
   majority vote of typed mentions (ties alphabetical). `gkg serve`, `gkg mcp`

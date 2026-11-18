@@ -133,10 +133,10 @@ func (s *submissionSpool) removeLocked(id string) error {
 	}, false)
 }
 
-// sweep runs after recovery has queued the graph's in-flight documents.
-// Query under mu so a concurrent Submit cannot publish between the snapshot
-// and removal. Workers may advance after the snapshot; their own cleanup
-// removes those entries, so keeping them temporarily is safe.
+// sweep keeps payloads needed by received and fetched documents, including
+// documents that recovery has yet to enqueue. Query under mu so a concurrent
+// Submit cannot publish between the snapshot and removal. Workers may advance
+// after the snapshot; their own cleanup removes those entries.
 func (s *submissionSpool) sweep(ctx context.Context, st pipelineStore) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

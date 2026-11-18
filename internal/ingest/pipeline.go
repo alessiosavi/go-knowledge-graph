@@ -329,10 +329,9 @@ func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submis
 
 // Process runs the pipeline stages for one document, resuming from the
 // persisted stage on recovery: received/fetched re-chunk, chunked/extracted
-// re-extract, merged/verifying only finish (supersede + done). Documents
-// that are done or superseded are a no-op. Processing is serialized per
-// document, so duplicate queue entries (submit + recover) cannot run two
-// passes at once.
+// re-extract, merged/verifying only finish (supersede + done). Terminal
+// documents are skipped. Processing is serialized per document, so duplicate
+// queue entries (submit + recover) cannot run two passes at once.
 func (p *Pipeline) Process(ctx context.Context, docID string) error {
 	lock := p.docLock(docID)
 	lock.Lock()
@@ -348,6 +347,10 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 	switch doc.Status {
 	case graph.StatusDone, graph.StatusSuperseded:
 		p.forget(docID)
+		return nil
+	case graph.StatusFailed:
+		// A resubmission resets the status to received before enqueueing.
+		slog.Debug("ingest: skipping job for failed document", "doc", docID)
 		return nil
 	}
 	fail := func(stage string, err error) error {
@@ -366,7 +369,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 	}
 
 	st := doc.Status
-	if st == graph.StatusReceived || st == graph.StatusFetched || st == graph.StatusFailed {
+	if st == graph.StatusReceived || st == graph.StatusFetched {
 		if err := p.setStatus(ctx, docID, graph.StatusFetched, ""); err != nil {
 			return fail("status", err)
 		}
@@ -964,20 +967,36 @@ func (p *Pipeline) Rebuild(ctx context.Context, docID, labels string) (res Rebui
 	return res, nil
 }
 
-// Recover requeues every in-flight document (restart path). Start the
-// worker pool before calling it: enqueue applies backpressure, so a full
-// queue blocks until workers drain it (or ctx is cancelled).
+// Recover reads in-flight documents synchronously, then requeues them in
+// the background until the backlog is enqueued or ctx is cancelled.
 func (p *Pipeline) Recover(ctx context.Context) error {
 	docs, err := p.store.InFlight(ctx)
 	if err != nil {
 		return err
 	}
-	for _, d := range docs {
-		p.enqueue(ctx, d.ID)
-	}
+	slog.Info("ingest: recovery enqueue started", "documents", len(docs))
+	// Free orphaned spool space before serving. The sweep keeps payloads
+	// based on persisted status, regardless of whether IDs are queued yet.
 	if err := p.spool.sweep(ctx, p.store); err != nil {
 		slog.Warn("ingest: spool recovery cleanup failed", "err", err)
 	}
+	go func() {
+		queued := 0
+		defer func() {
+			slog.Info("ingest: recovery enqueue finished", "queued", queued, "documents", len(docs))
+		}()
+		for _, d := range docs {
+			if ctx.Err() != nil {
+				return
+			}
+			select {
+			case p.jobs <- d.ID:
+				queued++
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	return nil
 }
 

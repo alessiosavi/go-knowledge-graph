@@ -79,8 +79,7 @@ func TestRecoveryRequeuesInFlight(t *testing.T) {
 		t.Fatalf("SetStatus chunked: %v", err)
 	}
 
-	// Workers first (the wiring order): Recover applies backpressure on a
-	// full queue, so the pool must already be draining.
+	// Match serve and MCP wiring: start the worker pool before recovery.
 	w := &ingest.Worker{Workers: 3, Pipeline: env.p}
 	w.Start(ctx)
 	if err := env.p.Recover(ctx); err != nil {
