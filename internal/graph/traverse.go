@@ -7,6 +7,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 // PathEdge is one traversed fact edge with provenance and evidence; From
@@ -258,12 +259,13 @@ LIMIT $limit`
 	return edges, nodes, nil
 }
 
-// EntitySearchRow is one entity text-search hit.
+// EntitySearchRow holds the fields needed to render and rank an entity hit.
 type EntitySearchRow struct {
-	Domain string
-	ID     string
-	Name   string
-	Type   string
+	Domain       string
+	ID           string
+	Name         string
+	Type         string
+	MentionCount int
 }
 
 // EntityTextSearch runs the Tantivy entity_text_v2 index. Entity search is
@@ -283,23 +285,46 @@ func (s *Store) EntityTextSearchIn(ctx context.Context, q, slug string, limit in
 	}
 	recs, err := s.runRead(ctx, `
 `+call+`
-RETURN node.id AS id, node.name AS name, node.type AS type, node.domain AS domain
+RETURN node.id AS id, node.name AS name, node.type AS type, node.domain AS domain,
+       coalesce(node.mention_count, 0) AS mention_count
 ORDER BY score DESC
 LIMIT $limit`,
 		map[string]any{"q": q, "limit": limit, "domain": slug})
 	if err != nil {
 		return nil, fmt.Errorf("graph: entity text search: %w", err)
 	}
+	return entitySearchRows(recs), nil
+}
+
+// EntitySearchRowsByID resolves entity ids in one read. Missing ids are
+// omitted, and callers restore their own ranking order.
+func (s *Store) EntitySearchRowsByID(ctx context.Context, ids []string) ([]EntitySearchRow, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	recs, err := s.runRead(ctx, `
+UNWIND $ids AS entity_id
+MATCH (e:Entity {id: entity_id})
+RETURN e.id AS id, e.name AS name, e.type AS type, e.domain AS domain,
+       coalesce(e.mention_count, 0) AS mention_count`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("graph: entity search rows by id: %w", err)
+	}
+	return entitySearchRows(recs), nil
+}
+
+func entitySearchRows(recs []*neo4j.Record) []EntitySearchRow {
 	out := make([]EntitySearchRow, 0, len(recs))
 	for _, r := range recs {
 		out = append(out, EntitySearchRow{
-			ID:     getString(r, "id"),
-			Name:   getString(r, "name"),
-			Type:   getString(r, "type"),
-			Domain: getString(r, "domain"),
+			ID:           getString(r, "id"),
+			Name:         getString(r, "name"),
+			Type:         getString(r, "type"),
+			Domain:       getString(r, "domain"),
+			MentionCount: getInt(r, "mention_count"),
 		})
 	}
-	return out, nil
+	return out
 }
 
 // ChunkSearchRow is one chunk text-search hit with its document title.
@@ -368,27 +393,6 @@ ORDER BY distance ASC`,
 		out = append(out, getString(r, "id"))
 	}
 	return out, nil
-}
-
-// EntityRef returns one entity by id, ErrNotFound when missing.
-func (s *Store) EntityRef(ctx context.Context, id string) (EntityRef, error) {
-	recs, err := s.runRead(ctx, `
-MATCH (e:Entity {id: $id})
-RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type, e.domain AS domain`,
-		map[string]any{"id": id})
-	if err != nil {
-		return EntityRef{}, fmt.Errorf("graph: entity ref: %w", err)
-	}
-	if len(recs) == 0 {
-		return EntityRef{}, fmt.Errorf("graph: entity %s: %w", id, ErrNotFound)
-	}
-	return EntityRef{
-		ID:     getString(recs[0], "id"),
-		Key:    getString(recs[0], "key"),
-		Name:   getString(recs[0], "name"),
-		Type:   getString(recs[0], "type"),
-		Domain: getString(recs[0], "domain"),
-	}, nil
 }
 
 // scopedTextQuery restricts Tantivy before its internal 1,000-hit cap, then
