@@ -81,6 +81,11 @@ func selectedDocuments(docs []document, opt Options) map[string]document {
 }
 
 func compute(d dataset, opt Options, p hygiene.Preset) Report {
+	report, _ := computeWithCensus(d, opt, p, false)
+	return report
+}
+
+func computeWithCensus(d dataset, opt Options, p hygiene.Preset, census bool) (Report, map[string][]duplicateGroup) {
 	docs := selectedDocuments(d.documents, opt)
 	chunks := make(map[string]string)
 	for _, c := range d.chunks {
@@ -182,7 +187,10 @@ func compute(d dataset, opt Options, p hygiene.Preset) Report {
 	duplicateMetrics(&r, active, entities, entityDocs, docs)
 	hygieneMetrics(&r, active, entities, opt, p)
 	coMentionMetrics(&r, chunkEntities)
-	return r
+	if census {
+		return r, duplicateCensusGroups(entities, entityDocs)
+	}
+	return r, nil
 }
 
 type triple struct{ head, rel, tail string }

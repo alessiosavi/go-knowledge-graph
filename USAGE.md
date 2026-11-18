@@ -390,6 +390,7 @@ gkg quality --json
 gkg quality --domain acme --seed domains.json
 gkg quality --json --seed - < domains.json
 gkg quality --hygiene-sample 50 --sample-seed 1 --out hygiene-sample.json
+gkg quality --domain acme --duplicates-out duplicates.jsonl
 ```
 
 `quality` reads done documents and their derived data in batches of 5,000,
@@ -405,6 +406,33 @@ provenance; a triple is a distinct directed (head, relation, tail).
 Duplicate groups normalize names with NFKD, remove company suffixes using the
 hygiene rule, then lowercase and keep letters and digits.
 Groups form within domains and, for document-scoped keys, within documents.
+
+`--duplicates-out` creates a new private JSONL file (mode `0600`) and refuses
+an existing path. It works independently of the hygiene sample. `--seed`
+assigns effective document domains by source prefix, and `--domain` selects
+done documents by their effective domain. Global entity keys supported by
+those documents are grouped by the domain in the stored `@<domain>:` key
+prefix and by name fold. Each group of at least two keys produces one row.
+Keys without a valid domain prefix use an empty row domain.
+
+Tier `A` requires a shared valid key domain, one shared non-empty entity type,
+at least four letters in the fold, and matching symbol counts (`+ # @ / &`)
+and digit runs after NFKD normalization. Names with a dotted version number
+such as `1.10`, `v` or `V` immediately followed by a digit, or letters
+followed by digits with optional spacing (such as `X100`, `X 100`, or
+`Area 51`) fail the version or model guard. Tier `other` records the first
+failing guard in `reason`. An absent or mismatched key domain is
+`key_domain_mismatch`.
+
+`suggested_canonical` is the key with the most stored mention edges, with ties
+going to the smallest key. Each member includes its supporting document count
+among selected documents, its stored mentions, confirmed and other typed
+edges, candidates and rejected facts, and up to two evidence sentences from
+selected documents, capped at 200 bytes each. Edge counts cover all stored
+incident data for each member. A link between two members contributes to both
+counts. The stdout summary gives tier counts and the maximum and nearest-rank p95 of
+per-group edge totals. With `--json`, the summary is the `duplicate_census`
+field of the single-line JSON report.
 
 | Report key | Definition and denominator |
 | --- | --- |
