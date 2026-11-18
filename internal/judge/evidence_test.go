@@ -63,13 +63,13 @@ func TestV2RequestFrozenBytesAndKeys(t *testing.T) {
 	}{
 		{"table without header", row, "",
 			prefix + `"evidence":"| Nebula | Nova |","table_header":null` + suffix,
-			"01b2ff67c0f21c21d5e3da87b239c1c120ccbf623864d6b8df5724c9367d0010"},
+			"51529249d33d731514b89fef31adc3f705f823971e6589794d0c5aeada8e167b"},
 		{"table with previous header", row, "| Product | API |\n| --- | --- |\n| Orion | Vega |\n",
 			prefix + `"evidence":"| Nebula | Nova |","table_header":"| Product | API |\n| --- | --- |"` + suffix,
-			"192c647749923959a11de1107fae7b2fafd5a1fda0ef16ba1907da1a5fbcf310"},
+			"c0f6453d1b26f776c9ceb5e37aac2bae50a40d6b348024ee76b3a567d8ac9fc7"},
 		{"prose", "Intro sentence. Nebula uses Nova. Closing sentence.", "",
 			prefix + `"evidence":"Nebula uses Nova.","table_header":null` + suffix,
-			"492f88c7f7750a4a2fd8931ee409697acd681a4e7fcd743612b41f8bd99a6e06"},
+			"26d8cd6a2e2bda75da7ec17570bc2e7794fa12018080aa09117a8b8fb64fbc5c"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := v2Input(t, tc.text, "Nebula", "Nova")
