@@ -300,9 +300,11 @@ paths:
       summary: Submit a document for ingestion
       description: |
         Accepts JSON (`url` or `text`), or a multipart form with a `file`
-        field. The submission is queued for the worker pool (if the client
+        field. The submission is queued for the worker pool. If the client
         disconnects while the queue is full, the server queues it in the
-        background); poll `/v1/documents/{id}/status` until `done` or `failed`. Re-submitting
+        background, or at its next start when that backlog is full or the
+        server stops first (the document stays `received` meanwhile); poll
+        `/v1/documents/{id}/status` until `done` or `failed`. Re-submitting
         unchanged content is a no-op (`noop: true`) unless `force` is set.
         `labels` selects an installed YAML preset under `labels.presets_dir`;
         omitted/empty uses built-in defaults. Shipped presets are general,
