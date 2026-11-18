@@ -176,3 +176,80 @@ CREATE (d)-[:HAS_CHUNK]->(:Chunk {id: d.id + '-c' + toString(n), text: '## Skipp
 		t.Errorf("skipped mentions = %v, want 4", n)
 	}
 }
+
+func TestRepairLabelsCLIWithoutReport(t *testing.T) {
+	graphtest.Store(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("GKG_CONFIG", "")
+	t.Setenv("GKG_MEMGRAPH_URI", os.Getenv(graphtest.URIEnv))
+	t.Setenv("GKG_MEMGRAPH_USER", "")
+	t.Setenv("GKG_MEMGRAPH_PASSWORD", "")
+	t.Setenv("GKG_INGEST_STOPLIST_FILE", "")
+
+	const scope = "repair-labels-no-report"
+	const text = "## Overview: details\n- **Notes**: details\n## Project: details\nProject uses Atlas."
+	proseStart := strings.LastIndex(text, "Project")
+	atlasStart := strings.Index(text, "Atlas")
+	t.Cleanup(func() {
+		migrationQuery(t, `MATCH (n)
+WHERE n.id IN [$scope + '-doc', $scope + '-chunk'] OR n.key STARTS WITH $scope + '-'
+DETACH DELETE n`, map[string]any{"scope": scope})
+	})
+	migrationQuery(t, `CREATE (d:Document {id: $scope + '-doc', domain: $scope, status: 'done'}),
+(c:Chunk {id: $scope + '-chunk', text: $text}), (d)-[:HAS_CHUNK]->(c),
+(o:Entity {key: $scope + '-overview', name: 'Overview'}),
+(n:Entity {key: $scope + '-notes', name: 'Notes'}),
+(p:Entity {key: $scope + '-project', name: 'Project'}),
+(a:Entity {key: $scope + '-atlas', name: 'Atlas'}),
+(c)-[:MENTIONS {start: 3, end: 11, type: 'topic'}]->(o),
+(c)-[:MENTIONS {start: $notes, end: $notes + 5, type: 'topic'}]->(n),
+(c)-[:MENTIONS {start: $heading, end: $heading + 7, type: 'topic'}]->(p),
+(c)-[:MENTIONS {start: $prose, end: $prose + 7, type: 'topic'}]->(p),
+(c)-[:MENTIONS {start: $atlas, end: $atlas + 5, type: 'topic'}]->(a)`, map[string]any{
+		"scope": scope, "text": text, "notes": strings.Index(text, "Notes"),
+		"heading": strings.Index(text, "Project"), "prose": proseStart, "atlas": atlasStart,
+	})
+
+	check := func(want string) {
+		t.Helper()
+		var out, stderr bytes.Buffer
+		if code := run([]string{"repair-labels", "-domain", scope}, &out, &stderr); code != 0 ||
+			out.String() != want || stderr.Len() != 0 {
+			t.Fatalf("repair-labels exit=%d, stdout %q, stderr %q, want %q", code, &out, &stderr, want)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("repair-labels without -report created files: %v", entries)
+		}
+	}
+	check("scanned_chunks=1 spans=3 heading_lead=2 lead_in=1 facts_confirmed=0 facts_other=0 candidates=0 rejected=0 entities_removed=2 skipped_docs=0\n")
+
+	params := map[string]any{"scope": scope}
+	mentions := migrationQuery(t, `MATCH (:Chunk {id: $scope + '-chunk'})-[m:MENTIONS]->(e:Entity)
+RETURN e.key AS key, m.start AS start, m.end AS end, m.type AS type ORDER BY m.start`, params)
+	if len(mentions) != 2 {
+		t.Fatalf("remaining mentions = %v, want only the two prose mentions", mentions)
+	}
+	for i, want := range []struct {
+		name  string
+		start int
+	}{{"Project", proseStart}, {"Atlas", atlasStart}} {
+		mention := mentions[i].AsMap()
+		if mention["key"] != scope+"-"+strings.ToLower(want.name) || mention["start"] != int64(want.start) ||
+			mention["end"] != int64(want.start+len(want.name)) || mention["type"] != "topic" {
+			t.Errorf("remaining mention = %v, want the %s prose mention at byte %d", mention, want.name, want.start)
+		}
+	}
+	entities := migrationQuery(t, `MATCH (e:Entity) WHERE e.key STARTS WITH $scope + '-' RETURN e.key AS key ORDER BY key`, params)
+	if len(entities) != 2 || entities[0].AsMap()["key"] != scope+"-atlas" || entities[1].AsMap()["key"] != scope+"-project" {
+		t.Errorf("remaining fixture entities = %v, want only Atlas and Project", entities)
+	}
+
+	before := graphtest.Snapshot(t)
+	check("scanned_chunks=1 spans=0 heading_lead=0 lead_in=0 facts_confirmed=0 facts_other=0 candidates=0 rejected=0 entities_removed=0 skipped_docs=0\n")
+	before.AssertUnchanged(t, "second repair-labels run without -report")
+}

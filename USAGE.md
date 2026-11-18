@@ -490,9 +490,12 @@ among selected documents, its stored mentions, confirmed and other typed
 edges, candidates and rejected facts, and up to two evidence sentences from
 selected documents, capped at 200 bytes each. Edge counts cover all stored
 incident data for each member. A link between two members contributes to both
-counts. The stdout summary gives tier counts and the maximum and nearest-rank p95 of
-per-group sizes (mentions, typed edges, candidates and rejected facts). With `--json`, the summary is the `duplicate_census`
-field of the single-line JSON report.
+counts. The stdout summary gives tier counts and the maximum and nearest-rank
+p95 rewire sizes. With `--json`, the single-line report carries the same tier
+counts and sizes in `duplicate_census` (`groups` and `members`, each `{A,
+other}`, plus `max_group_size` and `p95_group_size`). Both sizes summarize
+per-group rewire volume, calculated as the sum of mentions, typed edges,
+candidates and rejected facts.
 
 | Report key | Definition and denominator |
 | --- | --- |

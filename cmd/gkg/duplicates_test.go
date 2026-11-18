@@ -106,7 +106,7 @@ func TestQualityDuplicateCensus(t *testing.T) {
 	if code := run(args, &out, &stderr); code != 0 {
 		t.Fatalf("census exit=%d stderr=%s", code, &stderr)
 	}
-	if !strings.Contains(out.String(), "duplicate census groups A=1 other=1, members A=2 other=2, group size max=17 p95=17\n") {
+	if !strings.Contains(out.String(), "duplicate census groups A=1 other=1, members A=2 other=2, rewire size max=17 p95=17\n") {
 		t.Fatalf("missing or incorrect census summary:\n%s", &out)
 	}
 	if strings.Contains(out.String()+stderr.String(), "Kathmand") || strings.Contains(out.String()+stderr.String(), "Alpha") {
@@ -181,9 +181,10 @@ func TestQualityDuplicateCensus(t *testing.T) {
 		quality.Report
 		DuplicateCensus struct {
 			MaxGroupSize int `json:"max_group_size"`
+			P95GroupSize int `json:"p95_group_size"`
 		} `json:"duplicate_census"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.DuplicateCensus.MaxGroupSize != 17 {
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.DuplicateCensus.MaxGroupSize != 17 || report.DuplicateCensus.P95GroupSize != 17 {
 		t.Fatalf("combined JSON report = %s (%v)", &out, err)
 	}
 	if report.DuplicateGroups != baseline.DuplicateGroups || report.DuplicateEntities != baseline.DuplicateEntities {
