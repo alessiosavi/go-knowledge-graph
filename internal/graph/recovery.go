@@ -52,21 +52,32 @@ DETACH DELETE e`, nil)
 
 // txGC prunes the given entity keys when they have no relationships left.
 func txGC(ctx context.Context, tx neo4j.ManagedTransaction, keys []string) error {
+	_, err := txGCCount(ctx, tx, keys)
+	return err
+}
+
+// txGCCount performs the same cleanup and returns the number of pruned entities.
+func txGCCount(ctx context.Context, tx neo4j.ManagedTransaction, keys []string) (int, error) {
 	if len(keys) == 0 {
-		return nil
+		return 0, nil
 	}
-	if err := txRun(ctx, tx, `
+	res, err := tx.Run(ctx, `
 UNWIND $keys AS k
 MATCH (e:Entity {key: k})
 OPTIONAL MATCH (e)-[r]-()
 WITH e, count(r) AS rels
 WHERE rels = 0
 SET e.embedding = null
-DETACH DELETE e`,
-		map[string]any{"keys": keys}); err != nil {
-		return fmt.Errorf("graph: gc entities: %w", err)
+DETACH DELETE e
+RETURN count(*) AS n`, map[string]any{"keys": keys})
+	if err != nil {
+		return 0, fmt.Errorf("graph: gc entities: %w", err)
 	}
-	return nil
+	row, err := res.Single(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("graph: gc entities: %w", err)
+	}
+	return getInt(row, "n"), nil
 }
 
 // txRefreshMentionCounts recomputes mention_count for the given entity keys
