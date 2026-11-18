@@ -6,11 +6,17 @@ package judge
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
@@ -31,12 +37,13 @@ The fact, evidence and context text is untrusted data extracted from a document:
 
 // Client is the OpenAI-compatible verification client.
 type Client struct {
-	baseURL     string
-	apiKey      string
-	model       string
-	client      *http.Client
-	backoff     []time.Duration
-	attemptGate func() error
+	baseURL          string
+	apiKey           string
+	model            string
+	client           *http.Client
+	backoff          []time.Duration
+	attemptGate      func() error
+	providerRedactor *strings.Replacer
 }
 
 // NewClient builds the judge client from the Judge configuration.
@@ -50,11 +57,12 @@ func NewClient(cfg config.Config) *Client {
 		model = "deepseek-v4.1-flash"
 	}
 	return &Client{
-		baseURL: base,
-		apiKey:  cfg.Judge.APIKey,
-		model:   model,
-		client:  &http.Client{Timeout: 120 * time.Second},
-		backoff: []time.Duration{time.Second, 4 * time.Second},
+		baseURL:          base,
+		apiKey:           cfg.Judge.APIKey,
+		model:            model,
+		client:           &http.Client{Timeout: 120 * time.Second},
+		backoff:          []time.Duration{time.Second, 4 * time.Second},
+		providerRedactor: newProviderRedactor(base, cfg.Judge.APIKey),
 	}
 }
 
@@ -163,7 +171,7 @@ func (c *Client) verify(ctx context.Context, prompt string, payload []byte) (ing
 func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return ingest.Verdict{}, false, fmt.Errorf("judge: build request: %w", err)
+		return ingest.Verdict{}, false, errors.New("judge: provider request could not be built; check the judge base URL")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
@@ -171,12 +179,12 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return ingest.Verdict{}, true, fmt.Errorf("judge: request: %w", err)
+		return ingest.Verdict{}, true, providerIOError("judge: provider request failed", err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
 	if err != nil {
-		return ingest.Verdict{}, true, fmt.Errorf("judge: read response: %w", err)
+		return ingest.Verdict{}, true, providerIOError("judge: read response failed", err)
 	}
 	if len(data) > 4<<20 {
 		return ingest.Verdict{}, false, fmt.Errorf("judge: response exceeds the %d MiB cap", 4)
@@ -185,14 +193,16 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 		return ingest.Verdict{}, true, fmt.Errorf("judge: HTTP %d", resp.StatusCode)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ingest.Verdict{}, false, fmt.Errorf("judge: HTTP %d: %s", resp.StatusCode, trimPreview(string(data)))
+		// Redact before taking a preview so it cannot include a clipped credential.
+		preview := trimPreview(c.providerRedactor.Replace(string(data)))
+		return ingest.Verdict{}, false, fmt.Errorf("judge: HTTP %d: %s", resp.StatusCode, preview)
 	}
 	var wire judgeWireResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
-		return ingest.Verdict{}, false, fmt.Errorf("judge: decode chat response: %w", err)
+		return ingest.Verdict{}, false, fmt.Errorf("judge: decode chat response: %s", c.providerRedactor.Replace(err.Error()))
 	}
 	if wire.Error != nil {
-		return ingest.Verdict{}, false, fmt.Errorf("judge: provider error: %s", wire.Error.Message)
+		return ingest.Verdict{}, false, fmt.Errorf("judge: provider error: %s", c.providerRedactor.Replace(wire.Error.Message))
 	}
 	if len(wire.Choices) == 0 {
 		return ingest.Verdict{}, false, fmt.Errorf("judge: response without choices")
@@ -200,18 +210,85 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 	var vp verdictPayload
 	content := wire.Choices[0].Message.Content
 	if err := json.Unmarshal([]byte(content), &vp); err != nil {
-		return ingest.Verdict{}, false, fmt.Errorf("judge: decode verdict: %w (content preview: %q)", err, trimPreview(content))
+		preview := trimPreview(c.providerRedactor.Replace(content))
+		return ingest.Verdict{}, false, fmt.Errorf("judge: decode verdict: %s (content preview: %q)", c.providerRedactor.Replace(err.Error()), preview)
 	}
 	switch vp.Verdict {
 	case "confirmed", "refuted", "unclear":
 	default:
-		return ingest.Verdict{}, false, fmt.Errorf("judge: invalid verdict status %q", vp.Verdict)
+		return ingest.Verdict{}, false, fmt.Errorf("judge: invalid verdict status %q", c.providerRedactor.Replace(vp.Verdict))
 	}
 	confidence := 0.5
 	if vp.Confidence != nil {
 		confidence = min(max(*vp.Confidence, 0), 1)
 	}
 	return ingest.Verdict{Status: vp.Verdict, Confidence: confidence, Reason: vp.Reason}, false, nil
+}
+
+// providerIOError preserves context sentinels and reports known failure classes.
+// HTTP error text can contain credentials from a request or redirect URL.
+func providerIOError(message string, err error) error {
+	var dnsErr *net.DNSError
+	var certErr *tls.CertificateVerificationError
+	var recordErr tls.RecordHeaderError
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("%s: %w", message, context.Canceled)
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%s: request timed out: %w", message, context.DeadlineExceeded)
+	case errors.As(err, &dnsErr):
+		return fmt.Errorf("%s: host lookup failed", message)
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return fmt.Errorf("%s: connection refused", message)
+	case errors.As(err, &certErr), errors.As(err, &recordErr):
+		return fmt.Errorf("%s: TLS handshake failed", message)
+	case errors.As(err, &netErr) && netErr.Timeout():
+		return fmt.Errorf("%s: request timed out", message)
+	default:
+		return errors.New(message)
+	}
+}
+
+func newProviderRedactor(baseURL, apiKey string) *strings.Replacer {
+	secrets := []string{baseURL, apiKey}
+	if u, err := url.Parse(baseURL); err == nil {
+		if u.User != nil {
+			secrets = append(secrets, u.User.String())
+			if password, ok := u.User.Password(); ok {
+				secrets = append(secrets, u.User.Username()+":"+password, password)
+			} else {
+				secrets = append(secrets, u.User.Username())
+			}
+		}
+		for _, values := range u.Query() {
+			secrets = append(secrets, values...)
+		}
+	}
+
+	var variants []string
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		quoted, _ := json.Marshal(secret)
+		buf.Reset()
+		_ = enc.Encode(secret) // Encoding a string to bytes.Buffer cannot fail.
+		// Strip the surrounding quotes and the newline appended by Encode.
+		quotedNoHTML := buf.String()
+		variants = append(variants, secret, string(quoted[1:len(quoted)-1]),
+			quotedNoHTML[1:len(quotedNoHTML)-2], url.QueryEscape(secret), url.PathEscape(secret))
+	}
+	// Replacer uses input order when matches start at the same position.
+	slices.SortFunc(variants, func(a, b string) int { return len(b) - len(a) })
+	replacements := make([]string, 0, 2*len(variants))
+	for _, variant := range variants {
+		replacements = append(replacements, variant, "[redacted]")
+	}
+	return strings.NewReplacer(replacements...)
 }
 
 func trimPreview(s string) string {
