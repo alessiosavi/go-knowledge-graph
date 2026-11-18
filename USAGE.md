@@ -373,7 +373,7 @@ gkg quality --hygiene-sample 50 --sample-seed 1 --out hygiene-sample.json
 ```
 
 `quality` reads done documents and their derived data in batches of 5,000,
-without Bootstrap, graph writes, or provider calls. JSON uses `metrics: 1`;
+without Bootstrap, graph writes, or provider calls. JSON uses `metrics: 2`;
 undefined metrics are `null` (`n/a` in text). Candidate counts are `null`
 before extraction schema v4. `--seed` uses the longest matching prefix of the
 full document source, overriding its stored domain when matched. A domain
