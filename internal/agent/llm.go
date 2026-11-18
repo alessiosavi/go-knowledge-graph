@@ -213,7 +213,9 @@ func (c *client) chat(ctx context.Context, req chatRequest) (chatReply, error) {
 func (c *client) doChat(ctx context.Context, body []byte) (chatReply, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return chatReply{}, fmt.Errorf("agent: build request: %w", err)
+		// The parse error quotes the endpoint, which may embed a credential.
+		slog.Warn("agent: provider request could not be built; check the agent base URL")
+		return chatReply{}, &providerError{status: 0}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
@@ -307,7 +309,9 @@ func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(s
 func (c *client) doStream(ctx context.Context, body []byte, onDelta func(string) error) (chatReply, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return chatReply{}, fmt.Errorf("agent: build request: %w", err)
+		// The parse error quotes the endpoint, which may embed a credential.
+		slog.Warn("agent: provider request could not be built; check the agent base URL")
+		return chatReply{}, &providerError{status: 0}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
