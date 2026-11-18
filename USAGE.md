@@ -394,7 +394,7 @@ gkg quality --domain acme --duplicates-out duplicates.jsonl
 ```
 
 `quality` reads done documents and their derived data in batches of 5,000,
-without Bootstrap, graph writes, or provider calls. JSON uses `metrics: 2`;
+without Bootstrap, graph writes, or provider calls. JSON uses `metrics: 3`;
 undefined metrics are `null` (`n/a` in text). Candidate counts are `null`
 before extraction schema v4. `--seed` uses the longest matching prefix of the
 full document source, overriding its stored domain when matched. A domain
@@ -436,7 +436,7 @@ field of the single-line JSON report.
 
 | Report key | Definition and denominator |
 | --- | --- |
-| `metrics` | Metric definition version, currently 2 (2 shares the hygiene company-suffix rule; version 1 reports are not comparable on duplicate groups); no denominator. |
+| `metrics` | Metric definition version, currently 3 (3 judges hygiene noise with each document's own label preset, so `noise_rule_share` and hygiene samples are not comparable with version 2; 2 shares the hygiene company-suffix rule, so version 1 reports are not comparable on duplicate groups); no denominator. |
 | `documents` | Selected done documents; count. |
 | `chunks` | Distinct chunks of selected documents; count. |
 | `entities` | Entities mentioned in selected chunks or incident to selected typed facts; count. |
@@ -471,7 +471,7 @@ field of the single-line JSON report.
 | `duplicate_groups` | Folded-name groups containing at least two distinct entities within their domain/document scope; count. |
 | `duplicate_entities` | Distinct entities belonging to any duplicate group, counted once across groups; count. |
 | `cross_type_groups` | Duplicate groups containing more than one entity type; count. |
-| `noise_rule_share` | Entities whose name the hygiene policy drops / `entities`. |
+| `noise_rule_share` | Entities whose name every supporting document's hygiene preset drops / `entities`. |
 | `co_mention` | Object describing unordered entity pairs sharing a chunk; no denominator. |
 | `co_mention.nodes` | Entities incident to at least one co-mention pair; count. |
 | `co_mention.edges` | Distinct unordered co-mention pairs, weighted by distinct shared chunks; count. |
@@ -481,13 +481,19 @@ field of the single-line JSON report.
 
 Co-mention pairs are uncapped; memory grows with Σ(entities per chunk)².
 
-Noise and hygiene samples use the **built-in hygiene preset** plus the configured
-`ingest.stoplist_file` overlay, passing each entity's `type` as its label. The
-built-in preset has no value labels, so type exemptions do not apply to
-`noise_rule_share`. This policy is recorded in the report. Sampling is
-deterministic for the seed and writes up to N dropped and N renamed names, with original name, normalized name,
-and rule (`normalize` for renamed names). The sample file records available
-counts and uses mode 0600. Names go only to `--out`; stdout contains aggregates.
+Noise and hygiene samples use each selected done document's label preset plus the
+configured `ingest.stoplist_file` overlay, passing each entity's `type` as its
+label. An empty preset name uses the built-in policy. If a selected document's
+preset fails to load, `quality` exits with an error. A run that selects no
+documents loads no presets. An entity counts as noise when every preset of its
+supporting documents within the selection rejects it.
+For a dropped name, the sample reports the rule from the first supporting preset
+in sorted name order.
+
+Sampling is deterministic for the seed and writes up to N dropped and N renamed
+names with their original name, normalized name, and rule (`normalize` for
+renamed names). The sample file records available counts and uses mode 0600.
+Names go only to `--out`. Stdout contains aggregates.
 
 ## 7. Operations
 

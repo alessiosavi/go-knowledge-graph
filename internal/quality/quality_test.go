@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ import (
 func fixture() dataset {
 	return dataset{
 		version:   4,
-		documents: []document{{"d1", "text/acme/one", "a"}, {"d2", "text/zorbo/two", "b"}},
+		documents: []document{{id: "d1", source: "text/acme/one", domain: "a"}, {id: "d2", source: "text/zorbo/two", domain: "b"}},
 		chunks:    []chunk{{"c1", "d1"}, {"c2", "d1"}, {"c3", "d1"}, {"c4", "d2"}, {"c5", "d2"}},
 		entities:  []entity{{"a", "Acme-Max", "organization"}, {"b", "Acme Max", "product"}, {"c", "Zorbo", "location"}, {"d", "Quillon Ltd", "organization"}, {"e", "777", "number"}, {"f", "Quillon", "organization"}},
 		mentions:  []mention{{"a", "c1"}, {"b", "c1"}, {"c", "c1"}, {"a", "c2"}, {"b", "c2"}, {"a", "c3"}, {"d", "c3"}, {"c", "c4"}, {"d", "c4"}, {"e", "c5"}, {"f", "c5"}, {"a", "c1"}}, // 12 spans, 11 distinct pairs.
@@ -36,13 +37,13 @@ func fixture() dataset {
 	}
 }
 
-func policy(t *testing.T) hygiene.Preset {
+func policy(t *testing.T) map[string]hygiene.Preset {
 	t.Helper()
 	p, err := hygiene.LoadPreset("", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return p
+	return map[string]hygiene.Preset{"": p}
 }
 
 func number(t *testing.T, name string, got *float64, want float64) {
@@ -56,7 +57,7 @@ func TestMetricsOnHandGraph(t *testing.T) {
 	r := compute(fixture(), Options{}, policy(t))
 	// chunks/entity = [3,2,2,2,1,1], 11 distinct mentions; 2 singletons,
 	// 4 single-document entities. Sorted weighted sum = 45, so Gini = 13/66.
-	if r.Metrics != 2 || r.Documents != 2 || r.Chunks != 5 || r.Entities != 6 || r.Mentions != 11 {
+	if r.Metrics != 3 || r.Documents != 2 || r.Chunks != 5 || r.Entities != 6 || r.Mentions != 11 {
 		t.Fatalf("population: %+v", r)
 	}
 	number(t, "isolated", r.IsolatedShare, .5)
@@ -157,7 +158,7 @@ func TestDomainAndDuplicateScopes(t *testing.T) {
 		t.Fatalf("scoped cross domains: %+v", r)
 	}
 	// Document and domain boundaries must survive duplicate folding.
-	d = dataset{version: 4, documents: []document{{"d1", "one", "a"}, {"d2", "two", "b"}}, chunks: []chunk{{"c1", "d1"}, {"c2", "d2"}}, entities: []entity{{"a", "Àcme-Max Ltd.", "organization"}, {"b", "ＡＣＭＥ Max", "product"}, {"#d1:x", "Zorbo", "value"}, {"#d2:y", "Zorbo", "value"}}, mentions: []mention{{"a", "c1"}, {"b", "c2"}, {"#d1:x", "c1"}, {"#d2:y", "c2"}}}
+	d = dataset{version: 4, documents: []document{{id: "d1", source: "one", domain: "a"}, {id: "d2", source: "two", domain: "b"}}, chunks: []chunk{{"c1", "d1"}, {"c2", "d2"}}, entities: []entity{{"a", "Àcme-Max Ltd.", "organization"}, {"b", "ＡＣＭＥ Max", "product"}, {"#d1:x", "Zorbo", "value"}, {"#d2:y", "Zorbo", "value"}}, mentions: []mention{{"a", "c1"}, {"b", "c2"}, {"#d1:x", "c1"}, {"#d2:y", "c2"}}}
 	r = compute(d, Options{}, policy(t))
 	if r.DuplicateGroups != 0 {
 		t.Fatal("cross-domain or cross-document duplicate", r.DuplicateGroups)
@@ -185,7 +186,7 @@ func TestDuplicateGroupsCompanySuffix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			d := dataset{
 				version:   4,
-				documents: []document{{"d1", "one", "a"}},
+				documents: []document{{id: "d1", source: "one", domain: "a"}},
 				chunks:    []chunk{{"c1", "d1"}},
 				entities:  []entity{{"a", tt.first, "organization"}, {"b", tt.second, "organization"}},
 				mentions:  []mention{{"a", "c1"}, {"b", "c1"}},
@@ -200,7 +201,7 @@ func TestDuplicateGroupsCompanySuffix(t *testing.T) {
 
 func TestCrossDomainCoverage(t *testing.T) {
 	partial := fixture()
-	partial.documents = append(partial.documents, document{"d3", "text/quillon/three", ""})
+	partial.documents = append(partial.documents, document{id: "d3", source: "text/quillon/three"})
 	partial.chunks = append(partial.chunks, chunk{"c6", "d3"})
 	partial.mentions = append(partial.mentions, mention{"a", "c6"})
 	unresolved := fixture()
@@ -363,7 +364,7 @@ func TestQualityOnFixtureGraph(t *testing.T) {
 		if err != nil || len(ch) != 1 {
 			t.Fatalf("chunks: %+v %v", ch, err)
 		}
-		d.documents = append(d.documents, document{res.DocumentID, source, ""})
+		d.documents = append(d.documents, document{id: res.DocumentID, source: source})
 		d.chunks = append(d.chunks, chunk{ch[0].ID, res.DocumentID})
 		d.mentions = append(d.mentions, mention{"acme", ch[0].ID}, mention{strings.ToLower(tail), ch[0].ID})
 		d.facts = append(d.facts, fact{"acme", strings.ToLower(tail), "works_at", ch[0].ID, res.DocumentID, .9, false})
@@ -438,6 +439,86 @@ func TestQualityConfiguredHygieneOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 	number(t, "overlay", r.NoiseRuleShare, 1)
+
+	if err := os.Remove(overlay); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Compute(context.Background(), st, Options{Domain: tag})
+	if err == nil || !strings.Contains(err.Error(), `load label preset "built-in"`) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Compute error = %v, want missing overlay error naming the built-in preset", err)
+	}
+}
+
+func TestQualityDocumentHygienePresets(t *testing.T) {
+	st := graphtest.Store(t)
+	dir := t.TempDir()
+	for name, contents := range map[string]string{
+		"a-custom.yaml": "allowlist: [XY]\ncode_tokens: true\nstoplist:\n  exact: [sdk/path]\nentities:\n  - name: date\n    scope: document\n",
+		"z-plain.yaml":  "{}\n",
+		"stop.txt":      "OverlayTerm\n",
+		"config.yaml":   fmt.Sprintf("labels:\n  presets_dir: %q\ningest:\n  stoplist_file: %q\n", dir, filepath.Join(dir, "stop.txt")),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GKG_CONFIG", filepath.Join(dir, "config.yaml"))
+	for _, tc := range []struct {
+		name, entityName, entityType string
+		presets                      []string
+		dropRule, normalized         string
+		missingPreset                string
+	}{
+		{name: "allowlist", entityName: "XY", entityType: "product", presets: []string{"a-custom"}},
+		{name: "one-rejects", entityName: "  XY  ", entityType: "product", presets: []string{"", "a-custom"}, normalized: "XY"},
+		{name: "both-reject", entityName: "sdk/path", entityType: "product", presets: []string{"z-plain", "a-custom"}, dropRule: "stoplist"},
+		{name: "built-in-rejects-first", entityName: "sdk/path", entityType: "product", presets: []string{"a-custom", ""}, dropRule: "path_like"},
+		{name: "both-accept", entityName: "  Acme  ", entityType: "product", presets: []string{"z-plain", "a-custom"}, normalized: "Acme"},
+		{name: "value-label", entityName: "777", entityType: "date", presets: []string{"a-custom"}},
+		{name: "code-token", entityName: "worker_task", entityType: "product", presets: []string{"a-custom"}},
+		{name: "overlay", entityName: "OverlayTerm", entityType: "product", presets: []string{"a-custom", "z-plain"}, dropRule: "stoplist"},
+		{name: "unknown-preset", entityName: "Acme", entityType: "product", presets: []string{"missing"}, missingPreset: "missing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tag := fmt.Sprintf("quality-%d", time.Now().UnixNano())
+			docs := make([]map[string]any, 0, len(tc.presets))
+			for i, preset := range tc.presets {
+				docs = append(docs, map[string]any{"id": fmt.Sprintf("%s-%d", tag, i), "preset": preset})
+			}
+			p := map[string]any{"tag": tag, "name": tc.entityName, "type": tc.entityType, "docs": docs}
+			raw(t, `CREATE (e:Entity {key:$tag,name:$name,type:$type})
+WITH e UNWIND $docs AS row
+CREATE (d:Document {id:row.id,source:row.id,status:'done',domain:$tag,labels:row.preset}),
+       (c:Chunk {id:row.id,doc_id:row.id}), (d)-[:HAS_CHUNK]->(c), (c)-[:MENTIONS]->(e)`, p)
+			t.Cleanup(func() { raw(t, `MATCH (n) WHERE n.id STARTS WITH $tag OR n.key=$tag DETACH DELETE n`, p) })
+
+			r, err := Compute(context.Background(), st, Options{Domain: tag, HygieneSample: 1})
+			if tc.missingPreset != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.missingPreset) {
+					t.Fatalf("Compute error = %v, want error naming the preset %q", err, tc.missingPreset)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Entities != 1 || r.Documents != len(docs) {
+				t.Fatalf("got %d entities and %d documents, want 1 entity and %d documents", r.Entities, r.Documents, len(docs))
+			}
+			var dropped, renamed []SampleName
+			if tc.dropRule != "" {
+				dropped = append(dropped, SampleName{Key: tag, Type: tc.entityType, Original: tc.entityName, Rule: tc.dropRule})
+			}
+			if tc.normalized != "" {
+				renamed = append(renamed, SampleName{Key: tag, Type: tc.entityType, Original: tc.entityName, Normalized: tc.normalized, Rule: "normalize"})
+			}
+			number(t, "noise rule share", r.NoiseRuleShare, float64(len(dropped)))
+			if r.Sample.AvailableDropped != len(dropped) || r.Sample.AvailableRenamed != len(renamed) ||
+				!slices.Equal(r.Sample.Dropped, dropped) || !slices.Equal(r.Sample.Renamed, renamed) {
+				t.Errorf("sample dropped=%+v renamed=%+v, want dropped=%+v renamed=%+v", r.Sample.Dropped, r.Sample.Renamed, dropped, renamed)
+			}
+		})
+	}
 }
 
 func TestQualitySynthetic11K(t *testing.T) {

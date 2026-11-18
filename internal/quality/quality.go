@@ -9,16 +9,15 @@ import (
 	"os"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
-	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
-
 	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
 )
 
-const MetricsVersion = 2
+const MetricsVersion = 3
 
 // HygienePolicy describes the policy used for both noise and private samples.
-const HygienePolicy = "built-in preset plus configured stoplist overlay; label = entity.type"
+const HygienePolicy = "per-document label preset plus configured stoplist overlay; an entity is noise when every supporting document's preset rejects it; label = entity.type"
 
 type Options struct {
 	Domain        string
@@ -104,7 +103,7 @@ type SampleName struct {
 	Rule       string `json:"rule"`
 }
 
-type document struct{ id, source, domain string }
+type document struct{ id, source, domain, preset string }
 type chunk struct{ id, docID string }
 type entity struct{ key, name, typ string }
 type mention struct{ entity, chunk string }
@@ -153,10 +152,6 @@ func computeReport(ctx context.Context, st *graph.Store, opt Options, duplicates
 	if err != nil {
 		return Report{}, summary, err
 	}
-	preset, err := hygiene.LoadPreset(cfg.Labels.PresetsDir, "", cfg.Ingest.StoplistFile)
-	if err != nil {
-		return Report{}, summary, err
-	}
 	data, err := load(ctx, st, opt)
 	if err != nil {
 		return Report{}, summary, err
@@ -164,12 +159,27 @@ func computeReport(ctx context.Context, st *graph.Store, opt Options, duplicates
 	if err := ctx.Err(); err != nil {
 		return Report{}, summary, err
 	}
+	presets := make(map[string]hygiene.Preset)
+	for _, doc := range data.documents {
+		if _, ok := presets[doc.preset]; ok {
+			continue
+		}
+		preset, err := hygiene.LoadPreset(cfg.Labels.PresetsDir, doc.preset, cfg.Ingest.StoplistFile)
+		if err != nil {
+			name := doc.preset
+			if name == "" {
+				name = "built-in"
+			}
+			return Report{}, summary, fmt.Errorf("quality: load label preset %q: %w", name, err)
+		}
+		presets[doc.preset] = preset
+	}
 	var report Report
 	if duplicates == nil {
-		report = compute(data, opt, preset)
+		report = compute(data, opt, presets)
 	} else {
 		var groups map[string][]duplicateGroup
-		report, groups = computeWithCensus(data, opt, preset, true)
+		report, groups = computeWithCensus(data, opt, presets, true)
 		summary, err = writeDuplicates(ctx, st, duplicates, groups)
 		if err != nil {
 			return Report{}, DuplicateSummary{}, err
