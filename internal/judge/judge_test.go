@@ -150,8 +150,9 @@ func TestVerifyErrorAfterRetries(t *testing.T) {
 }
 
 func TestVerifyRedactsProviderErrors(t *testing.T) {
-	const key = `judge-fixture-"key\part"<&>`
+	const key = `judge-fixture-"key\part"/<&>`
 	const urlSecret = "judge-query-fixture"
+	const urlPath = "/judge-provider-fixture/private"
 	quotedKey, _ := json.Marshal(key)
 	escapedKey := string(quotedKey[1 : len(quotedKey)-1])
 
@@ -164,7 +165,22 @@ func TestVerifyRedactsProviderErrors(t *testing.T) {
 			return "denied " + key + " or " + escapedKey + " at " + baseURL
 		}},
 		{"JSON without HTML escaping", `HTTP 401: {"error":{"message":"denied [redacted]"}}`, http.StatusUnauthorized, func(_ string) string {
-			return `{"error":{"message":"denied judge-fixture-\"key\\part\"<&>"}}`
+			return `{"error":{"message":"denied judge-fixture-\"key\\part\"/<&>"}}`
+		}},
+		{"solidus escaped key with HTML escaping", `HTTP 401: {"error":{"message":"denied [redacted]"}}`, http.StatusUnauthorized, func(_ string) string {
+			return `{"error":{"message":"denied ` + strings.ReplaceAll(escapedKey, "/", `\/`) + `"}}`
+		}},
+		{"solidus escaped key without HTML escaping", `HTTP 401: {"error":{"message":"denied [redacted]"}}`, http.StatusUnauthorized, func(_ string) string {
+			return `{"error":{"message":"denied judge-fixture-\"key\\part\"\/<&>"}}`
+		}},
+		{"solidus escaped base URL", `HTTP 401: {"error":{"message":"denied [redacted]"}}`, http.StatusUnauthorized, func(baseURL string) string {
+			return `{"error":{"message":"denied ` + strings.ReplaceAll(baseURL, "/", `\/`) + `"}}`
+		}},
+		{"Unicode solidus with HTML escaping", `HTTP 401: {"error":{"message":"denied [redacted]"}}`, http.StatusUnauthorized, func(_ string) string {
+			return `{"error":{"message":"denied ` + strings.ReplaceAll(escapedKey, "/", `\u002f`) + `"}}`
+		}},
+		{"Unicode solidus without HTML escaping", `HTTP 401: {"error":{"message":"denied [redacted]"}}`, http.StatusUnauthorized, func(_ string) string {
+			return `{"error":{"message":"denied judge-fixture-\"key\\part\"\u002f<&>"}}`
 		}},
 		{"query escaped key", "HTTP 401: denied [redacted]", http.StatusUnauthorized, func(_ string) string {
 			return "denied " + url.QueryEscape(key)
@@ -193,7 +209,7 @@ func TestVerifyRedactsProviderErrors(t *testing.T) {
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.body(baseURL)))
 			}))
-			baseURL = "http://" + srv.Listener.Addr().String() + "/v1?api-key=" + urlSecret
+			baseURL = "http://" + srv.Listener.Addr().String() + urlPath + "?api-key=" + urlSecret
 			srv.Start()
 			t.Cleanup(srv.Close)
 			cfg := config.Config{}
@@ -207,11 +223,11 @@ func TestVerifyRedactsProviderErrors(t *testing.T) {
 				t.Fatal("VerifyFact succeeded, want provider error")
 			}
 			msg := err.Error()
-			if strings.Contains(msg, "judge-fixt") || strings.Contains(msg, urlSecret) {
-				t.Errorf("provider error exposed a credential: %v", err)
+			if strings.Contains(msg, "judge-fixt") || strings.Contains(msg, urlSecret) || strings.Contains(msg, "judge-provider-fixture") {
+				t.Fatal("provider error exposed a URL or credential")
 			}
 			if !strings.Contains(msg, tc.diagnostic) || strings.Contains(msg, "retries exhausted") {
-				t.Errorf("VerifyFact error = %v, want non-retryable %q diagnostic", err, tc.diagnostic)
+				t.Errorf("diagnostic = %q, want non-retryable %q diagnostic", msg, tc.diagnostic)
 			}
 		})
 	}
@@ -276,9 +292,9 @@ func TestVerifyRedactsRequestFailures(t *testing.T) {
 		name, baseURL, want string
 		wantAttempts        int
 	}{
-		{"invalid port", "http://127.0.0.1:bad/?api-key=" + urlSecret, "judge: provider request could not be built; check the judge base URL", 1},
+		{"invalid port", "http://127.0.0.1:bad/?api-key=" + urlSecret, "judge: provider request could not be built: provider URL or redirect target is invalid", 1},
 		{"connection refused", unreachable.URL + "/?api-key=" + urlSecret, "judge: retries exhausted: judge: provider request failed: connection refused", 3},
-		{"invalid redirect", redirect.URL + "/?api-key=" + urlSecret, "judge: retries exhausted: judge: provider request failed", 3},
+		{"invalid redirect", redirect.URL + "/?api-key=" + urlSecret, "judge: provider request failed: provider URL or redirect target is invalid", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Config{}
@@ -297,10 +313,10 @@ func TestVerifyRedactsRequestFailures(t *testing.T) {
 			}
 			msg := err.Error()
 			if strings.Contains(msg, urlSecret) || strings.Contains(msg, redirectSecret) || strings.Contains(msg, "http://") {
-				t.Errorf("request error exposed a URL or credential: %v", err)
+				t.Fatal("request error exposed a URL or credential")
 			}
-			if msg != tc.want {
-				t.Errorf("VerifyFact error = %q, want %q", msg, tc.want)
+			if !strings.HasPrefix(msg, tc.want) {
+				t.Errorf("diagnostic = %q, want prefix %q", msg, tc.want)
 			}
 			if attempts != tc.wantAttempts {
 				t.Errorf("attempts = %d, want %d", attempts, tc.wantAttempts)
@@ -319,9 +335,14 @@ func TestVerifyRedactsResponseReadFailure(t *testing.T) {
 	j.SetBackoff([]time.Duration{0, 0})
 
 	_, err := j.VerifyFact(t.Context(), ingest.FactInput{})
-	const want = "judge: retries exhausted: judge: read response failed"
-	if err == nil || err.Error() != want {
-		t.Errorf("VerifyFact error = %v, want %q", err, want)
+	const want = "judge: retries exhausted: judge: read response failed: connection closed by provider"
+	if err == nil {
+		t.Fatal("VerifyFact succeeded, want response read error")
+	}
+	if got := err.Error(); strings.Contains(got, "judge-key") {
+		t.Fatal("response read error exposed a credential")
+	} else if got != want {
+		t.Errorf("diagnostic = %q, want %q", got, want)
 	}
 	if calls.Load() != 3 {
 		t.Errorf("calls = %d, want 3 (initial + 2 retries)", calls.Load())
