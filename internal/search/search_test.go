@@ -249,13 +249,46 @@ func TestEntitySearchPropagatesRequestDeadlineDuringEmbedding(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
 	defer cancel()
 	st := vectorErrorStore{}
-	emb := queryEmbedFunc(func(ctx context.Context, _ string) ([]float64, error) {
+	emb := queryEmbedFunc(func(context.Context, string) ([]float64, error) {
 		<-ctx.Done()
 		return nil, errors.New("embedding request failed")
 	})
 	hits, err := search.Query(ctx, st, emb, "entity", "entity", 10)
 	if hits != nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("search returned %v, %v, want only a request deadline error", hits, err)
+	}
+}
+
+func TestEntitySearchKeepsTextHitWhenEmbeddingExceedsHalfTheRemainingBudget(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	parentDeadline, _ := ctx.Deadline()
+	emb := queryEmbedFunc(func(embedCtx context.Context, _ string) ([]float64, error) {
+		now := time.Now()
+		deadline, ok := embedCtx.Deadline()
+		if !ok || deadline.After(now.Add(parentDeadline.Sub(now)/2)) {
+			t.Fatalf("embedding deadline = %v (set: %v), want at most half the remaining request budget", deadline, ok)
+		}
+		<-embedCtx.Done()
+		// Even a vector returned after the embedding deadline must be dropped.
+		return []float64{1}, nil
+	})
+	st := vectorErrorStore{err: graph.ErrQueryTimeout}
+	hits, err := search.Query(ctx, st, emb, "entity", "entity", 10)
+	if err != nil || len(hits) != 1 || hits[0].ID != "text-hit" {
+		t.Errorf("search returned %v, %v, want the text hit", hits, err)
+	}
+}
+
+func TestEntitySearchDoesNotGiveUntimedEmbeddingADeadline(t *testing.T) {
+	emb := queryEmbedFunc(func(ctx context.Context, _ string) ([]float64, error) {
+		if _, ok := ctx.Deadline(); ok {
+			t.Error("embedding received a deadline for an untimed search")
+		}
+		return nil, nil
+	})
+	if _, err := search.Query(t.Context(), vectorErrorStore{}, emb, "entity", "entity", 10); err != nil {
+		t.Fatal(err)
 	}
 }
 

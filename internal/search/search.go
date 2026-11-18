@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
@@ -200,8 +201,17 @@ func entityCandidates(ctx context.Context, st Store, emb QueryEmbedder, q string
 // vectorLeg embeds the query and returns entity ids ordered by vector
 // distance. Failures skip the leg unless the search reaches its deadline.
 func vectorLeg(ctx context.Context, st Store, emb QueryEmbedder, q string, limit int) ([]string, error) {
-	vec, err := emb.EmbedQuery(ctx, q)
-	// The embedder may have its own HTTP timeout, independent of the search.
+	embedCtx := ctx
+	cancel := func() {}
+	if deadline, ok := ctx.Deadline(); ok {
+		now := time.Now()
+		embedCtx, cancel = context.WithDeadline(ctx, now.Add(deadline.Sub(now)/2))
+	}
+	vec, err := emb.EmbedQuery(embedCtx, q)
+	if err == nil && embedCtx.Err() == context.DeadlineExceeded {
+		err = context.DeadlineExceeded
+	}
+	cancel()
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("search: embedding: %w", context.DeadlineExceeded)
 	}

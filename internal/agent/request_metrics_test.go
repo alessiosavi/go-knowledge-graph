@@ -4,14 +4,70 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 )
+
+type documentListStore struct {
+	graphStore
+	list func(context.Context) ([]graph.Document, error)
+}
+
+func (s documentListStore) DocumentsIn(ctx context.Context, _ graph.Status, _ string, _ int) ([]graph.Document, error) {
+	return s.list(ctx)
+}
+
+func TestAgentReadToolPassesConfiguredDeadline(t *testing.T) {
+	const budget = 1200 * time.Millisecond
+	cfg := config.Config{}
+	cfg.Limits.ReadTimeoutMS = int(budget / time.Millisecond)
+	s := NewServer(cfg, nil, nil)
+	s.store = documentListStore{list: func(ctx context.Context) ([]graph.Document, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return nil, errors.New("document store received no deadline")
+		}
+		if remaining := time.Until(deadline); remaining > budget {
+			return nil, fmt.Errorf("document store received %v, want a deadline within %v", remaining, budget)
+		}
+		return []graph.Document{{ID: "fixture"}}, nil
+	}}
+	out, err := s.execTool(t.Context(), "list_documents", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if docs, ok := out.(documentsOut); !ok || len(docs.Documents) != 1 || docs.Documents[0].ID != "fixture" {
+		t.Errorf("list_documents returned %+v, want the store's fixture document", out)
+	}
+}
+
+func TestAgentReadToolPreservesClientErrorsAfterDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 0)
+	defer cancel()
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"argument", argerr.New("invalid limit")},
+		{"query", &graph.QueryError{Err: errors.New("invalid syntax")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(config.Config{}, nil, nil)
+			s.store = documentListStore{list: func(context.Context) ([]graph.Document, error) { return nil, tc.err }}
+			if _, err := s.execTool(ctx, "list_documents", nil); !errors.Is(err, tc.err) || errors.Is(err, graph.ErrQueryTimeout) {
+				t.Errorf("list_documents returned %v, want the original client error %v", err, tc.err)
+			}
+		})
+	}
+}
 
 func TestAgentToolRequestMetrics(t *testing.T) {
 	m := obs.New()

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"strings"
@@ -9,10 +10,45 @@ import (
 
 	mcpgo "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 )
+
+func TestMCPReadToolPreservesClientErrorsAfterDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"argument", argerr.New("invalid limit")},
+		{"query", &graph.QueryError{Err: errors.New("invalid syntax")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{}
+			cfg.Limits.ReadTimeoutMS = 1
+			s := NewServer(cfg, nil, nil)
+			addReadTool(s, &mcpgo.Tool{Name: "client-error"}, func(ctx context.Context, _ *mcpgo.CallToolRequest, _ struct{}) (*mcpgo.CallToolResult, any, error) {
+				if _, ok := ctx.Deadline(); !ok {
+					return nil, nil, errors.New("read handler received no deadline")
+				}
+				<-ctx.Done()
+				return nil, nil, tc.err
+			})
+			got := callTool(t, connectServer(t, s), "client-error", map[string]any{})
+			if !got.IsError || len(got.Content) != 1 {
+				t.Fatalf("read returned %+v, want one tool error", got)
+			}
+			msg, ok := got.Content[0].(*mcpgo.TextContent)
+			if !ok {
+				t.Fatalf("read error has type %T, want text", got.Content[0])
+			}
+			if msg.Text != tc.err.Error() {
+				t.Errorf("read error = %q, want %q", msg.Text, tc.err)
+			}
+		})
+	}
+}
 
 func TestMCPToolRequestMetrics(t *testing.T) {
 	m := obs.New()

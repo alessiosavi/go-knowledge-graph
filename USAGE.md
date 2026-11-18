@@ -470,9 +470,11 @@ counts and uses mode 0600. Names go only to `--out`; stdout contains aggregates.
   for each REST read and MCP or agent read tool, except Cypher. The default
   is 15000 ms and applies when the value is zero or negative. Cypher uses
   `limits.cypher_timeout_ms` (`GKG_LIMITS_CYPHER_TIMEOUT_MS`, default 10000 ms).
-  Memgraph receives the remaining budget for each query. A timed-out REST
-  query returns HTTP 504 with code `query_timeout`. MCP and agent tools
-  return a tool error.
+  A search's embedding call gets at most half of the remaining read budget.
+  If the embedder exceeds its share while the read budget is still active,
+  search returns text-only results. Memgraph receives the remaining budget
+  for each query. A timed-out REST query returns HTTP 504 with code
+  `query_timeout`. MCP and agent tools return a tool error.
 - Set `server.pprof_addr` or `GKG_SERVER_PPROF_ADDR` to a loopback
   host and port to expose `/debug/pprof/` there. An empty address disables
   profiling. Only the loopback listener serves profiles.

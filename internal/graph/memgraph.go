@@ -13,6 +13,7 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 	driverconfig "github.com/neo4j/neo4j-go-driver/v6/neo4j/config"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 )
 
@@ -107,13 +108,16 @@ var ErrQueryTimeout = errors.New("the query exceeded the configured timeout")
 
 // IsQueryTimeout reports whether a read failed at the server or client deadline.
 func IsQueryTimeout(ctx context.Context, err error) bool {
-	return err != nil && (errors.Is(err, ErrQueryTimeout) ||
-		errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded))
+	if err == nil || isReadClientError(err) {
+		return false
+	}
+	return errors.Is(err, ErrQueryTimeout) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(ctx.Err(), context.DeadlineExceeded)
 }
 
 func readError(ctx context.Context, err error) error {
-	if err == nil {
-		return nil
+	if err == nil || isReadClientError(err) {
+		return err
 	}
 	var nerr *neo4j.Neo4jError
 	if errors.As(err, &nerr) && strings.Contains(nerr.Msg, "transaction timeout") &&
@@ -125,6 +129,13 @@ func readError(ctx context.Context, err error) error {
 		return fmt.Errorf("%w: %w", context.DeadlineExceeded, err)
 	}
 	return err
+}
+
+func isReadClientError(err error) bool {
+	var query *QueryError
+	var arg argerr.Error
+	var argPtr *argerr.Error
+	return errors.As(err, &query) || errors.As(err, &arg) || errors.As(err, &argPtr)
 }
 
 // runWrite executes a single write query inside one managed transaction.

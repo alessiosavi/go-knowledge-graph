@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
@@ -36,6 +37,30 @@ func TestReadTxConfig(t *testing.T) {
 	opts[0](&tx)
 	if tx.Timeout <= 0 || tx.Timeout > time.Second {
 		t.Errorf("transaction timeout = %v, want a positive duration up to 1s", tx.Timeout)
+	}
+}
+
+func TestExpiredReadPreservesClientErrors(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 0)
+	defer cancel()
+	arg := argerr.New("invalid limit").(argerr.Error)
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"argument error value", arg},
+		{"argument error pointer", &arg},
+		{"query error", &QueryError{Err: errors.New("invalid syntax")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := fmt.Errorf("read failed: %w", tc.err)
+			if IsQueryTimeout(ctx, err) {
+				t.Errorf("client error %v was classified as a query timeout", err)
+			}
+			if got := readError(ctx, err); got != err {
+				t.Errorf("readError = %v, want the original error %v", got, err)
+			}
+		})
 	}
 }
 

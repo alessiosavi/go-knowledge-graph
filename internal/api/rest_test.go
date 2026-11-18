@@ -790,19 +790,32 @@ func TestCypherEndpointTimeoutMapsTo504(t *testing.T) {
 	}
 }
 
-type timedOutReadStore struct{ *graph.Store }
+type timedOutReadStore struct {
+	*graph.Store
+	budget time.Duration
+}
 
 func (timedOutReadStore) RunReadQuery(context.Context, string, map[string]any, int) (graph.QueryResult, error) {
 	return graph.QueryResult{}, fmt.Errorf("read query: %w", graph.ErrQueryTimeout)
 }
 
-func (timedOutReadStore) Document(context.Context, string) (*graph.Document, error) {
+func (s timedOutReadStore) Document(ctx context.Context, _ string) (*graph.Document, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil, errors.New("document store received no deadline")
+	}
+	if remaining := time.Until(deadline); remaining > s.budget {
+		return nil, fmt.Errorf("document store received %v, want a deadline within %v", remaining, s.budget)
+	}
 	return nil, fmt.Errorf("read document: %w", graph.ErrQueryTimeout)
 }
 
 func TestReadRoutesMapStoreTimeoutTo504(t *testing.T) {
-	s := NewServer(config.Config{}, nil, nil)
-	s.store = timedOutReadStore{}
+	const budgetMS = 1200
+	cfg := config.Config{}
+	cfg.Limits.ReadTimeoutMS = budgetMS
+	s := NewServer(cfg, nil, nil)
+	s.store = timedOutReadStore{budget: budgetMS * time.Millisecond}
 	s.SetMetrics(obs.New())
 	h := s.Handler()
 	for _, tc := range []struct {
