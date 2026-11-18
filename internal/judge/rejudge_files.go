@@ -83,6 +83,9 @@ func readRejudgeManifest(path string) (rejudgeManifest, string, error) {
 	if err == nil && m.header.Version != rejudgeManifestVersion {
 		err = fmt.Errorf("invalid manifest version %d", m.header.Version)
 	}
+	if err == nil && len(m.rows) == 0 {
+		err = errors.New("manifest has no rows")
+	}
 	if err != nil {
 		return m, "", fmt.Errorf("read manifest %s: %w", path, err)
 	}
@@ -90,12 +93,14 @@ func readRejudgeManifest(path string) (rejudgeManifest, string, error) {
 }
 
 type rejudgeAttempts struct {
-	Manifest     string `json:"manifest_sha256"`
-	Verdicts     string `json:"verdicts"`
-	Cap          int    `json:"cap"`
-	Attempts     int    `json:"attempts"`
-	LastID       string `json:"last_id,omitempty"`
-	LastAttempts int    `json:"last_attempts,omitempty"`
+	Manifest       string `json:"manifest_sha256"`
+	Verdicts       string `json:"verdicts"`
+	Cap            int    `json:"cap"`
+	Attempts       int    `json:"attempts"`
+	LastID         string `json:"last_id,omitempty"`
+	LastAttempts   int    `json:"last_attempts,omitempty"`
+	VerdictsSHA256 string `json:"verdicts_sha256,omitempty"`
+	Completed      bool   `json:"completed,omitempty"`
 }
 
 func (a rejudgeAttempts) save(path string, replace bool) error {
@@ -127,7 +132,26 @@ func readRejudgeAttempts(path string) (*rejudgeAttempts, error) {
 		(a.LastID == "") != (a.LastAttempts == 0) || (a.Attempts == 0) != (a.LastAttempts == 0) {
 		return nil, fmt.Errorf("invalid attempts or cap in %s", path)
 	}
+	if a.Completed != (a.VerdictsSHA256 != "") {
+		return nil, fmt.Errorf("invalid verdicts seal in %s", path)
+	}
 	return &a, nil
+}
+
+// rejudgeVerdictsDigest hashes the exact bytes of the open verdict log and
+// rewinds it for validation on resume.
+func rejudgeVerdictsDigest(f *os.File) (string, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return "", err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 func privateRejudgeFile(fi os.FileInfo) error {

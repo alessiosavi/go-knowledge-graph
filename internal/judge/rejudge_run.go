@@ -29,7 +29,7 @@ type RejudgeOptions struct {
 type RejudgeResult struct {
 	Planned, EffectiveBudget                  int
 	Judged, Resumed, CacheHits, Attempts, Cap int
-	Fingerprint                               string
+	Fingerprints                              RejudgeFingerprints
 	StoppedForBudget                          bool
 	Gate                                      *RejudgeGate
 }
@@ -72,10 +72,11 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 		return result, err
 	}
 	result.Planned = len(manifest.rows)
-	if result.Planned > 0 {
-		result.Fingerprint = manifest.rows[0].Request.Profile.Fingerprint
+	result.Fingerprints = make(RejudgeFingerprints, len(definitions))
+	for _, row := range manifest.rows {
+		result.Fingerprints[row.Preset] = row.Request.Profile.Fingerprint
 	}
-	gate := buildRejudgeGate(manifest, payloads, nil, result.Fingerprint)
+	gate := buildRejudgeGate(manifest, payloads, nil, result.Fingerprints)
 	if gate != nil && 100*gate.rows.reconciled < 95*gate.rows.expected {
 		result.Gate = gate
 		return result, nil
@@ -105,7 +106,31 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 	if err != nil {
 		return result, fmt.Errorf("open verdict ledger: %w", err)
 	}
-	defer func() { err = errors.Join(err, out.Close()) }()
+	var sealDigest string
+	defer func(runCtx context.Context) {
+		// The lease cleanup runs first. Publish only after the file closes
+		// and both the run and its cleanup have succeeded.
+		err = errors.Join(err, out.Close())
+		if err != nil || sealDigest == "" {
+			return
+		}
+		if err = context.Cause(runCtx); err != nil {
+			return
+		}
+		ledger.Completed, ledger.VerdictsSHA256 = true, sealDigest
+		if err = ledger.save(attemptsPath, true); err != nil {
+			err = fmt.Errorf("seal attempt ledger: %w", err)
+		}
+	}(ctx)
+	if ledger != nil && ledger.Completed {
+		verdictsDigest, err := rejudgeVerdictsDigest(out)
+		if err != nil {
+			return result, fmt.Errorf("read verdicts digest: %w", err)
+		}
+		if verdictsDigest != ledger.VerdictsSHA256 {
+			return result, fmt.Errorf("judge: verdicts digest does not match the sealed attempt ledger")
+		}
+	}
 	done, known, debits, err := readRejudgeVerdicts(out, rows)
 	if err != nil {
 		return result, fmt.Errorf("read verdict ledger: %w", err)
@@ -119,6 +144,13 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 		ledger = &rejudgeAttempts{Manifest: digest, Verdicts: outName, Cap: opt.BudgetAttempts}
 	} else {
 		result.Attempts, result.Cap = ledger.Attempts, ledger.Cap
+		if ledger.Completed {
+			if len(done) != result.Planned {
+				return result, fmt.Errorf("judge: sealed verdict ledger is incomplete")
+			}
+			result.Gate = buildRejudgeGate(manifest, payloads, done, result.Fingerprints)
+			return result, nil
+		}
 	}
 	raise := opt.BudgetAttempts > ledger.Cap
 	if raise && !opt.RaiseCap {
@@ -222,7 +254,7 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 		verdict := ingest.Verdict{Status: previous.Verdict, Confidence: previous.Confidence, Reason: previous.Reason}
 		var verifyErr error
 		if !reused {
-			verdict, verifyErr = cached.VerifyRequest(ctx, row.Request, definitions)
+			verdict, verifyErr = cached.VerifyRequest(ctx, row.Request, definitions.forPreset(row.Preset))
 		}
 		if errors.Is(verifyErr, errRejudgeBudget) {
 			result.StoppedForBudget = true
@@ -255,14 +287,20 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 			return result, fmt.Errorf("judge %s: %w", row.ID, verifyErr)
 		}
 	}
-	result.Gate = buildRejudgeGate(manifest, payloads, done, result.Fingerprint)
+	result.Gate = buildRejudgeGate(manifest, payloads, done, result.Fingerprints)
+	if len(done) == result.Planned && context.Cause(ctx) == nil {
+		sealDigest, err = rejudgeVerdictsDigest(out)
+		if err != nil {
+			return result, fmt.Errorf("hash verdicts for seal: %w", err)
+		}
+	}
 	return result, context.Cause(ctx)
 }
 
-func validateRejudgeManifest(m rejudgeManifest, model, presetDir string) (map[string]rejudgeManifestRow, map[string]v2Payload, map[string]map[string]string, error) {
+func validateRejudgeManifest(m rejudgeManifest, model, presetDir string) (map[string]rejudgeManifestRow, map[string]v2Payload, rejudgeDefinitions, error) {
 	rows := make(map[string]rejudgeManifestRow, len(m.rows))
 	payloads := make(map[string]v2Payload, len(m.rows))
-	definitions := make(map[string]map[string]string)
+	definitions := make(rejudgeDefinitions)
 	for _, row := range m.rows {
 		if row.ID == "" || row.ID != graph.FactAuditID(row.HeadKey, row.Relation, row.TailKey, row.ChunkID) ||
 			row.Request.DocID == "" || !validRejudgeLabel(row.Label) {
@@ -279,9 +317,7 @@ func validateRejudgeManifest(m rejudgeManifest, model, presetDir string) (map[st
 			}
 			definitions[row.Preset] = defs
 		}
-	}
-	for _, row := range m.rows {
-		if _, err := row.Request.validate(model, definitions); err != nil {
+		if _, err := row.Request.validate(model, definitions.forPreset(row.Preset)); err != nil {
 			return nil, nil, nil, fmt.Errorf("manifest id %s: %w", row.ID, err)
 		}
 		var payload v2Payload

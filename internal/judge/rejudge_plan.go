@@ -60,6 +60,12 @@ type rejudgeManifest struct {
 
 const rejudgeManifestVersion = 1
 
+type rejudgeDefinitions map[string]map[string]string
+
+func (d rejudgeDefinitions) forPreset(preset string) map[string]map[string]string {
+	return map[string]map[string]string{preset: d[preset]}
+}
+
 // PlanRejudge freezes validated requests and counts distinct cache misses.
 // Its only output side effect is an atomically published private manifest.
 func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path string, opt RejudgeSelection) (RejudgePlanResult, error) {
@@ -89,8 +95,8 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 		labels[row.ID] = row
 	}
 	seen := make(map[string]bool)
-	definitions := make(map[string]map[string]string)
-	usedDefinitions := make(map[string]map[string]string)
+	definitions := make(rejudgeDefinitions)
+	profiles := make(map[string]Profile)
 	presetErrors := make(map[string]error)
 	var incomplete []error
 	manifest := rejudgeManifest{header: rejudgeManifestHeader{Version: rejudgeManifestVersion}}
@@ -184,11 +190,15 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 			if prior == "" {
 				prior = "unjudged"
 			}
+			profile, ok := profiles[fact.Preset]
+			if !ok {
+				profile = NewV2Profile(model, definitions.forPreset(fact.Preset))
+				profiles[fact.Preset] = profile
+			}
 			manifest.rows = append(manifest.rows, rejudgeManifestRow{
 				RejudgeIdentity: fact.RejudgeIdentity, Before: fact.Before, Preset: fact.Preset, Prior: prior,
-				Request: Request{RequestBytes: payloadBytes, DocID: fact.DocID}, Label: labels[fact.ID].Label,
+				Request: Request{Profile: profile, RequestBytes: payloadBytes, DocID: fact.DocID}, Label: labels[fact.ID].Label,
 			})
-			usedDefinitions[fact.Preset] = definitions[fact.Preset]
 		}
 		return nil
 	})
@@ -208,12 +218,9 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 		return result, fmt.Errorf("judge: no rows to plan after selection, evidence checks and label reconciliation")
 	}
 	manifest.header.Mismatches = result.Mismatches
-	profile := NewV2Profile(model, usedDefinitions)
 	keys := make(map[string]struct{}, len(manifest.rows))
-	for i := range manifest.rows {
-		req := &manifest.rows[i].Request
-		req.Profile = profile
-		keys[RequestKeyV2(req.RequestBytes, profile.Fingerprint)] = struct{}{}
+	for _, row := range manifest.rows {
+		keys[RequestKeyV2(row.Request.RequestBytes, row.Request.Profile.Fingerprint)] = struct{}{}
 	}
 	hits, err := st.CountCachedJudgeRequests(ctx, slices.Collect(maps.Keys(keys)))
 	if err != nil {

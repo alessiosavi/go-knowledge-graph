@@ -66,19 +66,31 @@ func (c rejudgeGateCounts) distinctVerdict() (label, verdict string) {
 
 type rejudgeGateIssue struct{ kind, id, reason string }
 
+// RejudgeFingerprints holds the frozen profile fingerprint for each preset.
+type RejudgeFingerprints map[string]string
+
+func (f RejudgeFingerprints) Write(w io.Writer) error {
+	for _, preset := range slices.Sorted(maps.Keys(f)) {
+		if _, err := fmt.Fprintf(w, "preset=%q fingerprint=%s\n", preset, f[preset]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type RejudgeGate struct {
-	fingerprint    string
+	fingerprints   RejudgeFingerprints
 	incomplete     bool
 	rows, distinct rejudgeGateCounts
 	domains        map[string]*rejudgeGateCounts
 	issues         []rejudgeGateIssue
 }
 
-func buildRejudgeGate(m rejudgeManifest, payloads map[string]v2Payload, done map[string]rejudgeVerdict, fingerprint string) *RejudgeGate {
+func buildRejudgeGate(m rejudgeManifest, payloads map[string]v2Payload, done map[string]rejudgeVerdict, fingerprints RejudgeFingerprints) *RejudgeGate {
 	g := &RejudgeGate{
-		fingerprint: fingerprint,
-		incomplete:  len(done) < len(m.rows),
-		domains:     make(map[string]*rejudgeGateCounts),
+		fingerprints: fingerprints,
+		incomplete:   len(done) < len(m.rows),
+		domains:      make(map[string]*rejudgeGateCounts),
 	}
 	domainCounts := func(domain string) *rejudgeGateCounts {
 		if g.domains[domain] == nil {
@@ -129,7 +141,7 @@ func (g *RejudgeGate) Passed() bool { return !g.incomplete && g.rows.passes() }
 // Write reports the decision for the labelled set. Distinct facts and domain
 // splits are diagnostics; the pre-registered thresholds use the row totals.
 func (g *RejudgeGate) Write(w io.Writer) error {
-	if _, err := fmt.Fprintf(w, "fingerprint=%s\n", g.fingerprint); err != nil {
+	if err := g.fingerprints.Write(w); err != nil {
 		return err
 	}
 	const format = "%-20s %-20s %-18s %-20s %-20s %7s %9s %s\n"

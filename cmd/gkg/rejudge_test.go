@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -91,6 +92,7 @@ func TestRejudgeCLIResume(t *testing.T) {
 	if lines := bytes.Count(readRejudgeFile(t, verdicts), []byte("\n")); lines != 1 {
 		t.Fatalf("verdict count after budget stop = %d", lines)
 	}
+	assertRejudgeSeal(t, verdicts, false)
 	if code, out := callRejudge(t, "-plan", "-ids", labelPath, "-out", filepath.Join(dir, "second-plan.jsonl")); code != 0 ||
 		!strings.Contains(out, "calls_needed=1") || requests.Load() != 2 {
 		t.Fatalf("cache-adjusted plan exit=%d calls=%d: %s", code, requests.Load(), out)
@@ -113,8 +115,40 @@ func TestRejudgeCLIResume(t *testing.T) {
 	if len(records) != 2 || json.Unmarshal(records[1], &resumed) != nil || resumed.Attempts != 2 {
 		t.Fatalf("retried verdict does not count both attempts across resumes: %q", records)
 	}
+	assertRejudgeSeal(t, verdicts, true)
+	sealedLedger := readRejudgeFile(t, attempts)
+	sealedVerdicts := readRejudgeFile(t, verdicts)
+	st := graphtest.Store(t)
+	if ok, err := st.AcquireLease(t.Context(), "judge-rejudge", "sealed-test-owner", time.Minute, false); !ok || err != nil {
+		t.Fatalf("acquire fixture lease: %v %v", ok, err)
+	}
+	t.Cleanup(func() {
+		if err := st.ReleaseLease(context.Background(), "judge-rejudge", "sealed-test-owner"); err != nil {
+			t.Error(err)
+		}
+	})
 	if code, out := judgeArgs("3"); code != 0 || requests.Load() != 3 {
-		t.Fatalf("completed resume exit=%d calls=%d: %s", code, requests.Load(), out)
+		t.Errorf("sealed resume exit=%d calls=%d: %s", code, requests.Load(), out)
+	}
+	if !bytes.Equal(readRejudgeFile(t, attempts), sealedLedger) || !bytes.Equal(readRejudgeFile(t, verdicts), sealedVerdicts) {
+		t.Fatal("sealed resume rewrote the ledger or verdicts")
+	}
+	if err := st.ReleaseLease(t.Context(), "judge-rejudge", "sealed-test-owner"); err != nil {
+		t.Fatal(err)
+	}
+	// Change a valid field while preserving the row identity and request key.
+	tampered := bytes.Replace(sealedVerdicts, []byte(`"reason":"supported"`), []byte(`"reason":"edited"`), 1)
+	if bytes.Equal(tampered, sealedVerdicts) {
+		t.Fatal("fixture has no reason to edit")
+	}
+	if err := os.WriteFile(verdicts, tampered, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := judgeArgs("3"); code != 1 || !strings.Contains(out, "verdicts digest") || requests.Load() != 3 {
+		t.Errorf("tampered resume exit=%d calls=%d: %s", code, requests.Load(), out)
+	}
+	if !bytes.Equal(readRejudgeFile(t, attempts), sealedLedger) || !bytes.Equal(readRejudgeFile(t, verdicts), tampered) {
+		t.Fatal("tampered resume rewrote the ledger or verdicts")
 	}
 	for _, file := range []string{manifest, verdicts, attempts} {
 		fi, err := os.Stat(file)
@@ -127,6 +161,98 @@ func TestRejudgeCLIResume(t *testing.T) {
 	}
 	migrationQuery(t, `MATCH (v:JudgeVerdict {doc_id: $doc}) DELETE v`, map[string]any{"doc": doc})
 	before.AssertUnchanged(t, "judge except for verdict cache")
+}
+
+func TestRejudgeCLIPresetCacheAcrossManifests(t *testing.T) {
+	var calls atomic.Int32
+	_, defaults := rejudgeCLIFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		writeConfirmedRejudgeResponse(w)
+	})
+	presets, err := filepath.Abs("../../labels")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GKG_LABELS_PRESETS_DIR", presets)
+	_, documentation := seedRejudgeDocumentationFact(t, "rejudge-cross-preset-cache")
+	plan := func(wantCalls string, labels ...judge.AuditRow) string {
+		t.Helper()
+		dir := t.TempDir()
+		audit, manifest := filepath.Join(dir, "labels.jsonl"), filepath.Join(dir, "manifest.jsonl")
+		writeRejudgeLabels(t, audit, labels)
+		if code, out := callRejudge(t, "-plan", "-ids", audit, "-out", manifest); code != 0 ||
+			!strings.Contains(out, "planned="+fmt.Sprint(len(labels))) || !strings.Contains(out, "calls_needed="+wantCalls) {
+			t.Errorf("plan exit=%d: %s", code, out)
+		}
+		return manifest
+	}
+	judgeManifest := func(manifest string) (int, string) {
+		return callRejudge(t, "-judge", "-manifest", manifest, "-out", filepath.Join(filepath.Dir(manifest), "verdicts.jsonl"), "-budget-attempts", "2")
+	}
+	singleRequests := make(map[string]judge.Request)
+	for _, label := range []judge.AuditRow{defaults[0], documentation} {
+		manifest := plan("1", label)
+		singleRequests[label.ID] = firstRejudgeRequest(t, readRejudgeFile(t, manifest))
+		if code, out := judgeManifest(manifest); code != 0 || !strings.Contains(out, "GATE PASS") {
+			t.Fatalf("single preset judge exit=%d: %s", code, out)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("priming calls=%d, want 2", calls.Load())
+	}
+	mixed := plan("0", defaults[0], documentation)
+	lines := bytes.Split(bytes.TrimSpace(readRejudgeFile(t, mixed)), []byte("\n"))
+	if len(lines) != 3 {
+		t.Fatalf("mixed manifest has %d lines, want 3", len(lines))
+	}
+	for _, line := range lines[1:] {
+		var row struct {
+			ID      string
+			Request judge.Request
+		}
+		if err := json.Unmarshal(line, &row); err != nil {
+			t.Fatal(err)
+		}
+		single := singleRequests[row.ID]
+		frozen, want := row.Request.Profile.Fingerprint, single.Profile.Fingerprint
+		key := judge.RequestKeyV2(row.Request.RequestBytes, frozen)
+		if frozen != want || key != judge.RequestKeyV2(single.RequestBytes, want) {
+			t.Errorf("fact %s changed fingerprint or request key across manifests: got %s, want %s", row.ID, frozen, want)
+		}
+	}
+	code, out := judgeManifest(mixed)
+	if code != 0 || calls.Load() != 2 || !strings.Contains(out, "cache_hits=2 attempts=0") || !strings.Contains(out, "GATE PASS") {
+		t.Errorf("mixed judge exit=%d total calls=%d: %s", code, calls.Load(), out)
+	}
+	for preset, label := range map[string]judge.AuditRow{"": defaults[0], "documentation": documentation} {
+		line := fmt.Sprintf("preset=%q fingerprint=%s\n", preset, singleRequests[label.ID].Profile.Fingerprint)
+		if strings.Count(out, line) != 1 {
+			t.Errorf("expected one line %q: %s", line, out)
+		}
+	}
+}
+
+func TestRejudgeCLIRejectsEmptyManifest(t *testing.T) {
+	graphtest.Store(t)
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("empty manifest called the provider")
+	}))
+	t.Cleanup(server.Close)
+	configureRejudgeCLI(t, server.URL)
+	dir := t.TempDir()
+	manifest, verdicts := filepath.Join(dir, "manifest.jsonl"), filepath.Join(dir, "verdicts.jsonl")
+	if err := os.WriteFile(manifest, []byte("{\"rejudge_manifest\":1}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := callRejudge(t, "-judge", "-manifest", manifest, "-out", verdicts, "-budget-attempts", "1"); code != 1 ||
+		!strings.Contains(out, "manifest has no rows") {
+		t.Errorf("empty manifest exit=%d: %s", code, out)
+	}
+	for _, path := range []string{verdicts, filepath.Join(dir, "attempts.json")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("empty manifest created %s: %v", path, err)
+		}
+	}
 }
 
 func TestRejudgeCLIReconciliation(t *testing.T) {
@@ -220,6 +346,7 @@ func TestRejudgeCLIRejectsInvalidVerdictKeys(t *testing.T) {
 	}{
 		{"wrong key", func(record map[string]json.RawMessage) { record["key"] = json.RawMessage(`"wrong"`) }},
 		{"missing key", func(record map[string]json.RawMessage) { delete(record, "key") }},
+		{"empty key", func(record map[string]json.RawMessage) { record["key"] = json.RawMessage(`""`) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var calls atomic.Int32
@@ -369,6 +496,24 @@ func readRejudgeFile(t *testing.T, path string) []byte {
 	return data
 }
 
+func assertRejudgeSeal(t *testing.T, verdicts string, completed bool) {
+	t.Helper()
+	var ledger struct {
+		Completed bool
+		Digest    string `json:"verdicts_sha256"`
+	}
+	if err := json.Unmarshal(readRejudgeFile(t, filepath.Join(filepath.Dir(verdicts), "attempts.json")), &ledger); err != nil {
+		t.Fatal(err)
+	}
+	want := ""
+	if completed {
+		want = fmt.Sprintf("%x", sha256.Sum256(readRejudgeFile(t, verdicts)))
+	}
+	if ledger.Completed != completed || ledger.Digest != want {
+		t.Errorf("seal = completed %t, digest %q, want %t, %q", ledger.Completed, ledger.Digest, completed, want)
+	}
+}
+
 func TestRejudgeCLIStopsAfterVerdictCacheMissedWrite(t *testing.T) {
 	var paid atomic.Int32
 	doc, labels := rejudgeCLIFixture(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -400,6 +545,7 @@ func TestRejudgeCLIStopsAfterVerdictCacheMissedWrite(t *testing.T) {
 	if got := readRejudgeFile(t, v); !bytes.HasPrefix(got, first) || bytes.Count(got, []byte("\n")) != 2 {
 		t.Fatalf("resume replaced or repeated prior verdict: %s", got)
 	}
+	assertRejudgeSeal(t, v, false)
 	before.AssertUnchanged(t, "strict write with missing document")
 }
 

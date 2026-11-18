@@ -95,11 +95,13 @@ func runJudgeRejudge(args []string, stdout, stderr io.Writer) int {
 	result, runErr := judge.JudgeRejudge(ctx, st, client, cfg.Labels.PresetsDir, opt)
 	summary := fmt.Sprintf("judged=%d resumed=%d planned=%d cache_hits=%d attempts=%d cap=%d effective_budget=%d stopped_for_budget=%t",
 		result.Judged, result.Resumed, result.Planned, result.CacheHits, result.Attempts, result.Cap, result.EffectiveBudget, result.StoppedForBudget)
-	if result.Gate == nil && result.Fingerprint != "" {
-		summary += " fingerprint=" + result.Fingerprint
-	}
 	if _, err := fmt.Fprintln(stdout, summary); err != nil {
 		return fail(1, err)
+	}
+	if result.Gate == nil {
+		if err := result.Fingerprints.Write(stdout); err != nil {
+			return fail(1, err)
+		}
 	}
 	if runErr != nil {
 		return fail(1, runErr)

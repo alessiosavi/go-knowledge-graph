@@ -409,8 +409,8 @@ rows remain. Blank and `skip` labels are excluded from scoring.
 Inspect the cache-adjusted call estimate and per-relation table-header counts
 before approving spend. The plan refuses to overwrite a manifest.
 
-Use the same manifest and verdict file to resume. The verdict log is read before
-the cache. Each completed verdict must carry the matching frozen request key.
+Use the same non-empty manifest and verdict file to resume. The verdict log is
+read before the cache. Each verdict must carry the matching frozen request key.
 The sibling `attempts.json` ledger stores the cumulative cap and debits
 attempts before calls, including retries.
 The summary shows the stored cap and this invocation's effective budget.
@@ -418,15 +418,26 @@ Set `-raise-cap` explicitly when authorizing a larger cap. Keep all three privat
 files together for the run. The judge stops on cache errors, preserving a paid
 verdict in the verdict log if the cache write fails.
 
-The judge prints the profile fingerprint and a gate for each labelled set.
+When every manifest row has a verdict and the judge finishes without error,
+it atomically records `completed: true` and `verdicts_sha256` in `attempts.json`.
+Budget stops and runs that return a cache error leave the ledger unsealed.
+A sealed resume verifies the SHA-256 of the exact verdict file bytes and reports
+the saved results without calling the provider or changing the run files. A
+digest mismatch fails the resume before any spend.
+
+Each preset has its own profile fingerprint, based on its full relation
+definitions, the model, the prompt and the request schema. The same frozen
+request keeps its fingerprint and cache key when other presets are added to a
+manifest. Regenerate mixed-preset manifests created with a shared fingerprint.
+The judge prints one `preset=… fingerprint=…` line per preset, with `preset=""`
+for the built-in definitions. For labelled runs these lines precede the gate.
 At least 95% of the scored audit rows must reconcile, every planned row must
 have a verdict, at least 98% of ok rows must be confirmed, and at least 95%
 of confirmed rows must be ok. If
 reconciliation is below 95%, the judge reports the failed gate before spending
 any attempts. The table includes the Wilson 95% interval, distinct facts and
 domain splits. It shows reconciled and judged totals separately and lists lost
-ok and kept bad ids with reasons. Unlabelled runs print the fingerprint in the
-run summary. Apply is not part of this command yet.
+ok and kept bad ids with reasons. Apply is not part of this command yet.
 
 Rejudge exits `0` on success, `1` on an operational error, `2` on invalid
 arguments or audit input, `3` when the labelled gate fails, and `4` when an
