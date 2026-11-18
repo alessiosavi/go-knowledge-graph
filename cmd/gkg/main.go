@@ -520,12 +520,27 @@ func newAPIServer(cfg config.Config, st *graph.Store, pipe api.Submitter, emb se
 	rest.SetMetrics(metrics)
 	mcpSrv.SetMetrics(metrics)
 	agentSrv.SetMetrics(metrics)
+	mcpSrv.SetAsker(mcpAsker{agentSrv})
 	rest.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
 	rest.Mount("/mcp", mcpSrv.HTTPHandler())
 	rest.Mount("POST /v1/agent/ask", agentSrv.AskHandler())
 	rest.Mount("POST /v1/agent/ask/stream", agentSrv.StreamHandler())
 	rest.Mount("GET /v1/agent/status", agentSrv.StatusHandler())
 	return rest
+}
+
+type mcpAsker struct{ server *agent.Server }
+
+func (a mcpAsker) Ask(ctx context.Context, question, domain string, progress func(context.Context, int, string)) (mcpserver.AskResult, error) {
+	resp, err := a.server.AskWithProgress(ctx, agent.AskRequest{Question: question, Domain: domain}, progress)
+	if err != nil {
+		return mcpserver.AskResult{}, err
+	}
+	evidence := make([]mcpserver.AskEvidence, len(resp.Evidence))
+	for i, item := range resp.Evidence {
+		evidence[i] = mcpserver.AskEvidence(item)
+	}
+	return mcpserver.AskResult{Answer: resp.Answer, Steps: resp.Steps, Evidence: evidence}, nil
 }
 
 // runIngest ingests one file, URL or stdin payload synchronously and
@@ -649,6 +664,9 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 	}
 	srv := mcpserver.NewServer(cfg, st, pipe)
 	srv.SetEmbedder(emb)
+	if cfg.Agent.Enabled {
+		srv.SetAsker(mcpAsker{agent.NewServer(cfg, st, emb)})
+	}
 	if err := srv.RunStdio(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1

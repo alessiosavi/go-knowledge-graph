@@ -392,20 +392,12 @@ func TestQualityStoredPopulationAndReadOnly(t *testing.T) {
 	p := map[string]any{"tag": tag}
 	raw(t, `CREATE (d:Document {id:$tag,source:$tag,status:'done',domain:'quality-fixture'}), (c:Chunk {id:$tag,doc_id:$tag}), (d)-[:HAS_CHUNK]->(c), (e:Entity {key:$tag,name:'--zorbo',type:'value'}), (c)-[:MENTIONS]->(e), (c)-[:MENTIONS]->(e), (x:Document {id:$tag+'-failed',source:$tag+'-failed',status:'failed',domain:'quality-fixture'}), (y:Chunk {id:$tag+'-failed',doc_id:$tag+'-failed'}), (x)-[:HAS_CHUNK]->(y), (z:Entity {key:$tag+'-failed',name:'Acme',type:'organization'}), (y)-[:MENTIONS]->(z), (e)-[:uses {doc_id:$tag+'-failed',chunk_id:$tag+'-failed',confidence:0.1}]->(z), (:FactCandidate {id:$tag+'-u',doc_id:$tag,judge:''}), (:FactCandidate {id:$tag+'-c',doc_id:$tag,judge:'unclear'}), (:RejectedFact {id:$tag+'-r',doc_id:$tag}), (:FactCandidate {id:$tag+'-f',doc_id:$tag+'-failed',judge:''})`, p)
 	t.Cleanup(func() { raw(t, `MATCH (n) WHERE n.id STARTS WITH $tag OR n.key STARTS WITH $tag DETACH DELETE n`, p) })
-	queries := []string{`MATCH (n) RETURN labels(n),properties(n) ORDER BY id(n)`, `MATCH (a)-[r]->(b) RETURN id(a),type(r),properties(r),id(b) ORDER BY id(r)`, `SHOW INDEX INFO`, `SHOW CONSTRAINT INFO`}
 	for _, version := range []int{1, 3, 4} {
 		raw(t, `MATCH (m:GkgMeta {id:'extraction_schema'}) DELETE m`, nil)
 		if version != 1 {
 			raw(t, `CREATE (:GkgMeta {id:'extraction_schema',value:$v})`, map[string]any{"v": version})
 		}
-		before := make([]graph.QueryResult, len(queries))
-		for i, q := range queries {
-			var err error
-			before[i], err = st.RunReadQuery(ctx, q, nil, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
+		before := graphtest.Snapshot(t)
 		r, err := Compute(ctx, st, Options{Domain: "quality-fixture"})
 		if err != nil {
 			t.Fatal(err)
@@ -421,12 +413,7 @@ func TestQualityStoredPopulationAndReadOnly(t *testing.T) {
 		} else if r.Facts.CandidatesUnjudged == nil || *r.Facts.CandidatesUnjudged != 1 || r.Facts.CandidatesUnclear == nil || *r.Facts.CandidatesUnclear != 1 {
 			t.Fatalf("v4 counts: %+v", r.Facts)
 		}
-		for i, q := range queries {
-			after, err := st.RunReadQuery(ctx, q, nil, 0)
-			if err != nil || !reflect.DeepEqual(before[i], after) {
-				t.Fatalf("Compute wrote graph (%s): %v", q, err)
-			}
-		}
+		before.AssertUnchanged(t, "Compute")
 	}
 }
 

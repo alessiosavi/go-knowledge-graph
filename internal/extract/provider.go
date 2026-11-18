@@ -13,6 +13,8 @@ type Label struct {
 	Text      string  `yaml:"text" json:"-"`
 	Threshold float64 `yaml:"threshold" json:"threshold"`
 	Scope     string  `yaml:"scope" json:"-"`
+	// Definition is optional judge context for relation labels.
+	Definition string `yaml:"definition" json:"-"`
 }
 
 // RequestChunk is one chunk submitted for extraction. The JSON tags are

@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +25,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 )
 
 func TestUsageListsCommands(t *testing.T) {
@@ -213,11 +213,7 @@ func TestPreflightReadOnly(t *testing.T) {
 			t.Setenv("GKG_INGEST_SPOOL_DIR", "/dev/null/unwritable")
 			migrationQuery(t, `DROP INDEX ON :Entity(id)`, nil)
 			t.Cleanup(func() { migrationQuery(t, `CREATE INDEX ON :Entity(id)`, nil) })
-			queries := []string{`MATCH (n) RETURN labels(n),properties(n) ORDER BY id(n)`, `MATCH (a)-[r]->(b) RETURN id(a),type(r),properties(r),id(b) ORDER BY id(r)`, `SHOW INDEX INFO`, `SHOW CONSTRAINT INFO`}
-			before := make([]any, len(queries))
-			for i, q := range queries {
-				before[i] = migrationQuery(t, q, nil)
-			}
+			before := graphtest.Snapshot(t)
 			var out, errb bytes.Buffer
 			if code := run([]string{"preflight"}, &out, &errb); code != tc.code {
 				t.Errorf("exit %d, stdout %q, stderr %q; want %d", code, &out, &errb, tc.code)
@@ -237,11 +233,7 @@ func TestPreflightReadOnly(t *testing.T) {
 					t.Errorf("seed file diagnostic should report %q without coverage: %s", want, &errb)
 				}
 			}
-			for i, q := range queries {
-				if after := migrationQuery(t, q, nil); !reflect.DeepEqual(before[i], after) {
-					t.Errorf("preflight wrote: %s", q)
-				}
-			}
+			before.AssertUnchanged(t, "preflight")
 		})
 	}
 }

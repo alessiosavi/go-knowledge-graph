@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -450,8 +451,17 @@ func (p *probe) mcpDuring(long bool, reload func()) {
 		}
 		expect(r.code == 200 && err == nil, fmt.Sprintf("MCP call %d", i))
 		if i == 0 {
+			// edge-check.sh enables the agent, so ask is listed beside the eight graph tools.
 			tools, _ := result["tools"].([]any)
-			expect(len(tools) == 8, "MCP lists eight tools")
+			names := make([]string, 0, len(tools))
+			for _, tool := range tools {
+				entry, _ := tool.(map[string]any)
+				name, _ := entry["name"].(string)
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			want := []string{"ask", "cypher", "get_chunks", "get_entity", "ingest", "list_documents", "search", "status", "traverse"}
+			expect(strings.Join(names, ",") == strings.Join(want, ","), "MCP lists the graph tools and ask")
 		}
 	}
 	if reload == nil && long {

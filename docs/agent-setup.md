@@ -18,12 +18,30 @@ The tool set is the same on both transports:
 | ---------------- | ----------------------------------------------------------------------- |
 | `ingest`         | submit a URL or inline text; returns the document id                    |
 | `status`         | pipeline status of one document, or the most recent documents           |
+| `ask`            | answer a natural-language question in one call when the server-side agent is enabled |
 | `search`         | text search over entity names and chunks (vector fusion when enabled)   |
 | `get_entity`     | entity, aliases, `together` co-mentions (with shared chunk counts) and evidenced facts |
 | `get_chunks`     | chunk text, up to 4 KiB per chunk; `truncated` marks a cut; optionally up to two neighbours |
 | `traverse`       | walk fact edges up to two hops with direction/relation filters          |
 | `list_documents` | documents with metadata, filterable by status and domain                           |
 | `cypher`         | guarded read-only Cypher with row cap and timeout                       |
+
+Prefer `ask` for natural-language questions. It runs the server-side agent's
+retrieval loop and spends the server's LLM budget per call. Use `search`,
+`get_entity`, `get_chunks`, and `traverse` for targeted lookups. To expose
+`ask`, set `GKG_AGENT_ENABLED=true` and configure the agent's provider with
+`GKG_AGENT_BASE_URL`, `GKG_AGENT_API_KEY`, and `GKG_AGENT_MODEL`.
+
+Send a required `question` and optionally a `domain` slug. The response
+contains Markdown `answer` and `steps` (tool-requesting model turns). Set
+`include_evidence: true` to add evidence within a 32 KiB budget for one JSON
+copy of the result. The SDK sends that copy as both structured and text
+content. A `truncated` flag marks a shortened evidence list or item.
+Shortened results can be JSON string previews. An answer that exhausts the
+budget is returned in full with `truncated: true` and no evidence. A client
+that sends a progress token receives one tool-name update per step. Progress
+notifications are written inline, so a stalled client slows the ask. The call
+uses `GKG_AGENT_TIMEOUT_S` (default 60 seconds).
 
 By default, `get_entity` and `traverse` return typed facts that meet the assert
 floor or that the judge confirmed. Set `include_low_confidence` to return all
@@ -98,7 +116,7 @@ opencode mcp list    # ✓ gkg connected
 Notes:
 
 - Code Mode is the default in OpenCode V2: the tools are reachable through
-  `tools.gkg.*`. Set `"codemode": false` on the server to expose the eight
+  `tools.gkg.*`. Set `"codemode": false` on the server to expose the
   tools directly.
 - **Streamable HTTP instead of stdio** (e.g. the compose stack):
 
@@ -143,11 +161,11 @@ reaches gkg through the edge with its own login
 ([USAGE.md §5](../USAGE.md) shows how to create one). There are two ways to
 plug it in:
 
-- **One "ask" tool.** Your tool calls `POST https://<host>/v1/agent/ask`
-  with `{"question": ...}`; gkg's own agent does the retrieval and returns an
-  answer plus its `evidence`. Simplest, but needs `GKG_AGENT_ENABLED=true`
-  on gkg and spends gkg's model budget.
-- **gkg's tools over MCP.** Connect to `https://<host>/mcp` and hand gkg's
+- **One MCP `ask` call.** Connect to `https://<host>/mcp` and call `ask` with
+  `{"question": "What does the graph know about Ada Lovelace?"}`. gkg's
+  agent does the retrieval and returns the answer. HTTP clients can also
+  use `POST /v1/agent/ask`.
+- **Targeted tools over MCP.** Connect to `https://<host>/mcp` and hand gkg's
   read tools (`search`, `get_entity`, `get_chunks`, `traverse`, `list_documents`,
   `status`, `cypher`) to your model, which then does the retrieval itself.
   Every login can also `ingest`; leave that tool out if the agent should
@@ -223,14 +241,14 @@ outside the script.
 
 ### Domain scope
 
-MCP read tools `search`, `get_entity`, `get_chunks`, `traverse`,
+MCP tools `ask`, `search`, `get_entity`, `get_chunks`, `traverse`,
 `list_documents` and `status` accept an optional `domain` slug. Empty selects
 all. Search hits, entity views, and document views include `domain`. `GET /v1/domains`
 provides domain names and done-document counts for the web UI's search and
-ask pickers. MCP has no `ask` tool.
+ask pickers.
 
-REST ask and stream accept `domain` in the question body. That request scope
-applies to all answer tools, regardless of model arguments. Out-of-scope
+MCP ask and REST ask (JSON and stream) accept `domain` with the question.
+That request scope applies to all answer tools, regardless of model arguments. Out-of-scope
 entities/traversal starts are not found; chunks are `missing`; lists filter
 before their limit. Cypher is not domain-enforced; the system prompt states
 the scope. At v4, `get_entity` names use `EntityKey` folding (possessives,
