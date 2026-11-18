@@ -208,7 +208,8 @@ func vectorLeg(ctx context.Context, st Store, emb QueryEmbedder, q string, limit
 		embedCtx, cancel = context.WithDeadline(ctx, now.Add(deadline.Sub(now)/2))
 	}
 	vec, err := emb.EmbedQuery(embedCtx, q)
-	if err == nil && embedCtx.Err() == context.DeadlineExceeded {
+	shareExpired := embedCtx.Err() == context.DeadlineExceeded
+	if err == nil && shareExpired {
 		err = context.DeadlineExceeded
 	}
 	cancel()
@@ -216,7 +217,12 @@ func vectorLeg(ctx context.Context, st Store, emb QueryEmbedder, q string, limit
 		return nil, fmt.Errorf("search: embedding: %w", context.DeadlineExceeded)
 	}
 	if err != nil {
-		slog.Warn("search: embedding failed, text-only results", "err", err)
+		if shareExpired {
+			// By design, not an outage: a slow embedder leaves the read budget to the text leg.
+			slog.Warn("search: embedding exceeded its share of the read budget, text-only results", "err", err)
+		} else {
+			slog.Warn("search: embedding failed, text-only results", "err", err)
+		}
 		return nil, nil
 	}
 	if len(vec) == 0 {

@@ -131,6 +131,9 @@ func readError(ctx context.Context, err error) error {
 	return err
 }
 
+// isReadClientError reports caller mistakes that a timeout must not mask.
+// Invariant: argerr wraps argument validation only, never a store or driver
+// error, so a Memgraph timeout cannot be classified as a client error here.
 func isReadClientError(err error) bool {
 	var query *QueryError
 	var arg argerr.Error

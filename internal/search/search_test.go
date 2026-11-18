@@ -1,9 +1,11 @@
 package search_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -273,10 +275,18 @@ func TestEntitySearchKeepsTextHitWhenEmbeddingExceedsHalfTheRemainingBudget(t *t
 		// Even a vector returned after the embedding deadline must be dropped.
 		return []float64{1}, nil
 	})
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
 	st := vectorErrorStore{err: graph.ErrQueryTimeout}
 	hits, err := search.Query(ctx, st, emb, "entity", "entity", 10)
 	if err != nil || len(hits) != 1 || hits[0].ID != "text-hit" {
 		t.Errorf("search returned %v, %v, want the text hit", hits, err)
+	}
+	// A slow but healthy embedder must not read as an embedder failure.
+	if got := logs.String(); !strings.Contains(got, "exceeded its share of the read budget") || strings.Contains(got, "embedding failed") {
+		t.Errorf("log = %q, want the budget-share message, not an embedding failure", got)
 	}
 }
 
