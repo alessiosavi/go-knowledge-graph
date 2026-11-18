@@ -312,16 +312,24 @@ func loadDuplicateEvidence(ctx context.Context, st *graph.Store, keys []string, 
 		if start < 0 || end <= start || end > len(text) {
 			continue
 		}
-		sentence := ingest.EvidenceSentence(text, start, end)
-		cut := min(len(sentence), 200)
-		for cut < len(sentence) && !utf8.RuneStart(sentence[cut]) {
-			cut--
-		}
-		sentence = strings.TrimSpace(sentence[:cut])
+		sentence := strings.TrimSpace(truncateEvidence(ingest.EvidenceSentence(text, start, end), 200))
 		if sentence != "" && !slices.Contains(member.EvidenceSentences, sentence) {
 			// The sentence may be a substring of a much larger chunk.
 			member.EvidenceSentences = append(member.EvidenceSentences, strings.Clone(sentence))
 		}
 	}
 	return nil
+}
+
+// truncateEvidence cuts s to at most n bytes at a rune start. Invalid UTF-8
+// can leave no rune start before n; the cut then empties the string.
+func truncateEvidence(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

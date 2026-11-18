@@ -1,6 +1,9 @@
 package quality
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDuplicateTierGuards(t *testing.T) {
 	for _, test := range []struct {
@@ -103,5 +106,18 @@ func TestDuplicateEdgePercentile(t *testing.T) {
 	counts := []int{500, 1, 20, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
 	if max, p95 := duplicateSizePercentile(counts); max != 500 || p95 != 20 {
 		t.Fatalf("max/p95 = %d/%d, want 500/20", max, p95)
+	}
+}
+
+func TestTruncateEvidence(t *testing.T) {
+	invalid := strings.Repeat("\x80", 300) + " hello"
+	if got := truncateEvidence(invalid, 200); got != "" {
+		t.Errorf("invalid prefix: got %d bytes, want an empty cut", len(got))
+	}
+	if got := truncateEvidence(strings.Repeat("é", 150), 200); got != strings.Repeat("é", 100) {
+		t.Errorf("multi-byte cut = %d bytes, want 200", len(got))
+	}
+	if got := truncateEvidence("short", 200); got != "short" {
+		t.Errorf("short = %q", got)
 	}
 }
