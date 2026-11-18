@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/chunkread"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
@@ -198,28 +200,38 @@ func toolDefs() []toolDef {
 
 // execTool runs one tool call; its result marshals into the evidence array
 // and into the tool message the model receives.
-func (s *Server) execTool(ctx context.Context, name string, args json.RawMessage) (any, error) {
+func (s *Server) execTool(ctx context.Context, name string, args json.RawMessage) (_ any, err error) {
+	var run func(context.Context, json.RawMessage) (any, error)
+	switch name {
+	case "search":
+		run = s.toolSearch
+	case "get_entity":
+		run = s.toolGetEntity
+	case "get_chunks":
+		run = s.toolGetChunks
+	case "traverse":
+		run = s.toolTraverse
+	case "list_documents":
+		run = s.toolListDocuments
+	case "status":
+		run = s.toolStatus
+	case "cypher":
+		run = s.toolCypher
+	}
+	if run != nil && s.metrics != nil {
+		start := time.Now()
+		defer func() {
+			elapsed := time.Since(start)
+			s.metrics.ObserveRequest("agent_tool", name, obs.ToolOutcome(err), elapsed)
+		}()
+	}
 	if s.store == nil {
 		return nil, errors.New("knowledge graph unavailable: no store wired")
 	}
-	switch name {
-	case "search":
-		return s.toolSearch(ctx, args)
-	case "get_entity":
-		return s.toolGetEntity(ctx, args)
-	case "get_chunks":
-		return s.toolGetChunks(ctx, args)
-	case "traverse":
-		return s.toolTraverse(ctx, args)
-	case "list_documents":
-		return s.toolListDocuments(ctx, args)
-	case "status":
-		return s.toolStatus(ctx, args)
-	case "cypher":
-		return s.toolCypher(ctx, args)
-	default:
+	if run == nil {
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
+	return run(ctx, args)
 }
 
 func (s *Server) toolGetChunks(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -238,7 +250,7 @@ func decodeArgs(raw json.RawMessage, dst any) error {
 		raw = json.RawMessage(`{}`)
 	}
 	if err := json.Unmarshal(raw, dst); err != nil {
-		return fmt.Errorf("bad arguments: %w", err)
+		return argerr.Errorf("bad arguments: %w", err)
 	}
 	return nil
 }
@@ -253,7 +265,7 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 		return nil, err
 	}
 	if args.Query == "" {
-		return nil, errors.New("query is required")
+		return nil, argerr.New("query is required")
 	}
 	kind := args.Kind
 	if kind == "" {
@@ -262,7 +274,7 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 	switch kind {
 	case "entity", "chunk", "auto":
 	default:
-		return nil, fmt.Errorf("kind %q not in entity|chunk|auto", kind)
+		return nil, argerr.Errorf("kind %q not in entity|chunk|auto", kind)
 	}
 	limit := args.Limit
 	if limit <= 0 {
@@ -294,7 +306,7 @@ func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, e
 	id := args.ID
 	switch {
 	case id == "" && args.Name == "":
-		return nil, errors.New("id or name is required")
+		return nil, argerr.New("id or name is required")
 	case id == "":
 		refs, err := s.store.EntityCandidatesByName(ctx, args.Name, requestDomain(ctx))
 		if err != nil {
@@ -378,14 +390,14 @@ func (s *Server) toolTraverse(ctx context.Context, raw json.RawMessage) (any, er
 		return nil, err
 	}
 	if args.Entity == "" {
-		return nil, errors.New("entity is required")
+		return nil, argerr.New("entity is required")
 	}
 	depth := args.Depth
 	if depth == 0 {
 		depth = 1
 	}
 	if depth < 1 || depth > 2 {
-		return nil, fmt.Errorf("depth must be 1 or 2, got %d", depth)
+		return nil, argerr.Errorf("depth must be 1 or 2, got %d", depth)
 	}
 	direction := args.Direction
 	if direction == "" {
@@ -394,11 +406,11 @@ func (s *Server) toolTraverse(ctx context.Context, raw json.RawMessage) (any, er
 	switch direction {
 	case "out", "in", "both":
 	default:
-		return nil, fmt.Errorf("direction %q not in out|in|both", direction)
+		return nil, argerr.Errorf("direction %q not in out|in|both", direction)
 	}
 	limit := args.Limit
 	if limit < 0 {
-		return nil, errors.New("limit must not be negative")
+		return nil, argerr.New("limit must not be negative")
 	}
 	if limit > traverseMaxLimit {
 		limit = traverseMaxLimit
@@ -442,7 +454,7 @@ func (s *Server) toolListDocuments(ctx context.Context, raw json.RawMessage) (an
 	}
 	limit := args.Limit
 	if limit < 0 {
-		return nil, errors.New("limit must not be negative")
+		return nil, argerr.New("limit must not be negative")
 	}
 	if limit == 0 {
 		limit = docsDefaultLimit
@@ -491,14 +503,14 @@ func (s *Server) toolCypher(ctx context.Context, raw json.RawMessage) (any, erro
 	}
 	rewritten, err := api.CheckReadOnly(args.Query)
 	if err != nil {
-		return nil, err
+		return nil, argerr.Wrap(err)
 	}
 	capRows := s.cfg.Limits.CypherRows
 	if capRows <= 0 {
 		capRows = 1000
 	}
 	if n, ok := api.LimitClause(rewritten); ok && n > capRows {
-		return nil, fmt.Errorf("LIMIT %d exceeds the configured cypher_rows cap %d", n, capRows)
+		return nil, argerr.Errorf("LIMIT %d exceeds the configured cypher_rows cap %d", n, capRows)
 	}
 	rows := capRows
 	if args.Limit > 0 && args.Limit < rows {
@@ -517,7 +529,7 @@ func (s *Server) toolCypher(ctx context.Context, raw json.RawMessage) (any, erro
 		}
 		var qerr *graph.QueryError
 		if errors.As(err, &qerr) {
-			return nil, fmt.Errorf("query failed: %s", qerr.Error())
+			return nil, argerr.Errorf("query failed: %s", qerr.Error())
 		}
 		return nil, err
 	}

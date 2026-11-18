@@ -192,13 +192,13 @@ func TestResetExtraction(t *testing.T) {
 
 // uniqueSource returns a source unique to this test run, so reruns against a
 // shared dev database do not collide with earlier rows.
-func uniqueSource(t *testing.T) string {
+func uniqueSource(t testing.TB) string {
 	t.Helper()
 	name := strings.NewReplacer("/", "-", " ", "-").Replace(t.Name())
 	return fmt.Sprintf("file:%s-%d", name, time.Now().UnixNano())
 }
 
-func testUpsert(t *testing.T, st *graph.Store, kind, source, hash string) graph.UpsertResult {
+func testUpsert(t testing.TB, st *graph.Store, kind, source, hash string) graph.UpsertResult {
 	t.Helper()
 	res, err := st.UpsertDocument(context.Background(), graph.DocumentInput{
 		Kind: kind, Source: source, Title: "title", Hash: hash,

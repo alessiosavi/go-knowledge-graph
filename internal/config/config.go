@@ -45,10 +45,11 @@ type MemgraphConfig struct {
 	Password string `yaml:"password"`
 }
 
-// ServerConfig configures the REST/MCP HTTP surface.
+// ServerConfig configures the REST/MCP surface and optional profiler.
 type ServerConfig struct {
-	Addr   string `yaml:"addr"`
-	APIKey string `yaml:"api_key"`
+	Addr      string `yaml:"addr"`
+	APIKey    string `yaml:"api_key"`
+	PprofAddr string `yaml:"pprof_addr"` // empty disables the loopback-only listener
 }
 
 // ExtractorConfig selects the extraction provider.

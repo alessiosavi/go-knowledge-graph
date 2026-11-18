@@ -43,6 +43,8 @@ jobs:
           cache: true
       - name: Integration tests
         run: go test -p 1 ./... -count=1
+      - name: Integration benchmarks
+        run: go test -run '^$' -bench . -benchtime=1x ./internal/graph ./internal/search
 
   edge:
     runs-on: ubuntu-26.04

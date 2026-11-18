@@ -108,6 +108,12 @@ when false the parameter is ignored and `unverified_ignored` is set),
 `GKG_EMBEDDER_ENABLED`, `GKG_EMBEDDER_PROVIDER=openai|furls`,
 `GKG_API_KEY` (gkg's bearer; required by the edge, which injects it), `GKG_LIMITS_CYPHER_ROWS`.
 
+Set `server.pprof_addr` in YAML or `GKG_SERVER_PPROF_ADDR` in the environment
+to serve Go profiles from a separate loopback listener, for example
+`127.0.0.1:6060` or `[::1]:6060`. `localhost` binds to `127.0.0.1`.
+The default is empty (disabled). See [Operations](USAGE.md#7-operations)
+for the request and store metrics.
+
 Automatic domain detection uses `GKG_DOMAIN_TAU=0.05`, `GKG_DOMAIN_DELTA=0.02`
 and `GKG_DOMAIN_TAU_OVERRIDE=0.15` (zero or unset values use these defaults);
 `GKG_DOMAIN_SEED_FILE` supplies the private seed mapping read by the v4 migration

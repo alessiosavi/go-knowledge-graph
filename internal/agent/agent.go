@@ -19,6 +19,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/markdown"
+	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
@@ -80,6 +81,7 @@ type Server struct {
 	llm      *client
 	maxSteps int
 	timeout  time.Duration
+	metrics  *obs.Metrics
 }
 
 // NewServer wires the agent over the open graph store; emb feeds the search
@@ -94,6 +96,9 @@ func NewServer(cfg config.Config, store *graph.Store, emb search.QueryEmbedder) 
 		timeout:  agentTimeout(cfg.Agent),
 	}
 }
+
+// SetMetrics attaches the metrics registry before serving asks.
+func (s *Server) SetMetrics(m *obs.Metrics) { s.metrics = m }
 
 // clampSteps bounds the tool-turn budget: the default when unset, the hard
 // cap when configured beyond it.

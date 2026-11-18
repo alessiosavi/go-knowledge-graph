@@ -16,26 +16,30 @@ import (
 	mcpgo "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/chunkread"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
+	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
 // Server owns one SDK server with the gkg tool set registered.
 type Server struct {
-	cfg   config.Config
-	store *graph.Store
-	in    api.Submitter
-	emb   search.QueryEmbedder
-	sdk   *mcpgo.Server
+	cfg     config.Config
+	store   *graph.Store
+	in      api.Submitter
+	emb     search.QueryEmbedder
+	sdk     *mcpgo.Server
+	metrics *obs.Metrics
+	tools   map[string]struct{}
 }
 
 // NewServer wires the tool set. store is the open graph store; in accepts
 // ingest submissions (nil answers the ingest tool with an actionable error).
 func NewServer(cfg config.Config, store *graph.Store, in api.Submitter) *Server {
-	s := &Server{cfg: cfg, store: store, in: in}
+	s := &Server{cfg: cfg, store: store, in: in, tools: make(map[string]struct{})}
 	sdk := mcpgo.NewServer(&mcpgo.Implementation{
 		Name:    "go-knowledge-graph",
 		Version: "v0.1.0",
@@ -43,7 +47,8 @@ func NewServer(cfg config.Config, store *graph.Store, in api.Submitter) *Server 
 		Instructions: "Document-to-knowledge-graph service. Ingest documents, then search entities and chunks, read entities with evidenced facts, traverse relations and run guarded read-only Cypher.",
 	})
 	s.sdk = sdk
-	registerTools(s, sdk)
+	registerTools(s)
+	sdk.AddReceivingMiddleware(s.measureToolCalls)
 	return s
 }
 
@@ -67,6 +72,9 @@ func (s *Server) HTTPHandler() http.Handler {
 func (s *Server) SetEmbedder(emb search.QueryEmbedder) {
 	s.emb = emb
 }
+
+// SetMetrics attaches the metrics registry before serving tool calls.
+func (s *Server) SetMetrics(m *obs.Metrics) { s.metrics = m }
 
 // Tool input shapes. Optional fields carry omitempty so the inferred JSON
 // schema does not require them; empty values are treated as absent.
@@ -252,36 +260,36 @@ const (
 // errNoStore is the shared unavailability error.
 var errNoStore = errors.New("knowledge graph unavailable: no store wired")
 
-func registerTools(s *Server, sdk *mcpgo.Server) {
-	mcpgo.AddTool(sdk, &mcpgo.Tool{
+func registerTools(s *Server) {
+	addTool(s, &mcpgo.Tool{
 		Name:        "ingest",
 		Description: "Ingest a document from a URL or inline text; returns the document id. Poll `status` until done or failed.",
 	}, s.handleIngest)
-	mcpgo.AddTool(sdk, &mcpgo.Tool{
+	addTool(s, &mcpgo.Tool{
 		Name:        "status",
 		Description: "Pipeline status and error of one document, or of the most recently updated documents when no id is given.",
 	}, s.handleStatus)
-	mcpgo.AddTool(sdk, &mcpgo.Tool{
+	addTool(s, &mcpgo.Tool{
 		Name:        "search",
 		Description: "Full-text search over entity names and chunk text, with scores and snippets; entity hits fuse embeddings when the embedder is enabled. Start with limit 10.",
 	}, s.handleSearch)
-	mcpgo.AddTool(sdk, &mcpgo.Tool{
+	addTool(s, &mcpgo.Tool{
 		Name:        "get_entity",
 		Description: "One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status). Low-confidence facts need include_low_confidence unless the judge confirmed them. At schema v4 name lookup uses EntityKey folding (possessives and edge punctuation), with legacy case folding below v4. Unscoped ambiguous names return candidates, one per domain.",
 	}, s.handleGetEntity)
-	mcpgo.AddTool(sdk, &mcpgo.Tool{
+	addTool(s, &mcpgo.Tool{
 		Name:        "get_chunks",
 		Description: "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
 	}, s.handleGetChunks)
-	mcpgo.AddTool(sdk, &mcpgo.Tool{
+	addTool(s, &mcpgo.Tool{
 		Name:        "traverse",
 		Description: "Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. Start with limit 10.",
 	}, s.handleTraverse)
-	mcpgo.AddTool(sdk, &mcpgo.Tool{
+	addTool(s, &mcpgo.Tool{
 		Name:        "list_documents",
 		Description: "List documents with metadata, optionally filtered by pipeline status. Start with limit 10.",
 	}, s.handleListDocuments)
-	mcpgo.AddTool(sdk, &mcpgo.Tool{
+	addTool(s, &mcpgo.Tool{
 		Name:        "cypher",
 		Description: "Run a guarded read-only Cypher query with the configured row cap and timeout; nodes and relationships come back as JSON objects.",
 	}, s.handleCypher)
@@ -302,9 +310,9 @@ func (s *Server) handleIngest(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	u := strings.TrimSpace(args.URL)
 	switch {
 	case u != "" && args.Text != "":
-		return nil, ingestOut{}, errors.New("give either url or text, not both")
+		return nil, ingestOut{}, argerr.New("give either url or text, not both")
 	case u == "" && args.Text == "":
-		return nil, ingestOut{}, errors.New("url or text is required")
+		return nil, ingestOut{}, argerr.New("url or text is required")
 	}
 	in := ingest.Input{Source: args.Source, Labels: args.Labels, Force: args.Force}
 	if u != "" {
@@ -324,7 +332,7 @@ func (s *Server) handleStatus(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 		return nil, statusOut{}, errNoStore
 	}
 	if args.Domain != "" && !graph.ValidDomain(args.Domain) {
-		return nil, statusOut{}, errors.New("invalid domain slug")
+		return nil, statusOut{}, argerr.New("invalid domain slug")
 	}
 	if args.DocumentID != "" {
 		doc, err := s.store.Document(ctx, args.DocumentID)
@@ -348,7 +356,7 @@ func (s *Server) handleSearch(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 		return nil, searchOut{}, errNoStore
 	}
 	if strings.TrimSpace(args.Query) == "" {
-		return nil, searchOut{}, errors.New("query is required")
+		return nil, searchOut{}, argerr.New("query is required")
 	}
 	kind := args.Kind
 	if kind == "" {
@@ -357,7 +365,7 @@ func (s *Server) handleSearch(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	switch kind {
 	case "entity", "chunk", "auto":
 	default:
-		return nil, searchOut{}, fmt.Errorf("kind %q not in entity|chunk|auto", kind)
+		return nil, searchOut{}, argerr.Errorf("kind %q not in entity|chunk|auto", kind)
 	}
 	limit := args.Limit
 	if limit <= 0 {
@@ -384,7 +392,7 @@ func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, 
 	id := strings.TrimSpace(args.ID)
 	switch {
 	case id == "" && strings.TrimSpace(args.Name) == "":
-		return nil, entityOut{}, errors.New("id or name is required")
+		return nil, entityOut{}, argerr.New("id or name is required")
 	case id == "":
 		refs, err := s.store.EntityCandidatesByName(ctx, strings.TrimSpace(args.Name), args.Domain)
 		if err != nil {
@@ -425,14 +433,14 @@ func (s *Server) handleTraverse(ctx context.Context, _ *mcpgo.CallToolRequest, a
 	}
 	entity := strings.TrimSpace(args.Entity)
 	if entity == "" {
-		return nil, traverseOut{}, errors.New("entity is required")
+		return nil, traverseOut{}, argerr.New("entity is required")
 	}
 	depth := args.Depth
 	if depth == 0 {
 		depth = 1
 	}
 	if depth < 1 || depth > 2 {
-		return nil, traverseOut{}, fmt.Errorf("depth must be 1 or 2, got %d", depth)
+		return nil, traverseOut{}, argerr.Errorf("depth must be 1 or 2, got %d", depth)
 	}
 	direction := args.Direction
 	if direction == "" {
@@ -441,11 +449,11 @@ func (s *Server) handleTraverse(ctx context.Context, _ *mcpgo.CallToolRequest, a
 	switch direction {
 	case "out", "in", "both":
 	default:
-		return nil, traverseOut{}, fmt.Errorf("direction %q not in out|in|both", direction)
+		return nil, traverseOut{}, argerr.Errorf("direction %q not in out|in|both", direction)
 	}
 	limit := args.Limit
 	if limit < 0 {
-		return nil, traverseOut{}, errors.New("limit must not be negative")
+		return nil, traverseOut{}, argerr.New("limit must not be negative")
 	}
 	if limit > traverseMaxLimit {
 		limit = traverseMaxLimit
@@ -495,7 +503,7 @@ func (s *Server) handleListDocuments(ctx context.Context, _ *mcpgo.CallToolReque
 	}
 	limit := args.Limit
 	if limit < 0 {
-		return nil, listDocumentsOut{}, errors.New("limit must not be negative")
+		return nil, listDocumentsOut{}, argerr.New("limit must not be negative")
 	}
 	if limit == 0 {
 		limit = docsDefaultLimit
@@ -513,14 +521,14 @@ func (s *Server) handleListDocuments(ctx context.Context, _ *mcpgo.CallToolReque
 func (s *Server) handleCypher(ctx context.Context, _ *mcpgo.CallToolRequest, args cypherArgs) (*mcpgo.CallToolResult, cypherOut, error) {
 	rewritten, err := api.CheckReadOnly(args.Query)
 	if err != nil {
-		return nil, cypherOut{}, err
+		return nil, cypherOut{}, argerr.Wrap(err)
 	}
 	capRows := s.cfg.Limits.CypherRows
 	if capRows <= 0 {
 		capRows = 1000
 	}
 	if n, ok := api.LimitClause(rewritten); ok && n > capRows {
-		return nil, cypherOut{}, fmt.Errorf("LIMIT %d exceeds the configured cypher_rows cap %d", n, capRows)
+		return nil, cypherOut{}, argerr.Errorf("LIMIT %d exceeds the configured cypher_rows cap %d", n, capRows)
 	}
 	if s.store == nil {
 		return nil, cypherOut{}, errNoStore
@@ -542,7 +550,7 @@ func (s *Server) handleCypher(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 		}
 		var qerr *graph.QueryError
 		if errors.As(err, &qerr) {
-			return nil, cypherOut{}, fmt.Errorf("query failed: %s", qerr.Error())
+			return nil, cypherOut{}, argerr.Errorf("query failed: %s", qerr.Error())
 		}
 		return nil, cypherOut{}, err
 	}

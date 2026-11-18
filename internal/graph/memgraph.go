@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 	driverconfig "github.com/neo4j/neo4j-go-driver/v6/neo4j/config"
@@ -22,7 +23,14 @@ type Store struct {
 	// unique-constraint violation the driver does not retry. Multiple
 	// processes against one database are out of scope for v0 (one gkg
 	// process owns the store).
-	mu sync.Mutex
+	mu            sync.Mutex
+	writeLockWait func(time.Duration)
+}
+
+// SetWriteLockWaitObserver registers the optional lock wait observer.
+// Set it before using the store concurrently. The callback runs outside mu.
+func (s *Store) SetWriteLockWaitObserver(observe func(time.Duration)) {
+	s.writeLockWait = observe
 }
 
 // Open connects to Memgraph over Bolt and verifies connectivity and
@@ -90,7 +98,16 @@ func (s *Store) runWriteTx(ctx context.Context, fn func(tx neo4j.ManagedTransact
 // runWriteTxLocked serializes the whole transaction behind Store.mu before
 // running it; see Store.mu for why.
 func (s *Store) runWriteTxLocked(ctx context.Context, fn func(tx neo4j.ManagedTransaction) error) error {
+	observe := s.writeLockWait
+	var start time.Time
+	if observe != nil {
+		start = time.Now()
+	}
 	s.mu.Lock()
+	if observe != nil {
+		wait := time.Since(start)
+		defer observe(wait)
+	}
 	defer s.mu.Unlock()
 	return s.runWriteTx(ctx, fn)
 }

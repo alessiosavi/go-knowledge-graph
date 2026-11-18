@@ -1,22 +1,24 @@
 // Package obs provides the observability primitives: a Prometheus
-// registry with the pipeline counters and latencies, JSON structured logs
+// registry with pipeline and request metrics, JSON structured logs
 // and the request logging middleware. The HTTP probes that expose this
 // state (/healthz, /readyz, /metrics) live on the api mux.
 package obs
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// Metrics is the process registry with the pipeline counters and
-// latencies. It structurally implements the ingest pipeline's metrics
+// Metrics is the process registry with pipeline and request metrics.
+// It structurally implements the ingest pipeline's metrics
 // interface; a nil *Metrics is never wired (callers check before use).
 type Metrics struct {
 	reg *prometheus.Registry
@@ -34,6 +36,8 @@ type Metrics struct {
 	extractorErrors prometheus.Counter
 	extractSeconds  prometheus.Histogram
 	judgeSeconds    prometheus.Histogram
+	requestDuration *prometheus.HistogramVec
+	writeLockWait   prometheus.Histogram
 }
 
 // New builds the registry and registers every metric.
@@ -91,9 +95,20 @@ func New() *Metrics {
 			Name: "judge_seconds",
 			Help: "Judge verification latency in seconds, including cache lookups.",
 		}),
+		requestDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "gkg_request_duration_seconds",
+			Help:    "Duration of a REST route handler or tool call in seconds.",
+			Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60},
+		}, []string{"surface", "op", "outcome"}),
+		writeLockWait: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "gkg_store_write_lock_wait_seconds",
+			Help:    "Time spent waiting to acquire the store write lock in seconds.",
+			Buckets: []float64{.000001, .00001, .0001, .001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60},
+		}),
 	}
 	reg.MustRegister(m.documents, m.chunks, m.entities, m.facts, m.factsDropped,
-		m.hygieneDropped, m.hygieneRenamed, m.judgeVerdicts, m.judgeFailures, m.judgeCache, m.extractorErrors, m.extractSeconds, m.judgeSeconds)
+		m.hygieneDropped, m.hygieneRenamed, m.judgeVerdicts, m.judgeFailures, m.judgeCache, m.extractorErrors, m.extractSeconds, m.judgeSeconds,
+		m.requestDuration, m.writeLockWait)
 	return m
 }
 
@@ -168,6 +183,53 @@ func (m *Metrics) ExtractSeconds(seconds float64) { m.extractSeconds.Observe(sec
 // JudgeSeconds observes one judge verification duration, including cache lookups.
 func (m *Metrics) JudgeSeconds(seconds float64) { m.judgeSeconds.Observe(seconds) }
 
+const (
+	OutcomeOK          = "ok"
+	OutcomeClientError = "client_error"
+	OutcomeError       = "error"
+)
+
+// ToolOutcome classifies a typed tool error without inspecting its text.
+func ToolOutcome(err error) string {
+	var invalid argerr.Error
+	switch {
+	case err == nil:
+		return OutcomeOK
+	case errors.As(err, &invalid):
+		return OutcomeClientError
+	default:
+		return OutcomeError
+	}
+}
+
+// ObserveRequest records one completed operation. op must be a registered name.
+func (m *Metrics) ObserveRequest(surface, op, outcome string, elapsed time.Duration) {
+	m.requestDuration.WithLabelValues(surface, op, outcome).Observe(elapsed.Seconds())
+}
+
+// ObserveWriteLockWait records the time taken to acquire the store write lock.
+func (m *Metrics) ObserveWriteLockWait(elapsed time.Duration) {
+	m.writeLockWait.Observe(elapsed.Seconds())
+}
+
+// MeasureREST records a mounted REST handler with its ServeMux pattern.
+func (m *Metrics) MeasureREST(pattern string, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		h.ServeHTTP(rec, r)
+		elapsed := time.Since(start)
+		outcome := OutcomeOK
+		switch {
+		case rec.status >= 500:
+			outcome = OutcomeError
+		case rec.status >= 400:
+			outcome = OutcomeClientError
+		}
+		m.ObserveRequest("rest", pattern, outcome, elapsed)
+	})
+}
+
 // Log returns the process logger: JSON records on stderr.
 func Log() *slog.Logger { return LogTo(os.Stderr) }
 
@@ -197,11 +259,9 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// statusRecorder captures the response status for the request log while
-// staying transparent to the optional interfaces streaming handlers need
-// (SSE via Flush, Hijack): WriteHeader records only the first call, Flush
-// forwards directly and Unwrap lets http.ResponseController reach the
-// underlying writer.
+// statusRecorder records the final status, including an implicit 200 from
+// writing or flushing. Unwrap lets http.ResponseController reach the
+// underlying writer's optional methods.
 type statusRecorder struct {
 	http.ResponseWriter
 	status      int
@@ -212,14 +272,22 @@ func (r *statusRecorder) WriteHeader(code int) {
 	if r.wroteHeader {
 		return
 	}
-	r.wroteHeader = true
-	r.status = code
+	if code == http.StatusSwitchingProtocols || code >= 200 {
+		r.wroteHeader = true
+		r.status = code
+	}
 	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(p []byte) (int, error) {
+	r.wroteHeader = true // Writing the body commits an implicit 200 if needed.
+	return r.ResponseWriter.Write(p)
 }
 
 // Flush forwards to the underlying writer so streaming responses (SSE, the
 // MCP streamable endpoint) keep working through the logging wrapper.
 func (r *statusRecorder) Flush() {
+	r.wroteHeader = true // Flushing also commits the response.
 	_ = http.NewResponseController(r.ResponseWriter).Flush()
 }
 

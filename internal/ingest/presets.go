@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"go.yaml.in/yaml/v4"
 )
@@ -26,10 +27,13 @@ func LoadPreset(dir, name string) (entities, relations []extract.Label, err erro
 		return entities, relations, nil
 	}
 	if !presetNameRe.MatchString(name) {
-		return nil, nil, fmt.Errorf("label preset %q: invalid name", name)
+		return nil, nil, argerr.Errorf("label preset %q: invalid name", name)
 	}
 	path := filepath.Join(dir, name+".yaml")
 	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil, argerr.Errorf("label preset %q: %w", name, err)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("label preset %q: %w", name, err)
 	}
