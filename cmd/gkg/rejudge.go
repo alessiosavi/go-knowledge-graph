@@ -93,8 +93,12 @@ func runJudgeRejudge(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	result, runErr := judge.JudgeRejudge(ctx, st, client, cfg.Labels.PresetsDir, opt)
-	if _, err := fmt.Fprintf(stdout, "judged=%d resumed=%d cache_hits=%d attempts=%d cap=%d stopped_for_budget=%t\n",
-		result.Judged, result.Resumed, result.CacheHits, result.Attempts, result.Cap, result.StoppedForBudget); err != nil {
+	summary := fmt.Sprintf("judged=%d resumed=%d planned=%d cache_hits=%d attempts=%d cap=%d effective_budget=%d stopped_for_budget=%t",
+		result.Judged, result.Resumed, result.Planned, result.CacheHits, result.Attempts, result.Cap, result.EffectiveBudget, result.StoppedForBudget)
+	if result.Gate == nil && result.Fingerprint != "" {
+		summary += " fingerprint=" + result.Fingerprint
+	}
+	if _, err := fmt.Fprintln(stdout, summary); err != nil {
 		return fail(1, err)
 	}
 	if runErr != nil {
@@ -107,6 +111,12 @@ func runJudgeRejudge(args []string, stdout, stderr io.Writer) int {
 		if !result.Gate.Passed() {
 			return 3
 		}
+	} else if judged := result.Judged + result.Resumed; result.StoppedForBudget || judged < result.Planned {
+		message := fmt.Sprintf("incomplete: %d of %d rows judged", judged, result.Planned)
+		if result.StoppedForBudget {
+			message += "; budget reached"
+		}
+		return fail(4, errors.New(message))
 	}
 	return 0
 }

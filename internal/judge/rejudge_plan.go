@@ -204,6 +204,9 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 	if len(incomplete) > 0 {
 		return result, errors.Join(incomplete...)
 	}
+	if result.Planned == 0 {
+		return result, fmt.Errorf("judge: no rows to plan after selection, evidence checks and label reconciliation")
+	}
 	manifest.header.Mismatches = result.Mismatches
 	profile := NewV2Profile(model, usedDefinitions)
 	keys := make(map[string]struct{}, len(manifest.rows))
@@ -259,10 +262,10 @@ func rejudgeTableRow(in V2Input) bool {
 func foldRejudgeName(s string) string { return cases.Fold().String(graph.DisplayName(s)) }
 
 func reconcileRejudgeLabel(label AuditRow, fact graph.RejudgeFact, payload v2Payload) string {
-	if foldRejudgeName(label.Head) != foldRejudgeName(payload.Fact.Head) {
+	if head := foldRejudgeName(label.Head); head != foldRejudgeName(fact.HeadName) && head != foldRejudgeName(payload.Fact.Head) {
 		return "head differs"
 	}
-	if foldRejudgeName(label.Tail) != foldRejudgeName(payload.Fact.Tail) {
+	if tail := foldRejudgeName(label.Tail); tail != foldRejudgeName(fact.TailName) && tail != foldRejudgeName(payload.Fact.Tail) {
 		return "tail differs"
 	}
 	if label.Relation != payload.Fact.Rel {

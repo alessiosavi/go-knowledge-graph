@@ -8,8 +8,8 @@ import (
 )
 
 type rejudgeGateCounts struct {
-	matched, expected int
-	ok, bad           [4]int // confirmed, unclear, refuted, missing
+	reconciled, expected int
+	ok, bad              [4]int // confirmed, unclear, refuted, missing
 }
 
 func (c *rejudgeGateCounts) record(label, verdict string) {
@@ -22,7 +22,7 @@ func (c *rejudgeGateCounts) record(label, verdict string) {
 	case "refuted":
 		index = 2
 	}
-	c.matched++
+	c.reconciled++
 	c.expected++
 	if label == "ok" {
 		c.ok[index]++
@@ -36,7 +36,7 @@ func (c rejudgeGateCounts) okTotal() int {
 }
 
 func (c rejudgeGateCounts) passes() bool {
-	return c.expected > 0 && 100*c.matched >= 95*c.expected &&
+	return c.expected > 0 && 100*c.reconciled >= 95*c.expected &&
 		c.ok[3]+c.bad[3] == 0 && c.okTotal() > 0 && 100*c.ok[0] >= 98*c.okTotal() &&
 		100*c.ok[0] >= 95*(c.ok[0]+c.bad[0])
 }
@@ -55,9 +55,9 @@ func (c rejudgeGateCounts) distinctVerdict() (label, verdict string) {
 	switch {
 	case c.ok[3]+c.bad[3] > 0:
 		return label, ""
-	case totalBad > 0 && c.ok[0]+c.bad[0] > 0, totalBad == 0 && c.ok[0] == c.matched:
+	case totalBad > 0 && c.ok[0]+c.bad[0] > 0, totalBad == 0 && c.ok[0] == c.reconciled:
 		return label, "confirmed"
-	case totalBad > 0 && c.ok[2]+c.bad[2] == c.matched, totalBad == 0 && c.ok[2] > 0:
+	case totalBad > 0 && c.ok[2]+c.bad[2] == c.reconciled, totalBad == 0 && c.ok[2] > 0:
 		return label, "refuted"
 	default:
 		return label, "unclear"
@@ -67,13 +67,19 @@ func (c rejudgeGateCounts) distinctVerdict() (label, verdict string) {
 type rejudgeGateIssue struct{ kind, id, reason string }
 
 type RejudgeGate struct {
+	fingerprint    string
+	incomplete     bool
 	rows, distinct rejudgeGateCounts
 	domains        map[string]*rejudgeGateCounts
 	issues         []rejudgeGateIssue
 }
 
-func buildRejudgeGate(m rejudgeManifest, payloads map[string]v2Payload, done map[string]rejudgeVerdict) *RejudgeGate {
-	g := &RejudgeGate{domains: make(map[string]*rejudgeGateCounts)}
+func buildRejudgeGate(m rejudgeManifest, payloads map[string]v2Payload, done map[string]rejudgeVerdict, fingerprint string) *RejudgeGate {
+	g := &RejudgeGate{
+		fingerprint: fingerprint,
+		incomplete:  len(done) < len(m.rows),
+		domains:     make(map[string]*rejudgeGateCounts),
+	}
 	domainCounts := func(domain string) *rejudgeGateCounts {
 		if g.domains[domain] == nil {
 			g.domains[domain] = &rejudgeGateCounts{}
@@ -118,13 +124,17 @@ func buildRejudgeGate(m rejudgeManifest, payloads map[string]v2Payload, done map
 	return g
 }
 
-func (g *RejudgeGate) Passed() bool { return g.rows.passes() }
+func (g *RejudgeGate) Passed() bool { return !g.incomplete && g.rows.passes() }
 
 // Write reports the decision for the labelled set. Distinct facts and domain
 // splits are diagnostics; the pre-registered thresholds use the row totals.
 func (g *RejudgeGate) Write(w io.Writer) error {
-	const format = "%-20s %-16s %-20s %-20s %7s %9s %s\n"
-	if _, err := fmt.Fprintf(w, format, "set", "matched/expected", "ok K/U/R/missing", "bad K/U/R/missing", "ok kept", "precision", "Wilson 95%"); err != nil {
+	if _, err := fmt.Fprintf(w, "fingerprint=%s\n", g.fingerprint); err != nil {
+		return err
+	}
+	const format = "%-20s %-20s %-18s %-20s %-20s %7s %9s %s\n"
+	if _, err := fmt.Fprintf(w, format, "set", "reconciled/expected", "judged/reconciled",
+		"ok K/U/R/missing", "bad K/U/R/missing", "ok kept", "precision", "Wilson 95%"); err != nil {
 		return err
 	}
 	write := func(name string, c rejudgeGateCounts) error {
@@ -138,7 +148,8 @@ func (g *RejudgeGate) Write(w io.Writer) error {
 			precision = fmt.Sprintf("%.3f", p)
 			interval = fmt.Sprintf("[%.3f, %.3f] n=%d", lo, hi, n)
 		}
-		_, err := fmt.Fprintf(w, format, name, fmt.Sprintf("%d/%d", c.matched, c.expected),
+		judged := c.reconciled - c.ok[3] - c.bad[3]
+		_, err := fmt.Fprintf(w, format, name, fmt.Sprintf("%d/%d", c.reconciled, c.expected), fmt.Sprintf("%d/%d", judged, c.reconciled),
 			counts(c.ok), counts(c.bad), retained, precision, interval)
 		return err
 	}

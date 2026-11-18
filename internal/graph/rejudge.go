@@ -30,6 +30,7 @@ type RejudgeFact struct {
 	Before                             map[string]any
 	DocID, Title, Preset, Text         string
 	ChunkOwned                         bool
+	HeadName, TailName                 string
 	HeadType, TailType                 string
 	HeadTypeFallback, TailTypeFallback bool
 }
@@ -61,6 +62,7 @@ RETURN f AS ref, properties(r) AS before, r.doc_id AS doc_id, d.title AS title, 
        c.id IS NOT NULL AS owned, c.text AS text, r.judge AS judge, r.extractor_version AS extractor_version,
        r.head_start AS head_start, r.head_end AS head_end, r.tail_start AS tail_start, r.tail_end AS tail_end,
        r.confidence AS confidence, r.low_confidence AS low_confidence,
+       coalesce(h.name, f.head_key) AS head_name, coalesce(t.name, f.tail_key) AS tail_name,
        coalesce(ht, h.type, '') AS head_type, coalesce(tt, t.type, '') AS tail_type,
        ht IS NULL AS head_fallback, tt IS NULL AS tail_fallback
 ORDER BY f.idx`
@@ -150,6 +152,7 @@ func (s *Store) rejudgeFacts(ctx context.Context, refs []map[string]any) ([]Reju
 			},
 			Before: before, DocID: getString(row, "doc_id"), Title: getString(row, "title"),
 			Preset: getString(row, "preset"), Text: getString(row, "text"), ChunkOwned: getBool(row, "owned"),
+			HeadName: getString(row, "head_name"), TailName: getString(row, "tail_name"),
 			HeadType: getString(row, "head_type"), TailType: getString(row, "tail_type"),
 			HeadTypeFallback: getBool(row, "head_fallback"), TailTypeFallback: getBool(row, "tail_fallback"),
 		})

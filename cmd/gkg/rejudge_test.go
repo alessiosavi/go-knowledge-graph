@@ -65,6 +65,7 @@ func TestRejudgeCLIResume(t *testing.T) {
 		bytes.Contains(original, []byte(labels[2].ID)) {
 		t.Fatal("manifest failed to restrict to labelled confirmed/unjudged edges")
 	}
+	firstRequest := firstRejudgeRequest(t, original)
 	if code, _ := callRejudge(t, plan...); code == 0 || !bytes.Equal(original, readRejudgeFile(t, manifest)) {
 		t.Fatal("plan overwrote an existing manifest")
 	}
@@ -74,6 +75,18 @@ func TestRejudgeCLIResume(t *testing.T) {
 	}
 	if code, out := judgeArgs("2"); code != 3 || !strings.Contains(out, "GATE FAIL") || requests.Load() != 2 {
 		t.Fatalf("budget stop exit=%d calls=%d: %s", code, requests.Load(), out)
+	} else {
+		for _, want := range []string{"fingerprint=" + firstRequest.Profile.Fingerprint, "reconciled/expected", "judged/reconciled"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("partial gate missing %q: %s", want, out)
+			}
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if fields := strings.Fields(line); len(fields) > 2 && fields[0] == "rows" &&
+				(fields[1] != "2/2" || fields[2] != "1/2") {
+				t.Errorf("partial gate row counts: %s", line)
+			}
+		}
 	}
 	if lines := bytes.Count(readRejudgeFile(t, verdicts), []byte("\n")); lines != 1 {
 		t.Fatalf("verdict count after budget stop = %d", lines)
@@ -87,6 +100,10 @@ func TestRejudgeCLIResume(t *testing.T) {
 	migrationQuery(t, `MATCH (v:JudgeVerdict {doc_id: $doc}) DELETE v`, map[string]any{"doc": doc})
 	if code, _ := judgeArgs("3"); code == 0 || requests.Load() != 2 {
 		t.Fatal("cap changed without -raise-cap")
+	}
+	if code, out := judgeArgs("1"); code != 3 || requests.Load() != 2 ||
+		!strings.Contains(out, "cap=2") || !strings.Contains(out, "effective_budget=1") {
+		t.Errorf("lower invocation budget exit=%d calls=%d: %s", code, requests.Load(), out)
 	}
 	if code, out := judgeArgs("3", "-raise-cap"); code != 0 || !strings.Contains(out, "GATE PASS") || requests.Load() != 3 {
 		t.Fatalf("resume exit=%d calls=%d: %s", code, requests.Load(), out)
@@ -113,9 +130,15 @@ func TestRejudgeCLIResume(t *testing.T) {
 }
 
 func TestRejudgeCLIReconciliation(t *testing.T) {
-	_, labels := rejudgeCLIFixture(t, func(http.ResponseWriter, *http.Request) {
+	doc, labels := rejudgeCLIFixture(t, func(http.ResponseWriter, *http.Request) {
 		t.Error("plan called provider")
 	})
+	migrationQuery(t, `MATCH (h:Entity)-[r:uses {doc_id:$doc}]->(t:Entity)
+SET h.name='Acme Capital', t.name=t.name + ' Platform'`, map[string]any{"doc": doc})
+	canonical := labels[0]
+	canonical.Head, canonical.Tail = "**ACME CAPITAL**", "`Zorbo Platform`"
+	wrong := labels[1]
+	wrong.Head = "Neither Name"
 	dir := t.TempDir()
 	labelPath := filepath.Join(dir, "labels.jsonl")
 	tests := []struct {
@@ -124,7 +147,10 @@ func TestRejudgeCLIReconciliation(t *testing.T) {
 		code int
 		want string
 	}{
-		{"mismatch", []judge.AuditRow{labels[0], {ID: labels[1].ID, Label: "ok"}}, 0, "mismatched=1"},
+		{"canonical names", []judge.AuditRow{canonical}, 0, "reconciled=1"},
+		{"mismatch", []judge.AuditRow{labels[0], wrong}, 0, `reason="head differs"`},
+		{"all mismatched", []judge.AuditRow{wrong}, 1, "no rows to plan"},
+		{"empty selection", []judge.AuditRow{}, 1, "no rows to plan"},
 		{"missing", []judge.AuditRow{labels[0], {ID: "missing-id", Label: "ok"}}, 1, "missing-id"},
 		{"unverifiable", []judge.AuditRow{labels[2]}, 1, labels[2].ID},
 		{"duplicate", []judge.AuditRow{labels[0], labels[0]}, 2, labels[0].ID},
@@ -144,6 +170,107 @@ func TestRejudgeCLIReconciliation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRejudgeCLIIncomplete(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		labels  []string
+		code    int
+		message string
+	}{
+		{"unlabelled", []string{"", ""}, 4, "incomplete: 1 of 2 rows judged; budget reached"},
+		{"labelled with unjudged skip", []string{"ok", "skip"}, 3, "GATE FAIL"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			_, rows := rejudgeCLIFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				writeConfirmedRejudgeResponse(w)
+			})
+			for i, label := range tt.labels {
+				rows[i].Label = label
+			}
+			dir := t.TempDir()
+			manifest, verdicts, audit := filepath.Join(dir, "m.jsonl"), filepath.Join(dir, "v.jsonl"), filepath.Join(dir, "a.jsonl")
+			writeRejudgeLabels(t, audit, rows[:2])
+			if code, out := callRejudge(t, "-plan", "-ids", audit, "-out", manifest); code != 0 {
+				t.Fatalf("plan exit=%d: %s", code, out)
+			}
+			args := []string{"-judge", "-manifest", manifest, "-out", verdicts}
+			if code, out := callRejudge(t, append(args, "-budget-attempts", "1")...); code != tt.code ||
+				!strings.Contains(out, tt.message) || calls.Load() != 1 {
+				t.Errorf("partial run exit=%d calls=%d: %s", code, calls.Load(), out)
+			}
+			if tt.code == 4 {
+				req := firstRejudgeRequest(t, readRejudgeFile(t, manifest))
+				if code, out := callRejudge(t, append(args, "-budget-attempts", "2", "-raise-cap")...); code != 0 ||
+					!strings.Contains(out, "fingerprint="+req.Profile.Fingerprint) || calls.Load() != 2 {
+					t.Errorf("completed unlabelled run exit=%d calls=%d: %s", code, calls.Load(), out)
+				}
+			}
+		})
+	}
+}
+
+func TestRejudgeCLIRejectsInvalidVerdictKeys(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		edit func(map[string]json.RawMessage)
+	}{
+		{"wrong key", func(record map[string]json.RawMessage) { record["key"] = json.RawMessage(`"wrong"`) }},
+		{"missing key", func(record map[string]json.RawMessage) { delete(record, "key") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int32
+			_, rows := rejudgeCLIFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				writeConfirmedRejudgeResponse(w)
+			})
+			dir := t.TempDir()
+			manifest, verdicts, audit := filepath.Join(dir, "m.jsonl"), filepath.Join(dir, "v.jsonl"), filepath.Join(dir, "a.jsonl")
+			writeRejudgeLabels(t, audit, rows[:2])
+			if code, out := callRejudge(t, "-plan", "-ids", audit, "-out", manifest); code != 0 {
+				t.Fatalf("plan exit=%d: %s", code, out)
+			}
+			args := []string{"-judge", "-manifest", manifest, "-out", verdicts}
+			if code, out := callRejudge(t, append(args, "-budget-attempts", "1")...); code != 3 || calls.Load() != 1 {
+				t.Fatalf("partial run exit=%d calls=%d: %s", code, calls.Load(), out)
+			}
+			var record map[string]json.RawMessage
+			original := readRejudgeFile(t, verdicts)
+			if err := json.Unmarshal(original, &record); err != nil {
+				t.Fatal(err)
+			}
+			req := firstRejudgeRequest(t, readRejudgeFile(t, manifest))
+			wantKey := judge.RequestKeyV2(req.RequestBytes, req.Profile.Fingerprint)
+			var key string
+			if err := json.Unmarshal(record["key"], &key); err != nil || key != wantKey {
+				t.Errorf("verdict key = %q, want %q (decode: %v)", key, wantKey, err)
+			}
+			test.edit(record)
+			var edited bytes.Buffer
+			if err := json.NewEncoder(&edited).Encode(record); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(verdicts, edited.Bytes(), 0600); err != nil {
+				t.Fatal(err)
+			}
+			attempts := filepath.Join(dir, "attempts.json")
+			debits := readRejudgeFile(t, attempts)
+			if code, out := callRejudge(t, append(args, "-budget-attempts", "2", "-raise-cap")...); code != 1 ||
+				!strings.Contains(out, "request key") || calls.Load() != 1 {
+				t.Errorf("invalid key exit=%d calls=%d: %s", code, calls.Load(), out)
+			}
+			if !bytes.Equal(readRejudgeFile(t, verdicts), edited.Bytes()) || !bytes.Equal(readRejudgeFile(t, attempts), debits) {
+				t.Error("invalid key changed verdicts or attempt ledger")
+			}
+		})
+	}
+}
+
+func writeConfirmedRejudgeResponse(w http.ResponseWriter) {
+	fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"verdict\":\"confirmed\",\"confidence\":0.9,\"reason\":\"supported\"}"}}]}`)
 }
 
 func rejudgeCLIFixture(t *testing.T, handler http.HandlerFunc) (string, []judge.AuditRow) {
@@ -199,9 +326,25 @@ func rejudgeCLIFixture(t *testing.T, handler http.HandlerFunc) (string, []judge.
 
 func callRejudge(t *testing.T, args ...string) (int, string) {
 	t.Helper()
+	code, stdout, stderr := callRejudgeStreams(args...)
+	return code, stdout + stderr
+}
+
+func callRejudgeStreams(args ...string) (int, string, string) {
 	var out, stderr bytes.Buffer
 	code := run(append([]string{"judge", "rejudge"}, args...), &out, &stderr)
-	return code, out.String() + stderr.String()
+	return code, out.String(), stderr.String()
+}
+
+func firstRejudgeRequest(t *testing.T, manifest []byte) judge.Request {
+	t.Helper()
+	_, rows, _ := bytes.Cut(manifest, []byte("\n"))
+	line, _, _ := bytes.Cut(rows, []byte("\n"))
+	var row struct{ Request judge.Request }
+	if err := json.Unmarshal(line, &row); err != nil {
+		t.Fatal(err)
+	}
+	return row.Request
 }
 
 func writeRejudgeLabels(t *testing.T, path string, rows []judge.AuditRow) {
@@ -389,7 +532,6 @@ func configureRejudgeCLI(t *testing.T, url string) {
 }
 
 func TestRejudgeCLIPlanUsesStoredPresetAndAdjacentChunk(t *testing.T) {
-	st := graphtest.Store(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("plan contacted provider")
 		http.Error(w, "unexpected", http.StatusBadRequest)
@@ -402,6 +544,125 @@ func TestRejudgeCLIPlanUsesStoredPresetAndAdjacentChunk(t *testing.T) {
 	}
 	t.Setenv("GKG_LABELS_PRESETS_DIR", presets)
 	const domain = "rejudge-plan-source"
+	head, label := seedRejudgeDocumentationFact(t, domain)
+	// Fill one head-key page with irrelevant nodes to exercise the next page
+	// without relying on database insertion order or global fixture counts.
+	migrationQuery(t, `UNWIND range(1, 260) AS i CREATE (:Entity {key:'!rejudge-filler-'+toString(i), domain:$domain, filler:true})`,
+		map[string]any{"domain": domain})
+	t.Cleanup(func() {
+		migrationQuery(t, `MATCH (e:Entity {domain:$domain, filler:true}) DELETE e`, map[string]any{"domain": domain})
+	})
+	audit := filepath.Join(t.TempDir(), "audit.jsonl")
+	writeRejudgeLabels(t, audit, []judge.AuditRow{label})
+	path := filepath.Join(t.TempDir(), "m.jsonl")
+	if code, out := callRejudge(t, "-plan", "-domain", domain, "-ids", audit, "-out", path); code != 0 ||
+		!strings.Contains(out, "reconciled=1") || !strings.Contains(out, "header_present=1 header_null=0") {
+		t.Fatalf("plan exit=%d: %s", code, out)
+	}
+	lines := bytes.Split(bytes.TrimSpace(readRejudgeFile(t, path)), []byte("\n"))
+	if len(lines) != 2 {
+		t.Fatalf("manifest line count = %d", len(lines))
+	}
+	var row struct {
+		graph.RejudgeIdentity
+		Request judge.Request
+		Before  map[string]any
+	}
+	if err := json.Unmarshal(lines[1], &row); err != nil {
+		t.Fatal(err)
+	}
+	if row.ID != label.ID || row.HeadKey != head || !row.LowConfidence || row.ExtractorVersion != "fake:1" ||
+		row.Before["extra"] != "keep this property" {
+		t.Fatalf("incorrect identity/before-image: %+v", row)
+	}
+	var payload struct {
+		Fact struct {
+			Head, Tail string
+		}
+		Definition   string `json:"relation_definition"`
+		HeadType     string `json:"head_mention_type"`
+		TailType     string `json:"tail_mention_type"`
+		HeadFallback bool   `json:"head_type_fallback"`
+		TailFallback bool   `json:"tail_type_fallback"`
+		Header       string `json:"table_header"`
+		Title        string `json:"doc_title"`
+	}
+	if err := json.Unmarshal(row.Request.RequestBytes, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Fact.Head != "Acme" || payload.Fact.Tail != "/ready" ||
+		payload.Definition != rejudgeExposesDefinition ||
+		payload.HeadType != "service" || payload.HeadFallback || payload.TailType != "endpoint" || !payload.TailFallback ||
+		payload.Header != "| Service | Endpoint |\n| --- | --- |" || payload.Title != "API reference" {
+		t.Fatalf("unexpected source payload: %+v", payload)
+	}
+}
+
+const rejudgeExposesDefinition = "a service, API, component, endpoint or function (head) offers the tail (an endpoint, field, parameter, action or interface)"
+
+func TestRejudgeCLIJudgeRejectsEditedPreset(t *testing.T) {
+	var calls atomic.Int32
+	wirePayload := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := calls.Add(1)
+		var body struct{ Messages []struct{ Content string } }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Messages) != 2 {
+			t.Errorf("decode judge request: %v, messages=%d", err, len(body.Messages))
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if call == 1 {
+			wirePayload <- body.Messages[1].Content
+		}
+		writeConfirmedRejudgeResponse(w)
+	}))
+	t.Cleanup(server.Close)
+	configureRejudgeCLI(t, server.URL)
+	presets := t.TempDir()
+	preset := filepath.Join(presets, "documentation.yaml")
+	original := readRejudgeFile(t, "../../labels/documentation.yaml")
+	if err := os.WriteFile(preset, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GKG_LABELS_PRESETS_DIR", presets)
+	_, label := seedRejudgeDocumentationFact(t, "rejudge-edited-preset")
+	dir := t.TempDir()
+	manifest, verdicts, audit := filepath.Join(dir, "m.jsonl"), filepath.Join(dir, "v.jsonl"), filepath.Join(dir, "a.jsonl")
+	writeRejudgeLabels(t, audit, []judge.AuditRow{label})
+	if code, out := callRejudge(t, "-plan", "-ids", audit, "-out", manifest); code != 0 ||
+		!strings.Contains(out, "planned=1") || calls.Load() != 0 {
+		t.Fatalf("plan exit=%d calls=%d: %s", code, calls.Load(), out)
+	}
+	args := []string{"-judge", "-manifest", manifest, "-out", verdicts, "-budget-attempts", "1"}
+	if code, out := callRejudge(t, args...); code != 0 || !strings.Contains(out, "GATE PASS") || calls.Load() != 1 {
+		t.Fatalf("judge exit=%d calls=%d: %s", code, calls.Load(), out)
+	}
+	req := firstRejudgeRequest(t, readRejudgeFile(t, manifest))
+	sent := <-wirePayload
+	if sent != string(req.RequestBytes) || !strings.Contains(sent, rejudgeExposesDefinition) {
+		t.Fatalf("provider did not receive the frozen preset payload: %s", sent)
+	}
+	saved := readRejudgeFile(t, verdicts)
+	definitionEnd := []byte("parameter, action or interface)\n")
+	if bytes.Count(original, definitionEnd) != 1 {
+		t.Fatal("could not uniquely locate the exposes definition")
+	}
+	edited := bytes.Replace(original, definitionEnd, []byte("parameter, action or interface) (edited)\n"), 1)
+	if err := os.WriteFile(preset, edited, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := callRejudgeStreams(args...); code != 1 ||
+		!strings.Contains(stderr, "definitions digest") || calls.Load() != 1 {
+		t.Fatalf("edited preset exit=%d calls=%d: %s", code, calls.Load(), stderr)
+	}
+	if !bytes.Equal(readRejudgeFile(t, verdicts), saved) {
+		t.Fatal("edited preset changed the verdict file")
+	}
+}
+
+func seedRejudgeDocumentationFact(t *testing.T, domain string) (string, judge.AuditRow) {
+	t.Helper()
+	st := graphtest.Store(t)
 	doc, err := st.UpsertDocument(t.Context(), graph.DocumentInput{
 		Kind: "text", Source: domain, Hash: domain, Title: "API reference", Labels: "documentation", Domain: domain,
 	})
@@ -426,58 +687,6 @@ CREATE (d)-[:HAS_CHUNK]->(prev:Chunk {id:$previous, seq:0, doc_id:$doc, text:'| 
  (h)-[:exposes {doc_id:$doc, chunk_id:$chunk, judge:'', head_start:2, head_end:6, tail_start:9, tail_end:15,
      confidence:0.6, low_confidence:true, extractor_version:'fake:1', extra:'keep this property'}]->(t)`,
 		map[string]any{"doc": doc.ID, "previous": doc.ID + "-c0", "chunk": chunk, "head": head, "tail": tail, "domain": domain})
-	// Fill one head-key page with irrelevant nodes to exercise the next page
-	// without relying on database insertion order or global fixture counts.
-	migrationQuery(t, `UNWIND range(1, 260) AS i CREATE (:Entity {key:'!rejudge-filler-'+toString(i), domain:$domain, filler:true})`,
-		map[string]any{"domain": domain})
-	t.Cleanup(func() {
-		migrationQuery(t, `MATCH (e:Entity {domain:$domain, filler:true}) DELETE e`, map[string]any{"domain": domain})
-	})
-	id := graph.FactAuditID(head, "exposes", tail, chunk)
-	audit := filepath.Join(t.TempDir(), "audit.jsonl")
-	writeRejudgeLabels(t, audit, []judge.AuditRow{
-		{ID: id, Head: "**Acme**", Relation: "exposes", Tail: "`/ready`", Evidence: "| Acme | /ready |", Label: "ok"},
-	})
-	path := filepath.Join(t.TempDir(), "m.jsonl")
-	if code, out := callRejudge(t, "-plan", "-domain", domain, "-ids", audit, "-out", path); code != 0 ||
-		!strings.Contains(out, "reconciled=1") || !strings.Contains(out, "header_present=1 header_null=0") {
-		t.Fatalf("plan exit=%d: %s", code, out)
-	}
-	lines := bytes.Split(bytes.TrimSpace(readRejudgeFile(t, path)), []byte("\n"))
-	if len(lines) != 2 {
-		t.Fatalf("manifest line count = %d", len(lines))
-	}
-	var row struct {
-		graph.RejudgeIdentity
-		Request judge.Request
-		Before  map[string]any
-	}
-	if err := json.Unmarshal(lines[1], &row); err != nil {
-		t.Fatal(err)
-	}
-	if row.ID != id || row.HeadKey != head || !row.LowConfidence || row.ExtractorVersion != "fake:1" ||
-		row.Before["extra"] != "keep this property" {
-		t.Fatalf("incorrect identity/before-image: %+v", row)
-	}
-	var payload struct {
-		Fact struct {
-			Head, Tail string
-		}
-		Definition   string `json:"relation_definition"`
-		HeadType     string `json:"head_mention_type"`
-		TailType     string `json:"tail_mention_type"`
-		HeadFallback bool   `json:"head_type_fallback"`
-		TailFallback bool   `json:"tail_type_fallback"`
-		Header       string `json:"table_header"`
-		Title        string `json:"doc_title"`
-	}
-	if err := json.Unmarshal(row.Request.RequestBytes, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload.Fact.Head != "Acme" || payload.Fact.Tail != "/ready" ||
-		payload.Definition != "a service, API, component, endpoint or function (head) offers the tail (an endpoint, field, parameter, action or interface)" ||
-		payload.HeadType != "service" || payload.HeadFallback || payload.TailType != "endpoint" || !payload.TailFallback ||
-		payload.Header != "| Service | Endpoint |\n| --- | --- |" || payload.Title != "API reference" {
-		t.Fatalf("unexpected source payload: %+v", payload)
-	}
+	return head, judge.AuditRow{ID: graph.FactAuditID(head, "exposes", tail, chunk), Head: "**Acme**",
+		Relation: "exposes", Tail: "`/ready`", Evidence: "| Acme | /ready |", Label: "ok"}
 }

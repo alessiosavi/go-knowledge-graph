@@ -27,13 +27,16 @@ type RejudgeOptions struct {
 }
 
 type RejudgeResult struct {
+	Planned, EffectiveBudget                  int
 	Judged, Resumed, CacheHits, Attempts, Cap int
+	Fingerprint                               string
 	StoppedForBudget                          bool
 	Gate                                      *RejudgeGate
 }
 
 type rejudgeVerdict struct {
 	ID          string  `json:"id"`
+	Key         string  `json:"key"`
 	Fingerprint string  `json:"fingerprint"`
 	Verdict     string  `json:"verdict"`
 	Confidence  float64 `json:"confidence"`
@@ -59,6 +62,7 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 	if opt.BudgetAttempts <= 0 {
 		return result, fmt.Errorf("judge: budget-attempts must be positive")
 	}
+	result.EffectiveBudget = opt.BudgetAttempts
 	manifest, digest, err := readRejudgeManifest(opt.Manifest)
 	if err != nil {
 		return result, err
@@ -67,8 +71,12 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 	if err != nil {
 		return result, err
 	}
-	gate := buildRejudgeGate(manifest, payloads, nil)
-	if gate != nil && 100*gate.rows.matched < 95*gate.rows.expected {
+	result.Planned = len(manifest.rows)
+	if result.Planned > 0 {
+		result.Fingerprint = manifest.rows[0].Request.Profile.Fingerprint
+	}
+	gate := buildRejudgeGate(manifest, payloads, nil, result.Fingerprint)
+	if gate != nil && 100*gate.rows.reconciled < 95*gate.rows.expected {
 		result.Gate = gate
 		return result, nil
 	}
@@ -109,6 +117,8 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 	newLedger := ledger == nil
 	if newLedger {
 		ledger = &rejudgeAttempts{Manifest: digest, Verdicts: outName, Cap: opt.BudgetAttempts}
+	} else {
+		result.Attempts, result.Cap = ledger.Attempts, ledger.Cap
 	}
 	raise := opt.BudgetAttempts > ledger.Cap
 	if raise && !opt.RaiseCap {
@@ -171,7 +181,7 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 		if err := context.Cause(ctx); err != nil {
 			return err
 		}
-		if ledger.Attempts >= opt.BudgetAttempts {
+		if ledger.Attempts >= result.EffectiveBudget {
 			return errRejudgeBudget
 		}
 		if oldGate != nil {
@@ -224,7 +234,7 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 				attempts = ledger.LastAttempts
 			}
 			record := rejudgeVerdict{
-				ID: row.ID, Fingerprint: row.Request.Profile.Fingerprint, Verdict: verdict.Status,
+				ID: row.ID, Key: key, Fingerprint: row.Request.Profile.Fingerprint, Verdict: verdict.Status,
 				Confidence: verdict.Confidence, Reason: verdict.Reason, Attempts: attempts, Label: row.Label,
 			}
 			if err := enc.Encode(record); err != nil {
@@ -245,7 +255,7 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 			return result, fmt.Errorf("judge %s: %w", row.ID, verifyErr)
 		}
 	}
-	result.Gate = buildRejudgeGate(manifest, payloads, done)
+	result.Gate = buildRejudgeGate(manifest, payloads, done, result.Fingerprint)
 	return result, context.Cause(ctx)
 }
 
@@ -336,6 +346,9 @@ func readRejudgeVerdicts(f *os.File, rows map[string]rejudgeManifestRow) (map[st
 			return fmt.Errorf("invalid verdict for %s", v.ID)
 		}
 		key := RequestKeyV2(row.Request.RequestBytes, row.Request.Profile.Fingerprint)
+		if v.Key != key {
+			return fmt.Errorf("verdict for %q has a missing or mismatched request key", v.ID)
+		}
 		if prev, ok := known[key]; ok &&
 			(prev.Verdict != v.Verdict || prev.Confidence != v.Confidence || prev.Reason != v.Reason) {
 			return fmt.Errorf("conflicting verdicts for identical requests (%s and %s)", prev.ID, v.ID)
