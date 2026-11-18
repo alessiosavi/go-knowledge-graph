@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -35,6 +36,11 @@ func TestAgentToolRequestMetrics(t *testing.T) {
 	if _, err := unavailable.execTool(ctx, "status", nil); err == nil {
 		t.Error("status succeeded with no store")
 	}
+	expired, cancel := context.WithTimeout(ctx, 0)
+	defer cancel()
+	if _, err := s.execTool(expired, "list_documents", nil); !errors.Is(err, graph.ErrQueryTimeout) {
+		t.Errorf("list_documents with an expired ask deadline returned %v, want a query timeout", err)
+	}
 	rec := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
 	const count = "gkg_request_duration_seconds_count"
@@ -44,12 +50,13 @@ func TestAgentToolRequestMetrics(t *testing.T) {
 		count + `{op="search",outcome="client_error",surface="agent_tool"} 1`,
 		count + `{op="get_chunks",outcome="client_error",surface="agent_tool"} 1`,
 		count + `{op="status",outcome="error",surface="agent_tool"} 1`,
+		count + `{op="list_documents",outcome="error",surface="agent_tool"} 1`,
 	} {
 		if !strings.Contains(scrape, want+"\n") {
 			t.Errorf("scrape missing %s", want)
 		}
 	}
-	if got := strings.Count(scrape, count+"{"); got != 4 {
-		t.Errorf("request histogram series = %d, want 4", got)
+	if got := strings.Count(scrape, count+"{"); got != 5 {
+		t.Errorf("request histogram series = %d, want 5", got)
 	}
 }

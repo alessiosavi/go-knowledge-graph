@@ -4,7 +4,9 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,13 +70,61 @@ func (s *Store) Ping(ctx context.Context) error {
 
 // runRead executes a single read query and returns all records.
 func (s *Store) runRead(ctx context.Context, query string, params map[string]any) ([]*neo4j.Record, error) {
-	sess := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer sess.Close(ctx)
-	res, err := sess.Run(ctx, query, params)
+	opts, err := readTxConfig(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return res.Collect(ctx)
+	sess := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
+	defer sess.Close(ctx)
+	res, err := sess.Run(ctx, query, params, opts...)
+	if err != nil {
+		return nil, readError(ctx, err)
+	}
+	recs, err := res.Collect(ctx)
+	return recs, readError(ctx, err)
+}
+
+// readTxConfig gives Memgraph the remaining request budget. Timed reads
+// use auto-commit because managed transactions retry a timeout abort.
+func readTxConfig(ctx context.Context) ([]func(*neo4j.TransactionConfig), error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil, nil
+	}
+	remaining := time.Until(deadline)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if remaining <= 0 {
+		// The deadline may pass before the context timer runs.
+		return nil, context.DeadlineExceeded
+	}
+	return []func(*neo4j.TransactionConfig){neo4j.WithTxTimeout(remaining)}, nil
+}
+
+// ErrQueryTimeout marks an abort by Memgraph's transaction timeout.
+var ErrQueryTimeout = errors.New("the query exceeded the configured timeout")
+
+// IsQueryTimeout reports whether a read failed at the server or client deadline.
+func IsQueryTimeout(ctx context.Context, err error) bool {
+	return err != nil && (errors.Is(err, ErrQueryTimeout) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded))
+}
+
+func readError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	var nerr *neo4j.Neo4jError
+	if errors.As(err, &nerr) && strings.Contains(nerr.Msg, "transaction timeout") &&
+		nerr.Classification() == "TransientError" {
+		return fmt.Errorf("%w: %w", ErrQueryTimeout, err)
+	}
+	// The driver's connectivity errors may omit the context cause.
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) && !errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", context.DeadlineExceeded, err)
+	}
+	return err
 }
 
 // runWrite executes a single write query inside one managed transaction.

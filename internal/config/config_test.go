@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 )
@@ -109,6 +110,43 @@ func TestDurabilityConfigValidation(t *testing.T) {
 					t.Fatalf("want error naming %s: %v", key, err)
 				}
 			})
+		}
+	}
+}
+
+func TestReadTimeout(t *testing.T) {
+	t.Setenv("GKG_LIMITS_READ_TIMEOUT_MS", "")
+	if err := os.Unsetenv("GKG_LIMITS_READ_TIMEOUT_MS"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Limits.ReadTimeoutMS != 15000 || cfg.Limits.ReadTimeout() != 15*time.Second {
+		t.Errorf("default limits = %+v, want a 15s read timeout", cfg.Limits)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("limits:\n  read_timeout_ms: 750\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Limits.ReadTimeout(); got != 750*time.Millisecond {
+		t.Errorf("YAML read timeout = %v, want 750ms", got)
+	}
+
+	for _, value := range []string{"0", "-1"} {
+		t.Setenv("GKG_LIMITS_READ_TIMEOUT_MS", value)
+		cfg, err := config.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.Limits.ReadTimeout(); got != 15*time.Second {
+			t.Errorf("read timeout with env = %s is %v, want 15s", value, got)
 		}
 	}
 }
@@ -272,6 +310,7 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_LABELS_PRESETS_DIR", "custom", "custom", func(c config.Config) any { return c.Labels.PresetsDir }},
 		{"GKG_LIMITS_CYPHER_ROWS", "50", 50, func(c config.Config) any { return c.Limits.CypherRows }},
 		{"GKG_LIMITS_CYPHER_TIMEOUT_MS", "2500", 2500, func(c config.Config) any { return c.Limits.CypherTimeoutMS }},
+		{"GKG_LIMITS_READ_TIMEOUT_MS", "4500", 4500, func(c config.Config) any { return c.Limits.ReadTimeoutMS }},
 		{"GKG_AGENT_ENABLED", "true", true, func(c config.Config) any { return c.Agent.Enabled }},
 		{"GKG_AGENT_BASE_URL", "https://example/v1", "https://example/v1", func(c config.Config) any { return c.Agent.BaseURL }},
 		{"GKG_AGENT_API_KEY", "ak", "ak", func(c config.Config) any { return c.Agent.APIKey }},

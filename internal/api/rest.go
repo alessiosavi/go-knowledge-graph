@@ -312,7 +312,7 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 	}
 	docs, err := s.store.DocumentsIn(r.Context(), graph.Status(status), slug, limit)
 	if err != nil {
-		writeStoreError(w, err, "documents")
+		writeReadError(w, r.Context(), err, "documents")
 		return
 	}
 	out := make([]documentDTO, 0, len(docs))
@@ -329,7 +329,7 @@ func (s *Server) handleDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	doc, err := s.store.Document(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeStoreError(w, err, "document")
+		writeReadError(w, r.Context(), err, "document")
 		return
 	}
 	writeJSON(w, http.StatusOK, toDocumentDTO(*doc))
@@ -342,7 +342,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	doc, err := s.store.Document(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeStoreError(w, err, "document")
+		writeReadError(w, r.Context(), err, "document")
 		return
 	}
 	writeJSON(w, http.StatusOK, statusResponse{
@@ -415,7 +415,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	hits, err := search.Query(r.Context(), s.store, s.emb, req.Query, kind, limit, search.InDomain(req.Domain))
 	if err != nil {
-		writeStoreError(w, err, "search")
+		writeReadError(w, r.Context(), err, "search")
 		return
 	}
 	writeJSON(w, http.StatusOK, searchResponse{Hits: toHitDTOs(hits)})
@@ -435,7 +435,7 @@ func (s *Server) handleEntity(w http.ResponseWriter, r *http.Request) {
 		ConfirmedOnly:        queryBool(r, "confirmed_only"),
 	})
 	if err != nil {
-		writeStoreError(w, err, "entity")
+		writeReadError(w, r.Context(), err, "entity")
 		return
 	}
 	out := toEntityDTO(view)
@@ -497,7 +497,7 @@ func (s *Server) handleTraverse(w http.ResponseWriter, r *http.Request) {
 		ConfirmedOnly:        req.ConfirmedOnly,
 	})
 	if err != nil {
-		writeStoreError(w, err, "traverse")
+		writeReadError(w, r.Context(), err, "traverse")
 		return
 	}
 	out := toTraverseResponse(sub)
@@ -547,11 +547,7 @@ func (s *Server) handleCypher(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	res, err := s.store.RunReadQuery(ctx, rewritten, nil, rows)
 	if err != nil {
-		// The driver reports timeouts as connectivity errors that do not
-		// wrap context.DeadlineExceeded; the request context carries the
-		// truth. Consult it first so a timeout is a 504, not a 500.
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			writeError(w, http.StatusGatewayTimeout, "query_timeout", "the query exceeded the configured timeout")
+		if writeQueryTimeout(w, ctx, err) {
 			return
 		}
 		var qerr *graph.QueryError
@@ -681,7 +677,7 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.store.ListDomains(r.Context())
 	if err != nil {
-		writeStoreError(w, err, "domains")
+		writeReadError(w, r.Context(), err, "domains")
 		return
 	}
 	writeJSON(w, http.StatusOK, rows)

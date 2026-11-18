@@ -790,6 +790,44 @@ func TestCypherEndpointTimeoutMapsTo504(t *testing.T) {
 	}
 }
 
+type timedOutReadStore struct{ *graph.Store }
+
+func (timedOutReadStore) RunReadQuery(context.Context, string, map[string]any, int) (graph.QueryResult, error) {
+	return graph.QueryResult{}, fmt.Errorf("read query: %w", graph.ErrQueryTimeout)
+}
+
+func (timedOutReadStore) Document(context.Context, string) (*graph.Document, error) {
+	return nil, fmt.Errorf("read document: %w", graph.ErrQueryTimeout)
+}
+
+func TestReadRoutesMapStoreTimeoutTo504(t *testing.T) {
+	s := NewServer(config.Config{}, nil, nil)
+	s.store = timedOutReadStore{}
+	s.SetMetrics(obs.New())
+	h := s.Handler()
+	for _, tc := range []struct {
+		method, path, body, pattern string
+	}{
+		{"POST", "/v1/cypher", `{"query":"RETURN 1"}`, "POST /v1/cypher"},
+		{"GET", "/v1/documents/test-id", "", "GET /v1/documents/{id}"},
+	} {
+		t.Run(tc.pattern, func(t *testing.T) {
+			rr := doJSON(t, h, tc.method, tc.path, tc.body)
+			if rr.Code != http.StatusGatewayTimeout {
+				t.Fatalf("status = %d, want 504; body %s", rr.Code, rr.Body.String())
+			}
+			if body := decode[errorBody](t, rr); body.Error != "query_timeout" {
+				t.Errorf("error = %q, want query_timeout", body.Error)
+			}
+			scrape := do(t, h, http.MethodGet, "/metrics", nil, nil).Body.String()
+			want := fmt.Sprintf("gkg_request_duration_seconds_count{op=%q,outcome=\"error\",surface=\"rest\"} 1\n", tc.pattern)
+			if !strings.Contains(scrape, want) {
+				t.Errorf("scrape missing %s", want)
+			}
+		})
+	}
+}
+
 // stubEmbedder returns a fixed vector for every query (query-leg stub).
 type stubEmbedder struct{ vec []float64 }
 

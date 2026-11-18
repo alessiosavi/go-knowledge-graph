@@ -265,27 +265,27 @@ func registerTools(s *Server) {
 		Name:        "ingest",
 		Description: "Ingest a document from a URL or inline text; returns the document id. Poll `status` until done or failed.",
 	}, s.handleIngest)
-	addTool(s, &mcpgo.Tool{
+	addReadTool(s, &mcpgo.Tool{
 		Name:        "status",
 		Description: "Pipeline status and error of one document, or of the most recently updated documents when no id is given.",
 	}, s.handleStatus)
-	addTool(s, &mcpgo.Tool{
+	addReadTool(s, &mcpgo.Tool{
 		Name:        "search",
 		Description: "Full-text search over entity names and chunk text, with scores and snippets; entity hits fuse embeddings when the embedder is enabled. Start with limit 10.",
 	}, s.handleSearch)
-	addTool(s, &mcpgo.Tool{
+	addReadTool(s, &mcpgo.Tool{
 		Name:        "get_entity",
 		Description: "One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status). Low-confidence facts need include_low_confidence unless the judge confirmed them. At schema v4 name lookup uses EntityKey folding (possessives and edge punctuation), with legacy case folding below v4. Unscoped ambiguous names return candidates, one per domain.",
 	}, s.handleGetEntity)
-	addTool(s, &mcpgo.Tool{
+	addReadTool(s, &mcpgo.Tool{
 		Name:        "get_chunks",
 		Description: "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
 	}, s.handleGetChunks)
-	addTool(s, &mcpgo.Tool{
+	addReadTool(s, &mcpgo.Tool{
 		Name:        "traverse",
 		Description: "Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. Start with limit 10.",
 	}, s.handleTraverse)
-	addTool(s, &mcpgo.Tool{
+	addReadTool(s, &mcpgo.Tool{
 		Name:        "list_documents",
 		Description: "List documents with metadata, optionally filtered by pipeline status. Start with limit 10.",
 	}, s.handleListDocuments)
@@ -293,6 +293,18 @@ func registerTools(s *Server) {
 		Name:        "cypher",
 		Description: "Run a guarded read-only Cypher query with the configured row cap and timeout; nodes and relationships come back as JSON objects.",
 	}, s.handleCypher)
+}
+
+func addReadTool[In, Out any](s *Server, tool *mcpgo.Tool, handle mcpgo.ToolHandlerFor[In, Out]) {
+	addTool(s, tool, func(ctx context.Context, req *mcpgo.CallToolRequest, args In) (*mcpgo.CallToolResult, Out, error) {
+		ctx, cancel := context.WithTimeout(ctx, s.cfg.Limits.ReadTimeout())
+		defer cancel()
+		result, out, err := handle(ctx, req, args)
+		if graph.IsQueryTimeout(ctx, err) {
+			return nil, out, graph.ErrQueryTimeout
+		}
+		return result, out, err
+	})
 }
 
 func (s *Server) handleGetChunks(ctx context.Context, _ *mcpgo.CallToolRequest, args getChunksArgs) (*mcpgo.CallToolResult, chunkread.Result, error) {
@@ -545,8 +557,8 @@ func (s *Server) handleCypher(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	defer cancel()
 	res, err := s.store.RunReadQuery(qctx, rewritten, nil, rows)
 	if err != nil {
-		if errors.Is(qctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, cypherOut{}, errors.New("query timed out")
+		if graph.IsQueryTimeout(qctx, err) {
+			return nil, cypherOut{}, graph.ErrQueryTimeout
 		}
 		var qerr *graph.QueryError
 		if errors.As(err, &qerr) {

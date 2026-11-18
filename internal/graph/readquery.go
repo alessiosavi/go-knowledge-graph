@@ -30,6 +30,10 @@ type QueryResult struct {
 // and paths become maps; dates and local date-times become ISO 8601
 // strings; durations and points become structured objects.
 func (s *Store) RunReadQuery(ctx context.Context, query string, params map[string]any, rows int) (QueryResult, error) {
+	opts, err := readTxConfig(ctx)
+	if err != nil {
+		return QueryResult{}, err
+	}
 	if rows > 0 {
 		if params == nil {
 			params = map[string]any{}
@@ -38,17 +42,17 @@ func (s *Store) RunReadQuery(ctx context.Context, query string, params map[strin
 	}
 	sess := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
 	defer func() { _ = sess.Close(ctx) }()
-	res, err := sess.Run(ctx, query, params)
+	res, err := sess.Run(ctx, query, params, opts...)
 	if err != nil {
-		return QueryResult{}, queryError(err)
+		return QueryResult{}, readError(ctx, queryError(err))
 	}
 	keys, err := res.Keys()
 	if err != nil {
-		return QueryResult{}, queryError(err)
+		return QueryResult{}, readError(ctx, queryError(err))
 	}
 	recs, err := res.Collect(ctx)
 	if err != nil {
-		return QueryResult{}, queryError(err)
+		return QueryResult{}, readError(ctx, queryError(err))
 	}
 	out := QueryResult{Columns: keys, Rows: make([]map[string]any, 0, len(recs))}
 	for _, rec := range recs {
