@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
@@ -74,15 +75,15 @@ func Query(ctx context.Context, st *graph.Store, emb QueryEmbedder, q, kind stri
 		apply(&opt)
 	}
 	if opt.domain != "" && !graph.ValidDomain(opt.domain) {
-		return nil, fmt.Errorf("search: invalid domain slug %q", opt.domain)
+		return nil, argerr.Errorf("search: invalid domain slug %q", opt.domain)
 	}
 	if strings.TrimSpace(q) == "" {
-		return nil, fmt.Errorf("search: empty query")
+		return nil, argerr.New("search: empty query")
 	}
 	switch kind {
 	case "entity", "chunk", "auto":
 	default:
-		return nil, fmt.Errorf("search: kind %q not in entity|chunk|auto", kind)
+		return nil, argerr.Errorf("search: kind %q not in entity|chunk|auto", kind)
 	}
 	// A query with no searchable word (only punctuation or symbols) matches
 	// nothing: skip every leg, the vector leg included, rather than return

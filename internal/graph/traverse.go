@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 )
 
@@ -60,7 +61,7 @@ func (s *Store) TraverseOpts(ctx context.Context, startID, rel, direction string
 	}
 
 	if opt.Domain != "" && !ValidDomain(opt.Domain) {
-		return Subgraph{}, fmt.Errorf("graph: invalid domain slug %q", opt.Domain)
+		return Subgraph{}, argerr.Errorf("graph: invalid domain slug %q", opt.Domain)
 	}
 	start, err := s.resolveEntityRef(ctx, startID)
 	if err != nil {

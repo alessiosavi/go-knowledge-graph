@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -69,6 +70,24 @@ func TestMetricsHandlerServesRegistry(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `documents_total{status="done"} 1`) {
 		t.Errorf("scrape missing documents_total{status=\"done\"} 1:\n%s", rec.Body.String())
+	}
+}
+
+func TestObserveWriteLockWait(t *testing.T) {
+	m := New()
+	m.ObserveWriteLockWait(125 * time.Millisecond)
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	for _, want := range []string{
+		"gkg_store_write_lock_wait_seconds_count 1",
+		"gkg_store_write_lock_wait_seconds_sum 0.125",
+	} {
+		if !strings.Contains(rec.Body.String(), want+"\n") {
+			t.Errorf("scrape missing %q", want)
+		}
 	}
 }
 

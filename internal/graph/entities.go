@@ -17,6 +17,7 @@ import (
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
 )
 
@@ -681,7 +682,7 @@ func (s *Store) EntityView(ctx context.Context, idOrKey string, includeLowConfid
 // EntityViewOpts applies the requested fact visibility options.
 func (s *Store) EntityViewOpts(ctx context.Context, idOrKey string, opt ViewOptions) (EntityView, error) {
 	if opt.Domain != "" && !ValidDomain(opt.Domain) {
-		return EntityView{}, fmt.Errorf("graph: invalid domain slug %q", opt.Domain)
+		return EntityView{}, argerr.Errorf("graph: invalid domain slug %q", opt.Domain)
 	}
 	params := map[string]any{"q": idOrKey}
 	recs, err := s.runRead(ctx, entityByIDQuery, params)
@@ -880,7 +881,7 @@ func (s *Store) EntityByName(ctx context.Context, name string) (EntityRef, error
 // Legacy graphs retain their case-folded display-name scan.
 func (s *Store) EntityCandidatesByName(ctx context.Context, name, slug string) ([]EntityRef, error) {
 	if slug != "" && !ValidDomain(slug) {
-		return nil, fmt.Errorf("graph: invalid domain slug %q", slug)
+		return nil, argerr.Errorf("graph: invalid domain slug %q", slug)
 	}
 	version, err := s.SchemaVersion(ctx)
 	if err != nil {

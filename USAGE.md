@@ -456,6 +456,19 @@ counts and uses mode 0600. Names go only to `--out`; stdout contains aggregates.
 
 - Health: `GET /healthz`, `GET /readyz`; metrics: `GET /metrics`
   (auth-exempt).
+- `gkg_request_duration_seconds{surface,op,outcome}` measures mounted
+  `/v1/*` handlers and registered MCP and agent tools. For `rest`, `op`
+  is the mounted route pattern and timing starts when the request reaches
+  the handler after authentication. The HTTP status determines `outcome`,
+  with `ok` below 400, `client_error` for 4xx, and `error` for 5xx.
+  Streaming handlers record on return. For `mcp` and `agent_tool`, `op` is
+  the registered tool name and the same outcomes indicate success, invalid
+  arguments, and tool failure.
+- `gkg_store_write_lock_wait_seconds` measures the time to acquire the
+  store's write lock before a serialized transaction.
+- Set `server.pprof_addr` or `GKG_SERVER_PPROF_ADDR` to a loopback
+  host and port to expose `/debug/pprof/` there. An empty address disables
+  profiling. Only the loopback listener serves profiles.
 - `make up` starts the default sidecar extractor and docling converter;
   `make up LIGHT=1` uses mock extraction with conversion off. `make down`
   preserves graph data; `make smoke` checks the running stack.

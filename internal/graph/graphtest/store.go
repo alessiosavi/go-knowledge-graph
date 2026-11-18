@@ -66,7 +66,7 @@ func Vector(seed string, dim int) []float64 {
 // Without the variable the test is skipped, so `go test ./...` stays green
 // offline. It waits up to 30s for the server to accept connections (CI
 // service containers take a moment to become ready).
-func Store(t *testing.T) *graph.Store {
+func Store(t testing.TB) *graph.Store {
 	t.Helper()
 	uri := os.Getenv(URIEnv)
 	if uri == "" {

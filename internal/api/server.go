@@ -91,7 +91,12 @@ func (s *Server) SetReady(fn func(context.Context) error) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	for _, route := range s.routes() {
-		mux.Handle(route.pattern, route.handler)
+		h := route.handler
+		if pathStart := strings.IndexByte(route.pattern, '/'); s.metrics != nil && pathStart >= 0 &&
+			strings.HasPrefix(route.pattern[pathStart:], "/v1/") {
+			h = s.metrics.MeasureREST(route.pattern, h)
+		}
+		mux.Handle(route.pattern, h)
 	}
 	guarded := s.withAuth(mux)
 	return obs.RequestLogger(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

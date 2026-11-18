@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/convert"
 )
 
@@ -113,7 +114,7 @@ func DefaultLoader(f *Fetcher, conv convert.Converter) TextLoader {
 			}
 			u, uerr := url.Parse(in.URL)
 			if uerr != nil || (u.Scheme != "http" && u.Scheme != "https") {
-				return Loaded{}, fmt.Errorf("ingest: cannot reload url input %q after restart; resubmit the content", in.Source)
+				return Loaded{}, argerr.Errorf("ingest: cannot reload url input %q after restart; resubmit the content", in.Source)
 			}
 			if f == nil {
 				return Loaded{}, errors.New("ingest: url input without a fetcher")

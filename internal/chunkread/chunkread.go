@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
@@ -51,17 +52,17 @@ type Store interface {
 
 func Read(ctx context.Context, st Store, req Request) (Result, error) {
 	if req.Domain != "" && !graph.ValidDomain(req.Domain) {
-		return Result{}, errors.New("invalid domain slug")
+		return Result{}, argerr.New("invalid domain slug")
 	}
 	if len(req.IDs) < 1 || len(req.IDs) > MaxIDs {
-		return Result{}, errors.New("ids must hold 1–20 chunk ids")
+		return Result{}, argerr.New("ids must hold 1–20 chunk ids")
 	}
 	if req.Neighbours < 0 || req.Neighbours > MaxNeighbours {
-		return Result{}, errors.New("neighbours must be between 0 and 2")
+		return Result{}, argerr.New("neighbours must be between 0 and 2")
 	}
 	for _, id := range req.IDs {
 		if len(id) > 128 {
-			return Result{}, errors.New("chunk ids must be at most 128 bytes")
+			return Result{}, argerr.New("chunk ids must be at most 128 bytes")
 		}
 	}
 	result := Result{

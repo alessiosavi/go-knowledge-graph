@@ -12,19 +12,19 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
-func uniqueSearchSource(t *testing.T) string {
+func uniqueSearchSource(t testing.TB) string {
 	t.Helper()
 	return fmt.Sprintf("file:%s-%d", strings.NewReplacer("/", "-", " ", "-").Replace(t.Name()), time.Now().UnixNano())
 }
 
 // uniqueToken is a single alphanumeric search token unique per run, so
 // text-search assertions never depend on the accumulated shared corpus.
-func uniqueToken(t *testing.T) string {
+func uniqueToken(t testing.TB) string {
 	t.Helper()
 	return fmt.Sprintf("zetaquark%d", time.Now().UnixNano())
 }
 
-func upsertDoc(t *testing.T, st *graph.Store, source string) string {
+func upsertDoc(t testing.TB, st *graph.Store, source string) string {
 	t.Helper()
 	res, err := st.UpsertDocument(context.Background(), graph.DocumentInput{Kind: "file", Source: source, Hash: "hash-a"})
 	if err != nil {
@@ -44,7 +44,7 @@ type searchFixture struct {
 	chunkID   string
 }
 
-func newSearchFixture(t *testing.T) searchFixture {
+func newSearchFixture(t testing.TB) searchFixture {
 	t.Helper()
 	st := graphtest.Store(t)
 	ctx := context.Background()

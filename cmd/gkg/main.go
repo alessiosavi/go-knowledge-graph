@@ -427,6 +427,14 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
 		return 1
 	}
+	profiler, profilerListener, err := listenPprof(cfg.Server.PprofAddr)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
+		return 1
+	}
+	if profilerListener != nil {
+		defer profilerListener.Close()
+	}
 	st, err := graph.Open(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
@@ -447,6 +455,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	metrics := obs.New()
+	st.SetWriteLockWaitObserver(metrics.ObserveWriteLockWait)
 	pipe.SetMetrics(metrics)
 	workers := &ingest.Worker{Workers: serveWorkers, Pipeline: pipe}
 	workers.Start(ctx)
@@ -461,22 +470,38 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		Handler:           rest.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
+	if profiler != nil {
+		defer profiler.Close()
+		go func() {
+			errCh <- fmt.Errorf("pprof: %w", profiler.Serve(profilerListener))
+		}()
+		fmt.Fprintf(stdout, "gkg: pprof listening on %s\n", profilerListener.Addr())
+	}
 	go func() { errCh <- srv.ListenAndServe() }()
 	fmt.Fprintf(stdout, "gkg: listening on %s\n", cfg.Server.Addr)
 
+	exitCode := 0
 	select {
 	case <-ctx.Done():
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintf(stderr, "gkg serve: %v\n", err)
-			return 1
+			exitCode = 1
 		}
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if profiler != nil {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = profiler.Shutdown(shutdownCtx)
+		}()
+		defer func() { <-done }()
+	}
 	_ = srv.Shutdown(shutdownCtx)
-	return 0
+	return exitCode
 }
 
 // newAPIServer is the HTTP wiring used by serve and the OpenAPI drift guard.
@@ -489,6 +514,8 @@ func newAPIServer(cfg config.Config, st *graph.Store, pipe api.Submitter, emb se
 	rest.SetEmbedder(emb)
 	mcpSrv.SetEmbedder(emb)
 	rest.SetMetrics(metrics)
+	mcpSrv.SetMetrics(metrics)
+	agentSrv.SetMetrics(metrics)
 	rest.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
 	rest.Mount("/mcp", mcpSrv.HTTPHandler())
 	rest.Mount("POST /v1/agent/ask", agentSrv.AskHandler())

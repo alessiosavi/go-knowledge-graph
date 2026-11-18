@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
@@ -549,7 +550,7 @@ func (s *Store) DocumentsWithStatus(ctx context.Context, status Status, limit in
 // DocumentsIn applies both filters before the limit; empty values select all.
 func (s *Store) DocumentsIn(ctx context.Context, status Status, slug string, limit int) ([]Document, error) {
 	if slug != "" && !ValidDomain(slug) {
-		return nil, fmt.Errorf("graph: invalid domain slug %q", slug)
+		return nil, argerr.Errorf("graph: invalid domain slug %q", slug)
 	}
 	q := "MATCH (d:Document)"
 	var filters []string
