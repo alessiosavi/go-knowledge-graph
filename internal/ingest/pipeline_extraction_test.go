@@ -41,6 +41,16 @@ func TestBuildExtractionNameIdentity(t *testing.T) {
 	}
 }
 
+func TestBuildExtractionDisplayName(t *testing.T) {
+	p := &Pipeline{}
+	const text = "(Mira Zorbin)"
+	r := extract.ChunkResult{Mentions: []extract.Mention{{Label: "person", Text: text, End: len(text)}}}
+	ents, _, _ := p.buildExtraction(&graph.Document{ID: "doc"}, graph.Chunk{ID: "chunk"}, rawExtraction(r), "test", nil)
+	if len(ents) != 1 || ents[0].Name != "Mira Zorbin" || ents[0].Key != "mira zorbin" {
+		t.Fatalf("entities = %+v, want upsert for Mira Zorbin with key mira zorbin", ents)
+	}
+}
+
 func TestBuildExtractionSameSpanTwoLabels(t *testing.T) {
 	for _, scores := range [][2]float64{{0.6, 0.8}, {0.8, 0.8}} {
 		for _, reverse := range []bool{false, true} {

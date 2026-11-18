@@ -88,6 +88,8 @@ func TestRunDispatch(t *testing.T) {
 		{"mcp bad uri", []string{"mcp"}, map[string]string{"GKG_MEMGRAPH_URI": "://bad"}, 1, "", "gkg mcp:"},
 		{"eval missing golden", []string{"eval", "--golden", "/nonexistent-golden.jsonl"}, map[string]string{"GKG_EXTRACTOR_MODE": "mock"}, 1, "", "gkg eval:"},
 		{"migrate bad uri", []string{"migrate"}, map[string]string{"GKG_MEMGRAPH_URI": "://bad"}, 1, "", "gkg migrate:"},
+		{"repair-names help", []string{"repair-names", "-h"}, nil, 0, "", "-dry-run"},
+		{"repair-names unexpected arg", []string{"repair-names", "extra"}, nil, 2, "", "unexpected argument"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

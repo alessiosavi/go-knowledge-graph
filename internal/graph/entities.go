@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -61,12 +62,17 @@ func NormalizeSurface(s string) string {
 	return strings.TrimFunc(s, trimEdge)
 }
 
-// DisplayName removes edge whitespace, wrapping markdown and one trailing
-// possessive from a name, preserving case and other punctuation.
+// DisplayName cleans edge markup while preserving case and the entity key.
+// The original Markdown and single-possessive cleanup is the fallback for
+// names whose key would change under the extended rules.
 func DisplayName(s string) string {
-	s = trimNameWrappers(s)
-	s = stripPossessive(s)
-	return trimNameWrappers(s)
+	s = strings.TrimSpace(s)
+	name := trimNameEdges(stripPossessive(trimNameEdges(s)))
+	if name == s || EntityKey(name) == EntityKey(s) {
+		return name
+	}
+	// This fallback is legacy behaviour. Repair skips changes to the normalized key.
+	return trimNameWrappers(stripPossessive(trimNameWrappers(s)))
 }
 
 // trimNameWrappers peels balanced code/emphasis wrappers only. Underscores
@@ -83,6 +89,135 @@ func trimNameWrappers(s string) string {
 		s = strings.TrimSpace(s[left : len(s)-right])
 	}
 	return s
+}
+
+func trimNameEdges(s string) string {
+	for {
+		before := s
+		s = trimNameWrappers(s)
+		s = strings.TrimSpace(trimNameParentheses(s))
+		s = strings.TrimSpace(trimNameQuotes(s))
+		if !strings.HasSuffix(s, "::") {
+			s = strings.TrimSpace(strings.TrimSuffix(s, ":"))
+		}
+		if s != before {
+			continue // Resolve exposed wrappers before classifying a final period.
+		}
+		s = strings.TrimSpace(trimNamePeriod(s))
+		if s != before {
+			continue // Resolve trailing punctuation before classifying edge stars.
+		}
+		s = trimUnbalancedStars(s)
+		if s == before {
+			return s
+		}
+	}
+}
+
+var nameIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func trimUnbalancedStars(s string) string {
+	if strings.HasPrefix(s, "*") == strings.HasSuffix(s, "*") {
+		return s
+	}
+	inner := strings.TrimSpace(strings.Trim(s, "*"))
+	if nameIdentifier.MatchString(inner) {
+		return s
+	}
+	return inner
+}
+
+func trimNameParentheses(s string) string {
+	if inner, ok := strings.CutPrefix(s, "("); ok {
+		if wrapped, ok := strings.CutSuffix(inner, ")"); ok && balancedParentheses(wrapped) {
+			return wrapped
+		}
+		if !strings.Contains(inner, ")") {
+			return inner
+		}
+	}
+	if inner, ok := strings.CutSuffix(s, ")"); ok && !strings.Contains(inner, "(") {
+		return inner
+	}
+	return s
+}
+
+func balancedParentheses(s string) bool {
+	depth := 0
+	for _, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+	return depth == 0
+}
+
+func trimNameQuotes(s string) string {
+	first, left := utf8.DecodeRuneInString(s)
+	last, right := utf8.DecodeLastRuneInString(s)
+	var closeQuote rune
+	switch first {
+	case '"', '\'':
+		closeQuote = first
+	case '“':
+		closeQuote = '”'
+	case '‘':
+		closeQuote = '’'
+	case '«':
+		closeQuote = '»'
+	}
+	if closeQuote != 0 && last == closeQuote && left+right <= len(s) {
+		inner := s[left : len(s)-right]
+		if !strings.ContainsAny(inner, string(first)+string(last)) {
+			return inner
+		}
+	}
+	if (first == '"' || last == '"') && strings.Count(s, `"`) == 1 {
+		if first == '"' {
+			return s[left:]
+		}
+		return s[:len(s)-right]
+	}
+	firstCurly := first == '“' || first == '”'
+	lastCurly := last == '“' || last == '”'
+	if (firstCurly || lastCurly) && strings.Count(s, "“")+strings.Count(s, "”") == 1 {
+		if firstCurly {
+			return s[left:]
+		}
+		return s[:len(s)-right]
+	}
+	return s
+}
+
+func trimNamePeriod(s string) string {
+	withoutPeriod, ok := strings.CutSuffix(s, ".")
+	if !ok {
+		return s
+	}
+	var token string
+	// Leading star markup must not hide a protected abbreviation or initial.
+	for field := range strings.FieldsSeq(strings.TrimLeft(s, "*")) {
+		token = field
+	}
+	token = norm.NFC.String(strings.TrimSuffix(token, "."))
+	first, width := utf8.DecodeRuneInString(token)
+	isInitial := unicode.IsLetter(first) && strings.TrimLeftFunc(token[width:], func(r rune) bool {
+		return unicode.Is(unicode.Mn, r)
+	}) == ""
+	if isInitial || strings.Contains(token, ".") {
+		return s
+	}
+	switch strings.ToLower(token) {
+	case "co", "inc", "ltd", "corp", "llc", "gmbh", "srl", "spa", "st", "dr", "mr", "mrs", "ms", "mt", "no", "vs", "etc", "jr", "sr":
+		return s
+	}
+	return withoutPeriod
 }
 
 func stripPossessive(s string) string {

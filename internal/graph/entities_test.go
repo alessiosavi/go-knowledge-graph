@@ -231,6 +231,85 @@ func TestDisplayName(t *testing.T) {
 		if got := graph.DisplayName(in); got != want {
 			t.Errorf("DisplayName(%q) = %q, want %q", in, got, want)
 		}
+		assertDisplayNameKey(t, in)
+	}
+}
+
+func TestDisplayNameEdgeMarkup(t *testing.T) {
+	cases := map[string]string{
+		"**Zorbo Business Agent":             "Zorbo Business Agent",
+		"Zorbo GEO.**":                       "Zorbo GEO",
+		"**acme.org":                         "acme.org",
+		"**Co.":                              "Co.",
+		"**kwargs:":                          "**kwargs",
+		"*x**:":                              "*x**",
+		"*args.":                             "*args",
+		"(Mira Zorbin)":                      "Mira Zorbin",
+		"(Zorbo (Quillon))":                  "Zorbo (Quillon)",
+		"(Quillon":                           "Quillon",
+		"Quillon)":                           "Quillon",
+		"Zorbo (Quillon)":                    "Zorbo (Quillon)",
+		"foo()":                              "foo()",
+		"(a) and (b)":                        "(a) and (b)",
+		`"Zorbo"`:                            "Zorbo",
+		"'Quillon'":                          "Quillon",
+		"“Quillon”":                          "Quillon",
+		"‘Quillon’":                          "Quillon",
+		"«Quillon»":                          "Quillon",
+		`"Zorbo" and "Quillon"`:              `"Zorbo" and "Quillon"`,
+		"'A' or 'B'":                         "'A' or 'B'",
+		"“Zorbo” and “Quillon”":              "“Zorbo” and “Quillon”",
+		`"l'Acme" e "Quillon"`:               `"l'Acme" e "Quillon"`,
+		`"Quillon`:                           "Quillon",
+		`Quillon"`:                           "Quillon",
+		`"Zorbo Inc" and stray "Quillon Ltd`: `"Zorbo Inc" and stray "Quillon Ltd`,
+		`"Zorbo Agent`:                       "Zorbo Agent",
+		`Zorbo "Quillon" and Mira"`:          `Zorbo "Quillon" and Mira"`,
+		`"Zorbo and "Quillon" Ltd`:           `"Zorbo and "Quillon" Ltd`,
+		"“Quillon":                           "Quillon",
+		"Quillon”":                           "Quillon",
+		"“Zorbo” and “Quillon":               "“Zorbo” and “Quillon",
+		"Zorbo “Quillon” and Mira”":          "Zorbo “Quillon” and Mira”",
+		"Zorbo Agent”":                       "Zorbo Agent",
+		"'Quillon":                           "'Quillon",
+		"Quillon’":                           "Quillon’",
+		"'s'":                                "'s'",
+		"Playwrite:":                         "Playwrite",
+		"std::":                              "std::",
+		"Zorbo:::":                           "Zorbo:::",
+		"Roster.":                            "Roster",
+		"J.":                                 "J.",
+		"É.":                                 "É.",
+		"Zorbo E\u0301.":                     "Zorbo E\u0301.",
+		"Zorbo J\u0301.":                     "Zorbo J\u0301.",
+		"Zorbo JD\u0301.":                    "Zorbo JD\u0301",
+		"U.S.":                               "U.S.",
+		"Zorbo & Co.":                        "Zorbo & Co.",
+		"“Mt.":                               "Mt.",
+		"(Quillon).**":                       "Quillon",
+		"**(Zorbo & Co.)**":                  "Zorbo & Co.",
+		"Trekking nel Parco Zorbo**":         "Trekking nel Parco Zorbo",
+		"“((Zorbo:))”":                       "Zorbo",
+		"Zorbo __Quillon__":                  "Zorbo __Quillon__",
+	}
+	for _, abbr := range strings.Fields("Co Inc Ltd Corp LLC GmbH SRL SpA St Dr Mr Mrs Ms Mt No Vs Etc Jr Sr") {
+		name := "Zorbo " + abbr + "."
+		cases[name] = name
+	}
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			if got := graph.DisplayName(in); got != want {
+				t.Errorf("DisplayName(%q) = %q, want %q", in, got, want)
+			}
+			assertDisplayNameKey(t, in)
+		})
+	}
+}
+
+func assertDisplayNameKey(t *testing.T, name string) {
+	t.Helper()
+	if display := graph.DisplayName(name); graph.EntityKey(display) != graph.EntityKey(name) {
+		t.Errorf("DisplayName(%q) = %q changes key from %q to %q", name, display, graph.EntityKey(name), graph.EntityKey(display))
 	}
 }
 
@@ -251,6 +330,11 @@ func TestEntitySurfaceCleanup(t *testing.T) {
 		}
 		if got := graph.DisplayName(c.raw); got != c.display {
 			t.Errorf("DisplayName(%q) = %q, want %q", c.raw, got, c.display)
+		}
+		// Keep the legacy single-possessive removal for this double-possessive
+		// input. Normalizing its display would consume the second possessive.
+		if c.raw != "Widget's's" {
+			assertDisplayNameKey(t, c.raw)
 		}
 	}
 }

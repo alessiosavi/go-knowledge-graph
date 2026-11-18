@@ -9,6 +9,8 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
+var RepairEntityNamePageForTest = (*Store).repairEntityNamePage
+
 func AssignDomainFailForTest(ctx context.Context, s *Store, a Assignment, err error) error {
 	return s.assignDomain(ctx, a, func() error { return err })
 }
