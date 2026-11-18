@@ -16,20 +16,72 @@ entities:
   - { name: decision, threshold: 0.25 }
   - { name: requirement, threshold: 0.25 }
 relations:
-  - { name: part_of, text: part of, threshold: 0.35 }
-  - { name: depends_on, text: depends on, threshold: 0.35 }
-  - { name: calls, threshold: 0.35 }
-  - { name: exposes, threshold: 0.35 }
-  - { name: reads_from, text: reads from, threshold: 0.35 }
-  - { name: writes_to, text: writes to, threshold: 0.35 }
-  - { name: deployed_to, text: deployed to, threshold: 0.35 }
-  - { name: configured_by, text: configured by, threshold: 0.35 }
-  - { name: uses, threshold: 0.35 }
-  - { name: owned_by, text: owned by, threshold: 0.35 }
-  - { name: replaces, threshold: 0.35 }
-  - { name: documented_in, text: documented in, threshold: 0.35 }
-  - { name: decided, threshold: 0.35 }
-  - { name: requires, threshold: 0.35 }
+  - name: part_of
+    text: part of
+    threshold: 0.35
+    definition: >-
+      the head is a component or sub-unit of the tail.
+  - name: depends_on
+    text: depends on
+    threshold: 0.35
+    definition: >-
+      the head needs the tail to build, run or work.
+  - name: calls
+    threshold: 0.35
+    definition: >-
+      code or a service (head) invokes the tail (a function, endpoint or service).
+  - name: exposes
+    threshold: 0.35
+    definition: >-
+      a service, API, component, endpoint or function (head) offers the tail (an endpoint, field,
+      parameter, action or interface)
+  - name: reads_from
+    text: reads from
+    threshold: 0.35
+    definition: >-
+      the head reads data from the tail (a store, file, topic or service).
+  - name: writes_to
+    text: writes to
+    threshold: 0.35
+    definition: >-
+      the head writes data to the tail.
+  - name: deployed_to
+    text: deployed to
+    threshold: 0.35
+    definition: >-
+      the head is deployed to or runs on the tail (an environment, host or platform).
+  - name: configured_by
+    text: configured by
+    threshold: 0.35
+    definition: >-
+      the head's behaviour is set by the tail (a file, variable, flag or setting).
+  - name: uses
+    threshold: 0.35
+    definition: >-
+      the head itself employs the tail (a tool, library, technology or service).
+  - name: owned_by
+    text: owned by
+    threshold: 0.35
+    definition: >-
+      the head is owned or maintained by the tail (a person, team or organization).
+  - name: replaces
+    threshold: 0.35
+    definition: >-
+      the head supersedes the tail.
+  - name: documented_in
+    text: documented in
+    threshold: 0.35
+    definition: >-
+      the head is described in the tail (a document or page).
+  - name: decided
+    threshold: 0.35
+    definition: >-
+      a person or group (head) made the tail decision.
+  - name: requires
+    threshold: 0.35
+    definition: >-
+      the head needs the tail as a precondition or input (a field, parameter, permission or
+      component).
 
 # Generic entity-name hygiene. Private boilerplate belongs in the overlay file.
 code_tokens: true

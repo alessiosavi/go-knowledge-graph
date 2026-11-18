@@ -91,15 +91,15 @@ var (
 		{Name: "document", Threshold: 0.35},
 	}
 	defaultRelationLabels = []extract.Label{
-		{Name: "works_at", Text: "works at", Threshold: 0.25},
-		{Name: "located_in", Text: "located in", Threshold: 0.25},
-		{Name: "part_of", Text: "part of", Threshold: 0.25},
-		{Name: "uses", Threshold: 0.25},
-		{Name: "wrote", Threshold: 0.25},
-		{Name: "depends_on", Text: "depends on", Threshold: 0.25},
-		{Name: "owned_by", Text: "owned by", Threshold: 0.25},
-		{Name: "member_of", Text: "member of", Threshold: 0.25},
-		{Name: "about", Threshold: 0.25},
+		{Name: "works_at", Text: "works at", Threshold: 0.25, Definition: "a person works for or is employed by an organization."},
+		{Name: "located_in", Text: "located in", Threshold: 0.25, Definition: "a place, venue, organization, event, tour or listing is situated in, or takes place in, a place."},
+		{Name: "part_of", Text: "part of", Threshold: 0.25, Definition: "the head is a component, sub-unit, sub-area or member item of the tail; not a designation, award or category."},
+		{Name: "uses", Threshold: 0.25, Definition: "the head itself employs the tail (a tool, technology, material, ingredient or service) to do something."},
+		{Name: "wrote", Threshold: 0.25, Definition: "a person or organization authored the tail, a named work."},
+		{Name: "depends_on", Text: "depends on", Threshold: 0.25, Definition: "the head needs the tail to function, happen or exist."},
+		{Name: "owned_by", Text: "owned by", Threshold: 0.25, Definition: "the head is owned or controlled by the tail."},
+		{Name: "member_of", Text: "member of", Threshold: 0.25, Definition: "a person or organization belongs to the tail (a group, team, fund, association or organization)."},
+		{Name: "about", Threshold: 0.25, Definition: "the head is content (a document, page, article, listing, product page, trip or tour page, identified by its title or slug) whose subject is the tail; a place, route or attraction is never about something"},
 	}
 )
 
