@@ -172,3 +172,41 @@ func TestLoadPresetPreservesValidationErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestJudgeRelationDefinitions(t *testing.T) {
+	load := func(name string) []extract.Label {
+		t.Helper()
+		_, relations, err := LoadPreset("../../labels", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return relations
+	}
+
+	definitions := func(labels []extract.Label) map[string]string {
+		t.Helper()
+		out := make(map[string]string, len(labels))
+		for _, label := range labels {
+			if strings.TrimSpace(label.Definition) == "" {
+				t.Errorf("missing definition for %q", label.Name)
+			}
+			out[label.Name] = label.Definition
+		}
+		return out
+	}
+
+	const about = "the head is content (a document, page, article, listing, product page, trip or tour page, identified by its title or slug) whose subject is the tail; a place, route or attraction is never about something"
+	const exposes = "a service, API, component, endpoint or function (head) offers the tail (an endpoint, field, parameter, action or interface)"
+	general := definitions(load("general"))
+	documentation := definitions(load("documentation"))
+	_, defaultRelations := DefaultLabels()
+	if defaults := definitions(defaultRelations); !reflect.DeepEqual(defaults, general) {
+		t.Errorf("default definitions = %v, want general definitions %v", defaults, general)
+	}
+	if got := general["about"]; got != about {
+		t.Errorf("general about = %q, want %q", got, about)
+	}
+	if got := documentation["exposes"]; got != exposes {
+		t.Errorf("documentation exposes = %q, want %q", got, exposes)
+	}
+}

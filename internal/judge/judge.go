@@ -62,7 +62,7 @@ func NewClient(cfg config.Config) *Client {
 func (c *Client) SetBackoff(backoff []time.Duration) { c.backoff = backoff }
 
 // SetAttemptGate installs a check before every provider attempt, including retries.
-// Configure it before VerifyFact; a non-nil error aborts without that attempt.
+// Configure it before verification; a non-nil error aborts without that attempt.
 func (c *Client) SetAttemptGate(g func() error) { c.attemptGate = g }
 
 // Model returns the judge model name (evaluation reports record it).
@@ -104,10 +104,24 @@ func (c *Client) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 	if payload == nil {
 		return ingest.Verdict{}, fmt.Errorf("judge: encode payload: confidence must be finite")
 	}
+	return c.verify(ctx, judgePrompt, payload)
+}
+
+// VerifyRequest checks the frozen profile against the current definitions
+// (indexed by preset and relation) and sends the original user message.
+func (c *Client) VerifyRequest(ctx context.Context, req Request, definitions map[string]map[string]string) (ingest.Verdict, error) {
+	prompt, err := req.validate(c.model, definitions)
+	if err != nil {
+		return ingest.Verdict{}, err
+	}
+	return c.verify(ctx, prompt, req.RequestBytes)
+}
+
+func (c *Client) verify(ctx context.Context, prompt string, payload []byte) (ingest.Verdict, error) {
 	body, err := json.Marshal(judgeWireRequest{
 		Model: c.model,
 		Messages: []judgeMessage{
-			{Role: "system", Content: judgePrompt},
+			{Role: "system", Content: prompt},
 			{Role: "user", Content: string(payload)},
 		},
 		ResponseFormat: map[string]string{"type": "json_object"},
