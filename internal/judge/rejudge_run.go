@@ -1,8 +1,10 @@
 package judge
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +33,7 @@ type RejudgeResult struct {
 	Judged, Resumed, CacheHits, Attempts, Cap int
 	Fingerprints                              RejudgeFingerprints
 	StoppedForBudget                          bool
+	Sealed                                    bool // Returned from an already sealed ledger.
 	Gate                                      *RejudgeGate
 }
 
@@ -47,6 +50,12 @@ type rejudgeVerdict struct {
 
 type strictRejudgeStore struct{ *graph.Store }
 
+type rejudgeLeases interface {
+	AcquireLease(context.Context, string, string, time.Duration, bool) (bool, error)
+	RenewLease(context.Context, string, string, time.Duration) (bool, error)
+	ReleaseLease(context.Context, string, string) error
+}
+
 func (s strictRejudgeStore) PutJudgeVerdict(ctx context.Context, v graph.JudgeVerdict) error {
 	return s.PutJudgeVerdictStrict(ctx, v)
 }
@@ -58,7 +67,7 @@ func JudgeRejudge(ctx context.Context, st *graph.Store, client *Client, presetsD
 	return judgeRejudge(ctx, st, strictRejudgeStore{st}, client, presetsDir, opt)
 }
 
-func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, client *Client, presetsDir string, opt RejudgeOptions) (result RejudgeResult, err error) {
+func judgeRejudge(ctx context.Context, leases rejudgeLeases, store VerdictStore, client *Client, presetsDir string, opt RejudgeOptions) (result RejudgeResult, err error) {
 	if opt.BudgetAttempts <= 0 {
 		return result, fmt.Errorf("judge: budget-attempts must be positive")
 	}
@@ -94,7 +103,7 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 	defer lock.Close()
 
 	attemptsPath := filepath.Join(dir, "attempts.json")
-	ledger, err := readRejudgeAttempts(attemptsPath)
+	ledger, attemptsSnapshot, err := readRejudgeAttempts(attemptsPath)
 	if err != nil {
 		return result, fmt.Errorf("read attempt ledger: %w", err)
 	}
@@ -102,15 +111,17 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 		ledger.LastID != "" && rows[ledger.LastID].ID == "") {
 		return result, fmt.Errorf("judge: attempts.json belongs to a different manifest or verdict file")
 	}
-	out, err := openRejudgeVerdicts(opt.Out, ledger == nil)
-	if err != nil {
+	out, err := openRejudgeVerdicts(opt.Out)
+	if err != nil && !(ledger == nil && errors.Is(err, os.ErrNotExist)) {
 		return result, fmt.Errorf("open verdict ledger: %w", err)
 	}
 	var sealDigest string
 	defer func(runCtx context.Context) {
 		// The lease cleanup runs first. Publish only after the file closes
 		// and both the run and its cleanup have succeeded.
-		err = errors.Join(err, out.Close())
+		if out != nil {
+			err = errors.Join(err, out.Close())
+		}
 		if err != nil || sealDigest == "" {
 			return
 		}
@@ -131,12 +142,13 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 			return result, fmt.Errorf("judge: verdicts digest does not match the sealed attempt ledger")
 		}
 	}
-	done, known, debits, err := readRejudgeVerdicts(out, rows)
+	verdicts, err := readRejudgeVerdicts(out, rows)
 	if err != nil {
 		return result, fmt.Errorf("read verdict ledger: %w", err)
 	}
+	done, known := verdicts.done, verdicts.known
 	result.Resumed = len(done)
-	if (ledger == nil && len(done) > 0) || (ledger != nil && debits > ledger.Attempts) {
+	if (ledger == nil && len(done) > 0) || (ledger != nil && verdicts.debits > ledger.Attempts) {
 		return result, fmt.Errorf("judge: verdict ledger has no matching attempt debits")
 	}
 	newLedger := ledger == nil
@@ -149,6 +161,7 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 				return result, fmt.Errorf("judge: sealed verdict ledger is incomplete")
 			}
 			result.Gate = buildRejudgeGate(manifest, payloads, done, result.Fingerprints)
+			result.Sealed = true
 			return result, nil
 		}
 	}
@@ -156,12 +169,8 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 	if raise && !opt.RaiseCap {
 		return result, fmt.Errorf("judge: stored cap is %d; use -raise-cap to raise it to %d", ledger.Cap, opt.BudgetAttempts)
 	}
-	if raise {
-		ledger.Cap = opt.BudgetAttempts
-	}
-
 	owner := rand.Text()
-	ok, err := st.AcquireLease(ctx, rejudgeLeaseName, owner, backfillLeaseTTL, false)
+	ok, err := leases.AcquireLease(ctx, rejudgeLeaseName, owner, backfillLeaseTTL, false)
 	if err != nil {
 		return result, err
 	}
@@ -170,7 +179,7 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	renew := func() error {
-		ok, err := st.RenewLease(ctx, rejudgeLeaseName, owner, backfillLeaseTTL)
+		ok, err := leases.RenewLease(ctx, rejudgeLeaseName, owner, backfillLeaseTTL)
 		if err == nil && !ok {
 			err = fmt.Errorf("judge: rejudge lease lost")
 		}
@@ -198,8 +207,31 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 		<-stopped
 		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer stop()
-		err = errors.Join(err, st.ReleaseLease(cleanup, rejudgeLeaseName, owner))
+		err = errors.Join(err, leases.ReleaseLease(cleanup, rejudgeLeaseName, owner))
 	}()
+	// Another host may finish writing between our snapshot and lease acquisition.
+	_, currentAttempts, err := readRejudgeAttempts(attemptsPath)
+	if err != nil {
+		return result, fmt.Errorf("recheck attempts.json after acquiring the rejudge lease: %w", err)
+	}
+	if !bytes.Equal(attemptsSnapshot, currentAttempts) {
+		return result, errors.New("attempts.json changed before acquiring the rejudge lease")
+	}
+	if err := verdicts.recheck(opt.Out, out); err != nil {
+		return result, fmt.Errorf("%s changed before acquiring the rejudge lease: %w", outName, err)
+	}
+	if err := context.Cause(ctx); err != nil {
+		return result, err
+	}
+	if out == nil {
+		out, err = createRejudgeVerdicts(opt.Out)
+		if err != nil {
+			return result, fmt.Errorf("create verdict ledger: %w", err)
+		}
+	}
+	if raise {
+		ledger.Cap = opt.BudgetAttempts
+	}
 	if newLedger || raise {
 		if err := ledger.save(attemptsPath, !newLedger); err != nil {
 			return result, fmt.Errorf("write attempt ledger: %w", err)
@@ -268,6 +300,9 @@ func judgeRejudge(ctx context.Context, st *graph.Store, store VerdictStore, clie
 			record := rejudgeVerdict{
 				ID: row.ID, Key: key, Fingerprint: row.Request.Profile.Fingerprint, Verdict: verdict.Status,
 				Confidence: verdict.Confidence, Reason: verdict.Reason, Attempts: attempts, Label: row.Label,
+			}
+			if err := context.Cause(ctx); err != nil {
+				return result, err
 			}
 			if err := enc.Encode(record); err != nil {
 				return result, fmt.Errorf("append verdict for %s: %w", row.ID, errors.Join(err, verifyErr))
@@ -348,25 +383,62 @@ func validRejudgeVerdict(verdict string, confidence float64) bool {
 		!math.IsNaN(confidence) && confidence >= 0 && confidence <= 1
 }
 
-func readRejudgeVerdicts(f *os.File, rows map[string]rejudgeManifestRow) (map[string]rejudgeVerdict, map[string]rejudgeVerdict, int, error) {
+type rejudgeVerdictSnapshot struct {
+	done, known map[string]rejudgeVerdict
+	debits      int
+	info        os.FileInfo
+	digest      string
+}
+
+func (s rejudgeVerdictSnapshot) recheck(path string, f *os.File) error {
+	info, err := os.Lstat(path)
+	if s.info == nil && errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := privateRejudgeFile(info); err != nil {
+		return err
+	}
+	if s.info == nil || !os.SameFile(s.info, info) {
+		return errors.New("verdict file appeared or was replaced")
+	}
+	if s.info.Size() != info.Size() {
+		return errors.New("verdict file size changed")
+	}
+	digest, err := rejudgeVerdictsDigest(f)
+	if err != nil {
+		return err
+	}
+	if digest != s.digest {
+		return errors.New("verdict file digest changed")
+	}
+	return nil
+}
+
+func readRejudgeVerdicts(f *os.File, rows map[string]rejudgeManifestRow) (rejudgeVerdictSnapshot, error) {
+	snapshot := rejudgeVerdictSnapshot{done: make(map[string]rejudgeVerdict), known: make(map[string]rejudgeVerdict)}
+	if f == nil {
+		return snapshot, nil
+	}
 	info, err := f.Stat()
 	if err != nil {
-		return nil, nil, 0, err
+		return snapshot, err
 	}
+	snapshot.info = info
 	// Fail closed on a torn append, even when the final JSON itself parses.
 	if info.Size() > 0 {
 		var end [1]byte
 		if _, err := f.ReadAt(end[:], info.Size()-1); err != nil {
-			return nil, nil, 0, err
+			return snapshot, err
 		}
 		if end[0] != '\n' {
-			return nil, nil, 0, io.ErrUnexpectedEOF
+			return snapshot, io.ErrUnexpectedEOF
 		}
 	}
-	done := make(map[string]rejudgeVerdict)
-	known := make(map[string]rejudgeVerdict)
-	attempts := 0
-	err = scanRejudgeLines(f, func(_ int, raw []byte) error {
+	hash := sha256.New()
+	err = scanRejudgeLines(io.TeeReader(f, hash), func(_ int, raw []byte) error {
 		var v rejudgeVerdict
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return err
@@ -375,23 +447,24 @@ func readRejudgeVerdicts(f *os.File, rows map[string]rejudgeManifestRow) (map[st
 		if row.ID == "" || v.Fingerprint != row.Request.Profile.Fingerprint || v.Label != row.Label {
 			return fmt.Errorf("verdict for %q does not match the manifest", v.ID)
 		}
-		if _, duplicate := done[v.ID]; duplicate {
+		if _, duplicate := snapshot.done[v.ID]; duplicate {
 			return fmt.Errorf("duplicate verdict for %s", v.ID)
 		}
-		if !validRejudgeVerdict(v.Verdict, v.Confidence) || v.Attempts < 0 || v.Attempts > math.MaxInt-attempts {
+		if !validRejudgeVerdict(v.Verdict, v.Confidence) || v.Attempts < 0 || v.Attempts > math.MaxInt-snapshot.debits {
 			return fmt.Errorf("invalid verdict for %s", v.ID)
 		}
 		key := RequestKeyV2(row.Request.RequestBytes, row.Request.Profile.Fingerprint)
 		if v.Key != key {
 			return fmt.Errorf("verdict for %q has a missing or mismatched request key", v.ID)
 		}
-		if prev, ok := known[key]; ok &&
+		if prev, ok := snapshot.known[key]; ok &&
 			(prev.Verdict != v.Verdict || prev.Confidence != v.Confidence || prev.Reason != v.Reason) {
 			return fmt.Errorf("conflicting verdicts for identical requests (%s and %s)", prev.ID, v.ID)
 		}
-		attempts += v.Attempts
-		done[v.ID], known[key] = v, v
+		snapshot.debits += v.Attempts
+		snapshot.done[v.ID], snapshot.known[key] = v, v
 		return nil
 	})
-	return done, known, attempts, err
+	snapshot.digest = fmt.Sprintf("%x", hash.Sum(nil))
+	return snapshot, err
 }

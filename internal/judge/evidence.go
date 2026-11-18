@@ -53,20 +53,25 @@ type v2Payload struct {
 // BuildV2Request builds the exact user message from source text. It returns a
 // reason and no bytes when the evidence cannot be reconstructed.
 func BuildV2Request(in V2Input) (requestBytes []byte, unverifiable string) {
+	requestBytes, _, unverifiable = buildV2Request(in)
+	return requestBytes, unverifiable
+}
+
+func buildV2Request(in V2Input) (requestBytes []byte, tableRow bool, unverifiable string) {
 	text := in.ChunkText
 	if strings.TrimSpace(text) == "" {
-		return nil, "missing chunk text"
+		return nil, false, "missing chunk text"
 	}
 	if !utf8.ValidString(text) {
-		return nil, "invalid UTF-8 in chunk text"
+		return nil, false, "invalid UTF-8 in chunk text"
 	}
 	head, headName := mentionSurface(text, in.Head)
 	if headName == "" {
-		return nil, "invalid or empty head span"
+		return nil, false, "invalid or empty head span"
 	}
 	tail, tailName := mentionSurface(text, in.Tail)
 	if tailName == "" {
-		return nil, "invalid or empty tail span"
+		return nil, false, "invalid or empty tail span"
 	}
 
 	var evidence string
@@ -75,7 +80,8 @@ func BuildV2Request(in V2Input) (requestBytes []byte, unverifiable string) {
 	headLine := physicalLine(text, head.start)
 	row := headLine.text(text)
 	cells, pipes := tableCells(row)
-	if head.end <= headLine.end && tail.start >= headLine.start && tail.end <= headLine.end && isTableRow(row, cells, pipes) {
+	tableRow = head.end <= headLine.end && tail.start >= headLine.start && tail.end <= headLine.end && isTableRow(row, cells, pipes)
+	if tableRow {
 		evidence = row
 		if len(row) > maxEvidenceBytes {
 			evidence = trimTableRow(text, headLine, head, tail)
@@ -86,7 +92,7 @@ func BuildV2Request(in V2Input) (requestBytes []byte, unverifiable string) {
 		evidence = proseEvidence(text, head, tail)
 	}
 	if evidence == "" {
-		return nil, "mentions do not fit in the evidence limit"
+		return nil, tableRow, "mentions do not fit in the evidence limit"
 	}
 
 	// This schema contains only strings, booleans and a nullable string.
@@ -102,7 +108,7 @@ func BuildV2Request(in V2Input) (requestBytes []byte, unverifiable string) {
 		TableHeader:        tableHeader,
 		DocTitle:           in.DocTitle,
 	})
-	return payload, ""
+	return payload, tableRow, ""
 }
 
 type byteSpan struct{ start, end int }

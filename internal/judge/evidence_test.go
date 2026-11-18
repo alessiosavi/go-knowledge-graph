@@ -52,6 +52,42 @@ func buildV2(t *testing.T, in judge.V2Input) (v2Payload, []byte) {
 	return out, b
 }
 
+func TestV2RequestFrozenBytesAndKeys(t *testing.T) {
+	const definition = "the head employs the tail"
+	const prefix = `{"fact":{"head":"Nebula","rel":"uses","tail":"Nova"},"relation_definition":"the head employs the tail","head_mention_type":"service","tail_mention_type":"technology","head_type_fallback":false,"tail_type_fallback":true,`
+	const suffix = `,"doc_title":"Nebula guide"}`
+	const row = "| Nebula | Nova |"
+	profile := judge.NewV2Profile("frozen-fixture-model", map[string]map[string]string{"": {"uses": definition}})
+	for _, tc := range []struct {
+		name, text, previous, bytes, key string
+	}{
+		{"table without header", row, "",
+			prefix + `"evidence":"| Nebula | Nova |","table_header":null` + suffix,
+			"820479eb3689e916f191e3c0233ff915abedaa546b1eec3105f2761e5c0caeb4"},
+		{"table with previous header", row, "| Product | API |\n| --- | --- |\n| Orion | Vega |\n",
+			prefix + `"evidence":"| Nebula | Nova |","table_header":"| Product | API |\n| --- | --- |"` + suffix,
+			"042da2395d8ac2f01e8468ef41d3659d699d45a627e66c4059466d053b62d426"},
+		{"prose", "Intro sentence. Nebula uses Nova. Closing sentence.", "",
+			prefix + `"evidence":"Nebula uses Nova.","table_header":null` + suffix,
+			"3d4a1806668b6c6f349c627560ec883eab013d24f2e7fe97c31c61c2c7e6fe85"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := v2Input(t, tc.text, "Nebula", "Nova")
+			in.PreviousChunkText = tc.previous
+			in.Head.MentionType = "service"
+			in.Tail.MentionType, in.Tail.TypeFallback = "technology", true
+			in.Definition, in.DocTitle = definition, "Nebula guide"
+			_, payload := buildV2(t, in)
+			if string(payload) != tc.bytes {
+				t.Errorf("request bytes = %s, want %s", payload, tc.bytes)
+			}
+			if key := judge.RequestKeyV2(payload, profile.Fingerprint); key != tc.key {
+				t.Errorf("request key = %s, want %s", key, tc.key)
+			}
+		})
+	}
+}
+
 func TestV2RequestUsesSurfacesAndMentionTypes(t *testing.T) {
 	in := v2Input(t, "Intro sentence. **Nebula** uses a C++ shim at nebula.dev.", "**Nebula**", "C++")
 	in.Head.MentionType = "service"
