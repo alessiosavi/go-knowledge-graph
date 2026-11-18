@@ -243,7 +243,10 @@ func NewPipeline(cfg config.Config, st *graph.Store, prov extract.Provider, ix *
 }
 
 // Submit resolves the identity, decodes the content, applies the hash no-op
-// (bypassed by Force) and queues the document for processing.
+// (bypassed by Force) and queues the document for processing. If the request
+// ends while the queue is full, the published document is handed to a
+// background drainer instead; past the drainer's cap, or when the server
+// stops first, restart recovery queues it.
 func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 	// Fail fast on an unusable label preset instead of failing the document
 	// later (the name is persisted with the document for recovery).
@@ -322,13 +325,8 @@ func (p *Pipeline) deferEnqueue(docID string, requestErr error) {
 }
 
 func (p *Pipeline) drainDeferred(ctx context.Context) {
-	for {
-		p.mu.Lock()
-		if len(p.deferred) == 0 || ctx.Err() != nil {
-			p.deferred = nil
-			p.mu.Unlock()
-			return
-		}
+	p.mu.Lock()
+	for len(p.deferred) != 0 && ctx.Err() == nil {
 		// Remove one id from the set while it waits for a slot. Only this
 		// send can queue ahead of a live submit already waiting for space.
 		var docID string
@@ -340,8 +338,30 @@ func (p *Pipeline) drainDeferred(ctx context.Context) {
 
 		select {
 		case p.jobs <- docID:
+			p.mu.Lock()
 		case <-ctx.Done():
+			p.mu.Lock()
+			p.deferred[docID] = struct{}{}
 		}
+	}
+
+	deferred := p.deferred
+	queueCtx := p.queueCtx
+	// With IDs left, ctx has ended. A live queueCtx belongs to a replacement worker.
+	if len(deferred) != 0 && queueCtx.Err() == nil {
+		go p.drainDeferred(queueCtx)
+		p.mu.Unlock()
+		return
+	}
+	p.deferred = nil
+	p.mu.Unlock()
+
+	if len(deferred) == 0 {
+		return
+	}
+	slog.Warn("ingest: dropped deferred enqueues that will be recovered at the next start", "dropped", len(deferred), "err", ctx.Err())
+	for docID := range deferred {
+		slog.Debug("ingest: dropped deferred enqueue", "doc", docID)
 	}
 }
 

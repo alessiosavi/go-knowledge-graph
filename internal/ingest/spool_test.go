@@ -162,6 +162,20 @@ func submitSpool(t *testing.T, p *Pipeline, in Input) Result {
 	}
 	return res
 }
+
+func submitCancelledSpool(t *testing.T, p *Pipeline, st *spoolStore, text string) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	st.beforeUpsert = func(graph.DocumentInput) { cancel() }
+	res, err := p.Submit(ctx, Input{Kind: "text", Source: "notes", Text: text})
+	st.beforeUpsert = nil
+	if err != nil || res.Noop || res.DocumentID == "" {
+		t.Fatalf("cancelled Submit = %+v, %v", res, err)
+	}
+	return res.DocumentID
+}
+
 func absentSpool(t *testing.T, p *Pipeline, id string) {
 	t.Helper()
 	if _, err := os.Stat(spoolPath(p, id)); !errors.Is(err, os.ErrNotExist) {
@@ -402,6 +416,78 @@ func TestSubmitFullQueue(t *testing.T) {
 				t.Errorf("open queue emitted handoff logs: %s", &logs)
 			}
 		})
+	})
+}
+
+func TestSubmitFullQueueRestartsDrainer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p, st := spoolPipeline(t)
+		p.jobs = make(chan string, 1)
+		p.jobs <- "blocker"
+		oldCtx, stopOld := context.WithCancel(t.Context())
+		defer stopOld()
+		p.queueCtx = oldCtx
+
+		first := submitCancelledSpool(t, p, st, "Before worker restart.")
+		synctest.Wait() // The old drainer is blocked sending the first ID.
+		newCtx, stopNew := context.WithCancel(t.Context())
+		defer stopNew()
+		p.mu.Lock()
+		p.queueCtx = newCtx
+		p.mu.Unlock()
+		second := submitCancelledSpool(t, p, st, "After worker restart.")
+		stopOld()
+		synctest.Wait()
+
+		<-p.jobs // blocker
+		want := map[string]bool{first: true, second: true}
+		for range 2 {
+			synctest.Wait()
+			select {
+			case id := <-p.jobs:
+				if !want[id] {
+					t.Fatalf("unexpected or duplicate queued ID %q", id)
+				}
+				delete(want, id)
+			default:
+				t.Fatalf("replacement drainer did not queue IDs %v", want)
+			}
+		}
+	})
+}
+
+func TestSubmitFullQueueWarnsOnShutdown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p, st := spoolPipeline(t)
+		p.jobs = make(chan string, 1)
+		p.jobs <- "blocker"
+		queueCtx, stopWorker := context.WithCancel(t.Context())
+		defer stopWorker()
+		p.queueCtx = queueCtx
+
+		var logs bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+
+		inFlight := submitCancelledSpool(t, p, st, "Blocked on the queue.")
+		synctest.Wait()
+		parked := submitCancelledSpool(t, p, st, "Waiting in the deferred set.")
+		stopWorker()
+		synctest.Wait()
+
+		output := logs.String()
+		_, warning, _ := strings.Cut(output, "level=WARN ")
+		warning, _, _ = strings.Cut(warning, "\n")
+		if strings.Count(output, "level=WARN ") != 1 ||
+			!strings.Contains(warning, "recovered at the next start") || !strings.Contains(warning, " dropped=2 ") {
+			t.Errorf("want one warning for 2 dropped IDs and restart recovery, got:\n%s", output)
+		}
+		for _, id := range []string{inFlight, parked} {
+			if !strings.Contains(output, `level=DEBUG msg="ingest: dropped deferred enqueue" doc=`+id) {
+				t.Errorf("missing Debug log for dropped ID %q", id)
+			}
+		}
 	})
 }
 
