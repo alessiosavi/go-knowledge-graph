@@ -1150,12 +1150,13 @@ components:
           description: how many document versions were removed
     EntityRef:
       type: object
-      required: [id, key, name, type]
+      required: [id, key, name, type, domain]
       properties:
         id: { type: string }
         key: { type: string }
         name: { type: string }
         type: { type: string }
+        domain: { type: string, description: Entity's domain slug; empty when unassigned. }
     CoMention:
       allOf:
         - $ref: "#/components/schemas/EntityRef"
@@ -1195,12 +1196,13 @@ components:
         excerpt: { type: string }
     Entity:
       type: object
-      required: [id, key, name, type, aliases, mention_count, facts, together]
+      required: [id, key, name, type, domain, aliases, mention_count, facts, together]
       properties:
         id: { type: string }
         key: { type: string }
         name: { type: string }
         type: { type: string }
+        domain: { type: string, description: Entity's domain slug; empty when unassigned. }
         aliases:
           type: array
           items: { type: string }

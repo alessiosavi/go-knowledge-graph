@@ -217,7 +217,7 @@ outside the script.
 
 MCP read tools `search`, `get_entity`, `get_chunks`, `traverse`,
 `list_documents` and `status` accept an optional `domain` slug. Empty selects
-all. Search hits and document views include `domain`. `GET /v1/domains`
+all. Search hits, entity views, and document views include `domain`. `GET /v1/domains`
 provides domain names and done-document counts for the web UI's search and
 ask pickers. MCP has no `ask` tool.
 

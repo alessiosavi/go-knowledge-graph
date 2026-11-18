@@ -48,7 +48,10 @@ func TestRelatedEntityDomainsJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	cs := connectInMemory(t, config.Config{}, st, nil)
-	view := structured[map[string]any](t, callTool(t, cs, "get_entity", map[string]any{"id": graph.EntityID(head), "domain": "zorbo"}))
+	view := structured[map[string]any](t, callTool(t, cs, "get_entity", map[string]any{"id": graph.EntityID(head)}))
+	if got := view["domain"]; got != "zorbo" {
+		t.Errorf("viewed entity domain = %v, want zorbo", got)
+	}
 	factRows, together := view["facts"].([]any), view["together"].([]any)
 	if len(factRows) != 1 || len(together) != 1 {
 		t.Fatalf("entity JSON=%v, want one fact and one co-mention", view)
