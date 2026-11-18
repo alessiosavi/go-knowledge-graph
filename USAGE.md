@@ -383,6 +383,46 @@ and a Wilson 95% interval; skipped and unlabelled rows do not enter the denomina
 If no rows are scored, the command prints `no scored rows` and exits 2.
 Audit files contain graph-derived text; store them with the source data.
 
+### Evaluate judge v2
+
+Run each labelled set separately, using one output directory per set. For the
+corrected gkg evaluation file, relabel the six markup-only `noise` rows as
+`ok` and record that correction with the audited labels. This gives 175 ok and
+25 wrong or noise rows for gkg. Use the bc holdout separately (149 ok and 51
+wrong or noise). Run the evaluation before applying `repair-labels`, while the
+labelled edges still exist.
+
+```sh
+mkdir -p eval-gkg
+gkg judge rejudge -plan -ids labelled.jsonl -out eval-gkg/manifest.jsonl
+gkg judge rejudge -judge -manifest eval-gkg/manifest.jsonl \
+  -budget-attempts 240 -out eval-gkg/verdicts.jsonl
+```
+
+Planning makes zero provider calls. It selects typed edges with a confirmed or
+empty judge status. `-domain` scopes the selection. Use `-ids` to restrict it to
+the audit file, or `-limit N` to cap an unlabelled plan. Planning fails when any
+requested id is missing or unverifiable and lists audit rows whose names,
+relation or head sentence differ from the reconstructed request. Mismatched
+rows are excluded, and blank and `skip` labels are excluded from scoring.
+Inspect the cache-adjusted call estimate and per-relation table-header counts
+before approving spend. The plan refuses to overwrite a manifest.
+
+Use the same manifest and verdict file to resume. The verdict log is read before
+the cache and completed verdicts are retained. The sibling `attempts.json` ledger
+stores the cumulative cap and debits attempts before calls, including retries.
+Set `-raise-cap` explicitly when authorizing a larger cap. Keep all three private
+files together for the run. The judge stops on cache errors, preserving a paid
+verdict in the verdict log if the cache write fails.
+
+The judge prints a gate for each labelled set. At least 95% of the scored audit
+rows must reconcile, every reconciled row must have a verdict, at least 98% of
+ok rows must be confirmed, and at least 95% of confirmed rows must be ok. If
+reconciliation is below 95%, the judge reports the failed gate before spending
+any attempts. The table includes the Wilson 95% interval, distinct facts and
+domain splits. A failed gate exits 3 and lists lost ok and kept bad ids with
+reasons. Apply is not part of this command yet.
+
 ### Graph quality report
 
 ```sh

@@ -18,16 +18,18 @@ import (
 
 func runJudge(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: gkg judge <backfill|audit> [flags]")
+		fmt.Fprintln(stderr, "usage: gkg judge <backfill|audit|rejudge> [flags]")
 		return 2
 	}
 	switch args[0] {
 	case "backfill":
 		return runJudgeBackfill(args[1:], stdout, stderr)
+	case "rejudge":
+		return runJudgeRejudge(args[1:], stdout, stderr)
 	case "audit":
 		return runJudgeAudit(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
-		fmt.Fprintln(stdout, "usage: gkg judge <backfill|audit> [flags]")
+		fmt.Fprintln(stdout, "usage: gkg judge <backfill|audit|rejudge> [flags]")
 		return 0
 	default:
 		fmt.Fprintf(stderr, "gkg judge: unknown command %q\n", args[0])
