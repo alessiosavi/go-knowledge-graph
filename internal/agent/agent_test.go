@@ -832,7 +832,7 @@ func TestPlanFinalCallStreams(t *testing.T) {
 		}
 		return nil
 	}
-	resp, err := s.askWithPlan(context.Background(), "q "+fx.token, emit)
+	resp, err := s.askWithPlan(context.Background(), "q "+fx.token, askEvents{tool: emit, delta: emit})
 	if err != nil {
 		t.Fatalf("askWithPlan: %v", err)
 	}

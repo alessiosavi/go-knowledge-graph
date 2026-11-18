@@ -169,16 +169,25 @@ MATCH (d:Document) RETURN d.source, d.status, d.title ORDER BY d.created_at DESC
 
 ## 3. Query from an agent (MCP)
 
-`gkg` is an MCP server (stdio and streamable HTTP) exposing eight tools:
+`gkg` is an MCP server (stdio and streamable HTTP) exposing
 `ingest`, `status`, `search`, `get_entity`, `get_chunks`, `traverse`, `list_documents`,
-`cypher`. Configuration examples for OpenCode and Claude Desktop are in
-[docs/agent-setup.md](docs/agent-setup.md); the short version:
+`cypher`, and `ask` when `GKG_AGENT_ENABLED=true`. See
+[docs/agent-setup.md](docs/agent-setup.md) for OpenCode and Claude Desktop
+configuration examples.
 
 - **stdio**: run `gkg mcp` with `GKG_MEMGRAPH_URI` (+ credentials) in the
   environment — the agent host starts the process.
 - **streamable HTTP**: `POST /mcp` on the `serve` surface; set
   `GKG_API_KEY` to require `Authorization: Bearer <key>`. Through the edge,
   use `https://<host>/mcp` with `Authorization: Basic <base64 of login:password>`.
+
+Prefer `ask` for natural-language questions. Pass `question` and optionally
+`domain` to get a Markdown `answer` and `steps` in one call. Each call uses the
+server's LLM budget and the agent timeout. Request `include_evidence: true`
+to add evidence within a 32 KiB budget for one JSON copy of the result.
+`truncated: true` means evidence was shortened or omitted. An answer that
+exhausts the budget is returned in full with no evidence.
+Use `search`, `get_entity`, `get_chunks`, and `traverse` for targeted lookups.
 
 Example prompts:
 
@@ -467,9 +476,10 @@ counts and uses mode 0600. Names go only to `--out`; stdout contains aggregates.
 - `gkg_store_write_lock_wait_seconds` measures the time to acquire the
   store's write lock before a serialized transaction.
 - `limits.read_timeout_ms` (`GKG_LIMITS_READ_TIMEOUT_MS`) sets the time budget
-  for each REST read and MCP or agent read tool, except Cypher. The default
-  is 15000 ms and applies when the value is zero or negative. Cypher uses
+  for each REST read and MCP or agent read tool, except `cypher` and `ask`.
+  The default is 15000 ms and applies when the value is zero or negative. Cypher uses
   `limits.cypher_timeout_ms` (`GKG_LIMITS_CYPHER_TIMEOUT_MS`, default 10000 ms).
+  MCP `ask` uses `GKG_AGENT_TIMEOUT_S`, with the normal tool budgets inside the loop.
   A search's embedding call gets at most half of the remaining read budget.
   If the embedder exceeds its share while the read budget is still active,
   search returns text-only results. Memgraph receives the remaining budget
@@ -497,8 +507,8 @@ document list/detail responses, entity views, related entity references in facts
 co-mentions, and traversal nodes carry `domain`. The API accepts `domain` on
 `POST /v1/search`, `POST /v1/agent/ask` and `/v1/agent/ask/stream`, and as a
 query parameter on `GET /v1/documents`. Slugs use `[a-z0-9-]{1,40}`; empty
-means all domains. MCP `search`, `get_entity`, `get_chunks`, `traverse`,
-`list_documents` and `status` also accept `domain` (there is no MCP ask tool).
+means all domains. MCP `ask`, `search`, `get_entity`, `get_chunks`, `traverse`,
+`list_documents` and `status` also accept `domain`.
 
 An ask's domain applies to every answer tool; model arguments cannot widen it.
 An entity or traversal start outside scope is not found; `get_chunks` reports

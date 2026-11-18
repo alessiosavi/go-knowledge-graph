@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -156,6 +157,31 @@ type AskRequest struct{ Question, Domain string }
 
 // Ask runs the configured provider with the same deadline as the HTTP surface.
 func (s *Server) Ask(ctx context.Context, req AskRequest) (AskResponse, error) {
+	return s.askRequest(ctx, req, nil)
+}
+
+// AskWithProgress runs Ask and reports the first tool of each tool-requesting
+// model turn. The callback receives the bounded ask context. Provider failures
+// expose the classification without provider-supplied details.
+func (s *Server) AskWithProgress(ctx context.Context, req AskRequest, progress func(context.Context, int, string)) (AskResponse, error) {
+	resp, err := s.askRequest(ctx, req, progress)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return resp, err
+	}
+	var provider *providerError
+	var endpoint *url.Error
+	switch {
+	case errors.As(err, &provider):
+		slog.Warn("agent: MCP ask failed", "status", provider.status, "err", provider)
+		return resp, &providerError{status: provider.status}
+	case errors.As(err, &endpoint):
+		return resp, &providerError{}
+	default:
+		return resp, err
+	}
+}
+
+func (s *Server) askRequest(ctx context.Context, req AskRequest, progress func(context.Context, int, string)) (AskResponse, error) {
 	if req.Domain != "" && !graph.ValidDomain(req.Domain) {
 		return AskResponse{}, errors.New("invalid domain slug")
 	}
@@ -165,7 +191,18 @@ func (s *Server) Ask(ctx context.Context, req AskRequest) (AskResponse, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	return s.ask(ctx, req.Question)
+	var events askEvents
+	if progress != nil {
+		step := 0
+		events.tool = func(ev streamEvent) error {
+			if ev.firstInStep {
+				step++
+				progress(ctx, step, ev.Tool)
+			}
+			return ctx.Err()
+		}
+	}
+	return s.runWithEvents(ctx, req.Question, events)
 }
 
 // rawOrNull returns raw when it is valid JSON so evidence marshaling cannot
@@ -184,10 +221,15 @@ func rawOrNull(raw []byte) json.RawMessage {
 // streamEvent is one progressive update emitted while an ask runs: a tool
 // call about to execute, or a fragment of the final answer.
 type streamEvent struct {
-	Kind      string          // "tool" | "delta"
-	Tool      string          // tool name (Kind=tool)
-	Arguments json.RawMessage // tool arguments (Kind=tool)
-	Text      string          // answer fragment (Kind=delta)
+	Kind        string          // "tool" | "delta"
+	Tool        string          // tool name (Kind=tool)
+	Arguments   json.RawMessage // tool arguments (Kind=tool)
+	Text        string          // answer fragment (Kind=delta)
+	firstInStep bool            // first tool in a model turn (Kind=tool)
+}
+
+type askEvents struct {
+	tool, delta func(streamEvent) error
 }
 
 // ask drives the bounded tool loop over the JSON endpoint (no streaming:
@@ -196,14 +238,15 @@ func (s *Server) ask(ctx context.Context, question string) (AskResponse, error) 
 	return s.run(ctx, question, nil)
 }
 
-// run drives the bounded tool loop: chat with tools, execute the requested
-// read-only calls (one step is one model turn that requests tools), then
-// answer when the model stops asking. When emit is non-nil the turns run
-// streamed (when enabled and supported), answer fragments are forwarded as
-// delta events and each tool call as a tool event. A provider that cannot
-// take the tools parameter falls back to the constrained JSON plan within
-// the same request.
 func (s *Server) run(ctx context.Context, question string, emit func(streamEvent) error) (AskResponse, error) {
+	return s.runWithEvents(ctx, question, askEvents{tool: emit, delta: emit})
+}
+
+// runWithEvents drives tool-requesting model turns until the model answers
+// or a budget is reached. The delta callback opts into provider streaming
+// when supported. Tool events can also be delivered with plain provider
+// turns. A provider that rejects tools falls back to the constrained JSON plan.
+func (s *Server) runWithEvents(ctx context.Context, question string, events askEvents) (AskResponse, error) {
 	msgs := []chatMessage{
 		{Role: "system", Content: scopedPrompt(ctx, systemPrompt)},
 		{Role: "user", Content: question},
@@ -214,10 +257,10 @@ func (s *Server) run(ctx context.Context, question string, emit func(streamEvent
 	for steps < s.maxSteps && !s.contextBudgetReached(transcriptBytes) {
 		reply, err := s.runTurn(ctx, chatRequest{
 			Model: s.llm.model, Messages: msgs, Tools: toolDefs(), ToolChoice: "auto",
-		}, emit)
+		}, events.delta)
 		if err != nil {
 			if toolsUnsupported(err) {
-				return s.askWithPlan(ctx, question, emit)
+				return s.askWithPlan(ctx, question, events)
 			}
 			return AskResponse{}, err
 		}
@@ -227,9 +270,9 @@ func (s *Server) run(ctx context.Context, question string, emit func(streamEvent
 		msgs = append(msgs, chatMessage{Role: "assistant", Content: reply.Content, ToolCalls: reply.ToolCalls})
 		steps++
 		executed := 0
-		for _, tc := range reply.ToolCalls {
-			if emit != nil {
-				if err := emit(streamEvent{Kind: "tool", Tool: tc.Function.Name, Arguments: rawOrNull([]byte(tc.Function.Arguments))}); err != nil {
+		for i, tc := range reply.ToolCalls {
+			if events.tool != nil {
+				if err := events.tool(streamEvent{Kind: "tool", Tool: tc.Function.Name, Arguments: rawOrNull([]byte(tc.Function.Arguments)), firstInStep: i == 0}); err != nil {
 					return AskResponse{}, err
 				}
 			}
@@ -260,7 +303,7 @@ func (s *Server) run(ctx context.Context, question string, emit func(streamEvent
 	// Complete the transcript before the final turn: every requested tool
 	// call has a result, including calls skipped after a budget was reached.
 	msgs = append(msgs, chatMessage{Role: "user", Content: planFinalPrompt})
-	return s.budgetFinalAnswer(ctx, msgs, ev, steps, emit)
+	return s.budgetFinalAnswer(ctx, msgs, ev, steps, events.delta)
 }
 
 // runTurn performs one model turn. When emit is non-nil and the turn may
@@ -363,7 +406,7 @@ func streamFallbackEligible(err error) bool {
 // one final call over the results. The plan call stays non-streamed (it must
 // return the constrained JSON); the final answer call rides the normal turn
 // path, so it streams when streaming is available.
-func (s *Server) askWithPlan(ctx context.Context, question string, emit func(streamEvent) error) (AskResponse, error) {
+func (s *Server) askWithPlan(ctx context.Context, question string, events askEvents) (AskResponse, error) {
 	msgs := []chatMessage{
 		{Role: "system", Content: scopedPrompt(ctx, planSystemPrompt)},
 		{Role: "user", Content: question},
@@ -391,9 +434,9 @@ func (s *Server) askWithPlan(ctx context.Context, question string, emit func(str
 	var results strings.Builder
 	executed := 0
 	transcriptBytes := 0
-	for _, tc := range plan.ToolCalls {
-		if emit != nil {
-			if err := emit(streamEvent{Kind: "tool", Tool: tc.Name, Arguments: rawOrNull(tc.Arguments)}); err != nil {
+	for i, tc := range plan.ToolCalls {
+		if events.tool != nil {
+			if err := events.tool(streamEvent{Kind: "tool", Tool: tc.Name, Arguments: rawOrNull(tc.Arguments), firstInStep: i == 0}); err != nil {
 				return AskResponse{}, err
 			}
 		}
@@ -422,9 +465,9 @@ func (s *Server) askWithPlan(ctx context.Context, question string, emit func(str
 	}
 	msgs = append(msgs, chatMessage{Role: "user", Content: "Tool results:\n" + results.String() + planFinalPrompt})
 	if s.contextBudgetReached(transcriptBytes) {
-		return s.budgetFinalAnswer(ctx, msgs, ev, 1, emit)
+		return s.budgetFinalAnswer(ctx, msgs, ev, 1, events.delta)
 	}
-	reply, err = s.runTurn(ctx, chatRequest{Model: s.llm.model, Messages: msgs}, emit)
+	reply, err = s.runTurn(ctx, chatRequest{Model: s.llm.model, Messages: msgs}, events.delta)
 	if err != nil {
 		return AskResponse{}, err
 	}

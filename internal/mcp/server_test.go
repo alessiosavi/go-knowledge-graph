@@ -53,13 +53,18 @@ func connectInMemory(t *testing.T, cfg config.Config, st *graph.Store, sub api.S
 // connectServer wires a client session to a prepared server.
 func connectServer(t *testing.T, srv *Server) *mcpgo.ClientSession {
 	t.Helper()
+	return connectServerWithOptions(t, srv, nil)
+}
+
+func connectServerWithOptions(t *testing.T, srv *Server, options *mcpgo.ClientOptions) *mcpgo.ClientSession {
+	t.Helper()
 	ctx := context.Background()
 	serverTransport, clientTransport := mcpgo.NewInMemoryTransports()
 	ss, err := srv.MCP().Connect(ctx, serverTransport, nil)
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
-	client := mcpgo.NewClient(&mcpgo.Implementation{Name: "gkg-test", Version: "v0"}, nil)
+	client := mcpgo.NewClient(&mcpgo.Implementation{Name: "gkg-test", Version: "v0"}, options)
 	cs, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
