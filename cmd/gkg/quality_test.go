@@ -80,7 +80,7 @@ func TestQualityCLISeedSampleAndReadOnly(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 			t.Fatal(err)
 		}
-		if report["metrics"] != float64(2) || report["documents"] != float64(1) || report["cross_domain_entities"] != nil || report["domain_coverage"] != float64(1) {
+		if report["metrics"] != float64(3) || report["documents"] != float64(1) || report["cross_domain_entities"] != nil || report["domain_coverage"] != float64(1) {
 			t.Fatalf("report %s", out.String())
 		}
 		if strings.Contains(out.String(), "Quillon") || strings.Contains(out.String(), "--zorbo") || strings.Contains(stderr.String(), "Quillon") {

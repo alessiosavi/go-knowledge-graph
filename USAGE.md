@@ -394,7 +394,7 @@ gkg quality --domain acme --duplicates-out duplicates.jsonl
 ```
 
 `quality` reads done documents and their derived data in batches of 5,000,
-without Bootstrap, graph writes, or provider calls. JSON uses `metrics: 2`;
+without Bootstrap, graph writes, or provider calls. JSON uses `metrics: 3`;
 undefined metrics are `null` (`n/a` in text). Candidate counts are `null`
 before extraction schema v4. `--seed` uses the longest matching prefix of the
 full document source, overriding its stored domain when matched. A domain
@@ -436,7 +436,7 @@ field of the single-line JSON report.
 
 | Report key | Definition and denominator |
 | --- | --- |
-| `metrics` | Metric definition version, currently 2 (2 shares the hygiene company-suffix rule; version 1 reports are not comparable on duplicate groups); no denominator. |
+| `metrics` | Metric definition version, currently 3 (3 judges hygiene noise with each document's own label preset, so `noise_rule_share` and hygiene samples are not comparable with version 2; 2 shares the hygiene company-suffix rule, so version 1 reports are not comparable on duplicate groups); no denominator. |
 | `documents` | Selected done documents; count. |
 | `chunks` | Distinct chunks of selected documents; count. |
 | `entities` | Entities mentioned in selected chunks or incident to selected typed facts; count. |

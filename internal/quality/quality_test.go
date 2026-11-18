@@ -57,7 +57,7 @@ func TestMetricsOnHandGraph(t *testing.T) {
 	r := compute(fixture(), Options{}, policy(t))
 	// chunks/entity = [3,2,2,2,1,1], 11 distinct mentions; 2 singletons,
 	// 4 single-document entities. Sorted weighted sum = 45, so Gini = 13/66.
-	if r.Metrics != 2 || r.Documents != 2 || r.Chunks != 5 || r.Entities != 6 || r.Mentions != 11 {
+	if r.Metrics != 3 || r.Documents != 2 || r.Chunks != 5 || r.Entities != 6 || r.Mentions != 11 {
 		t.Fatalf("population: %+v", r)
 	}
 	number(t, "isolated", r.IsolatedShare, .5)

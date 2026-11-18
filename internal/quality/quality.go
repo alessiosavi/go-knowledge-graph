@@ -14,7 +14,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
 )
 
-const MetricsVersion = 2
+const MetricsVersion = 3
 
 // HygienePolicy describes the policy used for both noise and private samples.
 const HygienePolicy = "per-document label preset plus configured stoplist overlay; an entity is noise when every supporting document's preset rejects it; label = entity.type"
