@@ -51,27 +51,14 @@ func TestCommandsRefuseNewerSchema(t *testing.T) {
 			previousStdin := os.Stdin
 			os.Stdin = stdin
 			defer func() { os.Stdin = previousStdin }()
-			queries := []string{
-				`MATCH (n) RETURN labels(n), properties(n) ORDER BY id(n)`,
-				`MATCH (a)-[r]->(b) RETURN id(a), type(r), properties(r), id(b) ORDER BY id(r)`,
-				`SHOW INDEX INFO`,
-				`SHOW CONSTRAINT INFO`,
-			}
-			before := make([][]*neo4j.Record, len(queries))
-			for i, query := range queries {
-				before[i] = migrationQuery(t, query, nil)
-			}
+			before := graphtest.Snapshot(t)
 			var out, errb bytes.Buffer
 			code := run(args, &out, &errb)
 			want := fmt.Sprintf("gkg %s: graph extraction schema v%d is newer than this binary (v%d); deploy a newer gkg or restore the pre-migration snapshot\n", args[0], newer, graph.ExtractionSchemaVersion)
 			if code != 1 || errb.String() != want || out.Len() != 0 {
 				t.Errorf("run(%v) = %d, stdout %q, stderr %q; want exit 1, empty stdout and %q", args, code, &out, &errb, want)
 			}
-			for i, query := range queries {
-				if after := migrationQuery(t, query, nil); !reflect.DeepEqual(before[i], after) {
-					t.Errorf("command modified store: %s", query)
-				}
-			}
+			before.AssertUnchanged(t, args[0])
 		})
 	}
 }
