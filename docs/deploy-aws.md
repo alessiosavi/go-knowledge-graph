@@ -147,7 +147,8 @@ Deploy this script release before any revision that activates schema v4:
 SSM initially executes the deploy script already installed on the box.
 `gkg preflight` runs read-only on the newly built image with the deployment
 environment. Exit 0 continues normally; exit 2 means an older binary with no
-preflight command and skips migration. Exit 3 aborts with `seed required`;
+preflight command and skips migration. Exit 3 (a missing or invalid seed, or an
+unreadable stoplist overlay) aborts with `seed or stoplist overlay invalid`;
 all other exits except 10 also abort and restore the previous revision and image
 tags before startup. A failure to stop gkg before migration restores them too
 and attempts `make up` to restart a stack that may have been partially stopped.

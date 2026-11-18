@@ -530,8 +530,8 @@ share using stored profiles and configured domain thresholds; it calls no provid
 ### Schema migration
 
 Use `gkg preflight` to check a deployment without writing to the graph or spool:
-exit 0 means current or empty, 3 means a missing or invalid seed, and 10 means a
-v4 migration is ready. Existing documents require a schema-1 source-prefix seed
+exit 0 means current or empty, 3 means a missing or invalid seed or an
+unreadable `GKG_INGEST_STOPLIST_FILE`, and 10 means a v4 migration is ready. Existing documents require a schema-1 source-prefix seed
 at `GKG_DOMAIN_SEED_FILE`; `detect-all` is available for development.
 `gkg migrate --schema-only` assigns domains, clears derived data and requeues
 documents without extracting them. `gkg serve` completes the re-extraction;

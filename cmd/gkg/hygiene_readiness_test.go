@@ -113,30 +113,41 @@ func TestBuildPipelineStoplistOverlayGate(t *testing.T) {
 	}
 }
 
+// assignedRestartMarkers are the restart states the store resumes from: the
+// assign phase is durable whatever the old marker was, including a legacy
+// graph whose marker node the assign phase itself created without a value.
+var assignedRestartMarkers = map[string]string{
+	"v3":     `CREATE (:GkgMeta {id:'extraction_schema',value:3,v4_phase:'assigned'})`,
+	"v2":     `CREATE (:GkgMeta {id:'extraction_schema',value:2,v4_phase:'assigned'})`,
+	"legacy": `CREATE (:GkgMeta {id:'extraction_schema',v4_phase:'assigned'})`,
+}
+
 func TestPreflightAssignedRestart(t *testing.T) {
-	for _, seed := range []string{"", "unmatched"} {
-		t.Run("seed="+seed, func(t *testing.T) {
-			st := preflightCommandStore(t)
-			migrationCommandDocument(t, st, "done")
-			migrationQuery(t, `CREATE (:GkgMeta {id:'extraction_schema',value:3,v4_phase:'assigned'})`, nil)
-			if seed != "" {
-				path := filepath.Join(t.TempDir(), "seed.json")
-				if err := os.WriteFile(path, []byte(`{"schema":1,"rules":[{"match":"https://quillon.invalid/","domain":"quillon"}]}`), 0600); err != nil {
-					t.Fatal(err)
+	for marker, create := range assignedRestartMarkers {
+		for _, seed := range []string{"", "unmatched"} {
+			t.Run(marker+"/seed="+seed, func(t *testing.T) {
+				st := preflightCommandStore(t)
+				migrationCommandDocument(t, st, "done")
+				migrationQuery(t, create, nil)
+				before := migrationQuery(t, `MATCH (m:GkgMeta) RETURN properties(m)`, nil)
+				if seed != "" {
+					path := filepath.Join(t.TempDir(), "seed.json")
+					if err := os.WriteFile(path, []byte(`{"schema":1,"rules":[{"match":"https://quillon.invalid/","domain":"quillon"}]}`), 0600); err != nil {
+						t.Fatal(err)
+					}
+					seed = path
 				}
-				seed = path
-			}
-			t.Setenv("GKG_DOMAIN_SEED_FILE", seed)
-			t.Setenv("GKG_INGEST_STOPLIST_FILE", "")
-			var out, errb bytes.Buffer
-			if code := run([]string{"preflight"}, &out, &errb); code != 10 || out.Len() != 0 {
-				t.Errorf("exit=%d stdout=%q stderr=%q; want 10", code, &out, &errb)
-			}
-			rows := migrationQuery(t, `MATCH (m:GkgMeta {id:'extraction_schema',value:3,v4_phase:'assigned'}) RETURN m`, nil)
-			if len(rows) != 1 {
-				t.Error("preflight changed the restart marker")
-			}
-		})
+				t.Setenv("GKG_DOMAIN_SEED_FILE", seed)
+				t.Setenv("GKG_INGEST_STOPLIST_FILE", "")
+				var out, errb bytes.Buffer
+				if code := run([]string{"preflight"}, &out, &errb); code != 10 || out.Len() != 0 {
+					t.Errorf("exit=%d stdout=%q stderr=%q; want 10", code, &out, &errb)
+				}
+				if after := migrationQuery(t, `MATCH (m:GkgMeta) RETURN properties(m)`, nil); !reflect.DeepEqual(before, after) {
+					t.Errorf("preflight changed the restart marker: %v -> %v", before, after)
+				}
+			})
+		}
 	}
 }
 
@@ -144,14 +155,62 @@ func TestPreflightAssignedRestart(t *testing.T) {
 // durable, the migration needs no seed, so a seed that became unreadable
 // must not block `migrate --schema-only` after preflight said 10.
 func TestSchemaOnlyAssignedRestartWithoutSeed(t *testing.T) {
-	st := preflightCommandStore(t)
-	migrationCommandDocument(t, st, "done")
-	migrationQuery(t, `CREATE (:GkgMeta {id:'extraction_schema',value:3,v4_phase:'assigned'})`, nil)
-	t.Setenv("GKG_DOMAIN_SEED_FILE", filepath.Join(t.TempDir(), "gone.json"))
-	t.Setenv("GKG_INGEST_STOPLIST_FILE", "")
-	var out, errb bytes.Buffer
-	if code := run([]string{"migrate", "--schema-only"}, &out, &errb); code != 0 {
-		t.Fatalf("exit=%d stderr=%q; want 0 without a seed in the assigned phase", code, &errb)
+	for marker, create := range assignedRestartMarkers {
+		t.Run(marker, func(t *testing.T) {
+			st := preflightCommandStore(t)
+			migrationCommandDocument(t, st, "done")
+			migrationQuery(t, create, nil)
+			t.Setenv("GKG_DOMAIN_SEED_FILE", filepath.Join(t.TempDir(), "gone.json"))
+			t.Setenv("GKG_INGEST_STOPLIST_FILE", "")
+			var out, errb bytes.Buffer
+			if code := run([]string{"migrate", "--schema-only"}, &out, &errb); code != 0 {
+				t.Fatalf("exit=%d stderr=%q; want 0 without a seed in the assigned phase", code, &errb)
+			}
+			rows := migrationQuery(t, `MATCH (m:GkgMeta {id:'extraction_schema'}) RETURN m.value AS value, m.v4_phase AS phase`, nil)
+			if len(rows) != 1 {
+				t.Fatalf("marker rows=%d; want 1", len(rows))
+			}
+			value, _ := rows[0].Get("value")
+			phase, _ := rows[0].Get("phase")
+			if fmt.Sprint(value) != "4" || phase != nil {
+				t.Fatalf("marker after restart value=%v v4_phase=%v; want 4 and none", value, phase)
+			}
+		})
+	}
+}
+
+// TestPreflightEmptyGraphStoplistOverlay: startup on an empty graph writes the
+// v4 marker and the pipeline then refuses an unreadable overlay, so preflight
+// fails (3) here too instead of passing the deploy to a serve that cannot start.
+func TestPreflightEmptyGraphStoplistOverlay(t *testing.T) {
+	for _, marker := range []string{"none", "v3"} {
+		for _, kind := range []string{"missing", "directory", "valid", "unset"} {
+			t.Run(marker+"/"+kind, func(t *testing.T) {
+				preflightCommandStore(t)
+				if marker == "v3" {
+					migrationQuery(t, `CREATE (:GkgMeta {id:'extraction_schema',value:3})`, nil)
+				}
+				path, diagnostic := stoplistOverlayFixture(t, kind)
+				t.Setenv("GKG_INGEST_STOPLIST_FILE", path)
+				t.Setenv("GKG_DOMAIN_SEED_FILE", "")
+				before := migrationQuery(t, `MATCH (n) RETURN labels(n),properties(n) ORDER BY id(n)`, nil)
+				var out, errb bytes.Buffer
+				code := run([]string{"preflight"}, &out, &errb)
+				want := 0
+				if diagnostic != "" {
+					want = 3
+					if !strings.Contains(errb.String(), "stoplist overlay unreadable: ") || !strings.Contains(errb.String(), diagnostic) {
+						t.Errorf("overlay diagnostic=%q; want unreadable and %q", &errb, diagnostic)
+					}
+				}
+				if code != want || out.Len() != 0 {
+					t.Errorf("exit=%d stdout=%q stderr=%q; want %d and empty stdout", code, &out, &errb, want)
+				}
+				if after := migrationQuery(t, `MATCH (n) RETURN labels(n),properties(n) ORDER BY id(n)`, nil); !reflect.DeepEqual(before, after) {
+					t.Error("preflight changed the graph")
+				}
+			})
+		}
 	}
 }
 

@@ -202,7 +202,8 @@ require `GKG_DOMAIN_SEED_FILE=<path>` pointing to a schema-1 source-prefix seed
 that covers every live document; for local development, use
 `GKG_DOMAIN_SEED_FILE=detect-all` for deterministic detection instead.
 `gkg preflight` checks the marker and seed without writing or opening the spool
-(exit 0 for current/empty, 3 for a missing or invalid seed, 10 for a ready migration).
+(exit 0 for current/empty, 3 for a missing or invalid seed or an unreadable
+stoplist overlay, 10 for a ready migration).
 `gkg migrate --schema-only` migrates without invoking the extractor; `serve`
 re-extracts the queued documents after startup. After re-extraction, run
 `gkg judge backfill --budget-calls N` with an owner-approved budget to judge

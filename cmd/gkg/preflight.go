@@ -76,9 +76,12 @@ func migrateSchema(ctx context.Context, st *graph.Store, cfg config.Config) (gra
 }
 
 // assignedPhase reports the restart state after an interrupted v4 migration:
-// marker 3 with its assign phase complete.
+// any marker below v4 with its assign phase complete. Like the store, it does
+// not care which version the migration started from; on a legacy graph the
+// assign phase creates the marker node without a value.
 func assignedPhase(ctx context.Context, st *graph.Store) (bool, error) {
-	phase, err := st.RunReadQuery(ctx, `MATCH (m:GkgMeta {id:'extraction_schema',value:3,v4_phase:'assigned'}) RETURN m.id AS id`, nil, 1)
+	phase, err := st.RunReadQuery(ctx, `MATCH (m:GkgMeta {id:'extraction_schema',v4_phase:'assigned'})
+WHERE coalesce(m.value, 0) < $version RETURN m.id AS id`, map[string]any{"version": graph.ExtractionSchemaVersion}, 1)
 	if err != nil {
 		return false, err
 	}
@@ -162,6 +165,12 @@ RETURN d.id AS id,d.source AS source ORDER BY d.id`, nil, 0)
 				return 1
 			}
 			if len(data.Rows) == 0 {
+				// Startup writes the v4 marker on an empty graph, so the
+				// pipeline refuses an unreadable overlay there too.
+				if err := validateStoplistOverlay(cfg); err != nil {
+					fmt.Fprintf(stderr, "gkg preflight: %v\n", err)
+					return 3
+				}
 				return 0
 			}
 		}

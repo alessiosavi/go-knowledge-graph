@@ -663,7 +663,7 @@ commands:
   domain    list, inspect, evaluate and administer domains through serve
   judge     backfill unjudged candidates or sample and score a fact audit
   quality   report read-only graph quality metrics and optional private hygiene samples
-  preflight check schema and seed read-only (exit 0=current/empty, 3=seed required, 10=migration ready)
+  preflight check schema, seed and stoplist read-only (exit 0=current/empty, 3=seed or stoplist overlay invalid, 10=migration ready)
   migrate   upgrade the Memgraph schema and re-extract in-flight documents
   migrate --schema-only  upgrade schema and leave re-extraction to serve
   help      show this help (-h, --help)

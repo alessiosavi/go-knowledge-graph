@@ -2176,7 +2176,7 @@ func TestAWSDeployPreflight(t *testing.T) {
 				}
 				wantMessage := fmt.Sprintf("preflight failed (exit %d); previous revision and image tags restored", preflight)
 				if preflight == 3 {
-					wantMessage = "seed required; previous revision and image tags restored"
+					wantMessage = "seed or stoplist overlay invalid; previous revision and image tags restored"
 				} else if tc.mode == "stop-fail" {
 					wantMessage = "stop gkg failed; previous revision and image tags restored"
 				}

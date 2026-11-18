@@ -65,6 +65,11 @@ func TestUsageListsCommands(t *testing.T) {
 	if !strings.Contains(out.String(), "migrate --schema-only") {
 		t.Error("schema-only option missing from usage")
 	}
+	// Preflight exits 3 for a bad seed or an unreadable stoplist overlay;
+	// the help line must name both, as deploy.sh and the docs do.
+	if !strings.Contains(out.String(), "3=seed or stoplist overlay invalid") {
+		t.Error("preflight exit 3 in usage must name the seed and the stoplist overlay")
+	}
 }
 
 func TestMigrateRejectsArguments(t *testing.T) {
