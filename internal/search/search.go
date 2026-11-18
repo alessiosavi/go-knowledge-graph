@@ -30,6 +30,8 @@ type Hit struct {
 	Title   string
 	Score   float64
 	Snippet string
+
+	mentions int
 }
 
 const rrfK = 60
@@ -95,38 +97,43 @@ func Query(ctx context.Context, st *graph.Store, emb QueryEmbedder, q, kind stri
 		limit = 20
 	}
 	switch kind {
-	case "entity":
-		return entityHits(ctx, st, emb, q, limit, opt.domain)
 	case "chunk":
 		return chunkHits(ctx, st, q, limit, opt.domain)
-	case "auto":
-		ents, err := entityHits(ctx, st, emb, q, limit, opt.domain)
+	case "entity", "auto":
+		hits, err := entityCandidates(ctx, st, emb, q, limit, opt.domain)
 		if err != nil {
 			return nil, err
 		}
-		chunks, err := chunkHits(ctx, st, q, limit, opt.domain)
-		if err != nil {
-			return nil, err
+		if kind == "auto" {
+			chunks, err := chunkHits(ctx, st, q, limit, opt.domain)
+			if err != nil {
+				return nil, err
+			}
+			hits = append(hits, chunks...)
 		}
-		return topHits(append(ents, chunks...), limit), nil
+		return topHits(hits, limit), nil
 	default:
 		return nil, fmt.Errorf("search: kind %q not in entity|chunk|auto", kind)
 	}
 }
 
-type entityRow struct {
-	id, name, typ, domain string
+type entitySearchStore interface {
+	EntityTextSearchIn(ctx context.Context, q, slug string, limit int) ([]graph.EntitySearchRow, error)
+	EntityVectorSearch(ctx context.Context, vec []float64, limit int) ([]string, error)
+	EntitySearchRowsByID(ctx context.Context, ids []string) ([]graph.EntitySearchRow, error)
 }
 
-func entityHits(ctx context.Context, st *graph.Store, emb QueryEmbedder, q string, limit int, slug string) ([]Hit, error) {
+// entityCandidates keeps both legs' hits until the final ranking, which can
+// also include chunks in auto mode.
+func entityCandidates(ctx context.Context, st entitySearchStore, emb QueryEmbedder, q string, limit int, slug string) ([]Hit, error) {
 	recs, err := st.EntityTextSearchIn(ctx, q, slug, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search: entity text leg: %w", err)
 	}
-	rows := make(map[string]entityRow, len(recs))
+	rows := make(map[string]graph.EntitySearchRow, len(recs))
 	textLeg := make([]string, 0, len(recs))
 	for _, r := range recs {
-		rows[r.ID] = entityRow{id: r.ID, name: r.Name, typ: r.Type, domain: r.Domain}
+		rows[r.ID] = r
 		textLeg = append(textLeg, r.ID)
 	}
 
@@ -137,26 +144,33 @@ func entityHits(ctx context.Context, st *graph.Store, emb QueryEmbedder, q strin
 			vectorLimit *= 5
 		}
 		if vecLeg, ok := vectorLeg(ctx, st, emb, q, vectorLimit); ok {
-			// A vector entry whose entity no longer resolves cannot be
-			// rendered as a hit: drop it rather than emitting an id-only
-			// ghost. Legacy stale entries usually fail the CALL itself
-			// (Memgraph materializes deleted nodes), which degrades the
-			// whole leg to text-only; this filter covers the remaining
-			// delete race and lenient providers.
-			kept := make([]string, 0, len(vecLeg))
+			var unknown []string
 			for _, id := range vecLeg {
 				if _, known := rows[id]; !known {
-					if r, err := st.EntityRef(ctx, id); err == nil {
-						if slug != "" && r.Domain != slug {
-							continue
+					unknown = append(unknown, id)
+				}
+			}
+			if len(unknown) > 0 {
+				resolved, err := st.EntitySearchRowsByID(ctx, unknown)
+				if err != nil {
+					slog.Warn("search: vector entity lookup failed", "err", err)
+				} else {
+					for _, r := range resolved {
+						if _, known := rows[r.ID]; !known {
+							rows[r.ID] = r
 						}
-						rows[id] = entityRow{id: r.ID, name: r.Name, typ: r.Type, domain: r.Domain}
-					} else {
-						continue
 					}
 				}
-				if len(kept) >= limit {
+			}
+			// Rank only resolved, in-domain ids in their original vector order.
+			kept := make([]string, 0, min(len(vecLeg), limit))
+			for _, id := range vecLeg {
+				if len(kept) == limit {
 					break
+				}
+				row, known := rows[id]
+				if !known || (slug != "" && row.Domain != slug) {
+					continue
 				}
 				kept = append(kept, id)
 			}
@@ -167,20 +181,18 @@ func entityHits(ctx context.Context, st *graph.Store, emb QueryEmbedder, q strin
 	fused := FuseRanks(legs)
 	hits := make([]Hit, 0, len(fused))
 	for id, score := range fused {
-		row, known := rows[id]
-		title := row.name
-		if !known {
-			title = id
-		}
-		hits = append(hits, Hit{Domain: row.domain, Kind: "entity", ID: id, Title: title, Score: score, Snippet: row.typ})
+		row := rows[id]
+		hits = append(hits, Hit{
+			Domain: row.Domain, Kind: "entity", ID: id, Title: row.Name, Score: score, Snippet: row.Type, mentions: row.MentionCount,
+		})
 	}
-	return topHits(hits, limit), nil
+	return hits, nil
 }
 
 // vectorLeg embeds the query and returns entity ids ordered by vector
 // distance. Any failure (no embedder output, missing vector index) skips
 // the leg — text recall is never dropped by a vector problem.
-func vectorLeg(ctx context.Context, st *graph.Store, emb QueryEmbedder, q string, limit int) ([]string, bool) {
+func vectorLeg(ctx context.Context, st entitySearchStore, emb QueryEmbedder, q string, limit int) ([]string, bool) {
 	vec, err := emb.EmbedQuery(ctx, q)
 	if err != nil {
 		slog.Warn("search: embedding failed, text-only results", "err", err)
@@ -236,7 +248,8 @@ func snippetQuery(q string) string {
 	return strings.Join(words, " ")
 }
 
-// topHits sorts by score descending (id as tiebreaker) and truncates.
+// topHits sorts by descending score and ascending id. Within each tied run
+// of entities, it ranks by descending mentions without crossing chunk hits.
 func topHits(hits []Hit, limit int) []Hit {
 	sort.SliceStable(hits, func(i, j int) bool {
 		if hits[i].Score != hits[j].Score {
@@ -244,6 +257,21 @@ func topHits(hits []Hit, limit int) []Hit {
 		}
 		return hits[i].ID < hits[j].ID
 	})
+	for start := 0; start < len(hits); {
+		end := start + 1
+		if hits[start].Kind == "entity" {
+			for end < len(hits) && hits[end].Kind == "entity" && hits[end].Score == hits[start].Score {
+				end++
+			}
+			if end-start > 1 {
+				tied := hits[start:end]
+				sort.SliceStable(tied, func(i, j int) bool {
+					return tied[i].mentions > tied[j].mentions
+				})
+			}
+		}
+		start = end
+	}
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
