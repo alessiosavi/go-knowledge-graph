@@ -52,10 +52,10 @@ type tierCounts struct {
 
 // DuplicateSummary contains aggregate census counts and hub sizes.
 type DuplicateSummary struct {
-	Groups   tierCounts `json:"groups"`
-	Members  tierCounts `json:"members"`
-	MaxEdges int        `json:"max_edges"`
-	P95Edges int        `json:"p95_edges"`
+	Groups       tierCounts `json:"groups"`
+	Members      tierCounts `json:"members"`
+	MaxGroupSize int        `json:"max_group_size"`
+	P95GroupSize int        `json:"p95_group_size"`
 }
 
 var (
@@ -164,7 +164,7 @@ func duplicateCensusGroups(entities map[string]entity, entityDocs map[string]str
 	return groups
 }
 
-func duplicateEdgePercentile(counts []int) (maxEdges, p95Edges int) {
+func duplicateSizePercentile(counts []int) (maxSize, p95Size int) {
 	if len(counts) == 0 {
 		return 0, 0
 	}
@@ -226,7 +226,7 @@ func writeDuplicates(ctx context.Context, st *graph.Store, out io.Writer, groups
 			}
 		}
 	}
-	summary.MaxEdges, summary.P95Edges = duplicateEdgePercentile(edges)
+	summary.MaxGroupSize, summary.P95GroupSize = duplicateSizePercentile(edges)
 	return summary, nil
 }
 

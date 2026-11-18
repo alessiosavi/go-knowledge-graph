@@ -142,7 +142,7 @@ func runQuality(args []string, stdout, stderr io.Writer) int {
 		err = writeQualityText(stdout, report)
 		if err == nil && *duplicatesPath != "" {
 			_, err = fmt.Fprintf(stdout, "duplicate census groups A=%d other=%d, members A=%d other=%d, group size max=%d p95=%d\n",
-				census.Groups.A, census.Groups.Other, census.Members.A, census.Members.Other, census.MaxEdges, census.P95Edges)
+				census.Groups.A, census.Groups.Other, census.Members.A, census.Members.Other, census.MaxGroupSize, census.P95GroupSize)
 		}
 	}
 	if err != nil {

@@ -97,11 +97,11 @@ func TestDuplicateCensusGrouping(t *testing.T) {
 }
 
 func TestDuplicateEdgePercentile(t *testing.T) {
-	if max, p95 := duplicateEdgePercentile(nil); max != 0 || p95 != 0 {
+	if max, p95 := duplicateSizePercentile(nil); max != 0 || p95 != 0 {
 		t.Fatalf("empty max/p95 = %d/%d", max, p95)
 	}
 	counts := []int{500, 1, 20, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
-	if max, p95 := duplicateEdgePercentile(counts); max != 500 || p95 != 20 {
+	if max, p95 := duplicateSizePercentile(counts); max != 500 || p95 != 20 {
 		t.Fatalf("max/p95 = %d/%d, want 500/20", max, p95)
 	}
 }

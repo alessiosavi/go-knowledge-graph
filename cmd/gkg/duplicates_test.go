@@ -180,10 +180,10 @@ func TestQualityDuplicateCensus(t *testing.T) {
 	var report struct {
 		quality.Report
 		DuplicateCensus struct {
-			MaxEdges int `json:"max_edges"`
+			MaxGroupSize int `json:"max_group_size"`
 		} `json:"duplicate_census"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.DuplicateCensus.MaxEdges != 17 {
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.DuplicateCensus.MaxGroupSize != 17 {
 		t.Fatalf("combined JSON report = %s (%v)", &out, err)
 	}
 	if report.DuplicateGroups != baseline.DuplicateGroups || report.DuplicateEntities != baseline.DuplicateEntities {
