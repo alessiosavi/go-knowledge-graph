@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -67,8 +68,8 @@ func TestRejudgeCLIResume(t *testing.T) {
 		t.Fatal("manifest failed to restrict to labelled confirmed/unjudged edges")
 	}
 	firstRequest := firstRejudgeRequest(t, original)
-	if code, _ := callRejudge(t, plan...); code == 0 || !bytes.Equal(original, readRejudgeFile(t, manifest)) {
-		t.Fatal("plan overwrote an existing manifest")
+	if code, out := callRejudge(t, plan...); code != 1 || !bytes.Equal(original, readRejudgeFile(t, manifest)) {
+		t.Fatalf("existing manifest exit=%d: %s", code, out)
 	}
 
 	judgeArgs := func(cap string, extra ...string) (int, string) {
@@ -77,7 +78,7 @@ func TestRejudgeCLIResume(t *testing.T) {
 	if code, out := judgeArgs("2"); code != 3 || !strings.Contains(out, "GATE FAIL") || requests.Load() != 2 {
 		t.Fatalf("budget stop exit=%d calls=%d: %s", code, requests.Load(), out)
 	} else {
-		for _, want := range []string{"fingerprint=" + firstRequest.Profile.Fingerprint, "reconciled/expected", "judged/reconciled"} {
+		for _, want := range []string{"sealed=false", "fingerprint=" + firstRequest.Profile.Fingerprint, "reconciled/expected", "judged/reconciled"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("partial gate missing %q: %s", want, out)
 			}
@@ -109,6 +110,8 @@ func TestRejudgeCLIResume(t *testing.T) {
 	}
 	if code, out := judgeArgs("3", "-raise-cap"); code != 0 || !strings.Contains(out, "GATE PASS") || requests.Load() != 3 {
 		t.Fatalf("resume exit=%d calls=%d: %s", code, requests.Load(), out)
+	} else if !strings.Contains(out, "sealed=false") {
+		t.Errorf("run that first completed the ledger did not report sealed=false: %s", out)
 	}
 	records := bytes.Split(bytes.TrimSpace(readRejudgeFile(t, verdicts)), []byte("\n"))
 	var resumed struct{ Attempts int }
@@ -127,7 +130,7 @@ func TestRejudgeCLIResume(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if code, out := judgeArgs("3"); code != 0 || requests.Load() != 3 {
+	if code, out := judgeArgs("3"); code != 0 || !strings.Contains(out, "sealed=true") || requests.Load() != 3 {
 		t.Errorf("sealed resume exit=%d calls=%d: %s", code, requests.Load(), out)
 	}
 	if !bytes.Equal(readRejudgeFile(t, attempts), sealedLedger) || !bytes.Equal(readRejudgeFile(t, verdicts), sealedVerdicts) {
@@ -265,6 +268,8 @@ SET h.name='Acme Capital', t.name=t.name + ' Platform'`, map[string]any{"doc": d
 	canonical.Head, canonical.Tail = "**ACME CAPITAL**", "`Zorbo Platform`"
 	wrong := labels[1]
 	wrong.Head = "Neither Name"
+	invalid := labels[0]
+	invalid.Label = "maybe"
 	dir := t.TempDir()
 	labelPath := filepath.Join(dir, "labels.jsonl")
 	tests := []struct {
@@ -275,11 +280,13 @@ SET h.name='Acme Capital', t.name=t.name + ' Platform'`, map[string]any{"doc": d
 	}{
 		{"canonical names", []judge.AuditRow{canonical}, 0, "reconciled=1"},
 		{"mismatch", []judge.AuditRow{labels[0], wrong}, 0, `reason="head differs"`},
-		{"all mismatched", []judge.AuditRow{wrong}, 1, "no rows to plan"},
-		{"empty selection", []judge.AuditRow{}, 1, "no rows to plan"},
-		{"missing", []judge.AuditRow{labels[0], {ID: "missing-id", Label: "ok"}}, 1, "missing-id"},
-		{"unverifiable", []judge.AuditRow{labels[2]}, 1, labels[2].ID},
+		{"all mismatched", []judge.AuditRow{wrong}, 2, "no rows to plan"},
+		{"empty selection", []judge.AuditRow{}, 2, "no rows to plan"},
+		{"missing", []judge.AuditRow{labels[0], {ID: "missing-id", Label: "ok"}}, 2, "missing-id: missing eligible typed edge"},
+		{"unverifiable", []judge.AuditRow{labels[2]}, 2, labels[2].ID + ": unverifiable"},
+		{"invalid label", []judge.AuditRow{invalid}, 2, "invalid label"},
 		{"duplicate", []judge.AuditRow{labels[0], labels[0]}, 2, labels[0].ID},
+		{"empty id", []judge.AuditRow{{Label: "ok"}}, 2, "empty or duplicate labelled id"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -296,6 +303,11 @@ SET h.name='Acme Capital', t.name=t.name + ' Platform'`, map[string]any{"doc": d
 			}
 		})
 	}
+	path := filepath.Join(dir, "empty-unlabelled.jsonl")
+	if code, out := callRejudge(t, "-plan", "-domain", "no-rejudge-fixtures-in-this-domain", "-out", path); code != 1 ||
+		!strings.Contains(out, "no rows to plan") {
+		t.Errorf("unlabelled empty plan exit=%d: %s", code, out)
+	}
 }
 
 func TestRejudgeCLIIncomplete(t *testing.T) {
@@ -306,6 +318,7 @@ func TestRejudgeCLIIncomplete(t *testing.T) {
 		message string
 	}{
 		{"unlabelled", []string{"", ""}, 4, "incomplete: 1 of 2 rows judged; budget reached"},
+		{"labelled without scored rows", []string{"skip", ""}, 4, "incomplete: 1 of 2 rows judged; budget reached"},
 		{"labelled with unjudged skip", []string{"ok", "skip"}, 3, "GATE FAIL"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -332,7 +345,7 @@ func TestRejudgeCLIIncomplete(t *testing.T) {
 				req := firstRejudgeRequest(t, readRejudgeFile(t, manifest))
 				if code, out := callRejudge(t, append(args, "-budget-attempts", "2", "-raise-cap")...); code != 0 ||
 					!strings.Contains(out, "fingerprint="+req.Profile.Fingerprint) || calls.Load() != 2 {
-					t.Errorf("completed unlabelled run exit=%d calls=%d: %s", code, calls.Load(), out)
+					t.Errorf("completed run without a scored gate exit=%d calls=%d: %s", code, calls.Load(), out)
 				}
 			}
 		})
@@ -514,6 +527,82 @@ func assertRejudgeSeal(t *testing.T, verdicts string, completed bool) {
 	}
 }
 
+type rejudgeCLITransport func(*http.Request) (*http.Response, error)
+
+func (f rejudgeCLITransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+type rejudgeCLIResponseBody struct {
+	io.ReadCloser
+	onClose func()
+}
+
+func (b rejudgeCLIResponseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.onClose()
+	return err
+}
+
+func TestRejudgeCLICancelBeforeVerdictAppend(t *testing.T) {
+	_, labels := rejudgeCLIFixture(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("provider request bypassed the test transport")
+	})
+	dir := t.TempDir()
+	audit := filepath.Join(dir, "labels.jsonl")
+	manifest, verdicts := filepath.Join(dir, "manifest.jsonl"), filepath.Join(dir, "verdicts.jsonl")
+	writeRejudgeLabels(t, audit, labels[:1])
+	if code, out := callRejudge(t, "-plan", "-ids", audit, "-out", manifest); code != 0 || !strings.Contains(out, "calls_needed=1") {
+		t.Fatalf("plan exit=%d: %s", code, out)
+	}
+
+	self, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	var calls int
+	var cause error
+	http.DefaultTransport = rejudgeCLITransport(func(req *http.Request) (*http.Response, error) {
+		calls++
+		response := httptest.NewRecorder()
+		writeConfirmedRejudgeResponse(response)
+		resp := response.Result()
+		resp.Body = rejudgeCLIResponseBody{ReadCloser: resp.Body, onClose: func() {
+			// The judge client closes the body after decoding the verdict.
+			if err := self.Signal(os.Interrupt); err != nil {
+				t.Error(err)
+				return
+			}
+			select {
+			case <-req.Context().Done():
+				cause = context.Cause(req.Context())
+			case <-time.After(5 * time.Second):
+				t.Error("interrupt did not cancel the provider request context")
+			}
+		}}
+		return resp, nil
+	})
+	code, stdout, stderr := callRejudgeStreams("-judge", "-manifest", manifest, "-out", verdicts, "-budget-attempts", "1")
+	if code != 1 || calls != 1 || cause == nil || stderr != fmt.Sprintf("gkg judge rejudge: %v\n", cause) {
+		t.Errorf("cancelled run exit=%d calls=%d cause=%v\nstdout: %sstderr: %s", code, calls, cause, stdout, stderr)
+	}
+	if got := readRejudgeFile(t, verdicts); len(got) != 0 {
+		t.Errorf("cancelled run appended a verdict: %s", got)
+	}
+	var ledger struct {
+		Attempts     int
+		LastID       string `json:"last_id"`
+		LastAttempts int    `json:"last_attempts"`
+	}
+	if err := json.Unmarshal(readRejudgeFile(t, filepath.Join(dir, "attempts.json")), &ledger); err != nil {
+		t.Fatal(err)
+	}
+	if ledger.Attempts != 1 || ledger.LastAttempts != 1 || ledger.LastID != labels[0].ID {
+		t.Errorf("cancelled run lost or changed the paid debit: %+v", ledger)
+	}
+	assertRejudgeSeal(t, verdicts, false)
+}
+
 func TestRejudgeCLIStopsAfterVerdictCacheMissedWrite(t *testing.T) {
 	var paid atomic.Int32
 	doc, labels := rejudgeCLIFixture(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -572,8 +661,10 @@ func TestRejudgeCLILeaseBlocksAnotherRun(t *testing.T) {
 	if code, out := callRejudge(t, "-judge", "-manifest", m, "-budget-attempts", "1", "-out", v); code != 1 || !strings.Contains(out, "lease is held") {
 		t.Fatalf("live lease exit=%d: %s", code, out)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "attempts.json")); !os.IsNotExist(err) {
-		t.Fatalf("blocked caller created attempt ledger: %v", err)
+	for _, path := range []string{v, filepath.Join(dir, "attempts.json")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("blocked caller created %s: %v", path, err)
+		}
 	}
 	before.AssertUnchanged(t, "blocked judge")
 }

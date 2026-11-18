@@ -63,6 +63,13 @@ func scanRejudgeLines(r io.Reader, visit func(int, []byte) error) error {
 
 func readRejudgeManifest(path string) (rejudgeManifest, string, error) {
 	var m rejudgeManifest
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return m, "", err
+	}
+	if err := privateRejudgeFile(fi); err != nil {
+		return m, "", fmt.Errorf("read manifest %s: %w", path, err)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return m, "", err
@@ -109,33 +116,33 @@ func (a rejudgeAttempts) save(path string, replace bool) error {
 	})
 }
 
-func readRejudgeAttempts(path string) (*rejudgeAttempts, error) {
+func readRejudgeAttempts(path string) (*rejudgeAttempts, []byte, error) {
 	fi, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := privateRejudgeFile(fi); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var a rejudgeAttempts
 	if err := json.Unmarshal(raw, &a); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if a.Cap <= 0 || a.Attempts < 0 || a.Attempts > a.Cap || a.LastAttempts < 0 || a.LastAttempts > a.Attempts ||
 		(a.LastID == "") != (a.LastAttempts == 0) || (a.Attempts == 0) != (a.LastAttempts == 0) {
-		return nil, fmt.Errorf("invalid attempts or cap in %s", path)
+		return nil, nil, fmt.Errorf("invalid attempts or cap in %s", path)
 	}
 	if a.Completed != (a.VerdictsSHA256 != "") {
-		return nil, fmt.Errorf("invalid verdicts seal in %s", path)
+		return nil, nil, fmt.Errorf("invalid verdicts seal in %s", path)
 	}
-	return &a, nil
+	return &a, raw, nil
 }
 
 // rejudgeVerdictsDigest hashes the exact bytes of the open verdict log and
@@ -161,28 +168,25 @@ func privateRejudgeFile(fi os.FileInfo) error {
 	return nil
 }
 
-func openRejudgeVerdicts(path string, allowCreate bool) (*os.File, error) {
+func openRejudgeVerdicts(path string) (*os.File, error) {
 	fi, err := os.Lstat(path)
-	if err == nil {
-		if err := privateRejudgeFile(fi); err != nil {
-			return nil, err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	flags := os.O_RDWR | os.O_APPEND
-	if allowCreate && fi == nil {
-		flags |= os.O_CREATE | os.O_EXCL
-	}
-	f, err := os.OpenFile(path, flags, 0600)
 	if err != nil {
 		return nil, err
 	}
-	if fi == nil {
-		if err := syncRejudgeDir(filepath.Dir(path)); err != nil {
-			f.Close()
-			return nil, err
-		}
+	if err := privateRejudgeFile(fi); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0)
+}
+
+func createRejudgeVerdicts(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syncRejudgeDir(filepath.Dir(path)); err != nil {
+		f.Close()
+		return nil, err
 	}
 	return f, nil
 }

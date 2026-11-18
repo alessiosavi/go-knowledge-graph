@@ -15,6 +15,9 @@ import (
 	"golang.org/x/text/cases"
 )
 
+// ErrRejudgeAuditInput identifies audit input that cannot produce a valid plan.
+var ErrRejudgeAuditInput = errors.New("invalid rejudge audit input")
+
 type RejudgeSelection struct {
 	Domain string
 	// Nil selects all ids. An empty non-nil slice selects none.
@@ -83,13 +86,13 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 	}
 	for _, row := range opt.Labels {
 		if row.ID == "" {
-			return result, fmt.Errorf("empty labelled id")
+			return result, fmt.Errorf("%w: empty labelled id", ErrRejudgeAuditInput)
 		}
 		if !validRejudgeLabel(row.Label) {
-			return result, fmt.Errorf("invalid label %q for id %s", row.Label, row.ID)
+			return result, fmt.Errorf("%w: invalid label %q for id %s", ErrRejudgeAuditInput, row.Label, row.ID)
 		}
 		if _, exists := labels[row.ID]; exists {
-			return result, fmt.Errorf("duplicate labelled id %s", row.ID)
+			return result, fmt.Errorf("%w: duplicate labelled id %s", ErrRejudgeAuditInput, row.ID)
 		}
 		ids = append(ids, row.ID)
 		labels[row.ID] = row
@@ -141,7 +144,7 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 				Head:       EvidenceMention{fact.HeadStart, fact.HeadEnd, fact.HeadType, fact.HeadTypeFallback},
 				Tail:       EvidenceMention{fact.TailStart, fact.TailEnd, fact.TailType, fact.TailTypeFallback},
 			}
-			payloadBytes, reason := BuildV2Request(input)
+			payloadBytes, tableRow, reason := buildV2Request(input)
 			if reason != "" {
 				unverifiable(fact.ID, reason)
 				continue
@@ -157,7 +160,7 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 				}
 				result.Reconciled++
 			}
-			tryPrevious := payload.TableHeader == nil && rejudgeTableRow(input)
+			tryPrevious := tableRow && payload.TableHeader == nil
 			if tryPrevious {
 				previous[fact.ChunkID] = fact.DocID
 			}
@@ -212,10 +215,14 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 		}
 	}
 	if len(incomplete) > 0 {
-		return result, errors.Join(incomplete...)
+		return result, fmt.Errorf("%w: %w", ErrRejudgeAuditInput, errors.Join(incomplete...))
 	}
 	if result.Planned == 0 {
-		return result, fmt.Errorf("judge: no rows to plan after selection, evidence checks and label reconciliation")
+		err := errors.New("judge: no rows to plan after selection, evidence checks and label reconciliation")
+		if ids != nil {
+			err = fmt.Errorf("%w: %w", ErrRejudgeAuditInput, err)
+		}
+		return result, err
 	}
 	manifest.header.Mismatches = result.Mismatches
 	keys := make(map[string]struct{}, len(manifest.rows))
@@ -255,15 +262,6 @@ func loadRejudgeDefinitions(dir, name string) (map[string]string, error) {
 		definitions[key] = relation.Definition
 	}
 	return definitions, nil
-}
-
-func rejudgeTableRow(in V2Input) bool {
-	head, _ := mentionSurface(in.ChunkText, in.Head)
-	tail, _ := mentionSurface(in.ChunkText, in.Tail)
-	line := physicalLine(in.ChunkText, head.start)
-	row := line.text(in.ChunkText)
-	cells, pipes := tableCells(row)
-	return head.end <= line.end && tail.start >= line.start && tail.end <= line.end && isTableRow(row, cells, pipes)
 }
 
 func foldRejudgeName(s string) string { return cases.Fold().String(graph.DisplayName(s)) }

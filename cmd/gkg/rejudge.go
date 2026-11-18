@@ -87,14 +87,18 @@ func runJudgeRejudge(args []string, stdout, stderr io.Writer) int {
 		if err := writeRejudgePlanSummary(stdout, result); err != nil {
 			return fail(1, err)
 		}
+		if errors.Is(runErr, judge.ErrRejudgeAuditInput) {
+			return fail(2, runErr)
+		}
 		if runErr != nil {
 			return fail(1, runErr)
 		}
 		return 0
 	}
 	result, runErr := judge.JudgeRejudge(ctx, st, client, cfg.Labels.PresetsDir, opt)
-	summary := fmt.Sprintf("judged=%d resumed=%d planned=%d cache_hits=%d attempts=%d cap=%d effective_budget=%d stopped_for_budget=%t",
-		result.Judged, result.Resumed, result.Planned, result.CacheHits, result.Attempts, result.Cap, result.EffectiveBudget, result.StoppedForBudget)
+	summary := fmt.Sprintf("judged=%d resumed=%d planned=%d cache_hits=%d attempts=%d cap=%d effective_budget=%d stopped_for_budget=%t sealed=%t",
+		result.Judged, result.Resumed, result.Planned, result.CacheHits, result.Attempts, result.Cap, result.EffectiveBudget,
+		result.StoppedForBudget, result.Sealed)
 	if _, err := fmt.Fprintln(stdout, summary); err != nil {
 		return fail(1, err)
 	}
