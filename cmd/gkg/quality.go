@@ -32,7 +32,7 @@ func runQuality(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: gkg quality [--domain d] [--seed <file>|-] [--json] [--hygiene-sample N --sample-seed s --out <file>] [--duplicates-out <file>]")
 		fmt.Fprintln(stderr, "Report read-only metrics over done documents and their derived data; no graph writes or Bootstrap DDL.")
-		fmt.Fprintln(stderr, "Noise and samples use the built-in hygiene preset plus ingest.stoplist_file, with entity.type as the label.")
+		fmt.Fprintf(stderr, "Noise and samples use a %s.\n", quality.HygienePolicy)
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {

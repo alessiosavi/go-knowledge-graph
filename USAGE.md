@@ -471,7 +471,7 @@ field of the single-line JSON report.
 | `duplicate_groups` | Folded-name groups containing at least two distinct entities within their domain/document scope; count. |
 | `duplicate_entities` | Distinct entities belonging to any duplicate group, counted once across groups; count. |
 | `cross_type_groups` | Duplicate groups containing more than one entity type; count. |
-| `noise_rule_share` | Entities whose name the hygiene policy drops / `entities`. |
+| `noise_rule_share` | Entities whose name every supporting document's hygiene preset drops / `entities`. |
 | `co_mention` | Object describing unordered entity pairs sharing a chunk; no denominator. |
 | `co_mention.nodes` | Entities incident to at least one co-mention pair; count. |
 | `co_mention.edges` | Distinct unordered co-mention pairs, weighted by distinct shared chunks; count. |
@@ -481,13 +481,19 @@ field of the single-line JSON report.
 
 Co-mention pairs are uncapped; memory grows with Σ(entities per chunk)².
 
-Noise and hygiene samples use the **built-in hygiene preset** plus the configured
-`ingest.stoplist_file` overlay, passing each entity's `type` as its label. The
-built-in preset has no value labels, so type exemptions do not apply to
-`noise_rule_share`. This policy is recorded in the report. Sampling is
-deterministic for the seed and writes up to N dropped and N renamed names, with original name, normalized name,
-and rule (`normalize` for renamed names). The sample file records available
-counts and uses mode 0600. Names go only to `--out`; stdout contains aggregates.
+Noise and hygiene samples use each selected done document's label preset plus the
+configured `ingest.stoplist_file` overlay, passing each entity's `type` as its
+label. An empty preset name uses the built-in policy. If a selected document's
+preset fails to load, `quality` exits with an error. A run that selects no
+documents loads no presets. An entity counts as noise when every preset of its
+supporting documents within the selection rejects it.
+For a dropped name, the sample reports the rule from the first supporting preset
+in sorted name order.
+
+Sampling is deterministic for the seed and writes up to N dropped and N renamed
+names with their original name, normalized name, and rule (`normalize` for
+renamed names). The sample file records available counts and uses mode 0600.
+Names go only to `--out`. Stdout contains aggregates.
 
 ## 7. Operations
 

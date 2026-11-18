@@ -24,7 +24,7 @@ func TestQualityFlags(t *testing.T) {
 	if code := run([]string{"quality", "--help"}, &out, &stderr); code != 0 {
 		t.Fatalf("help exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, word := range []string{"-domain", "-seed", "-json", "-hygiene-sample", "-sample-seed", "-out", "-duplicates-out", "built-in", "type", "read-only"} {
+	for _, word := range []string{"-domain", "-seed", "-json", "-hygiene-sample", "-sample-seed", "-out", "-duplicates-out", "per-document label preset", "every supporting document", "entity.type", "read-only"} {
 		if !strings.Contains(stderr.String(), word) {
 			t.Errorf("help missing %s", word)
 		}
@@ -105,7 +105,7 @@ func TestQualityCLISeedSampleAndReadOnly(t *testing.T) {
 		}
 	}
 	var out, stderr bytes.Buffer
-	if code := run([]string{"quality", "--domain", "no-such-domain"}, &out, &stderr); code != 0 || !strings.Contains(out.String(), "n/a") || !strings.Contains(out.String(), "built-in") {
+	if code := run([]string{"quality", "--domain", "no-such-domain"}, &out, &stderr); code != 0 || !strings.Contains(out.String(), "n/a") || !strings.Contains(out.String(), "per-document label preset") {
 		t.Fatalf("text report exit=%d stdout=%s stderr=%s", code, out.String(), stderr.String())
 	}
 	before.AssertUnchanged(t, "quality CLI")

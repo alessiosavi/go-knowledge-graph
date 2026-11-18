@@ -63,8 +63,10 @@ func load(ctx context.Context, st *graph.Store, opt Options) (dataset, error) {
 		docFilter = " AND d.domain = $domain"
 		params["domain"] = opt.Domain
 	}
-	if err := readPages(ctx, st, `MATCH (d:Document {status: 'done'}) WHERE id(d) > $last`+docFilter+` RETURN id(d) AS cursor, d.id AS id, coalesce(d.source, '') AS source, coalesce(d.domain, '') AS domain ORDER BY cursor`, params, func(row map[string]any) {
-		d.documents = append(d.documents, document{textValue(row, "id"), textValue(row, "source"), textValue(row, "domain")})
+	if err := readPages(ctx, st, `MATCH (d:Document {status: 'done'}) WHERE id(d) > $last`+docFilter+` RETURN id(d) AS cursor, d.id AS id, coalesce(d.source, '') AS source, coalesce(d.domain, '') AS domain, coalesce(d.labels, '') AS preset ORDER BY cursor`, params, func(row map[string]any) {
+		d.documents = append(d.documents, document{
+			id: textValue(row, "id"), source: textValue(row, "source"), domain: textValue(row, "domain"), preset: textValue(row, "preset"),
+		})
 	}); err != nil {
 		return d, err
 	}

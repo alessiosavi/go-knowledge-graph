@@ -80,12 +80,12 @@ func selectedDocuments(docs []document, opt Options) map[string]document {
 	return out
 }
 
-func compute(d dataset, opt Options, p hygiene.Preset) Report {
-	report, _ := computeWithCensus(d, opt, p, false)
+func compute(d dataset, opt Options, presets map[string]hygiene.Preset) Report {
+	report, _ := computeWithCensus(d, opt, presets, false)
 	return report
 }
 
-func computeWithCensus(d dataset, opt Options, p hygiene.Preset, census bool) (Report, map[string][]duplicateGroup) {
+func computeWithCensus(d dataset, opt Options, presets map[string]hygiene.Preset, census bool) (Report, map[string][]duplicateGroup) {
 	docs := selectedDocuments(d.documents, opt)
 	chunks := make(map[string]string)
 	for _, c := range d.chunks {
@@ -185,7 +185,7 @@ func computeWithCensus(d dataset, opt Options, p hygiene.Preset, census bool) (R
 	r.Top1PctMentionShare = ratio(top, r.Mentions)
 	factMetrics(&r, facts)
 	duplicateMetrics(&r, active, entities, entityDocs, docs)
-	hygieneMetrics(&r, active, entities, opt, p)
+	hygieneMetrics(&r, entities, docs, entityDocs, presets, opt)
 	coMentionMetrics(&r, chunkEntities)
 	if census {
 		return r, duplicateCensusGroups(entities, entityDocs)
@@ -387,12 +387,36 @@ func duplicateMetrics(r *Report, active stringSet, entities map[string]entity, e
 	r.DuplicateEntities = len(duplicates)
 }
 
-func hygieneMetrics(r *Report, active stringSet, entities map[string]entity, opt Options, p hygiene.Preset) {
+func hygieneMetrics(r *Report, entities map[string]entity, docs map[string]document, entityDocs map[string]stringSet, presets map[string]hygiene.Preset, opt Options) {
 	dropped, renamed := []SampleName{}, []SampleName{}
 	noise := 0
-	for key := range active {
+	seen := make(stringSet)
+	var presetNames []string
+	for key, support := range entityDocs {
 		e := entities[key]
-		normalized, _, rule := hygiene.NameOnly(e.name, e.typ, p)
+		var normalized string
+		var rule hygiene.Rule
+		clear(seen)
+		presetNames = presetNames[:0]
+		for docID := range support {
+			name := docs[docID].preset
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			presetNames = append(presetNames, name)
+		}
+		slices.Sort(presetNames)
+		for _, name := range presetNames {
+			cleaned, _, rejected := hygiene.NameOnly(e.name, e.typ, presets[name])
+			if rejected == "" {
+				normalized, rule = cleaned, ""
+				break
+			}
+			if rule == "" {
+				rule = rejected
+			}
+		}
 		if rule != "" {
 			noise++
 		}
