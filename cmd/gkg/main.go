@@ -710,7 +710,7 @@ commands:
   eval      run the golden-set evaluation harness
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
   domain    list, inspect, evaluate and administer domains through serve
-  judge     backfill unjudged candidates or sample and score a fact audit
+  judge     backfill candidates, audit facts, or evaluate judge v2
   quality   report read-only graph quality metrics and optional private hygiene samples
   preflight check schema, seed and stoplist read-only (exit 0=current/empty, 3=seed or stoplist overlay invalid, 10=migration ready)
   migrate   upgrade the Memgraph schema and re-extract in-flight documents

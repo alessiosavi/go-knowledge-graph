@@ -103,6 +103,11 @@ func AuditScore(rows []AuditRow) (precision, lo, hi float64, n int) {
 	if n == 0 {
 		return 0, 0, 0, 0
 	}
+	precision, lo, hi = wilson(ok, n)
+	return precision, lo, hi, n
+}
+
+func wilson(ok, n int) (precision, lo, hi float64) {
 	precision = float64(ok) / float64(n)
 	const z = 1.96
 	z2 := z * z
@@ -117,5 +122,5 @@ func AuditScore(rows []AuditRow) (precision, lo, hi float64, n int) {
 	if ok == n {
 		hi = 1
 	}
-	return precision, lo, hi, n
+	return precision, lo, hi
 }
