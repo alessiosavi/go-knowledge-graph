@@ -20,7 +20,8 @@ info:
     entity, traverse, document and domain read routes share
     `Limits.ReadTimeoutMS` (default 15 s); a read that exceeds it is stopped on
     the server and answered `504 query_timeout`. The agent ask routes are bounded
-    by `Agent.TimeoutS` instead (`504 agent_timeout`).
+    by `Agent.TimeoutS` instead: `POST /v1/agent/ask` answers `504 agent_timeout`;
+    the stream route reports it as an `agent_timeout` SSE error event.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
