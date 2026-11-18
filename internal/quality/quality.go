@@ -14,7 +14,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
-const MetricsVersion = 1
+const MetricsVersion = 2
 
 // HygienePolicy describes the policy used for both noise and private samples.
 const HygienePolicy = "built-in preset plus configured stoplist overlay; label = entity.type"

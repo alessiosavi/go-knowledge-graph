@@ -159,7 +159,7 @@ func TestNormalize(t *testing.T) {
 			aliases   []string
 		}{prefix + "Acme", "Acme", nil})
 	}
-	for _, suffix := range []string{"S.r.l.", "Srl", "Srl.", "S.p.A.", "SpA", "SpA.", "Ltd", "Ltd.", "Inc", "Inc.", "GmbH", "GmbH.", "LLC", "LLC."} {
+	for _, suffix := range []string{"S.r.l.", "Srl", "Srl.", "s.R.L.", "sRL", "S.p.A", "S.p.A.", "S.P.A", "S.P.A.", "SpA", "SpA.", "SPA", "SPA.", "Ltd", "Ltd.", "lTD", "Inc", "Inc.", "iNC", "GmbH", "GmbH.", "gMBh", "LLC", "LLC.", "llc"} {
 		raw := "Quillon " + suffix
 		tests = append(tests, struct {
 			raw, want string
@@ -197,6 +197,78 @@ func TestNormalize(t *testing.T) {
 				t.Errorf("Renamed=%d, want %d", got.Renamed, wantRenamed)
 			}
 		})
+	}
+}
+
+func TestCompanySuffixNormalize(t *testing.T) {
+	p := testPreset(t, "general")
+	for _, tt := range []struct {
+		raw, want string
+	}{
+		{"Zorbo Resort & Spa", "Zorbo Resort & Spa"},
+		{"Zorbo Hotel & SPA", "Zorbo Hotel & SPA"},
+		{"Zorbo Hotel & SpA", "Zorbo Hotel & SpA"},
+		{"Zorbo Hotel & S.p.A.", "Zorbo Hotel & S.p.A."},
+		{"Zorbo Hotel & Ltd", "Zorbo Hotel & Ltd"},
+		{"Acme Spa", "Acme Spa"},
+		{"Acme spa", "Acme spa"},
+		{"Acme SPa", "Acme SPa"},
+		{"Acme Spa.", "Acme Spa."},
+		{"Acme spa.", "Acme spa."},
+		{"Acme S.p.a.", "Acme"},
+		{"Acme s.p.a.", "Acme"},
+		{"Acme sPa", "Acme sPa"},
+		{"Quillon Packaging,Inc", "Quillon Packaging"},
+		{"Acme,SpA", "Acme"},
+		{"Quillon Packaging Co., Ltd", "Quillon Packaging"},
+		{"Quillon Co Ltd", "Quillon Co"},
+		{"Quillon Co. Ltd", "Quillon"},
+		{"Quillon cO., lTd.", "Quillon"},
+		{"Quillon Co., Inc.", "Quillon"},
+		{"Quillon Co., LLC", "Quillon"},
+		{"Quillon Co., GmbH", "Quillon"},
+		{"Quillon, Co., Ltd", "Quillon"},
+		{"Quillon Packaging, Ltd", "Quillon Packaging"},
+		{"Quillon Alco Ltd", "Quillon Alco"},
+		{"Quillon co-op Ltd", "Quillon co-op"},
+		{"Quillon Co., Ltd's", "Quillon"},
+		{"**Quillon Co., Ltd**", "Quillon"},
+		{"Smith & Co. Ltd", "Smith & Co."},
+		{"Foo & Co., Ltd", "Foo & Co."},
+		{"Acme & Co. GmbH", "Acme & Co."},
+		{"Acme & Co", "Acme & Co"},
+		{"Acme Co.", "Acme Co."},
+		{"Acme Co. Srl", "Acme Co."},
+	} {
+		t.Run(tt.raw, func(t *testing.T) {
+			name, aliases, rule := NameOnly(tt.raw, "organization", p)
+			var wantAliases []string
+			if tt.want != tt.raw {
+				wantAliases = []string{tt.raw}
+			}
+			if name != tt.want || !reflect.DeepEqual(aliases, wantAliases) || rule != "" {
+				t.Errorf("NameOnly=%q %v %q; want %q %v kept", name, aliases, rule, tt.want, wantAliases)
+			}
+		})
+	}
+}
+
+func TestApplyCompanySuffix(t *testing.T) {
+	text := "Zorbo Resort & Spa uses Quillon Packaging Co., Ltd."
+	resort := extract.Mention{Text: "Zorbo Resort & Spa", Label: "organization", Start: 0, End: len("Zorbo Resort & Spa"), Score: .9}
+	company := extract.Mention{Text: "Quillon Packaging Co., Ltd", Label: "organization", Start: strings.Index(text, "Quillon"), End: len(text) - 1, Score: .8}
+	candidate := extract.Candidate{Head: 0, Tail: 1, Label: "uses", Score: .8}
+	raw := extract.ChunkResult{ChunkID: "c", Mentions: []extract.Mention{resort, company}, Candidates: []extract.Candidate{candidate}}
+	got := Apply(raw, text, testPreset(t, "general"))
+	want := []Mention{
+		{Mention: resort, Name: "Zorbo Resort & Spa"},
+		{Mention: company, Name: "Quillon Packaging", Aliases: []string{"Quillon Packaging Co., Ltd"}},
+	}
+	if !reflect.DeepEqual(got.Mentions, want) || !reflect.DeepEqual(got.Candidates, []extract.Candidate{candidate}) || got.Renamed != 1 || len(got.Dropped) != 0 || got.ChunkID != "c" {
+		t.Errorf("Apply=%+v; want mentions=%+v, unchanged candidate, one rename and no drops", got, want)
+	}
+	if !reflect.DeepEqual(raw.Mentions, []extract.Mention{resort, company}) {
+		t.Error("Apply mutated provider mentions")
 	}
 }
 
