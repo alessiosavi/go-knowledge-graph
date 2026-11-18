@@ -564,3 +564,14 @@ documents without extracting them. `gkg serve` completes the re-extraction;
 plain `gkg migrate` completes it synchronously. Unknown migrate flags fail with
 exit 2. After a rebuild, run `gkg judge backfill --budget-calls N` with an
 owner-approved budget to recover unjudged candidates.
+
+### Repair stored entity names
+
+Run `gkg repair-names -dry-run` to preview the number of stored entity names
+with removable edge markup. Run `gkg repair-names` to repair them in the
+configured graph without re-extraction. The commands report `scanned=N` and
+either `would_change=M` or `changed=M`. The repair updates the display name
+and its lookup key only when the name still matches the one it read.
+If repair fails partway through, the error includes the partial counts on
+stderr. Rerunning the repair is safe and idempotent because it skips names
+that are already clean.

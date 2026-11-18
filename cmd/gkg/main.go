@@ -60,6 +60,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPreflight(args[1:], stdout, stderr)
 	case "migrate":
 		return runMigrateArgs(args[1:], stdout, stderr)
+	case "repair-names":
+		return runRepairNames(args[1:], stdout, stderr)
 	case "eval":
 		return runEval(args[1:], stdout, stderr)
 	case "domain":
@@ -693,6 +695,7 @@ commands:
   preflight check schema, seed and stoplist read-only (exit 0=current/empty, 3=seed or stoplist overlay invalid, 10=migration ready)
   migrate   upgrade the Memgraph schema and re-extract in-flight documents
   migrate --schema-only  upgrade schema and leave re-extraction to serve
+  repair-names [-dry-run]  clean stored entity display names in place
   help      show this help (-h, --help)
   pdf-extract  internal isolated PDF parser
   version   print the version

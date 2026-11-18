@@ -21,11 +21,17 @@ import (
 )
 
 func TestCommandsRefuseNewerSchema(t *testing.T) {
-	for _, args := range [][]string{{"migrate"}, {"ingest", "x.txt"}, {"mcp"}, {"serve"}} {
+	for _, args := range [][]string{{"migrate"}, {"ingest", "x.txt"}, {"mcp"}, {"serve"}, {"repair-names"}} {
 		t.Run(args[0], func(t *testing.T) {
 			_, _, _ = migrationCommandFixture(t)
 			newer := graph.ExtractionSchemaVersion + 1
 			migrationQuery(t, `CREATE (:GkgMeta {id: 'extraction_schema', value: $version})`, map[string]any{"version": newer})
+			if args[0] == "repair-names" {
+				migrationQuery(t, `CREATE (:Entity {id: 'repair-newer', key: 'quillon', name: '(Quillon)'})`, nil)
+				t.Cleanup(func() {
+					migrationQuery(t, `MATCH (e:Entity {id: 'repair-newer'}) DELETE e`, nil)
+				})
+			}
 			// Keep an accidental serve startup bounded; it must report the
 			// schema error before attempting to bind this occupied address.
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
