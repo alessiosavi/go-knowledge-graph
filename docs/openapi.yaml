@@ -16,7 +16,9 @@ info:
     see docs/agent-setup.md for client setup.
     Body sizes are capped by configuration (`Ingest.MaxUploadMB` for ingestion,
     1 MiB for other JSON endpoints, including ask); Cypher row count and timeout
-    are capped by `Limits.CypherRows` / `Limits.CypherTimeoutMS`.
+    are capped by `Limits.CypherRows` / `Limits.CypherTimeoutMS`. Other read
+    routes share `Limits.ReadTimeoutMS` (default 15 s); a read that exceeds its
+    budget is stopped on the server and answered `504 query_timeout`.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
