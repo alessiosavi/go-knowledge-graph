@@ -63,9 +63,10 @@ func TestAskWithProgressProviderURLFailure(t *testing.T) {
 	cfg := enabledCfg("http://example.invalid:bad-port")
 	s := NewServer(cfg, nil, nil)
 	req := AskRequest{Question: "Who?"}
+	// Both surfaces classify an unbuildable request without quoting the endpoint.
 	var endpoint *url.Error
-	if _, err := s.Ask(t.Context(), req); !errors.As(err, &endpoint) {
-		t.Fatalf("Ask error = %v, want a wrapped URL error", err)
+	if _, err := s.Ask(t.Context(), req); err == nil || errors.As(err, &endpoint) || err.Error() != "the agent provider is unreachable" {
+		t.Fatalf("Ask error = %v, want the unreachable classification", err)
 	}
 	if _, err := s.AskWithProgress(t.Context(), req, nil); err == nil || err.Error() != "the agent provider is unreachable" {
 		t.Fatalf("AskWithProgress error = %v, want the unreachable classification", err)
