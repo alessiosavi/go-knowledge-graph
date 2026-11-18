@@ -422,8 +422,9 @@ When every manifest row has a verdict and the judge finishes without error,
 it atomically records `completed: true` and `verdicts_sha256` in `attempts.json`.
 Budget stops and runs that return a cache error leave the ledger unsealed.
 A sealed resume verifies the SHA-256 of the exact verdict file bytes and reports
-the saved results without calling the provider or changing the run files. A
-digest mismatch fails the resume before any spend.
+the saved results with `sealed=true` in the summary, without calling the provider
+or changing the run files. Other invocations report `sealed=false`. A digest
+mismatch fails the resume before any spend.
 
 Each preset has its own profile fingerprint, based on its full relation
 definitions, the model, the prompt and the request schema. The same frozen
@@ -439,9 +440,13 @@ any attempts. The table includes the Wilson 95% interval, distinct facts and
 domain splits. It shows reconciled and judged totals separately and lists lost
 ok and kept bad ids with reasons. Apply is not part of this command yet.
 
-Rejudge exits `0` on success, `1` on an operational error, `2` on invalid
-arguments or audit input, `3` when the labelled gate fails, and `4` when an
-unlabelled run ends before all planned rows have verdicts.
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Success. |
+| `1` | Operational error, including manifest, graph or provider failures, or a plan with zero rows when `-ids` is absent. |
+| `2` | Invalid arguments or audit input, including an invalid label, an empty or duplicate ID, a requested ID with no eligible or verifiable edge, or a `-ids` selection that leaves zero rows to plan. |
+| `3` | The labelled gate failed. |
+| `4` | The run ended before all planned rows had verdicts and had no scored gate. This includes runs whose labels are all `skip` or blank. |
 
 ### Graph quality report
 
