@@ -70,7 +70,7 @@ preflight=0
 "${compose[@]}" run --rm -T --no-deps gkg preflight >"$work/preflight" 2>&1 || preflight=$?
 case "$preflight" in
   0|2) ;;
-  3) restore_revision; restore_image_tags; failed 'seed required; previous revision and image tags restored' ;;
+  3) restore_revision; restore_image_tags; failed 'seed or stoplist overlay invalid; previous revision and image tags restored' ;;
   10)
     "${compose[@]}" stop gkg >"$work/stop" 2>&1 || {
       restore_revision
