@@ -210,7 +210,8 @@ type Pipeline struct {
 
 	mu       sync.Mutex
 	pending  map[string]submission
-	queueCtx context.Context // worker/server lifetime, never a request context
+	queueCtx context.Context     // worker/server lifetime, never a request context
+	deferred map[string]struct{} // non-nil while the enqueue drainer is active
 
 	procLocks   sync.Map   // docID → *sync.Mutex, serializes Process per document
 	domainOpsMu sync.Mutex // serializes resumable admin requests in serve
@@ -275,8 +276,73 @@ func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 		return res, err
 	}
 	// Release admission's locks before applying queue backpressure.
-	p.enqueue(ctx, res.DocumentID)
+	select {
+	case p.jobs <- res.DocumentID:
+		return res, nil
+	default:
+	}
+	select {
+	case p.jobs <- res.DocumentID:
+	case <-ctx.Done():
+		p.deferEnqueue(res.DocumentID, ctx.Err())
+	}
 	return res, nil
+}
+
+func (p *Pipeline) deferEnqueue(docID string, requestErr error) {
+	// A slot may have opened at the same time the request was cancelled.
+	select {
+	case p.jobs <- docID:
+		return
+	default:
+	}
+	p.mu.Lock()
+	if _, exists := p.deferred[docID]; exists {
+		p.mu.Unlock()
+		return
+	}
+	if len(p.deferred) >= cap(p.jobs) {
+		p.mu.Unlock()
+		slog.Warn("ingest: deferred enqueue backlog full; document left for restart recovery", "doc", docID)
+		return
+	}
+	queueCtx := p.queueCtx
+	if err := queueCtx.Err(); err != nil {
+		p.mu.Unlock()
+		slog.Warn("ingest: enqueue cancelled", "doc", docID, "err", err)
+		return
+	}
+	if p.deferred == nil {
+		p.deferred = make(map[string]struct{})
+		go p.drainDeferred(queueCtx)
+	}
+	p.deferred[docID] = struct{}{}
+	p.mu.Unlock()
+	slog.Info("ingest: deferring enqueue after request cancellation", "doc", docID, "err", requestErr)
+}
+
+func (p *Pipeline) drainDeferred(ctx context.Context) {
+	for {
+		p.mu.Lock()
+		if len(p.deferred) == 0 || ctx.Err() != nil {
+			p.deferred = nil
+			p.mu.Unlock()
+			return
+		}
+		// Remove one id from the set while it waits for a slot. Only this
+		// send can queue ahead of a live submit already waiting for space.
+		var docID string
+		for docID = range p.deferred {
+			break
+		}
+		delete(p.deferred, docID)
+		p.mu.Unlock()
+
+		select {
+		case p.jobs <- docID:
+		case <-ctx.Done():
+		}
+	}
 }
 
 func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submission, force bool) (Result, error) {
@@ -1006,9 +1072,7 @@ func (p *Pipeline) docLock(docID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// enqueue pushes a document id for the worker pool, applying backpressure
-// when the queue is full (bounded by ctx) so an accepted submission is
-// never silently parked until restart.
+// enqueue waits for space in the worker queue until ctx is cancelled.
 func (p *Pipeline) enqueue(ctx context.Context, docID string) {
 	select {
 	case p.jobs <- docID:
