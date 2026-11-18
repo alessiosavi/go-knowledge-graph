@@ -171,6 +171,9 @@ func (c *Client) verify(ctx context.Context, prompt string, payload []byte) (ing
 func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
+		if isProviderURLParseError(err) {
+			return ingest.Verdict{}, false, fmt.Errorf("judge: provider request could not be built: %w", errInvalidProviderURL)
+		}
 		return ingest.Verdict{}, false, errors.New("judge: provider request could not be built; check the judge base URL")
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -179,12 +182,14 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return ingest.Verdict{}, true, providerIOError("judge: provider request failed", err)
+		diagnostic := providerIOError("judge: provider request failed", err)
+		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), diagnostic
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
 	if err != nil {
-		return ingest.Verdict{}, true, providerIOError("judge: read response failed", err)
+		diagnostic := providerIOError("judge: read response failed", err)
+		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), diagnostic
 	}
 	if len(data) > 4<<20 {
 		return ingest.Verdict{}, false, fmt.Errorf("judge: response exceeds the %d MiB cap", 4)
@@ -225,6 +230,8 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 	return ingest.Verdict{Status: vp.Verdict, Confidence: confidence, Reason: vp.Reason}, false, nil
 }
 
+var errInvalidProviderURL = errors.New("provider URL or redirect target is invalid")
+
 // providerIOError preserves context sentinels and reports known failure classes.
 // HTTP error text can contain credentials from a request or redirect URL.
 func providerIOError(message string, err error) error {
@@ -237,17 +244,61 @@ func providerIOError(message string, err error) error {
 		return fmt.Errorf("%s: %w", message, context.Canceled)
 	case errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("%s: request timed out: %w", message, context.DeadlineExceeded)
+	case isProviderURLParseError(err):
+		return fmt.Errorf("%s: %w", message, errInvalidProviderURL)
 	case errors.As(err, &dnsErr):
 		return fmt.Errorf("%s: host lookup failed", message)
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return fmt.Errorf("%s: connection refused", message)
+	case errors.Is(err, syscall.ECONNRESET):
+		return fmt.Errorf("%s: connection reset", message)
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return fmt.Errorf("%s: connection closed by provider", message)
+	case errors.Is(err, http.ErrSchemeMismatch):
+		return fmt.Errorf("%s: provider returned HTTP to an HTTPS client", message)
 	case errors.As(err, &certErr), errors.As(err, &recordErr):
 		return fmt.Errorf("%s: TLS handshake failed", message)
 	case errors.As(err, &netErr) && netErr.Timeout():
 		return fmt.Errorf("%s: request timed out", message)
 	default:
-		return errors.New(message)
+		types := appendProviderErrorTypes(nil, err)
+		slices.Sort(types)
+		return fmt.Errorf("%s: %s", message, strings.Join(slices.Compact(types), ", "))
 	}
+}
+
+func isProviderURLParseError(err error) bool {
+	for err != nil {
+		switch cause := err.(type) {
+		case *url.Error:
+			if cause.Op == "parse" {
+				return true
+			}
+			// net/http flattens Location parse errors into the cause's text.
+			if cause.Err != nil && strings.HasPrefix(cause.Err.Error(), `failed to parse Location header "`) {
+				return true
+			}
+		case interface{ Unwrap() []error }:
+			return slices.ContainsFunc(cause.Unwrap(), isProviderURLParseError)
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
+}
+
+func appendProviderErrorTypes(types []string, err error) []string {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		if causes := joined.Unwrap(); len(causes) > 0 {
+			for _, cause := range causes {
+				types = appendProviderErrorTypes(types, cause)
+			}
+			return types
+		}
+	}
+	if cause := errors.Unwrap(err); cause != nil {
+		return appendProviderErrorTypes(types, cause)
+	}
+	return append(types, fmt.Sprintf("%T", err))
 }
 
 func newProviderRedactor(baseURL, apiKey string) *strings.Replacer {
@@ -279,8 +330,16 @@ func newProviderRedactor(baseURL, apiKey string) *strings.Replacer {
 		_ = enc.Encode(secret) // Encoding a string to bytes.Buffer cannot fail.
 		// Strip the surrounding quotes and the newline appended by Encode.
 		quotedNoHTML := buf.String()
-		variants = append(variants, secret, string(quoted[1:len(quoted)-1]),
-			quotedNoHTML[1:len(quotedNoHTML)-2], url.QueryEscape(secret), url.PathEscape(secret))
+		jsonEscaped := string(quoted[1 : len(quoted)-1])
+		jsonEscapedNoHTML := quotedNoHTML[1 : len(quotedNoHTML)-2]
+		variants = append(variants, secret, jsonEscaped, jsonEscapedNoHTML, url.QueryEscape(secret), url.PathEscape(secret))
+		if strings.Contains(secret, "/") {
+			variants = append(variants,
+				strings.ReplaceAll(jsonEscaped, "/", `\/`),
+				strings.ReplaceAll(jsonEscapedNoHTML, "/", `\/`),
+				strings.ReplaceAll(jsonEscaped, "/", `\u002f`),
+				strings.ReplaceAll(jsonEscapedNoHTML, "/", `\u002f`))
+		}
 	}
 	// Replacer uses input order when matches start at the same position.
 	slices.SortFunc(variants, func(a, b string) int { return len(b) - len(a) })
