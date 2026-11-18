@@ -25,11 +25,14 @@ The tool set is the same on both transports:
 | `list_documents` | documents with metadata, filterable by status and domain                           |
 | `cypher`         | guarded read-only Cypher with row cap and timeout                       |
 
-Low-confidence facts are excluded unless the tool call opts in with
-`include_low_confidence`. Entity and traversal results include `hidden` counts
-of distinct facts (`unclear`, `unjudged`, `rejected`) when any are nonzero,
-scoped to the viewed entity or traversal start regardless of inclusion options.
+By default, `get_entity` and `traverse` return typed facts that meet the assert
+floor or that the judge confirmed. Set `include_low_confidence` to return all
+typed facts. Entity and traversal results include `hidden` counts when any are
+nonzero. The counts cover unjudged and unclear `FactCandidate` records and
+`RejectedFact` audits touching the viewed entity or traversal start.
 Each `(head_key, rel, tail_key)` counts once per state across chunks.
+The counts are independent of read filters and exclude typed edges suppressed
+by `confirmed_only` or the default low-confidence filter.
 With confirmation enabled, candidates are excluded
 unless `include_unverified:true` is requested and `facts.allow_unverified_reads`
 is enabled (default false). Included candidates carry `unverified:true` and their
@@ -39,6 +42,11 @@ The built-in agent's tools keep candidates hidden even when this setting is enab
 Traversal can include candidate facts at the depth where they are found, but
 does not enqueue their far endpoints for further expansion. An endpoint can
 still expand when reached through a typed fact edge.
+
+Pass `"confirmed_only": true` to `get_entity` or `traverse` to return only
+judge-confirmed typed facts at any confidence. The option applies at every
+traversal hop and takes precedence over `include_low_confidence` and
+`include_unverified`, so candidates are excluded.
 
 ## Environment
 

@@ -666,9 +666,11 @@ MATCH (e:Entity {key: $q})
 RETURN e.id AS id, e.key AS key, e.name AS name, e.type AS type,
        e.domain AS domain, coalesce(e.aliases, []) AS aliases, coalesce(e.mention_count, 0) AS mention_count`
 
+const typedFactVisibility = "(r.judge = 'confirmed' OR (NOT $confirmed_only AND ($include OR coalesce(r.low_confidence, false) = false)))"
+
 // EntityView returns an entity with its aliases, mention count and facts,
-// grouped by (relation, other entity) with larger groups first;
-// low-confidence facts are excluded unless includeLowConfidence is set.
+// grouped by (relation, other entity) with larger groups first.
+// Judge-confirmed facts are visible regardless of includeLowConfidence.
 // Together lists up to ten co-mentioned entities ranked by shared chunks,
 // then mention count descending and key ascending, regardless of fact confidence.
 // idOrKey matches the entity id first, falling back to the entity key.
@@ -676,7 +678,7 @@ func (s *Store) EntityView(ctx context.Context, idOrKey string, includeLowConfid
 	return s.EntityViewOpts(ctx, idOrKey, ViewOptions{IncludeLowConfidence: includeLowConfidence})
 }
 
-// EntityViewOpts additionally exposes candidate facts when explicitly requested.
+// EntityViewOpts applies the requested fact visibility options.
 func (s *Store) EntityViewOpts(ctx context.Context, idOrKey string, opt ViewOptions) (EntityView, error) {
 	if opt.Domain != "" && !ValidDomain(opt.Domain) {
 		return EntityView{}, fmt.Errorf("graph: invalid domain slug %q", opt.Domain)
@@ -710,7 +712,7 @@ func (s *Store) EntityViewOpts(ctx context.Context, idOrKey string, opt ViewOpti
 
 	recs, err = s.runRead(ctx, `
 MATCH (e:Entity {key: $key})-[r]-(o:Entity)
-WHERE $include OR coalesce(r.low_confidence, false) = false
+WHERE `+typedFactVisibility+`
 OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
 RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type, o.domain AS domain,
        coalesce(r.confidence, 0) AS confidence, coalesce(r.judge, '') AS judge,
@@ -719,11 +721,11 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
        coalesce(r.head_key, '') AS head_key, coalesce(r.tail_key, '') AS tail_key,
        coalesce(r.head_start, -1) AS head_start, coalesce(r.tail_start, -1) AS tail_start,
        coalesce(c.text, '') AS text`,
-		map[string]any{"key": view.Key, "include": opt.IncludeLowConfidence})
+		map[string]any{"key": view.Key, "include": opt.IncludeLowConfidence, "confirmed_only": opt.ConfirmedOnly})
 	if err != nil {
 		return EntityView{}, fmt.Errorf("graph: entity facts: %w", err)
 	}
-	if opt.IncludeUnverified {
+	if opt.IncludeUnverified && !opt.ConfirmedOnly {
 		const projection = `
 OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
 RETURN r.rel AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type, o.domain AS domain,

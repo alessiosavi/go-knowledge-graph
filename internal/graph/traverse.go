@@ -35,15 +35,15 @@ const traverseDepthCap = 2
 
 // Traverse walks fact edges from the start entity (id or key) up to depth
 // hops, optionally filtered by relation and direction (out|in|both).
-// Low-confidence facts are excluded unless opted in. depth above the tool
-// cap is an error; limit caps the total edges returned.
+// Judge-confirmed facts are visible regardless of includeLowConfidence.
+// Depth above the tool cap is an error. The limit caps the total edges returned.
 func (s *Store) Traverse(ctx context.Context, startID, rel, direction string, depth, limit int, includeLowConfidence bool) (Subgraph, error) {
 	return s.TraverseOpts(ctx, startID, rel, direction, depth, limit, ViewOptions{IncludeLowConfidence: includeLowConfidence})
 }
 
-// TraverseOpts can also include candidate facts, marked as unverified, without
-// expanding their far endpoints. Hidden counts always describe the start entity,
-// regardless of depth or filters.
+// TraverseOpts applies fact visibility options at each hop. Included candidates
+// are marked unverified and their far endpoints are excluded from expansion.
+// Hidden counts always describe the start entity, regardless of depth or filters.
 func (s *Store) TraverseOpts(ctx context.Context, startID, rel, direction string, depth, limit int, opt ViewOptions) (Subgraph, error) {
 	if depth < 1 || depth > traverseDepthCap {
 		return Subgraph{}, fmt.Errorf("graph: traverse: depth %d outside 1..%d", depth, traverseDepthCap)
@@ -173,8 +173,7 @@ func (s *Store) hopQuery(ctx context.Context, from EntityRef, rel string, incomi
 	if incoming {
 		pattern = "MATCH (a:Entity)-[r]->(b:Entity {id: $id})"
 	}
-	query := pattern + `
-WHERE ($include OR coalesce(r.low_confidence, false) = false)` + relFilter + `
+	query := pattern + "\nWHERE " + typedFactVisibility + relFilter + `
 OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
 RETURN type(r) AS rel, a.id AS from_id, a.key AS from_key, a.name AS from_name, a.type AS from_type, a.domain AS from_domain,
        b.id AS to_id, b.key AS to_key, b.name AS to_name, b.type AS to_type, b.domain AS to_domain,
@@ -185,7 +184,9 @@ RETURN type(r) AS rel, a.id AS from_id, a.key AS from_key, a.name AS from_name, 
        coalesce(c.text, '') AS text
 ORDER BY rel, from_key, to_key, chunk_id
 LIMIT $limit`
-	params := map[string]any{"id": from.ID, "include": opt.IncludeLowConfidence, "limit": limit}
+	params := map[string]any{
+		"id": from.ID, "include": opt.IncludeLowConfidence, "confirmed_only": opt.ConfirmedOnly, "limit": limit,
+	}
 	if rel != "" {
 		params["rel"] = sanitizeRel(rel)
 	}
@@ -193,7 +194,7 @@ LIMIT $limit`
 	if err != nil {
 		return nil, nil, fmt.Errorf("graph: traverse hop: %w", err)
 	}
-	if opt.IncludeUnverified && len(recs) < limit {
+	if opt.IncludeUnverified && !opt.ConfirmedOnly && len(recs) < limit {
 		anchor := "head_key"
 		if incoming {
 			anchor = "tail_key"
@@ -202,7 +203,7 @@ LIMIT $limit`
 			"MATCH (a:Entity {key: r.head_key}), (b:Entity {key: r.tail_key})"
 		candidateQuery := strings.Replace(query, pattern, candidatePattern, 1)
 		candidateQuery = strings.ReplaceAll(candidateQuery, "type(r)", "r.rel")
-		candidateQuery = strings.Replace(candidateQuery, "($include OR coalesce(r.low_confidence, false) = false)", "coalesce(r.judge, '') IN ['', 'unclear']", 1)
+		candidateQuery = strings.Replace(candidateQuery, typedFactVisibility, "coalesce(r.judge, '') IN ['', 'unclear']", 1)
 		candidateQuery = strings.Replace(candidateQuery, "RETURN r.rel AS rel,", "RETURN true AS unverified, r.rel AS rel,", 1)
 		params["key"] = from.Key
 		params["limit"] = limit - len(recs)

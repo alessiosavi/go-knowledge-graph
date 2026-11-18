@@ -11,7 +11,8 @@ import (
 )
 
 // VisibilityFixture has two unjudged candidates, one unclear candidate, one
-// rejection and two confirmed edges (one low-confidence) around Zorbo.
+// rejection, two confirmed edges (one low-confidence), and one low-confidence
+// unclear edge around Zorbo.
 // Another candidate touches only its neighbours and must not count for Zorbo.
 type VisibilityFixture struct {
 	Store                                       *graph.Store
@@ -19,6 +20,18 @@ type VisibilityFixture struct {
 }
 
 func Visibility(t *testing.T) VisibilityFixture {
+	t.Helper()
+	return visibility(t, false)
+}
+
+// MixedVisibility adds unclear and unjudged typed edges at the start and
+// second-hop edges that exercise verdict filtering during expansion.
+func MixedVisibility(t *testing.T) VisibilityFixture {
+	t.Helper()
+	return visibility(t, true)
+}
+
+func visibility(t *testing.T, mixed bool) VisibilityFixture {
 	t.Helper()
 	st := Store(t)
 	ctx := context.Background()
@@ -67,13 +80,30 @@ func Visibility(t *testing.T) VisibilityFixture {
 	edges := []graph.FactUpsert{
 		{HeadKey: ents[0].Key, TailKey: ents[1].Key, Rel: "works_at", Confidence: .9},
 		{HeadKey: ents[0].Key, TailKey: ents[1].Key, Rel: "advises", Confidence: .4, LowConfidence: true},
+		{HeadKey: ents[0].Key, TailKey: ents[2].Key, Rel: "evaluates", Confidence: .4, LowConfidence: true},
+	}
+	judges := map[string]string{"works_at": "confirmed", "advises": "confirmed", "evaluates": "unclear"}
+	if mixed {
+		edges = append(edges,
+			graph.FactUpsert{HeadKey: ents[0].Key, TailKey: ents[2].Key, Rel: "consults", Confidence: .8},
+			graph.FactUpsert{HeadKey: ents[0].Key, TailKey: ents[3].Key, Rel: "uses", Confidence: .8},
+			graph.FactUpsert{HeadKey: ents[1].Key, TailKey: ents[3].Key, Rel: "supplies", Confidence: .8},
+			graph.FactUpsert{HeadKey: ents[1].Key, TailKey: ents[3].Key, Rel: "makes", Confidence: .4, LowConfidence: true},
+			graph.FactUpsert{HeadKey: ents[2].Key, TailKey: ents[3].Key, Rel: "ships", Confidence: .4, LowConfidence: true},
+		)
+		judges["consults"] = "unclear"
+		judges["supplies"] = "unclear"
+		judges["makes"] = "confirmed"
+		judges["ships"] = "confirmed"
 	}
 	if err := st.UpsertExtraction(ctx, doc.ID, doc.ID+"-c1", "mock:1", ents, edges); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range edges {
-		if err := st.SetFactJudge(ctx, f.HeadKey, f.Rel, f.TailKey, doc.ID+"-c1", "confirmed"); err != nil {
-			t.Fatal(err)
+		if judge := judges[f.Rel]; judge != "" {
+			if err := st.SetFactJudge(ctx, f.HeadKey, f.Rel, f.TailKey, doc.ID+"-c1", judge); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	return VisibilityFixture{Store: st, ID: graph.EntityID(ents[0].Key), Key: ents[0].Key, OtherKey: ents[1].Key, ThirdKey: ents[2].Key, DocID: doc.ID, ChunkID: cid}

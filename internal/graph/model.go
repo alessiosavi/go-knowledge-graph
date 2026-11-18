@@ -149,13 +149,16 @@ type CoMention struct {
 	SharedChunks int
 }
 
-// ViewOptions controls opt-in fact visibility. Low confidence filters typed
-// edges; unverified additionally includes candidates, regardless of confidence.
-// Domain restricts the start entity; empty selects all domains.
+// ViewOptions controls fact visibility. By default, typed edges are visible
+// if they meet the assert floor or the judge confirmed them. IncludeLowConfidence
+// adds all other typed edges. IncludeUnverified adds candidates at any confidence.
+// ConfirmedOnly takes precedence and returns only judge-confirmed typed edges.
+// An empty Domain selects all domains for the start entity.
 type ViewOptions struct {
 	Domain               string
 	IncludeLowConfidence bool
 	IncludeUnverified    bool
+	ConfirmedOnly        bool
 }
 
 // HiddenCounts counts distinct (head_key, rel, tail_key) facts in each state

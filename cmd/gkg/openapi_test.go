@@ -37,17 +37,19 @@ func TestOpenAPIReadVisibility(t *testing.T) {
 	if err := yaml.Unmarshal(docs.OpenAPI, &spec); err != nil {
 		t.Fatal(err)
 	}
-	found := false
+	queryParams := map[string]bool{}
 	for _, p := range spec.Paths["/v1/entities/{id}"].Get.Parameters {
-		if p.Name == "include_unverified" && p.In == "query" {
-			found = true
+		if p.In == "query" {
+			queryParams[p.Name] = true
 		}
 	}
-	if !found {
-		t.Error("entity include_unverified query parameter missing")
+	for _, field := range []string{"include_unverified", "confirmed_only"} {
+		if !queryParams[field] {
+			t.Errorf("entity %s query parameter missing", field)
+		}
 	}
 	for schema, fields := range map[string][]string{
-		"TraverseRequest":  {"include_unverified", "include_low_confidence"},
+		"TraverseRequest":  {"include_unverified", "include_low_confidence", "confirmed_only"},
 		"Entity":           {"hidden", "unverified_ignored"},
 		"TraverseResponse": {"hidden", "unverified_ignored"},
 		"Fact":             {"unverified", "judge"}, "Edge": {"unverified", "judge"},
