@@ -21,6 +21,11 @@ var (
 
 // SectionLabel classifies a single byte-exact mention as a heading lead or
 // emphasized lead-in. An empty result means this rule keeps the mention.
+//
+// Fence detection starts outside a fence and scans only the current chunk.
+// chunk.Split starts new chunks at short ATX lines, so a heading-shaped comment
+// lead can be dropped when its fence opener is in an earlier chunk. Ingest and
+// repair-labels use the same chunk-local classification.
 func SectionLabel(chunkText string, start, end int, preset Preset) string {
 	if start < 0 || end <= start || end > len(chunkText) {
 		return ""

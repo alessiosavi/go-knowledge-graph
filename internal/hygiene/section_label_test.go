@@ -35,9 +35,6 @@ func TestSectionLabel(t *testing.T) {
 		{"## Part 3 — FE + API routes on Vercel", "Vercel", ""},
 		{"This prose mentions Vercel: a platform", "Vercel", ""},
 		{"| **Roster**: | People |", "Roster", ""},
-		{"```md\n## Part 3 — example\n```", "Part 3", ""},
-		{"````md\n```\n- **Roster.** example\n````", "Roster", ""},
-		{"```md\nexample\n```\n## Part 3 — real heading", "Part 3", "heading_lead"},
 		{"## Allowlisted: suite", "Allowlisted", ""},
 		{"- **Allowlisted**: suite", "Allowlisted", ""},
 		{"## Deployment architecture", "Deployment architecture", ""},
@@ -48,6 +45,25 @@ func TestSectionLabel(t *testing.T) {
 		t.Run(tt.chunk+"/"+tt.name, func(t *testing.T) {
 			start := strings.Index(tt.chunk, tt.name)
 			if got := SectionLabel(tt.chunk, start, start+len(tt.name), preset); got != tt.rule {
+				t.Errorf("SectionLabel = %q, want %q", got, tt.rule)
+			}
+		})
+	}
+}
+
+func TestSectionLabelFenceStateWithinOneChunk(t *testing.T) {
+	const longHeading = "# Part 3 — deploy the API after verifying the rollback procedure"
+	for _, tt := range []struct {
+		caseName, chunk, mention, rule string
+	}{
+		{"long heading inside fence", "```sh\n" + longHeading + "\n```", "Part 3", ""},
+		{"shorter marker leaves fence open", "````md\n```\n- **Roster.** example\n````", "Roster", ""},
+		{"long heading after closing fence", "```sh\nexample\n```\n" + longHeading, "Part 3", "heading_lead"},
+		{"opener in previous chunk", "# Part 3 — deploy the API", "Part 3", "heading_lead"},
+	} {
+		t.Run(tt.caseName, func(t *testing.T) {
+			start := strings.Index(tt.chunk, tt.mention)
+			if got := SectionLabel(tt.chunk, start, start+len(tt.mention), Preset{}); got != tt.rule {
 				t.Errorf("SectionLabel = %q, want %q", got, tt.rule)
 			}
 		})

@@ -592,6 +592,9 @@ dependent facts using stored chunk text and byte offsets. Run
 `gkg repair-labels` to remove them. The repair uses each document's hygiene
 preset allowlist and commits one chunk at a time. You can rerun it after an
 interruption. It requires no extraction or judge calls.
+Ingest and `repair-labels` check for code fences only within the current chunk,
+so a short heading-shaped comment can be dropped if it starts a new chunk
+inside a fenced block.
 
 Run the sweep with ingestion idle, then run `gkg repair-labels -dry-run`
 again for the same scope and expect `spans=0`. A server running an older
