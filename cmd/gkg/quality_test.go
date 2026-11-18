@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/quality"
 )
@@ -48,15 +47,7 @@ func TestQualityCLISeedSampleAndReadOnly(t *testing.T) {
 	}
 	t.Setenv("GKG_CONFIG", cfg)
 	t.Setenv("GKG_MEMGRAPH_URI", os.Getenv(graphtest.URIEnv))
-	queries := []string{`MATCH (n) RETURN labels(n),properties(n) ORDER BY id(n)`, `MATCH (a)-[r]->(b) RETURN id(a),type(r),properties(r),id(b) ORDER BY id(r)`, `SHOW INDEX INFO`, `SHOW CONSTRAINT INFO`}
-	before := make([]graph.QueryResult, len(queries))
-	for i, q := range queries {
-		var err error
-		before[i], err = st.RunReadQuery(context.Background(), q, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
+	before := graphtest.Snapshot(t)
 	doc, err := st.Document(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
@@ -117,14 +108,7 @@ func TestQualityCLISeedSampleAndReadOnly(t *testing.T) {
 	if code := run([]string{"quality", "--domain", "no-such-domain"}, &out, &stderr); code != 0 || !strings.Contains(out.String(), "n/a") || !strings.Contains(out.String(), "built-in") {
 		t.Fatalf("text report exit=%d stdout=%s stderr=%s", code, out.String(), stderr.String())
 	}
-	for i, q := range queries {
-		after, err := st.RunReadQuery(context.Background(), q, nil, 0)
-		b, _ := json.Marshal(before[i])
-		a, _ := json.Marshal(after)
-		if err != nil || !bytes.Equal(a, b) {
-			t.Fatalf("CLI changed graph: %s (%v)", q, err)
-		}
-	}
+	before.AssertUnchanged(t, "quality CLI")
 }
 
 // TestQualityTextKeepsLargeCounts: text output prints counts as literals,
