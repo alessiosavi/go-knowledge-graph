@@ -87,15 +87,26 @@ stable on reruns. `make box-env ENV_FILE=<source-file>` selects an alternate
 source file. It prints key names only.
 
 `box-secrets` removes blank/comment lines and uploads `/$NAME/env` and
-`/$NAME/htpasswd` as Standard SecureStrings, refusing either value above
-4096 bytes. Optional local `deploy/aws/box.domain-seed.json` and
-`deploy/aws/box.stoplist.txt` upload to `/$NAME/domain-seed` and
-`/$NAME/stoplist` with the same Standard SecureString limit. An oversized
-file fails with its byte count before any upload; a missing optional file is
-skipped with a note and does not delete an existing remote parameter.
-To stop delivering an optional file, delete its SSM parameter; deleting the local
-upload file alone does not delete it (see the teardown/purge command below).
-Temporary JSON is private and removed on success and failure.
+`/$NAME/htpasswd` as Standard SecureStrings. It also uploads the optional domain
+seed and stoplist as Standard SecureStrings at `/$NAME/domain-seed` and
+`/$NAME/stoplist`. When `BOX_ENV_FILE` is unset, the optional files default to
+`deploy/aws/box.domain-seed.json` and `deploy/aws/box.stoplist.txt`. When
+`BOX_ENV_FILE` is set, even to an empty value or the default config path, supply
+the paths for that box with `BOX_DOMAIN_SEED_FILE` and `BOX_STOPLIST_FILE`. An
+override that identifies either primary file fails before any upload, including
+through a relative path or a symlinked parent directory. Each optional file
+without an override is skipped with a note. You can also use these overrides for
+the primary box.
+
+`box-secrets` stages each request in a temporary mode-0600 JSON file and checks
+the decoded value against the 4096-byte limit. An oversized value reports its
+byte count and fails before any upload. A symlink at any of the four upload
+paths or an explicit optional path without a regular file also fails before
+any upload. A missing primary default file is skipped with a note. Skipping an
+optional file leaves its existing SSM parameter in place. To stop delivering
+it, delete the parameter (see the teardown/purge command below). Temporary JSON
+is removed on success and failure.
+
 The remote command exports the validated `GKG_SSM_PREFIX=/$NAME`; the box
 refuses a missing or invalid prefix and reads those two required parameter
 names into `/opt/gkg/.env` and
@@ -106,8 +117,8 @@ on both bootstrap and deploy. It also fetches the optional parameters into
 removes its stale local file. An access-denied optional parameter is also skipped
 and its stale local file removed, with a note to run `make box-policy`;
 other fetch errors and all required-parameter errors fail the operation. Compose
-mounts this directory at `/etc/gkg/data` read-only. Both the data directory
-and the private upload files are excluded from Docker builds and Git.
+mounts this directory at `/etc/gkg/data` read-only. The data directory and the
+default private upload paths are excluded from Docker builds and Git.
 The role allows these four reads and explicitly
 denies `ssm:GetParameter*` for all other resources. This also blocks
 `/aws/service/*`, so the Mac resolves the AMI. Decryption uses the `aws/ssm` key
@@ -165,8 +176,9 @@ with `make box-policy` (only the inline secrets policy is replaced). Run it
 before the first deploy that needs a seed; until then, optional
 files that the old policy cannot read are skipped with a note. Set
 `GKG_DOMAIN_SEED_FILE=/etc/gkg/data/domain-seed.json` and, when used,
-`GKG_INGEST_STOPLIST_FILE=/etc/gkg/data/stoplist.txt` in the source environment;
-place the private upload files, run `make box-env`, then `make box-secrets`.
+`GKG_INGEST_STOPLIST_FILE=/etc/gkg/data/stoplist.txt` in the source environment.
+Run `make box-env`, then `make box-secrets` with the private upload files
+selected as described above.
 If enabling `GKG_FACTS_REQUIRE_CONFIRMATION=true`, also set `GKG_JUDGE_MODE=all`.
 A seedless `gkg serve` or `gkg mcp` start on a document-bearing v3 graph
 creates indexes and constraints idempotently before refusing migration.

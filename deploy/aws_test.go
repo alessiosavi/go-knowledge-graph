@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -273,6 +274,11 @@ func awsStub() {
 			}
 			name, _ := request["Name"].(string)
 			os.WriteFile(filepath.Join(dir, "uploaded-"+filepath.Base(name)), b, 0600)
+			if mode == "change-auth-after-first-put" && name == "/gkg/env" {
+				if os.WriteFile(filepath.Join(dir, "htpasswd"), []byte("deploy:changed\n"), 0600) != nil {
+					unexpected()
+				}
+			}
 			if mode == "upload-fail" {
 				die("injected upload failure")
 			}
@@ -1158,6 +1164,41 @@ func TestAWSSecretUpload(t *testing.T) {
 		}
 	}
 }
+
+func TestAWSSecretUploadUsesStagedValues(t *testing.T) {
+	h := newAWS(t)
+	h.mode("change-auth-after-first-put")
+	h.write("secrets.env", "MEMGRAPH_PASSWORD=x\nGKG_API_KEY=y\n")
+	h.write("htpasswd", "deploy:original\n")
+	h.ok("upload-secrets.sh")
+	var request struct{ Value string }
+	if err := json.Unmarshal([]byte(h.read("uploaded-htpasswd")), &request); err != nil || request.Value != "deploy:original\n" {
+		t.Fatalf("expected the htpasswd value staged before the first put, got %q (decode error: %v)", request.Value, err)
+	}
+}
+
+func TestAWSSecretUploadRejectsRequiredSymlinks(t *testing.T) {
+	for _, input := range []struct{ variable, file string }{
+		{"BOX_SECRETS_FILE", "secrets.env"},
+		{"BOX_HTPASSWD", "htpasswd"},
+	} {
+		t.Run(input.variable, func(t *testing.T) {
+			h := newAWS(t)
+			h.write("secrets.env", "MEMGRAPH_PASSWORD=x\nGKG_API_KEY=y\n")
+			h.write("htpasswd", "deploy:hash\n")
+			link := filepath.Join(h.dir, "input-link")
+			if err := os.Symlink(input.file, link); err != nil {
+				t.Fatal(err)
+			}
+			h.env = append(h.env, input.variable+"="+link)
+			out, code := h.run("upload-secrets.sh")
+			if puts, tags := h.count("put-parameter"), h.count("add-tags-to-resource"); code == 0 || puts != 0 || tags != 0 || !strings.Contains(out, input.variable) || !strings.Contains(out, "symlink") {
+				t.Fatalf("symlinked %s must fail before any upload or tag: exit=%d uploads=%d tags=%d output=%q", input.variable, code, puts, tags, out)
+			}
+		})
+	}
+}
+
 func TestAWSFetchSecrets(t *testing.T) {
 	for _, mode := range []string{"env-fail", "auth-fail"} {
 		h := newAWS(t)
@@ -1932,56 +1973,154 @@ func TestAWSPolicyOnlyRefusesForeignRole(t *testing.T) {
 }
 
 func TestAWSOptionalUpload(t *testing.T) {
-	for _, present := range []bool{false, true} {
-		t.Run(fmt.Sprint(present), func(t *testing.T) {
+	for _, tc := range []struct {
+		name, boxEnv                      string
+		defaultFiles, overrides, relative bool
+	}{
+		{name: "other box without overrides", defaultFiles: true},
+		{name: "other box with overrides", defaultFiles: true, overrides: true},
+		{name: "other box with relative overrides", defaultFiles: true, overrides: true, relative: true},
+		{name: "empty BOX_ENV_FILE", boxEnv: "empty", defaultFiles: true},
+		{name: "explicit default BOX_ENV_FILE", boxEnv: "default", defaultFiles: true},
+		{name: "primary box with default files", boxEnv: "unset", defaultFiles: true},
+		{name: "primary box without default files", boxEnv: "unset"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			h := newAWS(t)
+			name := "gkg"
+			if tc.boxEnv != "" {
+				h.write("repo/deploy/aws/box.env", h.read("box.config"))
+			}
+			primary := tc.boxEnv == "unset"
+			switch tc.boxEnv {
+			case "unset":
+				h.env = slices.DeleteFunc(h.env, func(entry string) bool {
+					return strings.HasPrefix(entry, "BOX_ENV_FILE=")
+				})
+			case "empty":
+				h.env = append(h.env, "BOX_ENV_FILE=")
+			case "default":
+				h.env = append(h.env, "BOX_ENV_FILE="+filepath.Join(h.root, "deploy/aws/box.env"))
+			default:
+				name = "gkg-other"
+				h.write("box.config", strings.Replace(h.read("box.config"), "NAME=gkg\n", "NAME="+name+"\n", 1))
+			}
 			h.write("secrets.env", "MEMGRAPH_PASSWORD="+awsMarker+"\nGKG_API_KEY="+awsMarker+"\n")
 			h.write("htpasswd", "deploy:"+awsMarker+"\n")
-			fixtures := map[string]string{"domain-seed": `{"rules":[{"match":"acme:","domain":"acme"}]}`, "stoplist": "quillon\n"}
-			if present {
-				for kind, value := range fixtures {
-					ext := ".txt"
-					if kind == "domain-seed" {
-						ext = ".json"
+			fixtures := []struct {
+				kind, defaultFile, override, defaultValue, overrideValue string
+			}{
+				{"domain-seed", "box.domain-seed.json", "BOX_DOMAIN_SEED_FILE", `{"rules":[{"match":"acme:","domain":"acme"}]}`, `{"rules":[{"match":"zorbo:","domain":"zorbo"}]}`},
+				{"stoplist", "box.stoplist.txt", "BOX_STOPLIST_FILE", "quillon\n", "zorbo\n"},
+			}
+			for _, f := range fixtures {
+				if tc.defaultFiles {
+					h.write("repo/deploy/aws/"+f.defaultFile, f.defaultValue)
+				}
+				if tc.overrides {
+					path := "other " + f.defaultFile
+					if tc.relative {
+						h.write("repo/"+path, f.overrideValue)
+					} else {
+						h.write(path, f.overrideValue)
+						path = filepath.Join(h.dir, path)
 					}
-					h.write("repo/deploy/aws/box."+kind+ext, value)
+					h.env = append(h.env, f.override+"="+path)
 				}
 			}
 			out := h.ok("upload-secrets.sh")
 			want := 2
+			present := tc.overrides || (primary && tc.defaultFiles)
 			if present {
 				want = 4
 			}
-			if h.count("put-parameter") != want || h.count("add-tags-to-resource") != want {
-				t.Fatal("optional files were skipped or missing files uploaded")
+			if puts, tags := h.count("put-parameter"), h.count("add-tags-to-resource"); puts != want || tags != want {
+				t.Fatalf("got %d uploads and %d tags, want %d each", puts, tags, want)
 			}
-			for kind, value := range fixtures {
+			for _, f := range fixtures {
 				if !present {
-					if !strings.Contains(out, kind) || !strings.Contains(out, "skip") {
-						t.Fatal("missing optional file needs a note")
+					note := "gkg-box: skipping missing optional " + f.kind + " file"
+					if !primary {
+						note = "gkg-box: skipping optional " + f.kind + " (set " + f.override + " for this box)"
+					}
+					if !strings.Contains(out, note) {
+						t.Fatalf("missing note %q in %q", note, out)
 					}
 					continue
+				}
+				value := f.defaultValue
+				if tc.overrides {
+					value = f.overrideValue
 				}
 				var request struct {
 					Name, Type, Value, Tier string
 					Overwrite               bool
 				}
-				if json.Unmarshal([]byte(h.read("uploaded-"+kind)), &request) != nil || request.Name != "/gkg/"+kind || request.Value != value || request.Type != "SecureString" || request.Tier != "Standard" || !request.Overwrite {
-					t.Fatalf("invalid optional %s upload", kind)
+				if json.Unmarshal([]byte(h.read("uploaded-"+f.kind)), &request) != nil || request.Name != "/"+name+"/"+f.kind || request.Value != value || request.Type != "SecureString" || request.Tier != "Standard" || !request.Overwrite {
+					t.Fatalf("invalid optional %s upload: %+v", f.kind, request)
 				}
 			}
 		})
 	}
 }
 
-func TestAWSOptionalUploadSize(t *testing.T) {
-	for _, file := range []string{"box.domain-seed.json", "box.stoplist.txt"} {
-		for _, size := range []int{4096, 4097} {
-			t.Run(fmt.Sprintf("%s/%d", file, size), func(t *testing.T) {
+func TestAWSOptionalUploadInvalidPath(t *testing.T) {
+	for _, input := range []struct{ override, file string }{
+		{"BOX_DOMAIN_SEED_FILE", "box.domain-seed.json"},
+		{"BOX_STOPLIST_FILE", "box.stoplist.txt"},
+	} {
+		for _, mode := range []string{"missing", "empty", "symlink", "primary-path", "relative-primary-path", "symlinked-primary-parent"} {
+			t.Run(input.override+"/"+mode, func(t *testing.T) {
 				h := newAWS(t)
 				h.write("secrets.env", "MEMGRAPH_PASSWORD=x\nGKG_API_KEY=y\n")
 				h.write("htpasswd", "deploy:hash\n")
-				h.write("repo/deploy/aws/"+file, strings.Repeat("x", size))
+				h.write("repo/deploy/aws/box.domain-seed.json", `{"rules":[]}`)
+				h.write("repo/deploy/aws/box.stoplist.txt", "quillon\n")
+				path := filepath.Join(h.dir, mode)
+				switch mode {
+				case "empty":
+					path = ""
+				case "symlink":
+					h.write("private.txt", "quillon\n")
+					if err := os.Symlink(filepath.Join(h.dir, "private.txt"), path); err != nil {
+						t.Fatal(err)
+					}
+				case "primary-path":
+					path = filepath.Join(h.root, "deploy/aws", input.file)
+				case "relative-primary-path":
+					path = filepath.Join("deploy/aws", input.file)
+				case "symlinked-primary-parent":
+					if err := os.Symlink(filepath.Join(h.root, "deploy/aws"), path); err != nil {
+						t.Fatal(err)
+					}
+					path = filepath.Join(path, input.file)
+				}
+				h.env = append(h.env, input.override+"="+path)
+				out, code := h.run("upload-secrets.sh")
+				if puts, tags := h.count("put-parameter"), h.count("add-tags-to-resource"); code == 0 || puts != 0 || tags != 0 || !strings.Contains(out, input.override) {
+					t.Fatalf("invalid %s path must fail before any upload or tag: exit=%d uploads=%d tags=%d output=%q", input.override, code, puts, tags, out)
+				}
+			})
+		}
+	}
+}
+
+func TestAWSOptionalUploadSize(t *testing.T) {
+	for _, f := range []struct{ file, override string }{
+		{"box.domain-seed.json", "BOX_DOMAIN_SEED_FILE"},
+		{"box.stoplist.txt", "BOX_STOPLIST_FILE"},
+	} {
+		for _, size := range []int{4096, 4097} {
+			t.Run(fmt.Sprintf("%s/%d", f.file, size), func(t *testing.T) {
+				h := newAWS(t)
+				h.write("secrets.env", "MEMGRAPH_PASSWORD=x\nGKG_API_KEY=y\n")
+				h.write("htpasswd", "deploy:hash\n")
+				value := strings.Repeat("é\"\n", 1024)
+				if size == 4097 {
+					value += "x"
+				}
+				h.write(f.file, value)
+				h.env = append(h.env, f.override+"="+filepath.Join(h.dir, f.file))
 				out, code := h.run("upload-secrets.sh")
 				if size == 4096 {
 					if code != 0 || h.count("put-parameter") != 3 {
@@ -1992,6 +2131,19 @@ func TestAWSOptionalUploadSize(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAWSOptionalUploadStagedSize(t *testing.T) {
+	h := newAWS(t)
+	h.write("secrets.env", "MEMGRAPH_PASSWORD=x\nGKG_API_KEY=y\n")
+	h.write("htpasswd", "deploy:hash\n")
+	// jq replaces each malformed byte with a three-byte replacement character.
+	h.write("stoplist.txt", strings.Repeat("\xff", 2048))
+	h.env = append(h.env, "BOX_STOPLIST_FILE="+filepath.Join(h.dir, "stoplist.txt"))
+	out, code := h.run("upload-secrets.sh")
+	if puts, tags := h.count("put-parameter"), h.count("add-tags-to-resource"); code == 0 || puts != 0 || tags != 0 || !strings.Contains(out, "stoplist SecureString is 6144 bytes") {
+		t.Fatalf("oversized staged value must fail before any upload or tag: exit=%d uploads=%d tags=%d output=%q", code, puts, tags, out)
 	}
 }
 
