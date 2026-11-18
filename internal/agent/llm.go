@@ -224,27 +224,27 @@ func (c *client) doChat(ctx context.Context, body []byte) (chatReply, error) {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return chatReply{}, err
 		}
-		slog.Warn("agent: provider request failed", "err", err)
+		slog.Warn("agent: provider request failed", "err", c.redactAPIKey(err.Error()))
 		return chatReply{}, &providerError{status: 0}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, responseCap+1))
 	if err != nil {
-		slog.Warn("agent: provider response read failed", "err", err)
+		slog.Warn("agent: provider response read failed", "err", c.redactAPIKey(err.Error()))
 		return chatReply{}, &providerError{status: 0}
 	}
 	if len(data) > responseCap {
 		return chatReply{}, fmt.Errorf("agent: response exceeds the %d MiB cap", responseCap>>20)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return chatReply{}, &providerError{status: resp.StatusCode, detail: trimPreview(string(data))}
+		return chatReply{}, &providerError{status: resp.StatusCode, detail: trimPreview(c.redactAPIKey(string(data)))}
 	}
 	var wire chatWireResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return chatReply{}, fmt.Errorf("agent: decode response: %w", err)
 	}
 	if wire.Error != nil {
-		return chatReply{}, &providerError{status: http.StatusBadGateway, detail: trimPreview(wire.Error.Message)}
+		return chatReply{}, &providerError{status: http.StatusBadGateway, detail: trimPreview(c.redactAPIKey(wire.Error.Message))}
 	}
 	if len(wire.Choices) == 0 {
 		return chatReply{}, fmt.Errorf("agent: response without choices")
@@ -447,6 +447,16 @@ func readSSE(body io.Reader, onDelta func(string) error) (chatReply, error) {
 			return chatReply{}, &providerError{status: 0}
 		}
 	}
+}
+
+// redactAPIKey handles provider diagnostics that echo the bearer credential
+// in plain text or JSON. Redact before trimming so a clipped key stays private.
+func (c *client) redactAPIKey(s string) string {
+	if c.apiKey == "" {
+		return s
+	}
+	quoted, _ := json.Marshal(c.apiKey)
+	return strings.NewReplacer(string(quoted[1:len(quoted)-1]), "[redacted]", c.apiKey, "[redacted]").Replace(s)
 }
 
 // trimPreview caps a provider payload preview; previews are the provider's

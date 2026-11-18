@@ -1,8 +1,6 @@
-// Package mcp exposes the gkg knowledge graph to MCP clients: eight tools
-// (ingest, status, search, get_entity, get_chunks, traverse, list_documents, cypher)
-// over stdio and streamable HTTP, thin over the search and traversal read
-// paths and the guarded read-only cypher surface. Judge-confirmed typed facts
-// are visible at any confidence.
+// Package mcp exposes the gkg knowledge graph over stdio and streamable HTTP.
+// Clients can ingest documents, query the graph directly, or use the optional
+// server-side ask agent. Judge-confirmed typed facts are visible at any confidence.
 package mcp
 
 import (
