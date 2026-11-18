@@ -88,10 +88,12 @@ func visibility(t *testing.T, mixed bool) VisibilityFixture {
 			graph.FactUpsert{HeadKey: ents[0].Key, TailKey: ents[2].Key, Rel: "consults", Confidence: .8},
 			graph.FactUpsert{HeadKey: ents[0].Key, TailKey: ents[3].Key, Rel: "uses", Confidence: .8},
 			graph.FactUpsert{HeadKey: ents[1].Key, TailKey: ents[3].Key, Rel: "supplies", Confidence: .8},
+			graph.FactUpsert{HeadKey: ents[1].Key, TailKey: ents[3].Key, Rel: "makes", Confidence: .4, LowConfidence: true},
 			graph.FactUpsert{HeadKey: ents[2].Key, TailKey: ents[3].Key, Rel: "ships", Confidence: .4, LowConfidence: true},
 		)
 		judges["consults"] = "unclear"
 		judges["supplies"] = "unclear"
+		judges["makes"] = "confirmed"
 		judges["ships"] = "confirmed"
 	}
 	if err := st.UpsertExtraction(ctx, doc.ID, doc.ID+"-c1", "mock:1", ents, edges); err != nil {

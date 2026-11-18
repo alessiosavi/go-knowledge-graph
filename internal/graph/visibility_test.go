@@ -196,8 +196,8 @@ func TestConfirmedOnlyTraversalDoesNotExpandThroughUnclearEdges(t *testing.T) {
 		opt  graph.ViewOptions
 		want []string
 	}{
-		{"default", graph.ViewOptions{}, []string{"advises", "consults", "ships", "supplies", "uses", "works_at"}},
-		{"confirmed_only", graph.ViewOptions{ConfirmedOnly: true}, []string{"advises", "works_at"}},
+		{"default", graph.ViewOptions{}, []string{"advises", "consults", "makes", "ships", "supplies", "uses", "works_at"}},
+		{"confirmed_only", graph.ViewOptions{ConfirmedOnly: true}, []string{"advises", "makes", "works_at"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sub, err := f.Store.TraverseOpts(context.Background(), f.ID, "", "out", 2, 50, tc.opt)
@@ -212,8 +212,8 @@ func TestConfirmedOnlyTraversalDoesNotExpandThroughUnclearEdges(t *testing.T) {
 			if !slices.Equal(rels, tc.want) {
 				t.Errorf("edge relations=%v, want %v", rels, tc.want)
 			}
-			if tc.opt.ConfirmedOnly && (len(sub.Nodes) != 2 || sub.Nodes[1].Key != f.OtherKey) {
-				t.Errorf("nodes=%+v, want only the start and its confirmed neighbour", sub.Nodes)
+			if tc.opt.ConfirmedOnly && (len(sub.Nodes) != 3 || sub.Nodes[1].Key != f.OtherKey) {
+				t.Errorf("nodes=%+v, want the start and two neighbours on confirmed edges", sub.Nodes)
 			}
 		})
 	}

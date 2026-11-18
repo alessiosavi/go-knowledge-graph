@@ -120,8 +120,12 @@ func TestConfirmedOnlyMCPSchema(t *testing.T) {
 		schema := tool.InputSchema.(map[string]any)
 		properties := schema["properties"].(map[string]any)
 		field, ok := properties["confirmed_only"].(map[string]any)
-		if !ok || field["type"] != "boolean" || field["description"] != "return only facts the judge confirmed" {
+		if !ok || field["type"] != "boolean" || field["description"] != "return only facts the judge confirmed. Overrides include_low_confidence and include_unverified" {
 			t.Errorf("%s confirmed_only schema=%v", tool.Name, field)
+		}
+		field, ok = properties["include_low_confidence"].(map[string]any)
+		if !ok || field["description"] != "include all typed facts below the assert floor. Judge-confirmed facts are always shown regardless of this flag" {
+			t.Errorf("%s include_low_confidence schema=%v", tool.Name, field)
 		}
 	}
 }

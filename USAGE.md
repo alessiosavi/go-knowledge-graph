@@ -147,8 +147,12 @@ options:
   at any confidence, and takes precedence over both inclusion flags.
   Otherwise, `include_unverified` adds marked candidates when
   `facts.allow_unverified_reads` is enabled. When the server setting is disabled,
-  `unverified_ignored:true` explains the ignored request. Responses report
-  nonzero `hidden` counts of distinct facts per state.
+  `unverified_ignored:true` explains the ignored request. When any `hidden`
+  count is nonzero, the response reports distinct facts per state from unjudged
+  and unclear `FactCandidate` records and `RejectedFact` audits touching the
+  viewed entity or traversal start. These counts are independent of read filters
+  and exclude typed edges suppressed by `confirmed_only` or the default
+  low-confidence filter.
   See [visibility options](docs/quickstart.md).
 - **Memgraph Lab**: run `memgraph/lab`, point it at the Bolt endpoint
   (`bolt://localhost:7687`; credentials from your `.env`) and use the Query

@@ -139,7 +139,7 @@ func toolDefs() []toolDef {
 				"properties": map[string]any{
 					"id":                     map[string]any{"type": "string", "description": "entity id"},
 					"name":                   map[string]any{"type": "string", "description": "entity name (EntityKey folding at v4; case folding on legacy graphs; used when id is omitted)"},
-					"include_low_confidence": map[string]any{"type": "boolean", "description": "include facts below the assert floor"},
+					"include_low_confidence": map[string]any{"type": "boolean", "description": "include facts below the assert floor. Judge-confirmed facts are always shown"},
 				},
 			}),
 		functionTool("get_chunks",
@@ -162,7 +162,7 @@ func toolDefs() []toolDef {
 					"direction":              map[string]any{"type": "string", "enum": []string{"out", "in", "both"}, "description": "edge direction (default out)"},
 					"depth":                  map[string]any{"type": "integer", "description": "hops, 1 or 2 (default 1)"},
 					"limit":                  map[string]any{"type": "integer", "description": "maximum edges (default 50, capped at 200)"},
-					"include_low_confidence": map[string]any{"type": "boolean", "description": "include facts below the assert floor"},
+					"include_low_confidence": map[string]any{"type": "boolean", "description": "include facts below the assert floor. Judge-confirmed facts are always shown"},
 				},
 				"required": []string{"entity"},
 			}),

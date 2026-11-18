@@ -1230,7 +1230,12 @@ components:
             $ref: "#/components/schemas/CoMention"
     HiddenCounts:
       type: object
-      description: Counts distinct (head_key, rel, tail_key) facts per state whose head_key or tail_key is the viewed entity key (the start entity for traversal), regardless of filters or inclusion options. Facts extracted from multiple chunks count once per state. Omitted when all counts are zero.
+      description: >-
+        Counts unjudged and unclear FactCandidate records and RejectedFact audits
+        whose head_key or tail_key matches the viewed entity (the start entity for traversal).
+        Each distinct (head_key, rel, tail_key) counts once per state across chunks.
+        Counts are independent of read filters and exclude typed edges suppressed by
+        confirmed_only or the default low-confidence filter. Omitted when all counts are zero.
       required: [unclear, unjudged, rejected]
       properties:
         unclear: { type: integer, minimum: 0 }

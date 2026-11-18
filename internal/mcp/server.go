@@ -95,9 +95,9 @@ type getEntityArgs struct {
 	Domain               string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	ID                   string `json:"id,omitempty" jsonschema:"entity id"`
 	Name                 string `json:"name,omitempty" jsonschema:"entity name (EntityKey folding at v4 including possessives and edge punctuation; legacy case folding)"`
-	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include all typed facts below the assert floor. Judge-confirmed facts already appear by default"`
+	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include all typed facts below the assert floor. Judge-confirmed facts are always shown regardless of this flag"`
 	IncludeUnverified    bool   `json:"include_unverified,omitempty" jsonschema:"include marked candidates only when facts.allow_unverified_reads is enabled; otherwise unverified_ignored is true"`
-	ConfirmedOnly        bool   `json:"confirmed_only,omitempty" jsonschema:"return only facts the judge confirmed"`
+	ConfirmedOnly        bool   `json:"confirmed_only,omitempty" jsonschema:"return only facts the judge confirmed. Overrides include_low_confidence and include_unverified"`
 }
 
 type getChunksArgs struct {
@@ -113,9 +113,9 @@ type traverseArgs struct {
 	Direction            string `json:"direction,omitempty" jsonschema:"out | in | both (default out)"`
 	Depth                int    `json:"depth,omitempty" jsonschema:"hops, 1 or 2 (default 1)"`
 	Limit                int    `json:"limit,omitempty" jsonschema:"maximum edges (default 50, capped at 200)"`
-	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include all typed facts below the assert floor. Judge-confirmed facts already appear by default"`
+	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include all typed facts below the assert floor. Judge-confirmed facts are always shown regardless of this flag"`
 	IncludeUnverified    bool   `json:"include_unverified,omitempty" jsonschema:"include marked candidates only when facts.allow_unverified_reads is enabled; otherwise unverified_ignored is true"`
-	ConfirmedOnly        bool   `json:"confirmed_only,omitempty" jsonschema:"return only facts the judge confirmed"`
+	ConfirmedOnly        bool   `json:"confirmed_only,omitempty" jsonschema:"return only facts the judge confirmed. Overrides include_low_confidence and include_unverified"`
 }
 
 type listDocumentsArgs struct {

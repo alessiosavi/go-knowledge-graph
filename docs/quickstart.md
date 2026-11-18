@@ -142,11 +142,13 @@ judge-confirmed typed facts at any confidence. It takes precedence over
 `include_low_confidence` and `include_unverified` at every hop.
 
 With confirmation enabled, unjudged and unclear facts stay as candidates, outside
-the typed graph edges. The `hidden` response object counts `unclear`, `unjudged`
-and `rejected` facts touching the viewed entity (the start entity for traversal),
-regardless of filters or inclusion options. Each distinct `(head_key, rel, tail_key)`
-counts once per state, even when extracted from multiple chunks. It is omitted
-when all three counts are zero.
+the typed graph edges. The `hidden` response object counts unjudged and unclear
+`FactCandidate` records and `RejectedFact` audits touching the viewed entity
+(the start entity for traversal). Each distinct `(head_key, rel, tail_key)`
+counts once per state, even when extracted from multiple chunks. The counts are
+independent of read filters and exclude typed edges suppressed by `confirmed_only`
+or the default low-confidence filter. The response omits `hidden` when all
+three counts are zero.
 The viewer renders these counts below the entity details.
 
 To inspect candidates deliberately, set `facts.allow_unverified_reads: true`
