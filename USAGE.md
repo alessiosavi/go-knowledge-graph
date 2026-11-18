@@ -373,7 +373,7 @@ gkg quality --hygiene-sample 50 --sample-seed 1 --out hygiene-sample.json
 ```
 
 `quality` reads done documents and their derived data in batches of 5,000,
-without Bootstrap, graph writes, or provider calls. JSON uses `metrics: 1`;
+without Bootstrap, graph writes, or provider calls. JSON uses `metrics: 2`;
 undefined metrics are `null` (`n/a` in text). Candidate counts are `null`
 before extraction schema v4. `--seed` uses the longest matching prefix of the
 full document source, overriding its stored domain when matched. A domain
@@ -382,12 +382,13 @@ filter applies to documents before metrics are computed.
 All populations below are selected done documents and their derived data.
 Typed facts are stored entity-to-entity edges with valid document and chunk
 provenance; a triple is a distinct directed (head, relation, tail).
-Duplicate groups use NFKD, lowercase, alphanumerics, and company-suffix removal,
-within domains and, for document-scoped keys, within documents.
+Duplicate groups normalize names with NFKD, remove company suffixes using the
+hygiene rule, then lowercase and keep letters and digits.
+Groups form within domains and, for document-scoped keys, within documents.
 
 | Report key | Definition and denominator |
 | --- | --- |
-| `metrics` | Metric definition version, currently 1; no denominator. |
+| `metrics` | Metric definition version, currently 2 (2 shares the hygiene company-suffix rule; version 1 reports are not comparable on duplicate groups); no denominator. |
 | `documents` | Selected done documents; count. |
 | `chunks` | Distinct chunks of selected documents; count. |
 | `entities` | Entities mentioned in selected chunks or incident to selected typed facts; count. |

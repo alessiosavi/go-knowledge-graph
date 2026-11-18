@@ -11,9 +11,13 @@ import (
 )
 
 var (
-	markdownLink  = regexp.MustCompile(`\[[^\]]*\]\([^)]*\)|\(#[^)]*\)`)
-	heading       = regexp.MustCompile(`^#{1,6}[\t ]+(.+?)\s*#*\s*$`)
-	companySuffix = regexp.MustCompile(`(?i)\s+(?:s\.r\.l\.?|srl\.?|s\.p\.a\.?|spa\.?|ltd\.?|inc\.?|gmbh\.?|llc\.?)$`)
+	markdownLink = regexp.MustCompile(`\[[^\]]*\]\([^)]*\)|\(#[^)]*\)`)
+	heading      = regexp.MustCompile(`^#{1,6}[\t ]+(.+?)\s*#*\s*$`)
+	// Undotted SpA spellings are case-sensitive to preserve the English word
+	// "Spa"; the dotted s.p.a. cannot be that word, so it folds case.
+	// The capture identifies suffixes that can follow a compound Co. marker.
+	companySuffix = regexp.MustCompile(`[,\s]+(?:(?i:s\.r\.l\.?|srl\.?|s\.p\.a\.?)|SpA\.?|SPA\.?|(?i:(ltd\.?|inc\.?|gmbh\.?|llc\.?)))$`)
+	companyMarker = regexp.MustCompile(`(?i)\s+co\.,?$`)
 	quotes        = strings.NewReplacer("’", "'", "‘", "'", "“", `"`, "”", `"`)
 )
 
@@ -84,6 +88,15 @@ func normalize(name string) (string, []string) {
 			break
 		}
 	}
+	if base, stripped := StripCompanySuffix(name); stripped {
+		return base, []string{name}
+	}
+	return name, nil
+}
+
+// StripCompanySuffix removes a trailing legal company suffix from a name.
+// If no suffix is removed, it returns the original name and false.
+func StripCompanySuffix(name string) (string, bool) {
 	// A possessive company form ("Quillon Ltd's") matches its suffix on the
 	// stem, so it keys like the plain form.
 	stem := name
@@ -93,12 +106,22 @@ func normalize(name string) (string, []string) {
 		stem = stem[:n-2]
 	}
 	stem = strings.TrimFunc(stem, trimEdge)
-	if at := companySuffix.FindStringIndex(stem); at != nil {
-		full := name
-		name = strings.TrimSpace(stem[:at[0]])
-		return name, []string{full}
+	at := companySuffix.FindStringSubmatchIndex(stem)
+	if at == nil {
+		return name, false
 	}
-	return name, nil
+	base := strings.TrimSpace(stem[:at[0]])
+	if strings.HasSuffix(base, "&") {
+		return name, false
+	}
+	if at[2] >= 0 { // Ltd, Inc, GmbH or LLC.
+		withoutMarker := strings.TrimRight(companyMarker.ReplaceAllString(base, ""), ", ")
+		if withoutMarker != "" && !strings.HasSuffix(withoutMarker, "&") {
+			return withoutMarker, true
+		}
+		base = strings.TrimRight(base, ", ")
+	}
+	return base, true
 }
 
 func normalizedDrop(name string, value bool, p Preset) Rule {

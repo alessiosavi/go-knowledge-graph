@@ -3,7 +3,6 @@ package quality
 import (
 	"math"
 	"math/rand/v2"
-	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -322,11 +321,11 @@ func coMentionMetrics(r *Report, chunks map[string]stringSet) {
 	r.CoMention = CoMentionMetrics{Nodes: len(adj), Edges: len(weights), Weight1Share: ratio(one, len(weights)), GiantShare: ratio(giant, len(adj))}
 }
 
-var companySuffix = regexp.MustCompile(`(?i)[\s,]+(?:s\.?r\.?l\.?|s\.?p\.?a\.?|ltd\.?|inc\.?|gmbh\.?|llc\.?)$`)
-
 func duplicateFold(name string) string {
-	name = strings.ToLower(norm.NFKD.String(strings.TrimSpace(name)))
-	name = companySuffix.ReplaceAllString(name, "")
+	// NFKD first, so compatibility spaces and full-width letters reach the
+	// suffix rule as ASCII.
+	name, _ = hygiene.StripCompanySuffix(norm.NFKD.String(strings.TrimSpace(name)))
+	name = strings.ToLower(name)
 	return strings.Map(func(r rune) rune {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			return r

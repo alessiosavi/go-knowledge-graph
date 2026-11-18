@@ -56,7 +56,7 @@ func TestMetricsOnHandGraph(t *testing.T) {
 	r := compute(fixture(), Options{}, policy(t))
 	// chunks/entity = [3,2,2,2,1,1], 11 distinct mentions; 2 singletons,
 	// 4 single-document entities. Sorted weighted sum = 45, so Gini = 13/66.
-	if r.Metrics != 1 || r.Documents != 2 || r.Chunks != 5 || r.Entities != 6 || r.Mentions != 11 {
+	if r.Metrics != 2 || r.Documents != 2 || r.Chunks != 5 || r.Entities != 6 || r.Mentions != 11 {
 		t.Fatalf("population: %+v", r)
 	}
 	number(t, "isolated", r.IsolatedShare, .5)
@@ -156,8 +156,7 @@ func TestDomainAndDuplicateScopes(t *testing.T) {
 	if r.CrossDomainEntities != nil {
 		t.Fatalf("scoped cross domains: %+v", r)
 	}
-	// Accent, compatibility, punctuation and company suffix folding are separate
-	// from hygiene: document and domain boundaries must survive the fold.
+	// Document and domain boundaries must survive duplicate folding.
 	d = dataset{version: 4, documents: []document{{"d1", "one", "a"}, {"d2", "two", "b"}}, chunks: []chunk{{"c1", "d1"}, {"c2", "d2"}}, entities: []entity{{"a", "Àcme-Max Ltd.", "organization"}, {"b", "ＡＣＭＥ Max", "product"}, {"#d1:x", "Zorbo", "value"}, {"#d2:y", "Zorbo", "value"}}, mentions: []mention{{"a", "c1"}, {"b", "c2"}, {"#d1:x", "c1"}, {"#d2:y", "c2"}}}
 	r = compute(d, Options{}, policy(t))
 	if r.DuplicateGroups != 0 {
@@ -167,6 +166,35 @@ func TestDomainAndDuplicateScopes(t *testing.T) {
 	r = compute(d, Options{}, policy(t))
 	if r.DuplicateGroups != 1 || r.DuplicateEntities != 2 || r.CrossTypeGroups != 1 {
 		t.Fatalf("fold/scopes: %+v", r)
+	}
+}
+
+func TestDuplicateGroupsCompanySuffix(t *testing.T) {
+	for _, tt := range []struct {
+		name, first, second string
+		wantGroups          int
+	}{
+		{"resort spa", "Zorbo Resort & Spa", "Zorbo Resort", 0},
+		{"compound suffix", "Quillon Packaging Co., Ltd", "Quillon Packaging", 1},
+		{"Italian suffix", "Quillon SpA", "Quillon", 1},
+		{"comma before suffix", "Quillon Packaging,Inc", "Quillon Packaging", 1},
+		{"lowercase dotted SpA", "Acme s.p.a.", "Acme", 1},
+		{"no-break space before suffix", "Acme\u00a0Ltd", "Acme", 1},
+		{"full-width suffix", "ＡＣＭＥ ＬＴＤ", "Acme", 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := dataset{
+				version:   4,
+				documents: []document{{"d1", "one", "a"}},
+				chunks:    []chunk{{"c1", "d1"}},
+				entities:  []entity{{"a", tt.first, "organization"}, {"b", tt.second, "organization"}},
+				mentions:  []mention{{"a", "c1"}, {"b", "c1"}},
+			}
+			r := compute(d, Options{}, policy(t))
+			if r.DuplicateGroups != tt.wantGroups || r.DuplicateEntities != 2*tt.wantGroups {
+				t.Errorf("duplicate groups/entities = %d/%d, want %d/%d", r.DuplicateGroups, r.DuplicateEntities, tt.wantGroups, 2*tt.wantGroups)
+			}
+		})
 	}
 }
 
