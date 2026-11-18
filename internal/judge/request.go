@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	profileVersionV2 = "2.1"
+	profileVersionV2 = "3"
 	requestSchemaV2  = "2"
 )
 

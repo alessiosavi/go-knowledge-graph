@@ -429,6 +429,9 @@ Each preset has its own profile fingerprint, based on its full relation
 definitions, the model, the prompt and the request schema. The same frozen
 request keeps its fingerprint and cache key when other presets are added to a
 manifest. Regenerate mixed-preset manifests created with a shared fingerprint.
+Each manifest row also records the prompt profile version (currently 3). The
+judge rejects rows planned with another version, so plan again after an
+upgrade that changes the prompt.
 The judge prints one `preset=… fingerprint=…` line per preset, with `preset=""`
 for the built-in definitions. For labelled runs these lines precede the gate.
 At least 95% of the scored audit rows must reconcile, every planned row must
