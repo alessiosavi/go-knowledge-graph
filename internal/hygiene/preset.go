@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
+	"github.com/alessiosavi/go-knowledge-graph/internal/validity"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -17,13 +18,14 @@ import (
 // Values exempts document-scoped labels from the five shape rules.
 // SectionLabelKeepTypes exempts lowercased entity types from HeadingLead.
 type Preset struct {
-	Name                  string           `json:"-"`
-	Allow                 map[string]bool  `json:"allowlist"`
-	Stop                  map[string]bool  `json:"stoplist_exact"`
-	StopPatterns          []*regexp.Regexp `json:"stoplist_patterns"`
-	Values                map[string]bool  `json:"document_scoped_labels"`
-	Code                  bool             `json:"code_tokens"`
-	SectionLabelKeepTypes map[string]bool  `json:"section_label_keep_types"`
+	Name                  string            `json:"-"`
+	Allow                 map[string]bool   `json:"allowlist"`
+	Stop                  map[string]bool   `json:"stoplist_exact"`
+	StopPatterns          []*regexp.Regexp  `json:"stoplist_patterns"`
+	Values                map[string]bool   `json:"document_scoped_labels"`
+	Code                  bool              `json:"code_tokens"`
+	SectionLabelKeepTypes map[string]bool   `json:"section_label_keep_types"`
+	Validity              *validity.Lexicon `json:"validity,omitempty"`
 }
 
 var presetName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -37,6 +39,9 @@ type PresetSettings struct {
 		Exact    []string `yaml:"exact"`
 		Patterns []string `yaml:"patterns"`
 	} `yaml:"stoplist"`
+	// Keep the node to distinguish an omitted block from an explicit null
+	// and apply strict validity decoding even in the hygiene-only loader.
+	Validity yaml.Node `yaml:"validity,omitempty"`
 }
 
 // LoadPreset reads hygiene settings from the label YAML. An empty name returns
@@ -84,6 +89,11 @@ func BuildPreset(name string, entities []extract.Label, settings PresetSettings,
 		p.StopPatterns = []*regexp.Regexp{regexp.MustCompile(`(?i)^Sezione \d+$`), regexp.MustCompile(`(?i)^Section \d+$`)}
 		// The built-in entity labels all have global scope, so Values is empty.
 	} else {
+		lexicon, err := validity.DecodeLexiconYAML(&settings.Validity)
+		if err != nil {
+			return Preset{}, fmt.Errorf("hygiene preset %q: %w", name, err)
+		}
+		p.Validity = lexicon
 		p.Code = settings.Code
 		for _, label := range entities {
 			if label.Scope == "document" {

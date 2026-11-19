@@ -124,6 +124,16 @@ Entity labels with `scope: document` are value labels: they skip the no-letter,
 short-name, CLI-flag, path and code shape rules, while normalization and newline,
 length, markdown-link, heading and stoplist checks still apply.
 
+A custom preset can include an optional top-level `validity:` block with
+`rules: catalog-v3` and a lexicon for catalog validity planning. Supply a
+nonempty `product_types` map (for example, `{zorbs: zorb}`) and nonempty
+`stop_tokens`, `quality_nouns`, `class_nouns`, `evaluative_stems`,
+`evaluative_words`, `sensory_stems`, `sensory_words`, and `function_words`
+lists. Use lowercase ASCII letters for stems and lowercase ASCII letters or
+digits for other tokens. `gkg preset check` validates the block. Omit it to
+leave validity rules off. An invalid `validity:` block fails every preset
+loader, including those used by ingest, eval, and rejudge planning.
+
 **From an agent**: the MCP `ingest` tool takes `url` or `text`, plus an
 optional `source` label and `force` to re-run an unchanged document.
 

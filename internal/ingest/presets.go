@@ -18,6 +18,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
+	"github.com/alessiosavi/go-knowledge-graph/internal/validity"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -56,12 +57,18 @@ func LoadPreset(dir, name string) (entities, relations []extract.Label, err erro
 	if err != nil {
 		return nil, nil, fmt.Errorf("label preset %q: %w", name, err)
 	}
-	var preset presetLabels
+	var preset struct {
+		presetLabels `yaml:",inline"`
+		Validity     yaml.Node `yaml:"validity,omitempty"`
+	}
 	if err := yaml.Unmarshal(data, &preset); err != nil {
 		return nil, nil, fmt.Errorf("label preset %q: %w", name, err)
 	}
-	// Preserve the lenient ingest loader and inspect the combined schema for
-	// unknown fields without making new validation rules fatal at ingest.
+	if _, err := validity.DecodeLexiconYAML(&preset.Validity); err != nil {
+		return nil, nil, fmt.Errorf("label preset %q: %w", name, err)
+	}
+	// The validity block is validated strictly and errors are fatal. Other
+	// unknown preset keys are logged as warnings.
 	var fieldErrors *yaml.LoadErrors
 	if errors.As(decodePresetFile(data, &presetFile{}), &fieldErrors) {
 		for _, field := range fieldErrors.Errors {

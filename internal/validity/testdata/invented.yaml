@@ -1,0 +1,11 @@
+validity:
+  rules: catalog-v3
+  product_types: {zorbs: zorb, vexels: vexel, preludes: stoppon}
+  stop_tokens: [stoppon, cutoffon]
+  quality_nouns: [plim, vexel]
+  class_nouns: [drindle]
+  evaluative_stems: [zestiv]
+  evaluative_words: [vexel]
+  sensory_stems: [brilliq]
+  sensory_words: [gleamy]
+  function_words: [wib]
