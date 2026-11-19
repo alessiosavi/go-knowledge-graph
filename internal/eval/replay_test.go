@@ -1,9 +1,35 @@
 package eval
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 )
+
+func TestReplayHygieneWithoutValidity(t *testing.T) {
+	preset, err := ingest.LoadCheckedPreset(t.TempDir(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantSHA = "f5ee1242c4a8077b28d4b1e2ffa982eec6bec3fc69b80d67685ac65dcd999e20"
+	if preset.SHA256 != wantSHA {
+		t.Errorf("built-in preset SHA-256 = %q, want %q", preset.SHA256, wantSHA)
+	}
+	header, err := json.Marshal(replayHeader{Type: "header", Hygiene: preset.Hygiene})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(header, &fields); err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"allowlist":{"AI":true,"EU":true,"IT":true,"UE":true,"UK":true,"US":true},"stoplist_exact":{"description":true,"descrizione":true,"index":true,"indice":true,"information":true,"informazioni":true,"introduction":true,"introduzione":true},"stoplist_patterns":["(?i)^Sezione \\d+$","(?i)^Section \\d+$"],"document_scoped_labels":{},"code_tokens":false,"section_label_keep_types":{"location":true}}`
+	if got := string(fields["hygiene"]); got != want {
+		t.Errorf("replay hygiene JSON = %s, want %s", got, want)
+	}
+}
 
 func TestReplayRoot(t *testing.T) {
 	for _, tc := range []struct {
