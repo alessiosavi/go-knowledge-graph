@@ -1,6 +1,8 @@
 package hygiene
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -44,7 +46,7 @@ func TestSectionLabel(t *testing.T) {
 	} {
 		t.Run(tt.chunk+"/"+tt.name, func(t *testing.T) {
 			start := strings.Index(tt.chunk, tt.name)
-			if got := SectionLabel(tt.chunk, start, start+len(tt.name), preset); got != tt.rule {
+			if got := SectionLabel(tt.chunk, start, start+len(tt.name), "topic", preset); got != tt.rule {
 				t.Errorf("SectionLabel = %q, want %q", got, tt.rule)
 			}
 		})
@@ -63,7 +65,7 @@ func TestSectionLabelFenceStateWithinOneChunk(t *testing.T) {
 	} {
 		t.Run(tt.caseName, func(t *testing.T) {
 			start := strings.Index(tt.chunk, tt.mention)
-			if got := SectionLabel(tt.chunk, start, start+len(tt.mention), Preset{}); got != tt.rule {
+			if got := SectionLabel(tt.chunk, start, start+len(tt.mention), "topic", Preset{}); got != tt.rule {
 				t.Errorf("SectionLabel = %q, want %q", got, tt.rule)
 			}
 		})
@@ -84,5 +86,49 @@ func TestApplySectionLabelDropsAnchoredFact(t *testing.T) {
 		len(result.Mentions) != 1 || result.Mentions[0].Name != "Vercel" ||
 		len(result.Candidates) != 1 || result.Candidates[0].Head != 0 || result.Candidates[0].Tail != 0 {
 		t.Fatalf("Apply = %+v", result)
+	}
+}
+
+func TestApplySectionLabelKeepTypes(t *testing.T) {
+	dir := t.TempDir()
+	for name, data := range map[string]string{
+		"implicit": "allowlist: []\n",
+		"empty":    "section_label_keep_types: []\n",
+		"custom":   "section_label_keep_types: [cOnCePt]\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tt := range []struct {
+		chunk, name, label, preset string
+		drop                       Rule
+	}{
+		{"**Zorvania – Trekking**", "Zorvania", "location", "", ""},
+		{"## Kelmora (14)", "Kelmora", "location", "", ""},
+		{"# Vandrel: arrivo", "Vandrel", "Location", "implicit", ""},
+		{"## Part 3 — FE", "Part 3", "work", "", "section_label"},
+		{"## Phase 2: Schema", "Phase 2", "concept", "", "section_label"},
+		{"- **Kelmora**: details", "Kelmora", "location", "", "section_label"},
+		{"## Kelmora", "Kelmora", "location", "", "heading_line"},
+		{"## Kelmora (14)", "Kelmora", "location", "empty", "section_label"},
+		{"## Kelmora (14)", "Kelmora", "location", "custom", "section_label"},
+		{"## Phase 2: Schema", "Phase 2", "concept", "custom", ""},
+	} {
+		t.Run(tt.preset+"/"+tt.chunk, func(t *testing.T) {
+			preset, err := LoadPreset(dir, tt.preset, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := strings.Index(tt.chunk, tt.name)
+			mention := extract.Mention{Text: tt.name, Label: tt.label, Start: start, End: start + len(tt.name)}
+			result, trace := ApplyWithTrace(extract.ChunkResult{Mentions: []extract.Mention{mention}}, tt.chunk, preset)
+			if got := trace.MentionDrops[0]; got != tt.drop {
+				t.Fatalf("drop rule = %q, want %q", got, tt.drop)
+			}
+			if tt.drop == "" && (len(result.Mentions) != 1 || result.Mentions[0].Mention != mention) {
+				t.Errorf("kept mentions = %+v, want %+v", result.Mentions, mention)
+			}
+		})
 	}
 }

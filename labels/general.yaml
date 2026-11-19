@@ -63,6 +63,7 @@ relations:
 
 # Generic entity-name hygiene. Private boilerplate belongs in the overlay file.
 allowlist: [AI, EU, UK, US, UE, IT]
+section_label_keep_types: [location]
 stoplist:
   exact: [Descrizione, Informazioni, Indice, Introduzione, Description, Information, Index, Introduction]
   patterns:
