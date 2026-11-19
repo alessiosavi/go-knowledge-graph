@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -118,6 +120,37 @@ func checkValidityCatalog(catalog validityCatalog, draft validityDraft, rules *v
 	return nil
 }
 
+func checkValidityRequestBytes(catalog validityCatalog, draft validityDraft, reader graph.CatalogReader) error {
+	docs := make(map[string]struct{})
+	for id := range draft.rewriteBySource {
+		docs[catalog.planned[id].fact.DocID] = struct{}{}
+	}
+	matches, err := reader.TitleMatches(slices.Sorted(maps.Keys(docs)))
+	if err != nil {
+		return err
+	}
+	for _, input := range draft.inputs {
+		e := catalog.planned[input.ID]
+		source := draft.bulk[input.ID].manifest
+		if !bytes.Equal(e.bytes, source.Request.RequestBytes) {
+			return validityInputError(fmt.Errorf("bulk manifest request bytes differ at id=%q", input.ID))
+		}
+		candidate := draft.rewriteBySource[input.ID]
+		if candidate.ID == "" {
+			continue
+		}
+		input.Target = validityTitleTarget(matches[e.fact.DocID])
+		rewritten, err := makeValidityRewrite(input, e, source)
+		if err != nil {
+			return fmt.Errorf("rewrites manifest id=%q (source id=%q): %w", candidate.ID, input.ID, err)
+		}
+		if !bytes.Equal(rewritten.Request.RequestBytes, candidate.Request.RequestBytes) {
+			return validityInputError(fmt.Errorf("rewrites manifest request bytes differ at id=%q (source id=%q)", candidate.ID, input.ID))
+		}
+	}
+	return nil
+}
+
 func checkValidityEvidence(fact graph.RejudgeFact, reader graph.CatalogReader, input validity.InputsRow,
 	source, candidate rejudgeManifestRow, definition string) error {
 	if !fact.ChunkOwned || fact.Preset != input.Preset || validityParityInput(fact) != input.Input {
@@ -152,6 +185,9 @@ func checkValidityEvidence(fact graph.RejudgeFact, reader graph.CatalogReader, i
 		return errors.New("source request bytes differ from the sealed manifest")
 	}
 	if candidate.ID != "" {
+		// Defence in depth: checkValidityRequestBytes compares every rewritten
+		// request in preflight, and this row has already re-checked the target and
+		// source bytes, so a mismatch here means the builder itself changed.
 		rewritten, err := makeValidityRewrite(input, e, source)
 		if err != nil {
 			return err
@@ -296,7 +332,7 @@ func ApplyValidity(ctx context.Context, st *graph.Store, presetsDir, dir, approv
 		if err := checkValidityCatalog(catalog, draft, rules); err != nil {
 			return validityInputError(err)
 		}
-		return nil
+		return checkValidityRequestBytes(catalog, draft, reader)
 	})
 	if err != nil {
 		return err

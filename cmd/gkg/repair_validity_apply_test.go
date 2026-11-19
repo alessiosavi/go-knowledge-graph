@@ -545,6 +545,58 @@ func TestRepairValidityApplyPreconditions(t *testing.T) {
 	})
 }
 
+func TestRepairValidityApplyRequestPreflight(t *testing.T) {
+	t.Run("bulk definition", func(t *testing.T) {
+		st := validityFixture(t)
+		d, uses := applyFixtureSource(t, "bulk", "Zorbs", true)
+		madeOf := d.edge(t, uses.HeadKey, "made_of", uses.TailKey, d.id, d.chunk, "confirmed", 0.8, 0, 5, 10, 16)
+		plan := applyFixturePlan(t, st, map[string]string{madeOf: "refuted"})
+		digest := finalizeApplyFixture(t, plan, "")
+
+		// Change the later row's relation so the old apply commits the first row.
+		id, definition := uses.ID, "employs the tail"
+		if madeOf > id {
+			id, definition = madeOf, "consists of the tail"
+		}
+		path := filepath.Join(os.Getenv("GKG_LABELS_PRESETS_DIR"), "catalog.yaml")
+		original := readRejudgeFile(t, path)
+		changed := bytes.Replace(original, []byte(definition), []byte("links the head to the tail"), 1)
+		if bytes.Equal(original, changed) {
+			t.Fatal("fixture relation definition was missing")
+		}
+		if err := os.WriteFile(path, changed, 0600); err != nil {
+			t.Fatal(err)
+		}
+		assertValidityPrecondition(t, plan, digest, filepath.Join(t.TempDir(), "apply.jsonl"), "bulk manifest", true, id)
+	})
+	t.Run("rewrite target type", func(t *testing.T) {
+		st := validityFixture(t)
+		doc, source := applyFixtureSource(t, "one", "Zorbs", true)
+		otherDoc, other := applyFixtureSource(t, "two", "Zorbs", true)
+		if source.ID < other.ID {
+			doc, source = otherDoc, other
+		}
+		migrationQuery(t, validityFixtureMatch+` SET h.name = 'zorbs'`, validityKeyParams(source))
+		plan := applyFixturePlan(t, st, nil)
+		verdicts := runCachedValidityJudge(t, st, filepath.Join(plan, "rewrites.jsonl"), nil)
+		digest := finalizeApplyFixture(t, plan, verdicts)
+
+		migrationQuery(t, `MATCH (e:Entity {key:$target}) SET e.type = 'glyph'`, map[string]any{"target": doc.target})
+		candidate := graph.FactAuditID(doc.target, source.Relation, source.TailKey, source.ChunkID)
+		assertValidityPrecondition(t, plan, digest, filepath.Join(t.TempDir(), "apply.jsonl"), "rewrites manifest", true, source.ID, candidate)
+	})
+	t.Run("refuted rewrite bytes", func(t *testing.T) {
+		st := validityFixture(t)
+		doc, source := applyFixtureSource(t, "refuted", "zorbs", true)
+		plan := applyFixturePlan(t, st, nil)
+		replaceRewriteEvidence(t, plan)
+		candidate := graph.FactAuditID(doc.target, source.Relation, source.TailKey, source.ChunkID)
+		verdicts := runCachedValidityJudge(t, st, filepath.Join(plan, "rewrites.jsonl"), map[string]string{candidate: "refuted"})
+		digest := finalizeApplyFixture(t, plan, verdicts)
+		assertValidityPrecondition(t, plan, digest, filepath.Join(t.TempDir(), "apply.jsonl"), "rewrites manifest", true, source.ID, candidate)
+	})
+}
+
 func TestRepairValidityApplyReportRace(t *testing.T) {
 	st := validityFixture(t)
 	applyFixtureSource(t, "report-race", "Zorbs", true)
@@ -598,7 +650,6 @@ func TestRepairValidityApplyStops(t *testing.T) {
 		{"destination", `MATCH (h:Entity {key:$target}), (t:Entity {key:$tail}) CREATE (h)-[:uses {chunk_id:$chunk, judge:'unclear'}]->(t)`,
 			"rewrite destination matched 1 edges", true},
 		{"lease", `MATCH (l:JudgeLease {id:'repair-validity'}) SET l.expires_at = 0`, "lease lost", false},
-		{"refuted rewrite bytes", "", "rewritten request bytes differ", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := validityFixture(t)
@@ -624,13 +675,7 @@ func TestRepairValidityApplyStops(t *testing.T) {
 			plan := applyFixturePlan(t, st, statuses)
 			var verdicts string
 			if tc.candidate {
-				manifest := filepath.Join(plan, "rewrites.jsonl")
-				var rewrites map[string]string
-				if tc.query == "" {
-					replaceRewriteEvidence(t, plan)
-					rewrites = map[string]string{graph.FactAuditID(middle.doc.target, "uses", middle.f.TailKey, middle.f.ChunkID): "refuted"}
-				}
-				verdicts = runCachedValidityJudge(t, st, manifest, rewrites)
+				verdicts = runCachedValidityJudge(t, st, filepath.Join(plan, "rewrites.jsonl"), nil)
 			}
 			digest := finalizeApplyFixture(t, plan, verdicts)
 			report := filepath.Join(t.TempDir(), "apply.jsonl")
@@ -641,7 +686,7 @@ func TestRepairValidityApplyStops(t *testing.T) {
 			writes := 0
 			st.SetWriteLockWaitObserver(func(time.Duration) {
 				writes++
-				if writes == 2 && tc.query != "" {
+				if writes == 2 {
 					migrationQuery(t, tc.query, params)
 					middleBefore = storedValidityEdges(t, middle.f)
 				}
