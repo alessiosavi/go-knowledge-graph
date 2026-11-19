@@ -79,6 +79,152 @@ CREATE (a:Document {id:'doc-a', domain:'zorbax', status:'done', title:'Zorbax No
 	}
 }
 
+func TestEvalSampleFromFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("GKG_CONFIG", "")
+	t.Setenv("GKG_MEMGRAPH_URI", "bolt://127.0.0.1:1")
+	t.Setenv("GKG_INGEST_CHUNK_WORDS", "8")
+	t.Setenv("GKG_INGEST_OVERLAP_SENTENCES", "1")
+
+	const docs = `{"id":"record:42","source":"https://example.invalid/fixture","title":"  Fixture\t title  ","text":"  Café has blue lamps. Zorvax sells amber bowls. Nimbrix stocks clay mugs.","product_id":42,"kind":"record"}` + "\r\n" +
+		`{"id":"record:42-c0","text":"Café has blue lamps. Zorvax sells amber bowls.","product_id":"0042","kind":"page"}`
+	writeEvalFile(t, "input.jsonl", []byte(docs))
+	runSample := func(out string, code int, stdout, stderr string) {
+		t.Helper()
+		assertEvalCLI(t, []string{"eval-sample", "-from", "input.jsonl", "-domain", "zorbax", "-out", out}, code, stdout, stderr)
+	}
+	runSample("sample.jsonl", 0, "documents=2 chunks=3\n", "")
+	runSample("second.jsonl", 0, "documents=2 chunks=3\n", "")
+	runSample("sample.jsonl", 1, "", "file exists")
+	rows, first := readEvalArtifact(t, "sample.jsonl")
+	_, second := readEvalArtifact(t, "second.jsonl")
+	if !bytes.Equal(first, second) {
+		t.Fatal("same input and configuration produced different samples")
+	}
+	seenChunkIDs := make(map[string]bool)
+	for _, row := range rows {
+		if row["type"] != "chunk" {
+			continue
+		}
+		id, _ := row["chunk_id"].(string)
+		if id == "" || seenChunkIDs[id] {
+			t.Fatalf("missing or repeated chunk ID %q across the two documents", id)
+		}
+		seenChunkIDs[id] = true
+		if row["duplicate_of"] != "" {
+			t.Errorf("chunk %q duplicate_of = %v, want empty string", id, row["duplicate_of"])
+		}
+	}
+	if len(seenChunkIDs) != 3 {
+		t.Fatalf("got %d unique chunk IDs, want 3", len(seenChunkIDs))
+	}
+	header := rows[0]
+	if header["origin"] != "from-file" || header["domain"] != "zorbax" || header["duplicate_links"] != "none" ||
+		header["input_sha256"] != fmt.Sprintf("%x", sha256.Sum256([]byte(docs))) {
+		t.Fatalf("unexpected sample header: %v", header)
+	}
+	if len(rows) != 7 ||
+		rows[1]["source"] != "https://example.invalid/fixture" || rows[1]["title"] != "Fixture title" ||
+		rows[1]["title_source"] != "caller" || rows[1]["product_id"] != float64(42) || rows[1]["kind"] != "record" ||
+		rows[4]["doc_id"] != "record:42-c0" || rows[4]["product_id"] != "0042" || rows[4]["kind"] != "page" ||
+		rows[2]["text"] != rows[5]["text"] {
+		t.Fatalf("unexpected sample rows: %v", rows)
+	}
+}
+
+func TestEvalSampleFromFileUsage(t *testing.T) {
+	t.Setenv("GKG_CONFIG", "")
+	t.Setenv("GKG_MEMGRAPH_URI", "bolt://127.0.0.1:1")
+	const metadata = `,"product_id":42,"kind":"page"}`
+	const valid = `{"id":"record:42","text":"Café has blue lamps."` + metadata + "\n"
+	const page = `{"id":"page:42","text":"Synthetic content."`
+	for _, tc := range []struct {
+		name, input, domain, want string
+		flags                     []string
+	}{
+		{name: "duplicate ID", input: valid + valid, want: "line 2: duplicate id"},
+		{name: "empty ID", input: valid + `{"id":"","text":"Synthetic content."` + metadata, want: "line 2: id is required"},
+		{name: "leading whitespace in ID", input: valid + `{"id":" page:42","text":"Synthetic content."` + metadata, want: "line 2: id has leading or trailing whitespace"},
+		{name: "trailing whitespace in ID", input: valid + `{"id":"page:42\u00a0","text":"Synthetic content."` + metadata, want: "line 2: id has leading or trailing whitespace"},
+		{name: "empty text", input: valid + `{"id":"page:42","text":""` + metadata, want: `line 2 (id "page:42"): empty text`},
+		{name: "blank text", input: valid + `{"id":"page:42","text":"\r\n \t\u00a0"` + metadata, want: `line 2 (id "page:42"): empty text`},
+		{name: "missing product_id", input: valid + page + `,"kind":"page"}`, want: "line 2: product_id is required"},
+		{name: "null product_id", input: valid + page + `,"product_id":null,"kind":"page"}`, want: "line 2: product_id is required"},
+		{name: "empty product_id", input: valid + page + `,"product_id":"","kind":"page"}`, want: "line 2: product_id is required"},
+		{name: "missing kind", input: valid + page + `,"product_id":42}`, want: "line 2: kind is required"},
+		{name: "null kind", input: valid + page + `,"product_id":42,"kind":null}`, want: "line 2: kind is required"},
+		{name: "blank kind", input: valid + page + `,"product_id":42,"kind":"\t\u00a0"}`, want: "line 2: kind is required"},
+		{name: "empty arrays", input: valid + page + `,"product_id":[ ],"kind":"page"}`, want: "line 2: product_id is required"},
+		{name: "empty objects", input: valid + page + `,"product_id":42,"kind":{ }}`, want: "line 2: kind is required"},
+		{name: "unknown field", input: valid + page + `,"sorce":"typo"` + metadata, want: `line 2: json: unknown field "sorce"`},
+		{name: "malformed JSON", input: valid + `{`, want: "line 2:"},
+		{name: "multiple JSON values", input: valid + page + metadata + ` {}`, want: "line 2:"},
+		{name: "empty input", want: "input contains no document rows"},
+		{name: "blank line", input: valid + "\n", want: "line 2: blank line"},
+		{name: "whitespace-only line", input: valid + " \t\r\n", want: "line 2: blank line"},
+		{name: "bad domain", input: valid, domain: "bad_slug", want: "usage:"},
+		{name: "explicit zero docs", input: valid, flags: []string{"-docs=0"}, want: "-from cannot be combined with -docs"},
+		{name: "explicit zero seed", input: valid, flags: []string{"-seed=0"}, want: "-from cannot be combined with -seed"},
+		{name: "empty file path", input: valid, flags: []string{"-from="}, want: "usage:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			writeEvalFile(t, "input.jsonl", []byte(tc.input))
+			domain := tc.domain
+			if domain == "" {
+				domain = "zorbax"
+			}
+			args := []string{"eval-sample", "-from", "input.jsonl", "-domain", domain, "-out", "sample.jsonl"}
+			assertEvalCLI(t, append(args, tc.flags...), 2, "", tc.want)
+			if _, err := os.Stat("sample.jsonl"); !os.IsNotExist(err) {
+				t.Fatalf("invalid input left an output file: stat error = %v", err)
+			}
+		})
+	}
+}
+
+func TestEvalSampleFromFileMatchesIngestedChunks(t *testing.T) {
+	st := preflightCommandStore(t)
+	t.Setenv("GKG_INGEST_CHUNK_WORDS", "8")
+	t.Setenv("GKG_INGEST_OVERLAP_SENTENCES", "1")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeline := ingest.NewPipeline(cfg, st, &extract.Mock{}, nil, ingest.DefaultLoader(nil, nil))
+	ctx := t.Context()
+	const text = "  Café has blue lamps. Zorvax sells amber bowls. Nimbrix stocks clay mugs."
+	result, err := pipeline.Submit(ctx, ingest.Input{Kind: "text", Text: text})
+	if err != nil || result.Noop {
+		t.Fatalf("Submit = %+v, %v", result, err)
+	}
+	if err := pipeline.Process(ctx, result.DocumentID); err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := st.Chunks(ctx, result.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("stored %d chunks, want 2", len(chunks))
+	}
+
+	input := fmt.Sprintf(`{"id":%q,"text":%q,"product_id":42,"kind":"page"}`, result.DocumentID, text) + "\n"
+	writeEvalFile(t, "input.jsonl", []byte(input))
+	assertEvalCLI(t, []string{"eval-sample", "-from", "input.jsonl", "-domain", "zorbax", "-out", "sample.jsonl"}, 0, "documents=1 chunks=2\n", "")
+	rows, _ := readEvalArtifact(t, "sample.jsonl")
+	if len(rows) != 5 || rows[1]["doc_id"] != result.DocumentID {
+		t.Fatalf("unexpected sample rows: %+v", rows)
+	}
+	for i, stored := range chunks {
+		row := rows[i+2]
+		if row["type"] != "chunk" || row["doc_id"] != result.DocumentID || row["chunk_id"] != stored.ID ||
+			row["text"] != stored.Text || row["start"] != float64(stored.Start) || row["end"] != float64(stored.End) {
+			t.Errorf("sample chunk %d = %+v, want id=%q text=%q start=%d end=%d", i, row, stored.ID, stored.Text, stored.Start, stored.End)
+		}
+	}
+}
+
 func TestEvalReplayDuplicateRoots(t *testing.T) {
 	_ = preflightCommandStore(t)
 	t.Setenv("GKG_INGEST_STOPLIST_FILE", "")
@@ -533,9 +679,28 @@ func TestEvalReplayMatchesIngestBatches(t *testing.T) {
 	assertEvalCLI(t, []string{"eval", "-replay", "sample.jsonl", "-predictions", "predictions.jsonl"},
 		0, "chunks=11 ok=0 empty=11 errors=0 occurrences=0 stored_winners=0 duplicate_roots_outside_sample=0 duplicate_root_cycles=0\n", "")
 	mu.Lock()
+	graphReplayBatches := batches
+	batches = nil
+	mu.Unlock()
+	if !reflect.DeepEqual(graphReplayBatches, ingestBatches) {
+		t.Errorf("replay batches = %v, want the ingest batches %v", graphReplayBatches, ingestBatches)
+	}
+
+	t.Setenv("GKG_INGEST_CHUNK_WORDS", "4")
+	t.Setenv("GKG_INGEST_OVERLAP_SENTENCES", "0")
+	writeEvalFile(t, "documents.jsonl", []byte(`{"id":"page:42","text":"Café has blue lamps. Marble has green veins.","product_id":42,"kind":"page"}`+"\n"))
+	assertEvalCLI(t, []string{"eval-sample", "-from", "documents.jsonl", "-domain", "zorbax", "-out", "external.jsonl"},
+		0, "documents=1 chunks=2\n", "")
+	assertEvalCLI(t, []string{"eval", "-replay", "external.jsonl", "-predictions", "external-predictions.jsonl"},
+		0, "chunks=2 ok=0 empty=2 errors=0 occurrences=0 stored_winners=0 duplicate_roots_outside_sample=0 duplicate_root_cycles=0\n", "")
+	wantExternal := [][]extract.RequestChunk{{
+		{ID: "page:42-c0", Text: "Café has blue lamps."},
+		{ID: "page:42-c1", Text: "Marble has green veins."},
+	}}
+	mu.Lock()
 	defer mu.Unlock()
-	if !reflect.DeepEqual(batches, ingestBatches) {
-		t.Errorf("replay batches = %v, want the ingest batches %v", batches, ingestBatches)
+	if !reflect.DeepEqual(batches, wantExternal) {
+		t.Errorf("external replay batches = %v, want %v", batches, wantExternal)
 	}
 }
 

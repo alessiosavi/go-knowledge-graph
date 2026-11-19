@@ -359,6 +359,29 @@ gkg eval --provider sidecar --labels documentation \
   --sweep 'entity=0.2:0.7:0.05 relation=0.1:0.5:0.05' --out documentation-sweep
 ```
 
+### Sample external text documents
+
+```sh
+gkg eval-sample -from documents.jsonl -domain zorvax -out sample.jsonl
+gkg eval -replay sample.jsonl -predictions predictions.jsonl -labels general
+```
+
+Supply at least one JSON object, one per line, with nonempty `id`, `text`,
+`product_id` and `kind`. You can also supply `source` and `title`. Document IDs
+must be unique and have no leading or trailing whitespace. Text must contain
+non-whitespace content. The command applies ingest's inline text loading, title
+and source resolution, and configured chunk size and overlap. It carries
+`product_id` and `kind` as document metadata.
+Unknown fields and blank lines are errors. Invalid rows report their line
+number and exit 2 without creating the sample.
+
+The sample header records `origin: "from-file"`, `duplicate_links: "none"`,
+the input file's SHA-256 and the domain. Replay always extracts file samples
+locally, chunk by chunk. The command creates a new file with mode 0600 and
+refuses to overwrite an existing file. File sampling needs no Memgraph connection.
+`-docs` and `-seed` are for graph sampling. Replay still requires the
+configured Memgraph schema and sidecar.
+
 ### Sample stored chunks and replay extraction
 
 ```sh

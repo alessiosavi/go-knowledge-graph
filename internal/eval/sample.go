@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"slices"
 	"strings"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 )
@@ -21,20 +24,25 @@ type SampleCounts struct {
 }
 
 type sampleHeader struct {
-	Type   string       `json:"type"`
-	Domain string       `json:"domain"`
-	Counts SampleCounts `json:"counts"`
-	Seed   int64        `json:"seed"`
+	Type           string       `json:"type"`
+	Domain         string       `json:"domain"`
+	Counts         SampleCounts `json:"counts"`
+	Seed           int64        `json:"seed"`
+	Origin         string       `json:"origin,omitempty"`
+	InputSHA256    string       `json:"input_sha256,omitempty"`
+	DuplicateLinks string       `json:"duplicate_links,omitempty"`
 }
 
 type sampleDocument struct {
-	Type        string        `json:"type"`
-	DocID       string        `json:"doc_id"`
-	Title       string        `json:"title"`
-	TitleSource string        `json:"title_source"`
-	Source      string        `json:"source"`
-	Labels      *string       `json:"labels"` // nil for samples exported before labels were recorded
-	Chunks      []sampleChunk `json:"-"`
+	Type        string          `json:"type"`
+	DocID       string          `json:"doc_id"`
+	Title       string          `json:"title"`
+	TitleSource string          `json:"title_source"`
+	Source      string          `json:"source"`
+	Labels      *string         `json:"labels"` // nil when there is no stored preset
+	ProductID   json.RawMessage `json:"product_id,omitempty"`
+	Kind        json.RawMessage `json:"kind,omitempty"`
+	Chunks      []sampleChunk   `json:"-"`
 }
 
 type sampleChunk struct {
@@ -54,6 +62,104 @@ type sample struct {
 	Header    sampleHeader
 	Documents []sampleDocument
 	SHA256    string
+}
+
+type externalDocument struct {
+	ID        string          `json:"id"`
+	Source    string          `json:"source"`
+	Title     string          `json:"title"`
+	Text      string          `json:"text"`
+	ProductID json.RawMessage `json:"product_id"`
+	Kind      json.RawMessage `json:"kind"`
+}
+
+// WriteSampleFromFile builds a replay sample from inline text documents in a
+// JSONL file. Documents and chunks are emitted in file and sequence order.
+func WriteSampleFromFile(ctx context.Context, cfg config.IngestConfig, domain, input, output string) (SampleCounts, error) {
+	if !graph.ValidDomain(domain) {
+		return SampleCounts{}, argerr.Errorf("invalid domain slug %q", domain)
+	}
+	data, err := os.ReadFile(input)
+	if err != nil {
+		return SampleCounts{}, err
+	}
+	var rows []sampleDocument
+	var counts SampleCounts
+	seen := make(map[string]bool)
+	lineNumber := 0
+	for line := range bytes.Lines(data) {
+		lineNumber++
+		if err := ctx.Err(); err != nil {
+			return SampleCounts{}, err
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
+			return SampleCounts{}, argerr.Errorf("input line %d: blank line", lineNumber)
+		}
+		var in externalDocument
+		dec := json.NewDecoder(bytes.NewReader(line))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&in); err != nil {
+			return SampleCounts{}, argerr.Errorf("input line %d: %w", lineNumber, err)
+		}
+		var extra json.RawMessage
+		if err := dec.Decode(&extra); err != io.EOF {
+			return SampleCounts{}, argerr.Errorf("input line %d: expected one JSON object", lineNumber)
+		}
+		if trimmed := strings.TrimSpace(in.ID); trimmed == "" {
+			return SampleCounts{}, argerr.Errorf("input line %d: id is required", lineNumber)
+		} else if trimmed != in.ID {
+			return SampleCounts{}, argerr.Errorf("input line %d: id has leading or trailing whitespace", lineNumber)
+		}
+		if seen[in.ID] {
+			return SampleCounts{}, argerr.Errorf("input line %d: duplicate id %q", lineNumber, in.ID)
+		}
+		if emptyMetadata(in.ProductID) {
+			return SampleCounts{}, argerr.Errorf("input line %d: product_id is required and must be non-empty", lineNumber)
+		}
+		if emptyMetadata(in.Kind) {
+			return SampleCounts{}, argerr.Errorf("input line %d: kind is required and must be non-empty", lineNumber)
+		}
+		seen[in.ID] = true
+		doc, chunks, err := ingest.PrepareText(ctx, cfg, ingest.Input{Source: in.Source, Title: in.Title, Text: in.Text})
+		if err != nil {
+			return SampleCounts{}, fmt.Errorf("input line %d (id %q): %w", lineNumber, in.ID, err)
+		}
+		row := sampleDocument{
+			Type: "document", DocID: in.ID, Title: doc.Title, TitleSource: doc.TitleSource, Source: doc.Source,
+			ProductID: in.ProductID, Kind: in.Kind, Chunks: make([]sampleChunk, 0, len(chunks)),
+		}
+		for _, c := range chunks {
+			row.Chunks = append(row.Chunks, sampleChunk{
+				Type: "chunk", DocID: in.ID, ChunkID: graph.ChunkID(in.ID, c.Seq), Seq: c.Seq, Start: c.Start, End: c.End, Text: c.Text,
+			})
+		}
+		rows = append(rows, row)
+		counts.Documents++
+		counts.Chunks += len(chunks)
+	}
+	if counts.Documents == 0 {
+		return SampleCounts{}, argerr.New("input contains no document rows")
+	}
+	header := sampleHeader{
+		Type: "header", Domain: domain, Counts: counts, Origin: "from-file", InputSHA256: sha256Hex(data),
+		DuplicateLinks: "none",
+	}
+	return counts, writeSample(ctx, output, header, rows)
+}
+
+func emptyMetadata(value json.RawMessage) bool {
+	if len(value) == 0 || bytes.Equal(value, []byte("null")) {
+		return true
+	}
+	switch value[0] {
+	case '"':
+		var s string
+		return json.Unmarshal(value, &s) == nil && strings.TrimSpace(s) == ""
+	case '[', '{':
+		return len(bytes.TrimSpace(value[1:len(value)-1])) == 0
+	default:
+		return false
+	}
 }
 
 // WriteSample exports a domain's completed documents and their stored chunks.
@@ -102,8 +208,13 @@ func WriteSample(ctx context.Context, st *graph.Store, domain, path string, limi
 		rows = append(rows, row)
 		counts.Chunks += len(chunks)
 	}
-	err = writeArtifact(path, func(enc *json.Encoder) (any, error) {
-		if err := enc.Encode(sampleHeader{Type: "header", Domain: domain, Counts: counts, Seed: seed}); err != nil {
+	header := sampleHeader{Type: "header", Domain: domain, Counts: counts, Seed: seed}
+	return counts, writeSample(ctx, path, header, rows)
+}
+
+func writeSample(ctx context.Context, path string, header sampleHeader, rows []sampleDocument) error {
+	return writeArtifact(path, func(enc *json.Encoder) (any, error) {
+		if err := enc.Encode(header); err != nil {
 			return nil, err
 		}
 		for _, d := range rows {
@@ -119,9 +230,8 @@ func WriteSample(ctx context.Context, st *graph.Store, domain, path string, limi
 				}
 			}
 		}
-		return counts, nil
+		return header.Counts, nil
 	})
-	return counts, err
 }
 
 func readSample(path string) (sample, error) {

@@ -12,7 +12,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/convert"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
 // zipMagic is the local-file magic shared by docx/xlsx/pptx/odt
@@ -160,6 +162,58 @@ func DefaultLoader(f *Fetcher, conv convert.Converter) TextLoader {
 			return Loaded{}, fmt.Errorf("ingest: unknown input kind %q", kind)
 		}
 	}
+}
+
+// PrepareText runs the graph-independent preparation of an inline text submission.
+func PrepareText(ctx context.Context, cfg config.IngestConfig, in Input) (graph.DocumentInput, []graph.Chunk, error) {
+	in.Kind = "text"
+	if in.Text == "" {
+		return graph.DocumentInput{}, nil, argerr.New("empty text")
+	}
+	loaded, err := DefaultLoader(nil, nil)(ctx, in)
+	if err != nil {
+		return graph.DocumentInput{}, nil, err
+	}
+	doc, err := prepareSubmission(in, &loaded)
+	if err != nil {
+		return graph.DocumentInput{}, nil, err
+	}
+	chunks, err := prepareChunks(cfg, loaded.Text)
+	if err != nil {
+		return graph.DocumentInput{}, nil, err
+	}
+	if len(chunks) == 0 {
+		return graph.DocumentInput{}, nil, argerr.New("empty text")
+	}
+	return doc, chunks, nil
+}
+
+func prepareSubmission(in Input, loaded *Loaded) (graph.DocumentInput, error) {
+	hash := sha256Hex(loaded.Text)
+	kind, source, synthesized, err := resolveIdentity(in, hash)
+	if err != nil {
+		return graph.DocumentInput{}, err
+	}
+	title, titleSource := normalizeTitle(in.Title), titleSourceCaller
+	if title == "" {
+		title, titleSource = normalizeTitle(loaded.Title), loaded.TitleSource
+	}
+	if title == "" {
+		derivationSource := source
+		if synthesized {
+			derivationSource = ""
+		}
+		title, titleSource = DeriveTitle(loaded.Text, derivationSource)
+	}
+	finalURL := ""
+	if kind == "url" {
+		finalURL = in.URL
+	}
+	loaded.Hash = hash
+	loaded.Title, loaded.TitleSource = title, titleSource
+	return graph.DocumentInput{
+		Kind: kind, Source: source, FinalURL: finalURL, Title: title, TitleSource: titleSource, Hash: hash, Labels: in.Labels,
+	}, nil
 }
 
 // decodeBody decodes a fetched or submitted body: with a converter

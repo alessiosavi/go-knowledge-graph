@@ -142,6 +142,11 @@ func (s *Store) requireDocument(ctx context.Context, docID string) error {
 	return nil
 }
 
+// ChunkID returns the document-scoped sequence number's globally unique id.
+func ChunkID(docID string, seq int) string {
+	return docID + "-c" + strconv.Itoa(seq)
+}
+
 // PutChunks persists the document's chunks atomically, deduplicating by
 // derived chunk id (docID+"-c"+seq), and links them with HAS_CHUNK. The
 // liveness check and the write share one transaction under Store.mu, so a
@@ -153,7 +158,7 @@ func (s *Store) PutChunks(ctx context.Context, docID string, chunks []Chunk) err
 	rows := make([]map[string]any, 0, len(chunks))
 	for _, c := range chunks {
 		rows = append(rows, map[string]any{
-			"id":        docID + "-c" + strconv.Itoa(c.Seq),
+			"id":        ChunkID(docID, c.Seq),
 			"seq":       c.Seq,
 			"text":      c.Text,
 			"start":     c.Start,
