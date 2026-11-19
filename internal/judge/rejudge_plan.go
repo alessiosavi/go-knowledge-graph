@@ -140,9 +140,10 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 			}
 			input := V2Input{
 				ChunkText: fact.Text, DocTitle: fact.Title, Rel: fact.Relation,
-				Definition: definitions[fact.Preset][fact.Relation],
-				Head:       EvidenceMention{fact.HeadStart, fact.HeadEnd, fact.HeadType, fact.HeadTypeFallback},
-				Tail:       EvidenceMention{fact.TailStart, fact.TailEnd, fact.TailType, fact.TailTypeFallback},
+				Definition:  definitions[fact.Preset][fact.Relation],
+				Head:        EvidenceMention{fact.HeadStart, fact.HeadEnd, fact.HeadType, fact.HeadTypeFallback},
+				Tail:        EvidenceMention{fact.TailStart, fact.TailEnd, fact.TailType, fact.TailTypeFallback},
+				HeadSurface: fact.HeadSurface,
 			}
 			payloadBytes, tableRow, reason := buildV2Request(input)
 			if reason != "" {

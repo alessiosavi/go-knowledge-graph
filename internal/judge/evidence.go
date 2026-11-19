@@ -10,7 +10,10 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
-const maxEvidenceBytes = 800
+const (
+	maxEvidenceBytes   = 800
+	invalidHeadSurface = "invalid head_surface"
+)
 
 // EvidenceMention gives the byte offsets and type of one mention in ChunkText.
 type EvidenceMention struct {
@@ -22,10 +25,15 @@ type EvidenceMention struct {
 // V2Input carries the source inputs for a v2 judge request. PreviousChunkText,
 // when present, must come from the immediately preceding chunk of the same
 // document. The caller owns document and chunk identity checks.
+// A nil HeadSurface derives the head name from its source span. A non-nil
+// HeadSurface must contain a non-empty, trimmed name for the re-attached head.
+// In that case Head.MentionType is the target entity's type, and Head still
+// holds the source offsets used for evidence.
 type V2Input struct {
 	ChunkText         string
 	PreviousChunkText string
 	Head, Tail        EvidenceMention
+	HeadSurface       *string
 	Rel               string
 	Definition        string
 	DocTitle          string
@@ -58,6 +66,12 @@ func BuildV2Request(in V2Input) (requestBytes []byte, unverifiable string) {
 }
 
 func buildV2Request(in V2Input) (requestBytes []byte, tableRow bool, unverifiable string) {
+	if in.HeadSurface != nil {
+		surface := *in.HeadSurface
+		if surface == "" || strings.TrimSpace(surface) != surface {
+			return nil, false, invalidHeadSurface
+		}
+	}
 	text := in.ChunkText
 	if strings.TrimSpace(text) == "" {
 		return nil, false, "missing chunk text"
@@ -68,6 +82,10 @@ func buildV2Request(in V2Input) (requestBytes []byte, tableRow bool, unverifiabl
 	head, headName := mentionSurface(text, in.Head)
 	if headName == "" {
 		return nil, false, "invalid or empty head span"
+	}
+	headFallback := in.Head.TypeFallback
+	if in.HeadSurface != nil {
+		headName, headFallback = *in.HeadSurface, true
 	}
 	tail, tailName := mentionSurface(text, in.Tail)
 	if tailName == "" {
@@ -101,7 +119,7 @@ func buildV2Request(in V2Input) (requestBytes []byte, tableRow bool, unverifiabl
 		RelationDefinition: in.Definition,
 		HeadMentionType:    in.Head.MentionType,
 		TailMentionType:    in.Tail.MentionType,
-		HeadTypeFallback:   in.Head.TypeFallback,
+		HeadTypeFallback:   headFallback,
 		TailTypeFallback:   in.Tail.TypeFallback,
 		Evidence:           evidence,
 		EvidenceTruncated:  evidenceTruncated,

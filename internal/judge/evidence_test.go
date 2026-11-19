@@ -2,6 +2,7 @@ package judge_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -110,6 +111,48 @@ func TestV2RequestUsesSurfacesAndMentionTypes(t *testing.T) {
 	got, _ = buildV2(t, in)
 	if got.Fact.Head != "Nebula" || got.HeadMentionType != "project" {
 		t.Errorf("request did not preserve the other occurrence's type: %+v", got)
+	}
+}
+
+func TestV2RequestOverridesHeadSurface(t *testing.T) {
+	const header = "| Material | Notes | API |\n| --- | --- | --- |"
+	for _, tc := range []struct {
+		name, text, previous string
+	}{
+		{"prose", "Intro sentence. Nebula uses Nova. Closing sentence.", ""},
+		{"table with previous header", "| Nebula | " + strings.Repeat("界", 300) + " | Nova |", header + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := v2Input(t, tc.text, "Nebula", "Nova")
+			in.PreviousChunkText = tc.previous
+			in.Head.MentionType = "material"
+			in.Tail.MentionType = "technology"
+			want, _ := buildV2(t, in)
+			surface := "**Quill Pro**"
+			in.HeadSurface = &surface
+			in.Head.MentionType = "product"
+			want.Fact.Head, want.HeadMentionType, want.HeadTypeFallback = "**Quill Pro**", "product", true
+			got, _ := buildV2(t, in)
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("payload = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestV2RequestRejectsInvalidHeadSurface(t *testing.T) {
+	for _, tc := range []struct{ name, surface string }{
+		{"empty", ""},
+		{"whitespace only", " \t\u00a0"},
+		{"untrimmed", " Quill Pro "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := v2Input(t, "Nebula uses Nova.", "Nebula", "Nova")
+			in.HeadSurface = &tc.surface
+			if b, reason := judge.BuildV2Request(in); b != nil || reason != "invalid head_surface" {
+				t.Errorf("request = %s, reason = %q, want nil and invalid head_surface", b, reason)
+			}
+		})
 	}
 }
 
