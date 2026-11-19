@@ -324,12 +324,12 @@ func TestBootstrapDocumentOnlyNeedsMigration(t *testing.T) {
 	}
 }
 
-// wipeGraph empties the shared test graph. Entity embeddings are nulled
+// wipeGraph empties the shared test graph. Embeddings are nulled
 // first: Memgraph's vector index otherwise keeps deleted nodes and later
 // vector searches fail with "Trying to get a property from a deleted object"
 // (the product's delete paths do the same).
 func wipeGraph(t *testing.T, uri string) {
 	t.Helper()
-	rawRun(t, uri, `MATCH (e:Entity) WHERE e.embedding IS NOT NULL SET e.embedding = null`)
+	rawRun(t, uri, `MATCH (n) WHERE n.embedding IS NOT NULL SET n.embedding = null`)
 	rawRun(t, uri, `MATCH (n) DETACH DELETE n`)
 }

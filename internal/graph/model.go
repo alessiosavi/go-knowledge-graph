@@ -143,6 +143,23 @@ type EntityRef struct {
 	Type   string
 }
 
+// Provenance identifies a selector that resolved through the merge ledger.
+type Provenance struct {
+	Requested   string
+	ResolvedVia string
+}
+
+// EntityCandidate is a name lookup hit from the exact or fold tier.
+type EntityCandidate struct {
+	EntityRef
+	Match string
+}
+
+const (
+	EntityMatchExact = "exact"
+	EntityMatchFold  = "fold"
+)
+
 // CoMention is an entity sharing chunks with the viewed entity.
 type CoMention struct {
 	EntityRef
@@ -189,6 +206,8 @@ type FactView struct {
 // EntityView is an entity with aliases, mention count, fact evidence and co-mentions.
 type EntityView struct {
 	EntityRef
+	Requested    string `json:"requested,omitempty"`
+	ResolvedVia  string `json:"resolved_via,omitempty"`
 	Aliases      []string
 	MentionCount int
 	Facts        []FactView

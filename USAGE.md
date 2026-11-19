@@ -553,12 +553,13 @@ candidates and rejected facts.
 | `fold.version` | Fold key algorithm version stored in the rebuild record. |
 | `fold.exceptions_digest` | Digest identifying the stored exception list. |
 | `fold.exceptions_count` | Number of stored exception keys. |
+| `fold.scope_count` | Number of distinct key scopes with fold hints in the last completed rebuild, including the bare-key scope when present. |
 | `fold.status` | `running`, `complete`, or `unknown` for older records without a status. |
 | `fold.rebuilt_at` | UTC completion timestamp, or an empty string when no timestamp is recorded. |
 | `fold.rows_written` | Number of entity rows changed by the completed rebuild. Zero when no count is recorded. |
 | `fold.rows_skipped` | Number of entity rows skipped by the completed rebuild for a missing or empty key or ID. Zero when no count is recorded. |
 | `fold.rows_stale` | Number of rows maintained by the rebuild whose stored hints differ from the expected hints. Present with `--fold-check` when the stored and current fold versions match. |
-| `fold.matching` | `off (version mismatch)` when `--fold-check` encounters a different stored fold version. Omitted otherwise. |
+| `fold.matching` | `off (scopes missing; run gkg fold rebuild)` when the record has no lookup scopes. With `--fold-check`, a different stored fold version reports `off (version mismatch)`. Omitted otherwise. |
 
 Co-mention pairs are uncapped; memory grows with Σ(entities per chunk)².
 
@@ -630,10 +631,18 @@ An entity or traversal start outside scope is not found; `get_chunks` reports
 out-of-scope ids in `missing`. Cypher is not domain-enforced; the prompt states
 the scope. At schema v4, name resolution uses `EntityKey` folding (including
 possessives and edge punctuation), covering document-scoped entities; older
-schemas keep case-folded display-name matching. Unscoped ambiguous names
-return `candidates`, one per domain. Text filters run before ranking and the
+schemas keep case-folded display-name matching. When the exact name lookup
+returns no matches, MCP and agent `get_entity` can use verified advisory fold
+hints. A fold hit carries `match: "fold"`. Unscoped ambiguous names return
+`candidates`, one per domain. Text filters run before ranking and the
 text engine's hit cap. Scoped vector search over-fetches 5× then post-filters,
 so it can return fewer than the requested number of hits.
+
+Entity and traversal selectors try a live ID, then a live key, then a recorded
+merge redirect. REST, MCP and agent tool responses include `requested` with the
+retired selector and `resolved_via: "merged"` when a redirect reaches a live
+entity in scope. A redirect whose survivor is missing or outside the request
+scope returns not found.
 
 `gkg eval-retrieval --questions questions.json --domain zorbo` applies that
 scope to all questions, including gold resolution and null checks. Without
@@ -721,8 +730,9 @@ changes and the number of rows skipped for missing keys or IDs. Rerun after an
 interruption or after running an older binary that can leave stale fold hints.
 `gkg quality` shows the latest exception digest and rebuild status. The status
 stays `running` after an interruption. A completed rebuild sets `complete` and
-records its timestamp and counters. Older records without a status show
-`unknown`. Add `--fold-check` for a read-only count of missing or stale hints
+records its timestamp, counters and the key scopes used by fold name lookup.
+Run a rebuild to populate scopes for older records. Records without a status
+show `unknown`. Add `--fold-check` for a read-only count of missing or stale hints
 among the rows the rebuild maintains. Rows skipped by the rebuild appear in
 `rows_skipped`. The stale count requires matching fold versions. A version
 mismatch reports that fold matching is off.

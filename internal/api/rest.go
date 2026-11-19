@@ -148,6 +148,8 @@ type entityDTO struct {
 	Together          []coMentionDTO      `json:"together"`
 	Hidden            *graph.HiddenCounts `json:"hidden,omitempty"`
 	UnverifiedIgnored bool                `json:"unverified_ignored,omitempty"`
+	Requested         string              `json:"requested,omitempty"`
+	ResolvedVia       string              `json:"resolved_via,omitempty"`
 }
 
 type edgeDTO struct {
@@ -168,6 +170,8 @@ type traverseResponse struct {
 	Edges             []edgeDTO           `json:"edges"`
 	Hidden            *graph.HiddenCounts `json:"hidden,omitempty"`
 	UnverifiedIgnored bool                `json:"unverified_ignored,omitempty"`
+	Requested         string              `json:"requested,omitempty"`
+	ResolvedVia       string              `json:"resolved_via,omitempty"`
 }
 
 type cypherResponse struct {
@@ -637,6 +641,8 @@ func toEntityDTO(v graph.EntityView) entityDTO {
 		Facts:        facts,
 		Together:     together,
 		Hidden:       hidden,
+		Requested:    v.Requested,
+		ResolvedVia:  v.ResolvedVia,
 	}
 }
 
@@ -668,7 +674,7 @@ func toTraverseResponse(sub graph.Subgraph) traverseResponse {
 	if sub.Hidden != (graph.HiddenCounts{}) {
 		hidden = &sub.Hidden
 	}
-	return traverseResponse{Nodes: nodes, Edges: edges, Hidden: hidden}
+	return traverseResponse{Nodes: nodes, Edges: edges, Hidden: hidden, Requested: sub.Requested, ResolvedVia: sub.ResolvedVia}
 }
 
 func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {

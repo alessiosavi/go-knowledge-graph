@@ -277,6 +277,8 @@ guarded Cypher is not domain-enforced and relies on the stated prompt scope.
 Name lookup uses indexed `Entity.name_key` and `EntityKey` folding at v4
 (possessives and edge punctuation included); legacy graphs retain the
 case-folded name scan. Ambiguous unscoped names return one candidate per domain.
+Name lookup also matches folded variants on an exact miss, and entity selectors
+follow merge redirects one hop.
 
 ## Admin reachability and historical audits
 

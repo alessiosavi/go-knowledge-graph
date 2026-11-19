@@ -29,9 +29,11 @@ type PathEdge struct {
 
 // Subgraph is the nodes and edges reachable from a traversal start.
 type Subgraph struct {
-	Nodes  []EntityRef
-	Edges  []PathEdge
-	Hidden HiddenCounts
+	Nodes       []EntityRef
+	Edges       []PathEdge
+	Hidden      HiddenCounts
+	Requested   string `json:"requested,omitempty"`
+	ResolvedVia string `json:"resolved_via,omitempty"`
 }
 
 // traverseDepthCap is the agent-tool ceiling for traversal depth.
@@ -66,14 +68,17 @@ func (s *Store) TraverseOpts(ctx context.Context, startID, rel, direction string
 	if opt.Domain != "" && !ValidDomain(opt.Domain) {
 		return Subgraph{}, argerr.Errorf("graph: invalid domain slug %q", opt.Domain)
 	}
-	start, err := s.resolveEntityRef(ctx, startID)
+	var start EntityRef
+	var provenance Provenance
+	err := s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
+		var err error
+		start, provenance, err = resolveEntitySelectorTx(ctx, tx, startID, opt.Domain)
+		return err
+	})
 	if err != nil {
-		return Subgraph{}, err
+		return Subgraph{}, fmt.Errorf("graph: traverse: %w", err)
 	}
-	if opt.Domain != "" && start.Domain != opt.Domain {
-		return Subgraph{}, fmt.Errorf("graph: entity %s: %w", startID, ErrNotFound)
-	}
-	sub := Subgraph{Nodes: []EntityRef{start}}
+	sub := Subgraph{Nodes: []EntityRef{start}, Requested: provenance.Requested, ResolvedVia: provenance.ResolvedVia}
 	sub.Hidden, err = s.hiddenCounts(ctx, start.Key)
 	if err != nil {
 		return Subgraph{}, err
@@ -105,27 +110,6 @@ func (s *Store) TraverseOpts(ctx context.Context, startID, rel, direction string
 		frontier = next
 	}
 	return sub, nil
-}
-
-func (s *Store) resolveEntityRef(ctx context.Context, idOrKey string) (EntityRef, error) {
-	params := map[string]any{"q": idOrKey}
-	recs, err := s.runRead(ctx, entityByIDQuery, params)
-	if err == nil && len(recs) == 0 {
-		recs, err = s.runRead(ctx, entityByKeyQuery, params)
-	}
-	if err != nil {
-		return EntityRef{}, fmt.Errorf("graph: traverse: %w", err)
-	}
-	if len(recs) == 0 {
-		return EntityRef{}, fmt.Errorf("graph: entity %s: %w", idOrKey, ErrNotFound)
-	}
-	return EntityRef{
-		ID:     getString(recs[0], "id"),
-		Key:    getString(recs[0], "key"),
-		Name:   getString(recs[0], "name"),
-		Type:   getString(recs[0], "type"),
-		Domain: getString(recs[0], "domain"),
-	}, nil
 }
 
 type traverseRow struct {

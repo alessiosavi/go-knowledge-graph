@@ -56,6 +56,24 @@ func (s recordingReadSession) Run(ctx context.Context, query string, params map[
 	return s.Session.Run(ctx, query, params, cfg...)
 }
 
+func (s recordingReadSession) BeginTransaction(ctx context.Context, cfg ...func(*neo4j.TransactionConfig)) (neo4j.ExplicitTransaction, error) {
+	tx, err := s.Session.BeginTransaction(ctx, cfg...)
+	if err != nil {
+		return nil, err
+	}
+	return recordingReadTx{ExplicitTransaction: tx, queries: s.queries}, nil
+}
+
+type recordingReadTx struct {
+	neo4j.ExplicitTransaction
+	queries *[]CapturedReadQuery
+}
+
+func (tx recordingReadTx) Run(ctx context.Context, query string, params map[string]any) (neo4j.Result, error) {
+	*tx.queries = append(*tx.queries, CapturedReadQuery{query, maps.Clone(params)})
+	return tx.ExplicitTransaction.Run(ctx, query, params)
+}
+
 // InterruptMigrationForTest injects a failure between committed transactions.
 // It exercises the actual database phase/ledger recovery without production hooks.
 func InterruptMigrationForTest(st *Store, mode string, run func() error) error {

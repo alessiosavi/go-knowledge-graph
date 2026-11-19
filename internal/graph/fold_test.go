@@ -206,6 +206,77 @@ func TestBootstrapIndexesExistingGkgMeta(t *testing.T) {
 	}
 }
 
+func TestBootstrapMergedEntitySchemaOnPopulatedGraph(t *testing.T) {
+	st := foldIntegrationStore(t)
+	ctx := t.Context()
+	for _, prop := range []string{"old_id", "old_key"} {
+		if err := st.runAuto(ctx, "DROP CONSTRAINT ON (m:MergedEntity) ASSERT m."+prop+" IS UNIQUE", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	props := []string{"old_id", "old_key", "survivor_id"}
+	for _, prop := range props {
+		if err := st.runAuto(ctx, "DROP INDEX ON :MergedEntity("+prop+")", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const composite = `CONSTRAINT ON (m:MergedEntity) ASSERT m.old_id, m.old_key IS UNIQUE`
+	if err := st.runAuto(ctx, "CREATE "+composite, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.runAuto(context.Background(), "DROP "+composite, nil); err != nil {
+			t.Error(err)
+		}
+	})
+	foldTestWrite(t, st, `CREATE (:Entity {id:'live', key:'zervix', name:'Zervix'}),
+(:MergedEntity {old_id:'retired', old_key:'zer-vix', survivor_id:'live'})`, nil)
+	for range 2 {
+		if err := st.Bootstrap(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, prop := range props {
+		if have, err := st.indexExists(ctx, "MergedEntity", []string{prop}); err != nil || !have {
+			t.Errorf("index %s exists = %t, %v", prop, have, err)
+		}
+	}
+	for _, duplicate := range []struct{ prop, oldID, oldKey string }{
+		{"old_id", "retired", "other-key"},
+		{"old_key", "other-id", "zer-vix"},
+	} {
+		if have, err := st.constraintExists(ctx, "MergedEntity", duplicate.prop); err != nil || !have {
+			t.Errorf("constraint %s exists = %t, %v", duplicate.prop, have, err)
+		}
+		if err := st.runWrite(ctx, `CREATE (:MergedEntity {old_id:$id, old_key:$key, survivor_id:'live'})`, map[string]any{
+			"id": duplicate.oldID, "key": duplicate.oldKey,
+		}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "constraint") {
+			t.Errorf("duplicate %s = %v, want a constraint error", duplicate.prop, err)
+		}
+	}
+	for _, selector := range []string{"retired", "zer-vix"} {
+		if view, err := st.EntityView(ctx, selector, false); err != nil || view.ID != "live" || view.ResolvedVia != "merged" {
+			t.Errorf("redirect for %q after repeat Bootstrap = %+v, %v", selector, view, err)
+		}
+	}
+}
+
+func TestMergedEntityUniqueConstraintWithMissingOldID(t *testing.T) {
+	st := foldIntegrationStore(t)
+	ctx := t.Context()
+	if have, err := st.constraintExists(ctx, "MergedEntity", "old_id"); err != nil || !have {
+		t.Fatalf("old_id unique constraint exists = %t, %v", have, err)
+	}
+	// Deliberately omit old_id to characterize what the database enforces.
+	foldTestWrite(t, st, `CREATE (:MergedEntity {old_key:'retired-a', survivor_id:'live'})`, nil)
+	foldTestWrite(t, st, `CREATE (:MergedEntity {old_key:'retired-b', survivor_id:'live'})`, nil)
+	rows, err := st.runRead(ctx, `MATCH (m:MergedEntity) WHERE m.old_id IS NULL RETURN count(m) AS n`, nil)
+	if err != nil || len(rows) != 1 || getInt(rows[0], "n") != 2 {
+		t.Fatalf("count of ledger rows without old_id = %v, %v, want 2", rows, err)
+	}
+	t.Log("unique old_id constraint accepted both rows without old_id")
+}
+
 func TestFoldRebuildPopulatedAndIndexedRemoval(t *testing.T) {
 	st := foldIntegrationStore(t)
 	ctx := t.Context()

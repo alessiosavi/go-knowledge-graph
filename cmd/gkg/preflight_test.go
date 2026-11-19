@@ -409,7 +409,7 @@ func TestPreflightLegacyWithoutLiveDocuments(t *testing.T) {
 			if tc.query != "" {
 				migrationQuery(t, tc.query, nil)
 			}
-			t.Cleanup(func() { migrationQuery(t, `MATCH (n) DETACH DELETE n`, nil) })
+			t.Cleanup(func() { wipeCommandGraph(t) })
 			t.Setenv("GKG_DOMAIN_SEED_FILE", tc.seed)
 			var out, errb bytes.Buffer
 			if code := run([]string{"preflight"}, &out, &errb); code != tc.code {
@@ -427,7 +427,7 @@ func TestPreflightLegacyWithoutLiveDocuments(t *testing.T) {
 
 func TestPreflightUnmatchedLimit(t *testing.T) {
 	preflightCommandStore(t)
-	t.Cleanup(func() { migrationQuery(t, `MATCH (n) DETACH DELETE n`, nil) })
+	t.Cleanup(func() { wipeCommandGraph(t) })
 	migrationQuery(t, `CREATE (:GkgMeta {id:'extraction_schema',value:3})`, nil)
 	for i := 0; i < 25; i++ {
 		migrationQuery(t, `CREATE (:Document {id:$id,source:$source,status:'done'})`, map[string]any{"id": fmt.Sprintf("acme-%02d", i), "source": fmt.Sprintf("https://acme.invalid/%02d", i)})
@@ -442,12 +442,17 @@ func TestPreflightUnmatchedLimit(t *testing.T) {
 	}
 }
 
-// Preflight owns an isolated disposable graph, including fixtures left by prior
-// packages; only this helper clears it, after document cleanups have run.
+// Preflight starts and ends with an empty disposable integration graph.
 func preflightCommandStore(t *testing.T) *graph.Store {
 	t.Helper()
 	st := migrationCommandStore(t)
-	migrationQuery(t, `MATCH (n) DETACH DELETE n`, nil)
-	t.Cleanup(func() { migrationQuery(t, `MATCH (n) DETACH DELETE n`, nil) })
+	wipeCommandGraph(t)
+	t.Cleanup(func() { wipeCommandGraph(t) })
 	return st
+}
+
+func wipeCommandGraph(t *testing.T) {
+	t.Helper()
+	migrationQuery(t, `MATCH (n) WHERE n.embedding IS NOT NULL SET n.embedding = null`, nil)
+	migrationQuery(t, `MATCH (n) DETACH DELETE n`, nil)
 }

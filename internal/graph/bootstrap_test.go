@@ -44,6 +44,36 @@ func TestBootstrapDoesNotMigrate(t *testing.T) {
 	}
 }
 
+func TestBootstrapEntityKeyWithCompositeConstraint(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := t.Context()
+	uri := os.Getenv(graphtest.URIEnv)
+	key := fmt.Sprintf("bootstrap-composite-%d", time.Now().UnixNano())
+	const composite = `CONSTRAINT ON (e:Entity) ASSERT e.key, e.id IS UNIQUE`
+	rawRun(t, uri, fmt.Sprintf(`CREATE (:Entity {key:'%s', id:'original'})`, key))
+	t.Cleanup(func() {
+		rawRun(t, uri, fmt.Sprintf(`MATCH (e:Entity {key:'%s'}) DELETE e`, key))
+		if err := st.Bootstrap(context.Background()); err != nil {
+			t.Errorf("restore bootstrap: %v", err)
+		}
+	})
+	rawRun(t, uri, "CREATE "+composite)
+	t.Cleanup(func() { rawRun(t, uri, "DROP "+composite) })
+	rawRun(t, uri, `DROP CONSTRAINT ON (e:Entity) ASSERT e.key IS UNIQUE`)
+	for range 2 {
+		if err := st.Bootstrap(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := rawCount(t, uri, fmt.Sprintf(`MATCH (:Entity {key:'%s', id:'original'}) RETURN count(*) AS n`, key)); n != 1 {
+		t.Errorf("original entity count after repeat Bootstrap = %d, want 1", n)
+	}
+	err := rawExec(uri, fmt.Sprintf(`CREATE (:Entity {key:'%s', id:'different'})`, key))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "constraint") {
+		t.Errorf("duplicate key with different ID = %v, want a constraint error", err)
+	}
+}
+
 func TestMigrateExtractionSchema(t *testing.T) {
 	st := graphtest.MigrationStore(t)
 	ctx := context.Background()
@@ -240,7 +270,7 @@ func TestBootstrapMarksEmptyStore(t *testing.T) {
 	ctx := context.Background()
 	uri := os.Getenv(graphtest.URIEnv)
 	// A truly empty store has no Documents either.
-	rawRun(t, uri, `MATCH (n) DETACH DELETE n`)
+	wipeGraph(t, uri)
 	rawRun(t, uri, `MATCH (m:GkgMeta {id: 'extraction_schema'}) DELETE m`)
 	if _, err := st.MigrateExtractionSchemaOpts(ctx, graph.MigrationOptions{DetectAll: true}); err != nil {
 		t.Fatal(err)

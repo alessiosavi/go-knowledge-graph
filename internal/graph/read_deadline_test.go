@@ -112,6 +112,12 @@ func TestReadDeadlineStopsServerTransaction(t *testing.T) {
 			_, err := st.runRead(ctx, query, nil)
 			return err
 		}},
+		{"runReadTx", func(ctx context.Context, query string) error {
+			return st.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
+				_, err := txRows(ctx, tx, query, nil)
+				return err
+			})
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The unique alias lets the observer identify this test's query.

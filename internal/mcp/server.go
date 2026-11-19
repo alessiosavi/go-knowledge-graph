@@ -99,8 +99,8 @@ type searchArgs struct {
 
 type getEntityArgs struct {
 	Domain               string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
-	ID                   string `json:"id,omitempty" jsonschema:"entity id"`
-	Name                 string `json:"name,omitempty" jsonschema:"entity name (EntityKey folding at v4 including possessives and edge punctuation; legacy case folding)"`
+	ID                   string `json:"id,omitempty" jsonschema:"live or retired entity id or key"`
+	Name                 string `json:"name,omitempty" jsonschema:"entity name, used when id is omitted"`
 	IncludeLowConfidence bool   `json:"include_low_confidence,omitempty" jsonschema:"include all typed facts below the assert floor. Judge-confirmed facts are always shown regardless of this flag"`
 	IncludeUnverified    bool   `json:"include_unverified,omitempty" jsonschema:"include marked candidates only when facts.allow_unverified_reads is enabled; otherwise unverified_ignored is true"`
 	ConfirmedOnly        bool   `json:"confirmed_only,omitempty" jsonschema:"return only facts the judge confirmed. Overrides include_low_confidence and include_unverified"`
@@ -215,10 +215,18 @@ type entityOut struct {
 	Together          []coMentionOut      `json:"together"`
 	Hidden            *graph.HiddenCounts `json:"hidden,omitempty"`
 	UnverifiedIgnored bool                `json:"unverified_ignored,omitempty"`
+	Requested         string              `json:"requested,omitempty"`
+	ResolvedVia       string              `json:"resolved_via,omitempty"`
+	Match             string              `json:"match,omitempty"`
+}
+
+type nameCandidateOut struct {
+	entityRefOut
+	Match string `json:"match,omitempty"`
 }
 
 type candidatesOut struct {
-	Candidates []entityRefOut `json:"candidates"`
+	Candidates []nameCandidateOut `json:"candidates"`
 }
 
 type edgeOut struct {
@@ -239,6 +247,8 @@ type traverseOut struct {
 	Edges             []edgeOut           `json:"edges"`
 	Hidden            *graph.HiddenCounts `json:"hidden,omitempty"`
 	UnverifiedIgnored bool                `json:"unverified_ignored,omitempty"`
+	Requested         string              `json:"requested,omitempty"`
+	ResolvedVia       string              `json:"resolved_via,omitempty"`
 }
 
 type cypherOut struct {
@@ -273,7 +283,7 @@ func registerTools(s *Server) {
 	}, s.handleSearch)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "get_entity",
-		Description: "One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status). Low-confidence facts need include_low_confidence unless the judge confirmed them. At schema v4 name lookup uses EntityKey folding (possessives and edge punctuation), with legacy case folding below v4. Unscoped ambiguous names return candidates, one per domain.",
+		Description: "One entity with aliases, co-mentions and evidenced facts. Low-confidence facts need include_low_confidence unless the judge confirmed them. A merge redirect includes requested and resolved_via=merged. Name lookup tries exact matches first, then verified folds marked match=fold. Unscoped ambiguous names return one candidate per domain.",
 	}, s.handleGetEntity)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "get_chunks",
@@ -281,7 +291,7 @@ func registerTools(s *Server) {
 	}, s.handleGetChunks)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "traverse",
-		Description: "Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. Start with limit 10.",
+		Description: "Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. A merge redirect includes requested and resolved_via=merged. Start with limit 10.",
 	}, s.handleTraverse)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "list_documents",
@@ -400,6 +410,7 @@ func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, 
 		return nil, entityOut{}, errNoStore
 	}
 	id := strings.TrimSpace(args.ID)
+	var match string
 	switch {
 	case id == "" && strings.TrimSpace(args.Name) == "":
 		return nil, entityOut{}, argerr.New("id or name is required")
@@ -411,18 +422,17 @@ func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, 
 		if len(refs) == 0 {
 			return nil, entityOut{}, fmt.Errorf("no entity matching %q: %w", args.Name, graph.ErrNotFound)
 		}
-		candidates := []entityRefOut{}
-		seen := map[string]bool{}
-		for _, ref := range refs {
-			if !seen[ref.Domain] {
-				seen[ref.Domain] = true
-				candidates = append(candidates, toEntityRefOut(ref))
+		if len(refs) > 1 {
+			candidates := make([]nameCandidateOut, 0, len(refs))
+			for _, ref := range refs {
+				candidates = append(candidates, toNameCandidateOut(ref))
 			}
-		}
-		if len(candidates) > 1 {
 			return nil, candidatesOut{Candidates: candidates}, nil
 		}
 		id = refs[0].ID
+		if refs[0].Match == graph.EntityMatchFold {
+			match = refs[0].Match
+		}
 	}
 	view, err := s.store.EntityViewOpts(ctx, id, graph.ViewOptions{
 		Domain: args.Domain, IncludeLowConfidence: args.IncludeLowConfidence,
@@ -433,6 +443,7 @@ func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, 
 		return nil, entityOut{}, fmt.Errorf("entity %s: %w", id, err)
 	}
 	out := toEntityOut(view)
+	out.Match = match
 	out.UnverifiedIgnored = args.IncludeUnverified && !s.cfg.Facts.AllowUnverifiedReads
 	return nil, out, nil
 }
@@ -504,6 +515,7 @@ func (s *Server) handleTraverse(ctx context.Context, _ *mcpgo.CallToolRequest, a
 		hidden = &sub.Hidden
 	}
 	return nil, traverseOut{Nodes: nodes, Edges: edges, Hidden: hidden,
+		Requested: sub.Requested, ResolvedVia: sub.ResolvedVia,
 		UnverifiedIgnored: args.IncludeUnverified && !s.cfg.Facts.AllowUnverifiedReads}, nil
 }
 
@@ -595,6 +607,14 @@ func toEntityRefOut(ref graph.EntityRef) entityRefOut {
 	return entityRefOut{ID: ref.ID, Key: ref.Key, Name: ref.Name, Type: ref.Type, Domain: ref.Domain}
 }
 
+func toNameCandidateOut(candidate graph.EntityCandidate) nameCandidateOut {
+	out := nameCandidateOut{entityRefOut: toEntityRefOut(candidate.EntityRef)}
+	if candidate.Match == graph.EntityMatchFold {
+		out.Match = candidate.Match
+	}
+	return out
+}
+
 func toEntityOut(view graph.EntityView) entityOut {
 	aliases := view.Aliases
 	if aliases == nil {
@@ -641,5 +661,7 @@ func toEntityOut(view graph.EntityView) entityOut {
 		Facts:        facts,
 		Together:     together,
 		Hidden:       hidden,
+		Requested:    view.Requested,
+		ResolvedVia:  view.ResolvedVia,
 	}
 }

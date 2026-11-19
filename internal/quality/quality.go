@@ -70,6 +70,7 @@ type FoldStatus struct {
 	Version          int    `json:"version"`
 	ExceptionsDigest string `json:"exceptions_digest"`
 	ExceptionsCount  int    `json:"exceptions_count"`
+	ScopeCount       int    `json:"scope_count"`
 	Status           string `json:"status"`
 	RebuiltAt        string `json:"rebuilt_at"`
 	RowsWritten      int    `json:"rows_written"`
@@ -207,7 +208,11 @@ func computeReport(ctx context.Context, st *graph.Store, opt Options, duplicates
 	if fold != nil {
 		report.Fold = &FoldStatus{
 			Version: fold.Version, ExceptionsDigest: fold.ExceptionsDigest, ExceptionsCount: len(fold.Exceptions.Keys()),
-			Status: fold.Status, RebuiltAt: fold.RebuiltAt, RowsWritten: fold.RowsWritten, RowsSkipped: fold.RowsSkipped,
+			ScopeCount: len(fold.Scopes),
+			Status:     fold.Status, RebuiltAt: fold.RebuiltAt, RowsWritten: fold.RowsWritten, RowsSkipped: fold.RowsSkipped,
+		}
+		if len(fold.Scopes) == 0 {
+			report.Fold.Matching = "off (scopes missing; run gkg fold rebuild)"
 		}
 		if opt.FoldCheck && fold.Version != graph.FoldKeyVersion {
 			report.Fold.Matching = "off (version mismatch)"

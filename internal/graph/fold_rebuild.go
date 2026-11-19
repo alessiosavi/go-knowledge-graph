@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -96,6 +98,7 @@ func (s *Store) rebuildFold(ctx context.Context, replacement *FoldExceptions, af
 	out.RowsSkipped = getInt(rows[0], "n")
 
 	last, limit := "", foldBatchSize
+	scopes := make(map[string]struct{})
 	for {
 		batchCtx, cancel := context.WithTimeout(ctx, foldBatchBudget)
 		batch, err := s.rebuildFoldBatch(batchCtx, owner, last, limit, ex)
@@ -110,6 +113,7 @@ func (s *Store) rebuildFold(ctx context.Context, replacement *FoldExceptions, af
 		}
 		out.RowsWritten += batch.written
 		out.RowsSkipped += batch.skipped
+		maps.Copy(scopes, batch.scopes)
 		if afterBatch != nil && batch.read > 0 {
 			afterBatch()
 		}
@@ -124,9 +128,11 @@ func (s *Store) rebuildFold(ctx context.Context, replacement *FoldExceptions, af
 		}
 		rows, err := txRows(ctx, tx, `MATCH (m:GkgMeta {id: 'fold'})
 WHERE m.rebuild_owner = $owner
-SET m.status = 'complete', m.rebuilt_at = $at, m.rows_written = $written, m.rows_skipped = $skipped
+SET m.status = 'complete', m.rebuilt_at = $at, m.rows_written = $written, m.rows_skipped = $skipped,
+    m.scopes = $scopes
 RETURN m.id`, map[string]any{
 			"owner": owner, "at": time.Now().UTC().Format(timeLayout), "written": out.RowsWritten, "skipped": out.RowsSkipped,
+			"scopes": slices.Sorted(maps.Keys(scopes)),
 		})
 		if err != nil {
 			return err
@@ -225,6 +231,7 @@ func txGuardFoldLease(ctx context.Context, tx neo4j.ManagedTransaction, owner st
 type foldBatch struct {
 	read, written, skipped int
 	last                   string
+	scopes                 map[string]struct{}
 }
 
 func (s *Store) rebuildFoldBatch(ctx context.Context, owner, last string, limit int, ex FoldExceptions) (foldBatch, error) {
@@ -242,7 +249,7 @@ func txRebuildFoldBatch(ctx context.Context, tx neo4j.ManagedTransaction, owner,
 	if err != nil {
 		return foldBatch{}, err
 	}
-	batch := foldBatch{read: len(rows)}
+	batch := foldBatch{read: len(rows), scopes: make(map[string]struct{})}
 	updates := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		batch.last = getString(row, "key")
@@ -250,7 +257,12 @@ func txRebuildFoldBatch(ctx context.Context, tx neo4j.ManagedTransaction, owner,
 			batch.skipped++
 			continue
 		}
-		if update, differs := foldUpdate(row, ex); differs {
+		update, fold := foldUpdate(row, ex)
+		if fold != nil {
+			scope, _, _ := strings.Cut(*fold, "|")
+			batch.scopes[scope] = struct{}{}
+		}
+		if update != nil {
 			updates = append(updates, update)
 		}
 	}
@@ -278,7 +290,7 @@ func (s *Store) CountStaleFolds(ctx context.Context, ex FoldExceptions) (int, er
 			if !foldRowEligible(row) {
 				continue
 			}
-			if _, differs := foldUpdate(row, ex); differs {
+			if update, _ := foldUpdate(row, ex); update != nil {
 				count++
 			}
 		}

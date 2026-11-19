@@ -135,7 +135,7 @@ func TestEntityViewByIDOrKey(t *testing.T) {
 	if _, err := st.EntityView(ctx, "missing-"+tag, false); !errors.Is(err, graph.ErrNotFound) {
 		t.Errorf("unknown entity error = %v, want ErrNotFound", err)
 	}
-	// Traversal resolves the same two forms through resolveEntityRef.
+	// Traversal resolves the same two forms as EntityView.
 	byID, err := st.Traverse(ctx, graph.EntityID(ents[0].Key), "", "out", 1, 10, false)
 	if err != nil {
 		t.Fatalf("Traverse(id): %v", err)

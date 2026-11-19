@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -79,5 +80,84 @@ func TestMCPDomains(t *testing.T) {
 		if out := callTool(t, cs, tool, args); !out.IsError {
 			t.Errorf("%s accepted invalid domain", tool)
 		}
+	}
+}
+
+func TestMCPMergedSelectorProvenance(t *testing.T) {
+	f := graphtest.Visibility(t)
+	oldID, oldKey := graph.EntityID("retired-"+f.Key), "retired-"+f.Key
+	graphtest.SeedMergedEntity(t, oldID, oldKey, f.ID)
+	cs := connectInMemory(t, config.Config{}, f.Store, nil)
+	for _, tc := range []struct{ tool, field string }{{"get_entity", "id"}, {"traverse", "entity"}} {
+		t.Run(tc.tool, func(t *testing.T) {
+			var exact map[string]any
+			for _, sel := range []string{f.ID, f.Key, oldID, oldKey} {
+				out := structured[map[string]any](t, callTool(t, cs, tc.tool, map[string]any{tc.field: sel}))
+				requested, hasRequested := out["requested"]
+				via, hasVia := out["resolved_via"]
+				if sel == oldID || sel == oldKey {
+					if requested != sel || via != "merged" {
+						t.Errorf("selector %q: provenance %v/%v", sel, requested, via)
+					}
+				} else if hasRequested || hasVia {
+					t.Errorf("exact selector %q carried provenance: %v", sel, out)
+				}
+				delete(out, "requested")
+				delete(out, "resolved_via")
+				if exact == nil {
+					exact = out
+				} else if !reflect.DeepEqual(out, exact) {
+					t.Errorf("selector %q: payload differs from live ID", sel)
+				}
+			}
+		})
+	}
+}
+
+func TestMCPFoldNameMatch(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := t.Context()
+	const a, b = "zelvix", "vorqun"
+	graphtest.SeedFoldScopes(t, "@"+a, "@"+b)
+	stamp := fmt.Sprint(time.Now().UnixNano())
+	names := map[string]string{a: "Zel-vix" + stamp, b: "Zélvix" + stamp}
+	keys := map[string]string{}
+	for slug, name := range names {
+		key := graph.DomainKey(slug, graph.EntityKey(name))
+		keys[slug] = key
+		doc, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "text", Source: name, Hash: stamp, Domain: slug})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := st.DeleteDocument(context.Background(), doc.ID); err != nil {
+				t.Error(err)
+			}
+		})
+		if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Text: name}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.UpsertExtractionOpts(ctx, doc.ID, doc.ID+"-c0", "mock", []graph.EntityUpsert{{Key: key, Name: name}}, nil, graph.WriteOptions{Domain: slug}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cs := connectInMemory(t, config.Config{}, st, nil)
+	call := func(name, scope string) map[string]any {
+		return structured[map[string]any](t, callTool(t, cs, "get_entity", map[string]any{"name": name, "domain": scope}))
+	}
+	for _, tc := range []struct{ name, scope, match string }{
+		{names[a], "", ""}, // The exact hit suppresses the other domain's fold hit.
+		{"Zelvix" + stamp, a, "fold"},
+	} {
+		out := call(tc.name, tc.scope)
+		match, hasMatch := out["match"]
+		if out["id"] != graph.EntityID(keys[a]) || hasMatch != (tc.match != "") || (hasMatch && match != tc.match) ||
+			out["requested"] != nil || out["resolved_via"] != nil {
+			t.Errorf("name %q scope %q: %+v", tc.name, tc.scope, out)
+		}
+	}
+	out := structured[candidatesOut](t, callTool(t, cs, "get_entity", map[string]any{"name": "Zelvix" + stamp}))
+	if len(out.Candidates) != 2 || out.Candidates[0].Match != "fold" || out.Candidates[1].Match != "fold" {
+		t.Errorf("ambiguous fold hits = %+v", out.Candidates)
 	}
 }

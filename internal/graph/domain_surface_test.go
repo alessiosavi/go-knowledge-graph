@@ -106,6 +106,11 @@ func TestEntityCandidatesByName(t *testing.T) {
 		if err != nil || len(refs) != tc.n {
 			t.Fatalf("scope=%q refs=%+v err=%v", tc.d, refs, err)
 		}
+		for _, ref := range refs {
+			if ref.Match != graph.EntityMatchExact {
+				t.Errorf("scope=%q exact name match = %+v", tc.d, ref)
+			}
+		}
 	}
 	rows := rawRecords(t, uri, fmt.Sprintf(`EXPLAIN MATCH (e:Entity) WHERE e.name_key = '%s' RETURN e.id`, graph.EntityKey(name)))
 	indexed := false
@@ -142,7 +147,7 @@ func TestEntityCandidatesByName(t *testing.T) {
 	rawRun(t, uri, `MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=3`)
 	rawRun(t, uri, fmt.Sprintf(`MATCH (e:Entity {name:'%s'}) REMOVE e.name_key`, name))
 	refs, err = st.EntityCandidatesByName(ctx, strings.ToUpper(name), "a")
-	if err != nil || len(refs) != 1 {
+	if err != nil || len(refs) != 1 || refs[0].Match != graph.EntityMatchExact {
 		t.Fatalf("legacy=%+v %v", refs, err)
 	}
 	_, err = st.EntityViewOpts(ctx, refs[0].ID, graph.ViewOptions{Domain: "b"})

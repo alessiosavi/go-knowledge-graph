@@ -108,7 +108,7 @@ func TestFoldRebuildCLIExceptionsAndQuality(t *testing.T) {
 		t.Fatal(err)
 	}
 	fold := got.Fold
-	if fold == nil || fold.Status != "complete" || fold.Version != graph.FoldKeyVersion || fold.ExceptionsCount != 1 ||
+	if fold == nil || fold.Status != "complete" || fold.Version != graph.FoldKeyVersion || fold.ExceptionsCount != 1 || fold.ScopeCount != 1 ||
 		fold.ExceptionsDigest != rec.ExceptionsDigest || fold.RebuiltAt != rec.RebuiltAt || fold.RebuiltAt == "" ||
 		fold.RowsWritten != 2 || fold.RowsSkipped != 0 || fold.RowsStale == nil || *fold.RowsStale != 1 || stderr != "" {
 		t.Fatalf("quality JSON fold = %+v, stderr %q", fold, stderr)
@@ -117,7 +117,7 @@ func TestFoldRebuildCLIExceptionsAndQuality(t *testing.T) {
 		t.Fatal("quality disclosed an exception key")
 	}
 	out, stderr = invoke(0, "quality")
-	for _, line := range []string{"fold.version: 1", "fold.exceptions_count: 1",
+	for _, line := range []string{"fold.version: 1", "fold.exceptions_count: 1", "fold.scope_count: 1",
 		"fold.exceptions_digest: " + rec.ExceptionsDigest, "fold.rebuilt_at: " + rec.RebuiltAt,
 		"fold.rows_written: 2", "fold.rows_skipped: 0", "fold.status: complete\n"} {
 		if !strings.Contains(out, line) {
@@ -205,6 +205,31 @@ func TestFoldQualityVersionMismatch(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), tc.legacyStatus) {
 			t.Errorf("%v should report %q for a legacy record", tc.args, tc.legacyStatus)
+		}
+	}
+}
+
+func TestFoldQualityMissingScopes(t *testing.T) {
+	st := preflightCommandStore(t)
+	if err := st.Bootstrap(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	migrationQuery(t, `CREATE (:GkgMeta {id:'fold', fold_version:$version})`,
+		map[string]any{"version": graph.FoldKeyVersion})
+	const off = "off (scopes missing; run gkg fold rebuild)"
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"quality"}, "fold.matching: " + off + "\n"},
+		{[]string{"quality", "--json", "--fold-check"}, `"matching": "` + off + `"`},
+	} {
+		var out, stderr bytes.Buffer
+		if code := run(tc.args, &out, &stderr); code != 0 || stderr.Len() != 0 {
+			t.Fatalf("%v exited %d, stderr %q", tc.args, code, &stderr)
+		}
+		if !strings.Contains(out.String(), tc.want) {
+			t.Errorf("%v should report %q: %s", tc.args, tc.want, &out)
 		}
 	}
 }

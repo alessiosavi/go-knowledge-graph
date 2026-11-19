@@ -15,6 +15,10 @@ var uniqueConstraints = []struct {
 	{"Document", "id"},
 	{"Chunk", "id"},
 	{"Entity", "key"},
+	// Every MergedEntity row carries both old_id and old_key. The merge
+	// writer (T4) supplies both because uniqueness permits missing properties.
+	{"MergedEntity", "old_id"},
+	{"MergedEntity", "old_key"},
 	{"GkgMeta", "id"},
 	{"JudgeVerdict", "key"},
 	{"FactCandidate", "id"},
@@ -46,6 +50,9 @@ var secondaryIndexes = []struct {
 	{"Entity", []string{"id"}},
 	{"Entity", []string{"key"}},
 	{"Entity", []string{"name_key"}},
+	{"MergedEntity", []string{"old_id"}},
+	{"MergedEntity", []string{"old_key"}},
+	{"MergedEntity", []string{"survivor_id"}},
 	{"GkgMeta", []string{"id"}},
 	{"Domain", []string{"id"}},
 	{"DomainOp", []string{"op_id"}},
@@ -265,8 +272,8 @@ func (s *Store) indexExists(ctx context.Context, label string, props []string) (
 	return false, nil
 }
 
-// propsMatch reports whether the SHOW INDEX INFO properties column names
-// exactly the props, in any order; the column shape varies by version.
+// propsMatch reports whether a schema row names exactly the requested
+// properties, in any order. The column shape varies by version.
 func propsMatch(v any, props []string) bool {
 	var list []string
 	switch t := v.(type) {
@@ -296,8 +303,8 @@ func propsMatch(v any, props []string) bool {
 
 // constraintExists reports whether a label+property *unique* constraint
 // already exists, using SHOW CONSTRAINT INFO. Rows of other constraint
-// types (exists, data-type) match label and property too and must not be
-// mistaken for the unique one.
+// types (exists, data-type) and composite unique constraints do not enforce
+// uniqueness on the requested property by itself.
 func (s *Store) constraintExists(ctx context.Context, label, prop string) (bool, error) {
 	recs, err := s.runRead(ctx, "SHOW CONSTRAINT INFO", nil)
 	if err != nil {
@@ -313,33 +320,11 @@ func (s *Store) constraintExists(ctx context.Context, label, prop string) (bool,
 			continue
 		}
 		p, _ := r.Get("properties")
-		if propsContain(p, prop) {
+		if propsMatch(p, []string{prop}) {
 			return true, nil
 		}
 	}
 	return false, nil
-}
-
-// propsContain reports whether the SHOW CONSTRAINT INFO properties column,
-// which varies by Memgraph version (string, []any or []string), names prop.
-func propsContain(v any, prop string) bool {
-	switch t := v.(type) {
-	case string:
-		return t == prop
-	case []any:
-		for _, e := range t {
-			if fmt.Sprint(e) == prop {
-				return true
-			}
-		}
-	case []string:
-		for _, e := range t {
-			if e == prop {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // orderTextIndexProperties makes Memgraph assign property ids to text and

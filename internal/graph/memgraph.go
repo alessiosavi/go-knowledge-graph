@@ -85,8 +85,27 @@ func (s *Store) runRead(ctx context.Context, query string, params map[string]any
 	return recs, readError(ctx, err)
 }
 
-// readTxConfig gives Memgraph the remaining request budget. Timed reads
-// use auto-commit because managed transactions retry a timeout abort.
+// runReadTx keeps related reads in one snapshot without the retries of a
+// managed read transaction, which can retry a server-side timeout.
+func (s *Store) runReadTx(ctx context.Context, read func(neo4j.ManagedTransaction) error) error {
+	opts, err := readTxConfig(ctx)
+	if err != nil {
+		return err
+	}
+	sess := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
+	defer sess.Close(ctx)
+	tx, err := sess.BeginTransaction(ctx, opts...)
+	if err != nil {
+		return readError(ctx, err)
+	}
+	defer tx.Close(ctx)
+	if err := read(tx); err != nil {
+		return readError(ctx, err)
+	}
+	return readError(ctx, tx.Commit(ctx))
+}
+
+// readTxConfig gives Memgraph the remaining request budget.
 func readTxConfig(ctx context.Context) ([]func(*neo4j.TransactionConfig), error) {
 	deadline, ok := ctx.Deadline()
 	if !ok {
