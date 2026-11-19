@@ -21,6 +21,7 @@ const noValidityRewrites = "no-rewrites"
 type validityDraft struct {
 	summary         validity.PlanSummary
 	inputs          []validity.InputsRow
+	inventory       []validityInventoryRow
 	bulk            map[string]validityBulkSource
 	rewriteBySource map[string]rejudgeManifestRow
 	rewrites        map[string]rejudgeManifestRow
@@ -28,8 +29,8 @@ type validityDraft struct {
 }
 
 type validityBulkSource struct {
-	verdict        rejudgeVerdict
-	docID, chunkID string
+	verdict  rejudgeVerdict
+	manifest rejudgeManifestRow
 }
 
 // FinalizeValidity validates all sealed inputs offline and publishes final
@@ -55,26 +56,17 @@ func FinalizeValidity(ctx context.Context, dir, verdictPath string) (string, err
 		}
 	}
 
-	rows := make([]validity.FinalRow, 0, len(draft.inputs))
-	finalBySource := make(map[string]validity.FinalRow, len(draft.inputs))
-	finalCounts := make(validityCounts)
-	for _, input := range draft.inputs {
-		row := finalizeValidityRow(input, draft.bulk[input.ID].verdict, draft.rewriteBySource[input.ID], rewrite.verdicts)
-		finalBySource[row.ID] = row
-		rows = append(rows, row)
-		finalCounts.add(row.FinalOutcome, input.Relation, row.Rule)
-	}
-	finalBytes, err := validityJSONLines(rows)
+	rows, summary, finalBytes, err := projectFinalValidity(draft, rewrite)
 	if err != nil {
 		return "", err
 	}
-	summary := draft.summary
-	summary.Counts = finalCounts
-	summary.RewriteVerdictSeal = rewrite.seal
-	summary.FinalDigest = validityDigest([]byte(summary.DraftDigest), []byte(rewrite.seal), finalBytes)
 	summaryBytes, err := validityJSONLines([]validity.PlanSummary{summary})
 	if err != nil {
 		return "", err
+	}
+	finalBySource := make(map[string]validity.FinalRow, len(rows))
+	for _, row := range rows {
+		finalBySource[row.ID] = row
 	}
 	affected, affectedSummary := affectedValiditySources(draft.inputs, draft.bulk, finalBySource)
 	affectedBytes, err := validityJSONLines(affected)
@@ -95,6 +87,25 @@ func FinalizeValidity(ctx context.Context, dir, verdictPath string) (string, err
 	}
 	files = append(files, validityFile{"final-plan.json", summaryBytes})
 	return summary.FinalDigest, writeValidityFiles(ctx, dir, files)
+}
+
+func projectFinalValidity(draft validityDraft, rewrite sealedValidityRun) ([]validity.FinalRow, validity.PlanSummary, []byte, error) {
+	rows := make([]validity.FinalRow, 0, len(draft.inputs))
+	counts := make(validityCounts)
+	for _, input := range draft.inputs {
+		row := finalizeValidityRow(input, draft.bulk[input.ID].verdict, draft.rewriteBySource[input.ID], rewrite.verdicts)
+		rows = append(rows, row)
+		counts.add(row.FinalOutcome, input.Relation, row.Rule)
+	}
+	raw, err := validityJSONLines(rows)
+	if err != nil {
+		return nil, validity.PlanSummary{}, nil, err
+	}
+	summary := draft.summary
+	summary.Counts = counts
+	summary.RewriteVerdictSeal = rewrite.seal
+	summary.FinalDigest = validityDigest([]byte(summary.DraftDigest), []byte(rewrite.seal), raw)
+	return rows, summary, raw, nil
 }
 
 func readValidityDraft(dir string) (validityDraft, error) {
@@ -149,7 +160,7 @@ func readValidityDraft(dir string) (validityDraft, error) {
 	if len(draft.inputs) == 0 {
 		return draft, errors.New("draft has no planned inputs")
 	}
-	if err := checkDraftInventory(read, draft, inputByID); err != nil {
+	if err := checkDraftInventory(read, &draft, inputByID); err != nil {
 		return draft, err
 	}
 	draft.bulk, err = readDraftBulk(read, summary, inputByID)
@@ -164,7 +175,7 @@ func readValidityDraft(dir string) (validityDraft, error) {
 	return draft, nil
 }
 
-func checkDraftInventory(read func(string) ([]byte, error), draft validityDraft, inputs map[string]validity.InputsRow) error {
+func checkDraftInventory(read func(string) ([]byte, error), draft *validityDraft, inputs map[string]validity.InputsRow) error {
 	raw, err := read("inventory.jsonl")
 	if err != nil {
 		return err
@@ -206,6 +217,7 @@ func checkDraftInventory(read func(string) ([]byte, error), draft validityDraft,
 			return fmt.Errorf("%s differs from the sealed inventory", file.name)
 		}
 	}
+	draft.inventory = inventory
 	return nil
 }
 
@@ -252,7 +264,7 @@ func readDraftBulk(read func(string) ([]byte, error), summary validity.PlanSumma
 	}
 	sources := make(map[string]validityBulkSource, len(rows))
 	for id, row := range rows {
-		sources[id] = validityBulkSource{verdict: bulk.verdicts[id], docID: row.Request.DocID, chunkID: row.ChunkID}
+		sources[id] = validityBulkSource{verdict: bulk.verdicts[id], manifest: row}
 	}
 	return sources, nil
 }
@@ -394,7 +406,7 @@ func affectedValiditySources(inputs []validity.InputsRow, bulk map[string]validi
 			continue
 		}
 		source := bulk[input.ID]
-		row.DocID, row.ChunkID = source.docID, source.chunkID
+		row.DocID, row.ChunkID = source.manifest.Request.DocID, source.manifest.ChunkID
 		for _, state := range row.States {
 			row.HasConfirmedDestination = row.HasConfirmedDestination || (state.Live && state.Judge == "confirmed")
 		}

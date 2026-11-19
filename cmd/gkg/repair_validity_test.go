@@ -50,7 +50,7 @@ func seedValidityDoc(t *testing.T, suffix, preset, title, text string) validityD
 	t.Helper()
 	doc := "validity-" + t.Name() + "-" + suffix
 	d := validityDoc{doc, doc + "-c2", title, doc + "-target"}
-	migrationQuery(t, `CREATE (d:Document {id:$doc, title:$title, labels:$preset, domain:$doc}),
+	migrationQuery(t, `CREATE (d:Document {id:$doc, title:$title, labels:$preset, domain:$doc, status:'done'}),
 (d)-[:HAS_CHUNK]->(:Chunk {id:$title_chunk, doc_id:$doc, seq:0, text:$title}),
 (d)-[:HAS_CHUNK]->(:Chunk {id:$chunk, doc_id:$doc, seq:2, text:$text})`,
 		map[string]any{"doc": d.id, "title": title, "preset": preset, "title_chunk": doc + "-c0", "chunk": d.chunk, "text": text})
@@ -78,7 +78,7 @@ func (d validityDoc) edge(t *testing.T, head, rel, tail, doc, chunk, state strin
 	}
 	migrationQuery(t, fmt.Sprintf(`MATCH (h:Entity {key:$head}), (t:Entity {key:$tail})
 CREATE (h)-[:%s {head_key:$head, tail_key:$tail, doc_id:$doc, chunk_id:$chunk, judge:$judge, confidence:$confidence,
- head_start:$hs, head_end:$he, tail_start:$ts, tail_end:$te}]->(t)`, rel),
+ head_start:$hs, head_end:$he, tail_start:$ts, tail_end:$te, extractor_version:'invented-v1', low_confidence:false}]->(t)`, rel),
 		map[string]any{"head": head, "tail": tail, "doc": doc, "chunk": chunk, "judge": state, "confidence": confidence,
 			"hs": hs, "he": he, "ts": ts, "te": te})
 	return graph.FactAuditID(head, rel, tail, chunk)
@@ -109,6 +109,7 @@ func TestRepairValidityFlags(t *testing.T) {
 		{"-finalize", "-plan", "dir", "-rewrite-verdicts", "v", "-no-rewrites"},
 		{"-finalize", "-plan", "dir", "-no-rewrites", "-out", "other"},
 		{"-apply", "-plan", "dir"},
+		{"-apply", "-plan", "dir", "-approved-digest", strings.Repeat("0", 64), "-quiescent"},
 	} {
 		if code, _ := callValidity(args...); code != 2 {
 			t.Errorf("%v exit=%d, want 2", args, code)
@@ -226,6 +227,10 @@ func validityBulkRun(t *testing.T, st *graph.Store, statuses map[string]string) 
 
 func TestRepairValidityProjection(t *testing.T) {
 	st := validityFixture(t)
+	baseline, err := st.CountValidityEdges(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
 	const prefix = "zorbs use Quarin"
 	const relation = "uses"
 	addDoc := func(suffix string) (validityDoc, string) {
@@ -279,6 +284,8 @@ func TestRepairValidityProjection(t *testing.T) {
 		}
 		if s.projected == "" {
 			bulkStatuses[occupant] = "refuted"
+			migrationQuery(t, `MATCH (h:Entity {key:$target})-[r:uses]->(:Entity {key:$tail}) SET r.invented_float = 1.0`,
+				map[string]any{"target": target, "tail": tail})
 		}
 		occupied = append(occupied, occupiedScenario{addSource(d, tail, "source", "zorbs", 0.8), occupant, s.stored, s.projected})
 	}
@@ -308,6 +315,13 @@ func TestRepairValidityProjection(t *testing.T) {
 	bulkStatuses[demote] = "unclear"
 	d, tail = addDoc("rule-drop")
 	drop := addSource(d, tail, "source", "drindle", 0.8)
+	d.edge(t, d.entity(t, "unverifiable", "Galune", false), relation, tail, d.id, d.chunk+"-missing", "confirmed", 0.8, 0, 5, 10, 16)
+	migrationQuery(t, `MATCH (h:Entity)-[r:uses]->(:Entity)
+WHERE h.key IN $keys SET r.low_confidence = true`, map[string]any{"keys": []string{
+		selfTarget,
+		"validity-" + t.Name() + "-unclear-rewrite-source",
+		"validity-" + t.Name() + "-bulk-unclear-source",
+	}})
 
 	manifest, verdicts := validityBulkRun(t, st, bulkStatuses)
 	planArgs := []string{"-plan", "-manifest", manifest, "-verdicts", verdicts}
@@ -498,6 +512,13 @@ func TestRepairValidityProjection(t *testing.T) {
 	if !maps.Equal(summary, wantSummary) {
 		t.Errorf("affected summary = %+v, want %+v", summary, wantSummary)
 	}
+
+	finalPlan, err := validity.DecodePlanSummary(readRejudgeFile(t, filepath.Join(draft1, "final-plan.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyReport := filepath.Join(t.TempDir(), "apply.jsonl")
+	assertMixedValidityApply(t, st, draft1, applyReport, finalPlan, occupied[3].occupant, tableSource, baseline, inputs, bulkSources)
 }
 
 func TestRepairValidityInventoryMismatchAndZeroCandidates(t *testing.T) {
@@ -626,17 +647,7 @@ func assertValidityRejected(t *testing.T, dir string, args ...string) string {
 
 func checkValidityDigests(t *testing.T, dir string) {
 	t.Helper()
-	// Each tuple component is prefixed with its byte length (uint64 big endian).
-	digest := func(parts ...[]byte) string {
-		h := sha256.New()
-		for _, b := range parts {
-			if err := binary.Write(h, binary.BigEndian, uint64(len(b))); err != nil {
-				t.Fatal(err)
-			}
-			_, _ = h.Write(b)
-		}
-		return fmt.Sprintf("%x", h.Sum(nil))
-	}
+	digest := func(parts ...[]byte) string { return validityTestDigest(t, parts...) }
 	files := validityFileSnapshot(t, dir)
 	preset := bytes.TrimSuffix(files["preset.txt"], []byte("\n"))
 	inventory := digest(preset, files["inventory.jsonl"], files["planned-ids.txt"])
@@ -667,4 +678,16 @@ func checkValidityDigests(t *testing.T, dir string) {
 		final.FinalDigest != digest([]byte(draft), []byte(v2), files["final.jsonl"]) {
 		t.Errorf("final digest differs: %+v", final)
 	}
+}
+
+func validityTestDigest(t *testing.T, parts ...[]byte) string {
+	t.Helper()
+	h := sha256.New()
+	for _, b := range parts {
+		if err := binary.Write(h, binary.BigEndian, uint64(len(b))); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = h.Write(b)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }

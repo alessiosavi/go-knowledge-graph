@@ -638,6 +638,43 @@ bytes for JSONL components, including their final newlines.
 - Final uses the draft digest, the SHA-256 of `rewrite-verdicts.jsonl` (or the
   literal text `no-rewrites`) and `final.jsonl`.
 
+### Apply an approved catalog validity plan
+
+After the gate and owner approval, stop serve and every other graph writer.
+Take and verify a pre-apply snapshot with `make box-snapshot` using the procedure in
+[the deployment guide](docs/deploy-aws.md). Keep writers stopped through the
+projected-count check, spot check and post-apply audit.
+
+```sh
+gkg repair-validity -apply -plan draft -approved-digest "$APPROVED_DIGEST" \
+  -quiescent -report validity-lineage.jsonl
+```
+
+Apply requires a finalized directory, the approved digest, the sealed preset
+rules and lexicon, and a graph with no live judge lease or previous validity run.
+Every Document must have a terminal status. A missing status blocks apply.
+Apply checks the live inventory and collision inputs before taking the lease
+and rebuilds the evidence and requests in each row's transaction. Ambiguous and
+unverifiable rows are counted and left untouched.
+
+Choose a fresh `-report` path. Apply checks that the path is absent during
+preflight and creates the `0600` JSONL file after acquiring the lease, before
+applying any rows. The report records each source's disposition and reason,
+followed by projected and actual outcomes and typed-edge visibility counts.
+A stopped or completed apply consumes the report path. Use a new path when
+rerunning after a restore.
+
+Restore the pre-apply Memgraph data-directory snapshot to preserve internal
+edge IDs, which the sealed occupant `edge_id` values depend on. A logical
+dump and import changes those IDs and requires re-planning from `-classify`.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | All rows applied and projected totals equal actual totals. |
+| `1` | Operational error, for example failure while writing the report. Check the graph and report before resuming writers. |
+| `2` | Usage or precondition failure. The graph and report path are unchanged. |
+| `4` | Apply stopped and wrote a stop report. Earlier rows remain committed. A new marker after preflight stops the first row with `validity_run appeared after preflight`. Keep writers stopped and restore the pre-apply snapshot before starting a new apply. |
+
 ### Graph quality report
 
 ```sh

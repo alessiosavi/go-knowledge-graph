@@ -19,18 +19,23 @@ func runRepairValidity(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	classify := fs.Bool("classify", false, "classify the catalog inventory")
 	finalize := fs.Bool("finalize", false, "finalize a frozen draft offline")
+	apply := fs.Bool("apply", false, "apply an approved finalized plan")
+	approved := fs.String("approved-digest", "", "owner-approved final plan digest")
+	quiescent := fs.Bool("quiescent", false, "assert that serve and all other graph writers are stopped")
+	report := fs.String("report", "", "new apply lineage report file")
 	preset := fs.String("preset", "catalog", "label preset to classify or plan")
 	out := fs.String("out", "", "output directory")
 	manifest := fs.String("manifest", "", "sealed bulk run's manifest")
 	verdicts := fs.String("verdicts", "", "sealed bulk run's verdicts")
 	rewriteVerdicts := fs.String("rewrite-verdicts", "", "sealed rewrite run's verdicts")
 	noRewrites := fs.Bool("no-rewrites", false, "finalize a draft with no rewrite candidates")
-	// A bare -plan selects planning. In finalize mode -plan DIR takes a path.
-	plan := fs.String("plan", "", "plan a bulk run, or supply the draft directory when finalizing")
+	// A bare -plan selects planning. Finalize and apply take a path.
+	plan := fs.String("plan", "", "plan a bulk run, or supply the directory for finalize or apply")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: gkg repair-validity -classify [-preset NAME] -out DIR")
 		fmt.Fprintln(stderr, "       gkg repair-validity -plan [-preset NAME] -manifest M -verdicts V -out DIR")
 		fmt.Fprintln(stderr, "       gkg repair-validity -finalize -plan DIR (-rewrite-verdicts V2 | -no-rewrites)")
+		fmt.Fprintln(stderr, "       gkg repair-validity -apply -plan DIR -approved-digest HEX -quiescent -report FILE")
 		fs.PrintDefaults()
 	}
 	// Normalize the bare planning flag for flag.FlagSet, which cannot assign
@@ -55,6 +60,9 @@ func runRepairValidity(args []string, stdout, stderr io.Writer) int {
 	fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
 	valid := false
 	switch {
+	case *apply:
+		valid = !*classify && !*finalize && *plan != "" && *plan != planMode && *approved != "" && *quiescent && *report != "" &&
+			!seen["out"] && !seen["preset"] && !seen["manifest"] && !seen["verdicts"] && !seen["rewrite-verdicts"] && !seen["no-rewrites"]
 	case *classify:
 		valid = !*finalize && !seen["plan"] && *preset != "" && *out != "" &&
 			!seen["manifest"] && !seen["verdicts"] && !seen["rewrite-verdicts"] && !seen["no-rewrites"]
@@ -64,6 +72,9 @@ func runRepairValidity(args []string, stdout, stderr io.Writer) int {
 	default:
 		valid = *plan == planMode && *preset != "" && *out != "" && *manifest != "" && *verdicts != "" &&
 			!seen["rewrite-verdicts"] && !seen["no-rewrites"]
+	}
+	if !*apply && (seen["approved-digest"] || seen["quiescent"] || seen["report"]) {
+		valid = false
 	}
 	if fs.NArg() != 0 || !valid {
 		fs.Usage()
@@ -97,6 +108,9 @@ func runRepairValidity(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	defer st.Close(context.WithoutCancel(ctx))
+	if *apply {
+		return runValidityApply(ctx, st, cfg.Labels.PresetsDir, *plan, *approved, *report, stderr)
+	}
 
 	var message string
 	if *classify {
@@ -116,4 +130,20 @@ func runRepairValidity(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	return 0
+}
+
+func runValidityApply(ctx context.Context, st *graph.Store, presetsDir, plan, digest, report string, stderr io.Writer) int {
+	err := judge.ApplyValidity(ctx, st, presetsDir, plan, digest, report)
+	if err == nil {
+		return 0
+	}
+	fmt.Fprintf(stderr, "gkg repair-validity: %v\n", err)
+	switch {
+	case errors.Is(err, judge.ErrValidityStopped):
+		return 4
+	case errors.Is(err, judge.ErrValidityInput), errors.Is(err, os.ErrExist):
+		return 2
+	default:
+		return 1
+	}
 }

@@ -169,23 +169,45 @@ func matchValidityInventory(planned map[string]rejudgeEvidence, frozen map[strin
 func projectValidity(catalog validityCatalog, matches map[string][]graph.CatalogTitleMatch, rules *validity.Rules,
 	manifest map[string]rejudgeManifestRow, verdicts map[string]rejudgeVerdict) ([]validity.InputsRow, []validityRewriteRow, error) {
 	inputs := make([]validity.InputsRow, 0, len(catalog.planned))
-	groups := make(map[validity.DestinationKey][]int)
 	for _, id := range slices.Sorted(maps.Keys(catalog.planned)) {
 		fact := catalog.planned[id].fact
 		row := validity.InputsRow{
 			ID: id, Domain: fact.Domain, Preset: fact.Preset, Bucket: catalogPlanned, PriorJudge: fact.Judge,
-			Input: validity.Input{Head: fact.HeadName, Relation: fact.Relation, Tail: fact.TailName, Title: fact.Title,
-				Evidence: ingest.EvidenceSentence(fact.Text, fact.HeadStart, fact.HeadEnd)},
+			Input:  validityParityInput(fact),
 			Target: validityTitleTarget(matches[fact.DocID]),
 		}
 		projectValiditySource(&row, fact, rules, verdicts[id].Verdict, catalog.occupants)
-		if row.Outcome == validity.OutcomeRewriteCandidate {
-			groups[*row.Destination] = append(groups[*row.Destination], len(inputs))
-		}
 		inputs = append(inputs, row)
 	}
 
+	rankValidityCandidates(inputs, catalog)
 	var rewrites []validityRewriteRow
+	for _, row := range inputs {
+		if row.Outcome != validity.OutcomeRewriteCandidate {
+			continue
+		}
+		rewrite, err := makeValidityRewrite(row, catalog.planned[row.ID], manifest[row.ID])
+		if err != nil {
+			return nil, nil, err
+		}
+		rewrites = append(rewrites, rewrite)
+	}
+	slices.SortFunc(rewrites, func(a, b validityRewriteRow) int { return cmp.Compare(a.ID, b.ID) })
+	return inputs, rewrites, nil
+}
+
+func validityParityInput(fact graph.RejudgeFact) validity.Input {
+	return validity.Input{Head: fact.HeadName, Relation: fact.Relation, Tail: fact.TailName, Title: fact.Title,
+		Evidence: ingest.EvidenceSentence(fact.Text, fact.HeadStart, fact.HeadEnd)}
+}
+
+func rankValidityCandidates(inputs []validity.InputsRow, catalog validityCatalog) {
+	groups := make(map[validity.DestinationKey][]int)
+	for i, row := range inputs {
+		if row.Outcome == validity.OutcomeRewriteCandidate {
+			groups[*row.Destination] = append(groups[*row.Destination], i)
+		}
+	}
 	for _, group := range groups {
 		ranks := make([]validity.CandidateRankInput, 0, len(group))
 		for _, i := range group {
@@ -201,17 +223,9 @@ func projectValidity(catalog validityCatalog, matches map[string][]graph.Catalog
 			row.CandidateGroup = ranks
 			if row.ID != winnerID {
 				row.Outcome, row.Reason = validity.OutcomeValidityDrop, "collision-merged:"+winnerID
-				continue
 			}
-			rewrite, err := makeValidityRewrite(*row, catalog.planned[row.ID], manifest[row.ID])
-			if err != nil {
-				return nil, nil, err
-			}
-			rewrites = append(rewrites, rewrite)
 		}
 	}
-	slices.SortFunc(rewrites, func(a, b validityRewriteRow) int { return cmp.Compare(a.ID, b.ID) })
-	return inputs, rewrites, nil
 }
 
 func validityTitleTarget(matches []graph.CatalogTitleMatch) validity.TitleTarget {
