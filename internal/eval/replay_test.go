@@ -2,9 +2,14 @@ package eval
 
 import (
 	"encoding/json"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 )
 
@@ -73,5 +78,51 @@ func TestReplaySidecarImageDigest(t *testing.T) {
 				t.Errorf("replaySidecarImageDigest = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestReplayHygieneWithValidity(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := t.Context()
+	dir := t.TempDir()
+	input, output := filepath.Join(dir, "sample.jsonl"), filepath.Join(dir, "predictions.jsonl")
+	// A zero-chunk sample exercises the header writer without calling a sidecar.
+	if counts, err := WriteSample(ctx, st, "replay-validity", input, 0, 0); err != nil || counts != (SampleCounts{}) {
+		t.Fatalf("empty sample = %+v, err = %v", counts, err)
+	}
+	var cfg config.Config
+	cfg.Memgraph.URI = os.Getenv(graphtest.URIEnv)
+	cfg.Labels.PresetsDir = "../validity/testdata"
+	if _, err := Replay(ctx, cfg, input, output, "invented", "test", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var header struct {
+		Type    string
+		Preset  string
+		Hygiene struct {
+			Validity json.RawMessage
+		}
+	}
+	if err := json.NewDecoder(f).Decode(&header); err != nil {
+		t.Fatal(err)
+	}
+	if header.Type != "header" || header.Preset != "invented" {
+		t.Fatalf("replay header = %+v", header)
+	}
+	var lexicon struct{ Rules string }
+	if err := json.Unmarshal(header.Hygiene.Validity, &lexicon); err != nil {
+		t.Fatal(err)
+	}
+	if lexicon.Rules != "catalog-v3" {
+		t.Errorf("replay validity rules = %q, want catalog-v3", lexicon.Rules)
+	}
+	const wantDigest = "bdef5d4d09752aba374c43f0a84800206ac9f252cdd65727d4696c538d3f4ed1"
+	if got := sha256Hex(header.Hygiene.Validity); got != wantDigest {
+		t.Errorf("replay validity lexicon SHA-256 = %s, want %s", got, wantDigest)
 	}
 }

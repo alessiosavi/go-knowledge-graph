@@ -426,7 +426,6 @@ func readRejudgeVerdicts(f *os.File, rows map[string]rejudgeManifestRow) (rejudg
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot.info = info
 	// Fail closed on a torn append, even when the final JSON itself parses.
 	if info.Size() > 0 {
 		var end [1]byte
@@ -437,8 +436,15 @@ func readRejudgeVerdicts(f *os.File, rows map[string]rejudgeManifestRow) (rejudg
 			return snapshot, io.ErrUnexpectedEOF
 		}
 	}
+	snapshot, err = decodeRejudgeVerdicts(f, rows)
+	snapshot.info = info
+	return snapshot, err
+}
+
+func decodeRejudgeVerdicts(r io.Reader, rows map[string]rejudgeManifestRow) (rejudgeVerdictSnapshot, error) {
+	snapshot := rejudgeVerdictSnapshot{done: make(map[string]rejudgeVerdict), known: make(map[string]rejudgeVerdict)}
 	hash := sha256.New()
-	err = scanRejudgeLines(io.TeeReader(f, hash), func(_ int, raw []byte) error {
+	err := scanRejudgeLines(io.TeeReader(r, hash), func(_ int, raw []byte) error {
 		var v rejudgeVerdict
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return err

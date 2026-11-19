@@ -64,6 +64,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRepairNames(args[1:], stdout, stderr)
 	case "repair-labels":
 		return runRepairLabels(args[1:], stdout, stderr)
+	case "repair-validity":
+		return runRepairValidity(args[1:], stdout, stderr)
 	case "repair-titles":
 		return runRepairTitles(args[1:], stdout, stderr)
 	case "eval":
@@ -764,6 +766,7 @@ commands:
   migrate --schema-only  upgrade schema and leave re-extraction to serve
   repair-names [-dry-run]  clean stored entity display names in place
   repair-labels [-dry-run] [-domain slug] [-report path]  remove stored section labels
+  repair-validity  classify, plan and finalize a catalog validity repair read-only
   repair-titles [-apply] [-domain SLUG] [-out FILE]  fill missing document titles
   help      show this help (-h, --help)
   pdf-extract  internal isolated PDF parser

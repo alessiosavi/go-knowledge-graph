@@ -557,6 +557,59 @@ ok and kept bad ids with reasons. Apply is not part of this command yet.
 | `3` | The labelled gate failed. |
 | `4` | The run ended before all planned rows had verdicts and had no scored gate. This includes runs whose labels are all `skip` or blank. |
 
+### Catalog validity repair planning
+
+Use a preset with a `validity:` block. The default preset is `catalog`.
+Classification and planning read Memgraph. Finalization works offline. The
+two `judge rejudge -judge` invocations are separate budgeted runs.
+
+```sh
+mkdir -p bulk-run rewrite-run
+gkg repair-validity -classify -out inventory
+gkg judge rejudge -plan -ids inventory/planned-ids.txt -out bulk-run/manifest.jsonl
+gkg judge rejudge -judge -manifest bulk-run/manifest.jsonl \
+  -budget-attempts "$BULK_BUDGET" -out bulk-run/verdicts.jsonl
+gkg repair-validity -plan -manifest bulk-run/manifest.jsonl \
+  -verdicts bulk-run/verdicts.jsonl -out draft
+gkg judge rejudge -judge -manifest draft/rewrites.jsonl \
+  -budget-attempts "$REWRITE_BUDGET" -out rewrite-run/verdicts.jsonl
+gkg repair-validity -finalize -plan draft -rewrite-verdicts rewrite-run/verdicts.jsonl
+```
+
+Pass the same `-preset NAME` to classify and plan when selecting another
+preset. `planned-ids.txt` contains ID-only JSONL for the rejudge selection.
+Ambiguous logical keys and unverifiable edges are recorded in the inventory.
+A missing document is attributed to the chunk's recorded owner when available.
+Orphans with no attributable owner are reported for any selected preset.
+Planning rescans the inventory and checks the planned IDs, prior judges and
+frozen requests against the sealed bulk run. Each verdict file needs its
+completed sibling `attempts.json`.
+
+For a draft with zero candidates, skip the rewrite run and use
+`gkg repair-validity -finalize -plan draft -no-rewrites`. Read the projected
+counts in `plan.json` and the final counts and digest in `final-plan.json`.
+`affected.jsonl` lists the sources dropped for missing or ambiguous targets
+and collisions. Each row includes the source `doc_id` and `chunk_id` and each
+destination's projected state.
+`affected-summary.json` counts sources without a confirmed destination.
+Artifacts have mode `0600`. Use separate inventory, run and draft directories.
+An existing output file or an input mismatch exits `2` before publishing any
+outputs. Success exits `0` and operational errors exit `1`.
+
+The inventory, draft and final digests are SHA-256 over the following ordered
+tuples. Each component is prefixed with its byte length as an unsigned 64-bit
+big-endian integer. Use lowercase hex text for digest components and exact file
+bytes for JSONL components, including their final newlines.
+
+- Inventory uses the preset name (the contents of `preset.txt` without the
+  final newline), `inventory.jsonl` and `planned-ids.txt`.
+- Draft uses the SHA-256 of `source-manifest.jsonl`, the SHA-256 of
+  `source-verdicts.jsonl`, `inputs.jsonl`, `rewrites.jsonl`, the rules ID in
+  `plan.json` and the SHA-256 of `lexicon.json`. The first input row carries the
+  inventory digest.
+- Final uses the draft digest, the SHA-256 of `rewrite-verdicts.jsonl` (or the
+  literal text `no-rewrites`) and `final.jsonl`.
+
 ### Graph quality report
 
 ```sh

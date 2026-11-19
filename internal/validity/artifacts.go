@@ -29,11 +29,14 @@ const (
 // Occupants and CandidateGroup record the inputs to collision decisions at K.
 // Empty lists encode as [] and decode as nil slices from either [] or null.
 type InputsRow struct {
-	ID         string `json:"id"`
-	Domain     string `json:"domain"`
-	Preset     string `json:"preset"`
-	Bucket     string `json:"bucket"`
-	PriorJudge string `json:"prior_judge"`
+	// InventoryDigest binds the full classifier inventory to the draft.
+	// It is recorded in the first row of inputs.jsonl.
+	InventoryDigest string `json:"inventory_digest,omitempty"`
+	ID              string `json:"id"`
+	Domain          string `json:"domain"`
+	Preset          string `json:"preset"`
+	Bucket          string `json:"bucket"`
+	PriorJudge      string `json:"prior_judge"`
 	Input
 	Decision
 	Target         TitleTarget          `json:"target"`
@@ -101,6 +104,8 @@ type DestinationKey struct {
 type Occupant struct {
 	ID    string `json:"id"`
 	Judge string `json:"judge"`
+	// EdgeID distinguishes live occupants with the same logical audit id.
+	EdgeID *int `json:"edge_id,omitempty"`
 }
 
 // CandidateRankInput records the confidence and source id used to rank a

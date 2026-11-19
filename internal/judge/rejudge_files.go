@@ -76,7 +76,20 @@ func readRejudgeManifest(path string) (rejudgeManifest, string, error) {
 	}
 	defer f.Close()
 	hash := sha256.New()
-	err = scanRejudgeLines(io.TeeReader(f, hash), func(line int, raw []byte) error {
+	m, err = decodeRejudgeManifest(io.TeeReader(f, hash))
+
+	if err == nil && len(m.rows) == 0 {
+		err = errors.New("manifest has no rows")
+	}
+	if err != nil {
+		return m, "", fmt.Errorf("read manifest %s: %w", path, err)
+	}
+	return m, fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
+func decodeRejudgeManifest(r io.Reader) (rejudgeManifest, error) {
+	var m rejudgeManifest
+	err := scanRejudgeLines(r, func(line int, raw []byte) error {
 		if line == 1 {
 			return json.Unmarshal(raw, &m.header)
 		}
@@ -90,13 +103,7 @@ func readRejudgeManifest(path string) (rejudgeManifest, string, error) {
 	if err == nil && m.header.Version != rejudgeManifestVersion {
 		err = fmt.Errorf("invalid manifest version %d", m.header.Version)
 	}
-	if err == nil && len(m.rows) == 0 {
-		err = errors.New("manifest has no rows")
-	}
-	if err != nil {
-		return m, "", fmt.Errorf("read manifest %s: %w", path, err)
-	}
-	return m, fmt.Sprintf("%x", hash.Sum(nil)), nil
+	return m, err
 }
 
 type rejudgeAttempts struct {
@@ -131,18 +138,23 @@ func readRejudgeAttempts(path string) (*rejudgeAttempts, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	a, err := decodeRejudgeAttempts(path, raw)
+	return a, raw, err
+}
+
+func decodeRejudgeAttempts(path string, raw []byte) (*rejudgeAttempts, error) {
 	var a rejudgeAttempts
 	if err := json.Unmarshal(raw, &a); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if a.Cap <= 0 || a.Attempts < 0 || a.Attempts > a.Cap || a.LastAttempts < 0 || a.LastAttempts > a.Attempts ||
 		(a.LastID == "") != (a.LastAttempts == 0) || (a.Attempts == 0) != (a.LastAttempts == 0) {
-		return nil, nil, fmt.Errorf("invalid attempts or cap in %s", path)
+		return nil, fmt.Errorf("invalid attempts or cap in %s", path)
 	}
 	if a.Completed != (a.VerdictsSHA256 != "") {
-		return nil, nil, fmt.Errorf("invalid verdicts seal in %s", path)
+		return nil, fmt.Errorf("invalid verdicts seal in %s", path)
 	}
-	return &a, raw, nil
+	return &a, nil
 }
 
 // rejudgeVerdictsDigest hashes the exact bytes of the open verdict log and

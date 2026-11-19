@@ -3,6 +3,8 @@ package graph
 import (
 	"context"
 	"fmt"
+
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 // RejudgeIdentity identifies one typed edge in the evaluation population.
@@ -136,7 +138,15 @@ func (s *Store) WalkRejudgeFacts(ctx context.Context, domain string, ids []strin
 }
 
 func (s *Store) rejudgeFacts(ctx context.Context, refs []map[string]any) ([]RejudgeFact, error) {
-	rows, err := s.runRead(ctx, rejudgeHydrate, map[string]any{"refs": refs})
+	return readRejudgeFacts(func(query string, params map[string]any) ([]*neo4j.Record, error) {
+		return s.runRead(ctx, query, params)
+	}, refs)
+}
+
+type rejudgeRead func(string, map[string]any) ([]*neo4j.Record, error)
+
+func readRejudgeFacts(read rejudgeRead, refs []map[string]any) ([]RejudgeFact, error) {
+	rows, err := read(rejudgeHydrate, map[string]any{"refs": refs})
 	if err != nil {
 		return nil, fmt.Errorf("graph: read rejudge evidence: %w", err)
 	}
@@ -176,31 +186,46 @@ func (s *Store) rejudgeFacts(ctx context.Context, refs []map[string]any) ([]Reju
 // RejudgePreviousChunks retrieves the immediately preceding chunk by sequence
 // for the selected chunks, verifying both chunks belong to the same document.
 func (s *Store) RejudgePreviousChunks(ctx context.Context, chunks map[string]string) (map[string]string, error) {
+	previous, duplicates, err := rejudgePreviousChunks(func(query string, params map[string]any) ([]*neo4j.Record, error) {
+		return s.runRead(ctx, query, params)
+	}, chunks)
+	if err != nil {
+		return nil, err
+	}
+	if len(duplicates) != 0 {
+		return nil, fmt.Errorf("graph: multiple preceding chunks for %s", duplicates[0])
+	}
+	return previous, nil
+}
+
+func rejudgePreviousChunks(read rejudgeRead, chunks map[string]string) (map[string]string, []string, error) {
 	refs := make([]map[string]any, 0, len(chunks))
 	for chunk, doc := range chunks {
 		refs = append(refs, map[string]any{"chunk": chunk, "doc": doc})
 	}
 	out := make(map[string]string, len(refs))
+	var duplicates []string
 	if len(refs) == 0 {
-		return out, nil
+		return out, duplicates, nil
 	}
-	rows, err := s.runRead(ctx, `UNWIND $refs AS f
+	rows, err := read(`UNWIND $refs AS f
 MATCH (d:Document {id:f.doc}), (c:Chunk {id:f.chunk})
 WHERE c.doc_id = d.id AND (d)-[:HAS_CHUNK]->(c)
 MATCH (d)-[:HAS_CHUNK]->(p:Chunk)
 WHERE p.doc_id = d.id AND p.seq = c.seq - 1
 RETURN c.id AS chunk, p.id AS previous, p.text AS text ORDER BY chunk, previous`, map[string]any{"refs": refs})
 	if err != nil {
-		return nil, fmt.Errorf("graph: read previous rejudge chunks: %w", err)
+		return nil, nil, fmt.Errorf("graph: read previous rejudge chunks: %w", err)
 	}
 	for _, row := range rows {
 		id := getString(row, "chunk")
 		if _, ok := out[id]; ok {
-			return nil, fmt.Errorf("graph: multiple preceding chunks for %s", id)
+			duplicates = append(duplicates, id)
+			continue
 		}
 		out[id] = getString(row, "text")
 	}
-	return out, nil
+	return out, duplicates, nil
 }
 
 // CountCachedJudgeRequests counts present keys with bounded, indexed lookups.
