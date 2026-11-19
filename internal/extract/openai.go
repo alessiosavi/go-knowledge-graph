@@ -188,7 +188,8 @@ func (o *OpenAI) doBatch(ctx context.Context, body []byte, chunks []RequestChunk
 		if !ok {
 			wc = wireChunk{ChunkID: c.ID}
 		}
-		out = append(out, validateChunkResult(c.Text, wc, entitySet, relationSet))
+		result, _ := validateChunkResult(c.Text, wc, entitySet, relationSet)
+		out = append(out, result)
 	}
 	return out, false, nil
 }
@@ -214,7 +215,8 @@ func previewContent(s string) string {
 // remaps relation indexes after filtering, clamps scores to [0,1] and
 // defaults missing scores to 0.5. Labels must belong to the requested sets
 // (unless the request specified none, in which case no filtering applies).
-func validateChunkResult(text string, wc wireChunk, entitySet, relationSet map[string]bool) ChunkResult {
+// It also returns the mapping from wire entity indexes to kept mention indexes.
+func validateChunkResult(text string, wc wireChunk, entitySet, relationSet map[string]bool) (ChunkResult, map[int]int) {
 	res := ChunkResult{ChunkID: wc.ChunkID}
 
 	keptIdx := make(map[int]int, len(wc.Entities))
@@ -263,7 +265,7 @@ func validateChunkResult(text string, wc wireChunk, entitySet, relationSet map[s
 			Score: clampScore(r.Score),
 		})
 	}
-	return res
+	return res, keptIdx
 }
 
 func clampScore(score *float64) float64 {

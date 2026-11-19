@@ -11,6 +11,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
 )
 
 func TestBuildExtractionNameIdentity(t *testing.T) {
@@ -69,6 +70,38 @@ func TestBuildExtractionSameSpanTwoLabels(t *testing.T) {
 				t.Errorf("scores %v, reverse %v: entities = %+v, want shopify with mentions %+v", scores, reverse, ents, want)
 			}
 		}
+	}
+}
+
+func TestBuildExtractionIgnoresAmbiguousRelationDiagnostic(t *testing.T) {
+	p := &Pipeline{}
+	doc := graph.Document{ID: "doc"}
+	chunk := graph.Chunk{ID: "c1", Text: "Città cites Notes"}
+	result := extract.ChunkResult{
+		ChunkID: chunk.ID,
+		Mentions: []extract.Mention{
+			{Label: "place", Text: "Città", Start: 0, End: 6, Score: 0.8},
+			{Label: "work", Text: "Città", Start: 0, End: 6, Score: 0.7},
+			{Label: "work", Text: "Notes", Start: 13, End: 18, Score: 0.9},
+		},
+		Diagnostics: []extract.Diagnostic{{
+			Type: "ambiguous_relation", Label: "cites_work", Score: 0.7,
+			HeadCandidates: []int{0, 1}, TailCandidates: []int{2},
+		}},
+	}
+	for _, tc := range []struct {
+		name   string
+		result hygiene.Result
+	}{
+		{"raw", rawExtraction(result)},
+		{"with hygiene", hygiene.Apply(result, chunk.Text, hygiene.Preset{})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ents, facts, audits := p.buildExtraction(&doc, chunk, tc.result, "test", nil)
+			if len(ents) != 2 || len(facts) != 0 || len(audits) != 0 {
+				t.Errorf("entities = %+v, facts = %+v, audits = %+v, want only the two entities", ents, facts, audits)
+			}
+		})
 	}
 }
 

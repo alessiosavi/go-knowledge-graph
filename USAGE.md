@@ -347,6 +347,11 @@ The JSON report records `preset` (empty for built-in defaults), plus each
 label's `name`, `text` and `threshold`. Mock runs check the harness; their
 scores do not measure extraction quality.
 
+If a sidecar relation endpoint matches several returned entities and the model
+cannot identify one, the sidecar reports an `ambiguous_relation` diagnostic
+with candidate entity indexes for both endpoints. Ingest ignores diagnostics
+and builds facts from resolved relations.
+
 The documentation, code, mail, meeting and demo thresholds are tuned on their
 golden sets against the GLiNER sidecar: the highest values on the best F1
 plateau of a sweep (`general` and `news` keep the starting values; the

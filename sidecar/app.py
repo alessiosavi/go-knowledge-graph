@@ -12,6 +12,10 @@ Contract (design section 5.4):
   score}], "relations": [{label, head, tail, score}]}]}`` — one result per
   submitted chunk, in order, with **byte** offsets and relation
   ``head``/``tail`` as indexes into that chunk's entity list.
+  Each result may include ``"diagnostics": [{type, label, score,
+  head_candidates, tail_candidates}]``. Omission means empty. An
+  ``ambiguous_relation`` diagnostic lists the possible entity indexes on
+  each side of a relation withheld because an endpoint has multiple matches.
 
 The runtime adapter (``_adapt``) converts the pinned ``glinerel-fast``
 output (span objects, character offsets) into that wire shape. Weights are
@@ -112,8 +116,13 @@ def _byte_offsets(text: str, start: int, end: int) -> tuple[int, int]:
 def _adapt(text: str, raw: dict) -> dict:
     """Runtime result -> wire result for one chunk."""
     entities = []
-    for e in raw.get("entities", []):
-        start, end = _byte_offsets(text, e["start"], e["end"])
+    by_span = {}
+    raw_entities = raw.get("entities", [])
+    for i, e in enumerate(raw_entities):
+        span = (e["start"], e["end"])
+        # Keep the first relation candidate in each group of identical entities.
+        by_span.setdefault(span, {}).setdefault((e["label"], e["text"]), i)
+        start, end = _byte_offsets(text, *span)
         entities.append(
             {
                 "label": e["label"],
@@ -124,30 +133,57 @@ def _adapt(text: str, raw: dict) -> dict:
             }
         )
 
-    def span_index(span):
-        if isinstance(span, int):
-            return span
-        if isinstance(span, dict) and "start" in span and "end" in span:
-            start, end = _byte_offsets(text, span["start"], span["end"])
-            for i, e in enumerate(entities):
-                if e["start"] == start and e["end"] == end:
-                    return i
-        return -1
+    def endpoint_candidates(endpoint):
+        if isinstance(endpoint, dict):
+            index = endpoint.get("index")
+            if "start" in endpoint and "end" in endpoint:
+                span = (endpoint["start"], endpoint["end"])
+                label = endpoint.get("label")
+                if type(index) is int and 0 <= index < len(raw_entities):
+                    entity = raw_entities[index]
+                    if (entity["start"], entity["end"]) == span and (
+                        label is None or entity["label"] == label
+                    ):
+                        return [index]
+                candidates = by_span.get(span, {})
+                return [
+                    i for (name, _), i in candidates.items() if label is None or name == label
+                ]
+            endpoint = index
+        if type(endpoint) is int and 0 <= endpoint < len(entities):
+            return [endpoint]
+        return []
 
     relations = []
+    diagnostics = []
     for r in raw.get("relations", []):
-        head, tail = span_index(r.get("head")), span_index(r.get("tail"))
-        if head < 0 or tail < 0:
-            continue  # relation referencing an entity the adapter dropped
+        head = endpoint_candidates(r.get("head"))
+        tail = endpoint_candidates(r.get("tail"))
+        if not head or not tail:
+            continue
+        if len(head) > 1 or len(tail) > 1:
+            diagnostics.append(
+                {
+                    "type": "ambiguous_relation",
+                    "label": r["label"],
+                    "score": r.get("score", 0.5),
+                    "head_candidates": head,
+                    "tail_candidates": tail,
+                }
+            )
+            continue
         relations.append(
             {
                 "label": r["label"],
-                "head": head,
-                "tail": tail,
+                "head": head[0],
+                "tail": tail[0],
                 "score": r.get("score", 0.5),
             }
         )
-    return {"entities": entities, "relations": relations}
+    result = {"entities": entities, "relations": relations}
+    if diagnostics:
+        result["diagnostics"] = diagnostics
+    return result
 
 
 @app.get("/healthz")
