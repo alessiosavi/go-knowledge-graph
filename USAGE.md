@@ -431,7 +431,8 @@ from the selected preset. Each chunk has one result row with the document's stor
 show `null` for `labels`.
 
 Replay checks sidecar health once for a nonempty sample and batches each
-document's nonduplicate chunks in sequence order as ingest does. In replay,
+document's nonduplicate chunks (every chunk with `-no-borrow`) in sequence
+order as ingest does. In replay,
 each batch must return exactly one result for every requested chunk ID.
 Missing, duplicate or unrequested IDs fail the batch, which is retried one
 chunk at a time. Predictions for chunks with zero extracted relations are
@@ -441,11 +442,14 @@ and entity keys, endpoint types, relation, model label text, confidence,
 evidence, document title and disposition. `stored_winner` marks the occurrence
 selected by ingest's per-chunk storage rules before judging. With
 `facts.require_confirmation=true`, the winner would be stored as a candidate.
-Duplicates borrow occurrences from their root in the sample, with
-`source_chunk_id` identifying the chunk the evidence and offsets come from.
-Their winner flags are false. A duplicate whose root is outside the sample
-is `empty` after a successful health check and has `duplicate_root` set to
-`outside_sample`; exclude those rows from the fidelity comparison. A cyclic
+With normal borrowing, duplicates borrow occurrences from their root in the
+sample, with `source_chunk_id` identifying the chunk the evidence and offsets
+come from. Their winner flags are false. A duplicate whose root is outside the
+sample is `empty` after a successful health check and has `duplicate_root` set
+to `outside_sample`; exclude those rows from the fidelity comparison. With
+`-no-borrow`, every duplicate (including one whose root is outside the sample)
+is extracted locally: its rows carry their own occurrences and winner flags,
+no `source_chunk_id`, and `duplicate_root` stays informational. A cyclic
 chain is flagged as `cycle`: `eval-sample` exports it without
 `duplicate_of`, and replay extracts it as ingest does, so its occurrences
 stay comparable. The `empty` count includes `outside_sample` rows. The replay
