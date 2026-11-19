@@ -55,9 +55,10 @@ func (s *Store) UpsertDocument(ctx context.Context, in DocumentInput) (UpsertRes
 				err := s.runWrite(ctx, `
 MATCH (d:Document {id: $id})
 SET d.status = $status, d.error = '', d.labels = $labels, d.title = $title,
-    d.final_url = $final, d.updated_at = $now`, map[string]any{
+    d.title_source = $title_source, d.final_url = $final, d.updated_at = $now`, map[string]any{
 					"id": d.ID, "status": string(StatusReceived), "labels": in.Labels,
-					"title": in.Title, "final": in.FinalURL, "now": time.Now().UTC().Format(timeLayout),
+					"title": in.Title, "title_source": in.TitleSource, "final": in.FinalURL,
+					"now": time.Now().UTC().Format(timeLayout),
 				})
 				return UpsertResult{ID: d.ID}, err
 			}
@@ -81,13 +82,14 @@ SET d.status = $status, d.error = '', d.labels = $labels, d.title = $title,
 MERGE (d:Document {id: $id})
 ON CREATE SET d.created_at = $now
 SET d.source_kind = $kind, d.source = $source, d.final_url = $final, d.title = $title,
+    d.title_source = $title_source,
     d.hash = $hash, d.labels = $labels, d.status = $status, d.error = '', d.updated_at = $now, d.version_at = $now,
     d.supersedes = coalesce(d.supersedes, ''),
     d.domain = CASE WHEN $domain <> '' THEN $domain ELSE d.domain END,
     d.domain_tok = CASE WHEN $domain <> '' THEN $domain_tok ELSE d.domain_tok END`,
 		map[string]any{
 			"id": id, "kind": in.Kind, "source": in.Source, "final": in.FinalURL,
-			"title": in.Title, "hash": in.Hash, "labels": in.Labels,
+			"title": in.Title, "title_source": in.TitleSource, "hash": in.Hash, "labels": in.Labels,
 			"status": string(StatusReceived),
 			"domain": in.Domain, "domain_tok": domainTokenOrNil(in.Domain),
 			"now": time.Now().UTC().Format(timeLayout),
@@ -524,7 +526,7 @@ func (s *Store) Document(ctx context.Context, id string) (*Document, error) {
 	recs, err := s.runRead(ctx, `
 MATCH (d:Document {id: $id})
 RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
-       d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
+       d.title AS title, d.title_source AS title_source, d.hash AS hash, d.status AS status, d.error AS error,
        coalesce(d.labels, '') AS labels, d.domain AS domain,
        d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes`,
 		map[string]any{"id": id})
@@ -565,7 +567,7 @@ func (s *Store) DocumentsIn(ctx context.Context, status Status, slug string, lim
 	}
 	q += `
  RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
- d.title AS title, d.hash AS hash, d.status AS status, d.error AS error,
+ d.title AS title, d.title_source AS title_source, d.hash AS hash, d.status AS status, d.error AS error,
  coalesce(d.labels, '') AS labels, d.domain AS domain,
  d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
  ORDER BY d.updated_at DESC`
@@ -718,19 +720,20 @@ ORDER BY coalesce(o.version_at, o.created_at) ASC, o.id ASC`,
 
 func recordToDocument(r *neo4j.Record) *Document {
 	return &Document{
-		ID:         getString(r, "id"),
-		Domain:     getString(r, "domain"),
-		SourceKind: getString(r, "source_kind"),
-		Source:     getString(r, "source"),
-		FinalURL:   getString(r, "final_url"),
-		Title:      getString(r, "title"),
-		Hash:       getString(r, "hash"),
-		Status:     Status(getString(r, "status")),
-		Error:      getString(r, "error"),
-		Labels:     getString(r, "labels"),
-		CreatedAt:  parseTime(getString(r, "created_at")),
-		UpdatedAt:  parseTime(getString(r, "updated_at")),
-		Supersedes: getString(r, "supersedes"),
+		ID:          getString(r, "id"),
+		Domain:      getString(r, "domain"),
+		SourceKind:  getString(r, "source_kind"),
+		Source:      getString(r, "source"),
+		FinalURL:    getString(r, "final_url"),
+		Title:       getString(r, "title"),
+		TitleSource: getString(r, "title_source"),
+		Hash:        getString(r, "hash"),
+		Status:      Status(getString(r, "status")),
+		Error:       getString(r, "error"),
+		Labels:      getString(r, "labels"),
+		CreatedAt:   parseTime(getString(r, "created_at")),
+		UpdatedAt:   parseTime(getString(r, "updated_at")),
+		Supersedes:  getString(r, "supersedes"),
 	}
 }
 

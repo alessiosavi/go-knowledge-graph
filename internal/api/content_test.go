@@ -16,7 +16,7 @@ import (
 func TestDocumentContentEndpoint(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()
-	res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: apiSource(t), Hash: "hash-api-content", Title: "Content doc"})
+	res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: apiSource(t), Hash: "hash-api-content", Title: "Content doc", TitleSource: "caller"})
 	if err != nil {
 		t.Fatalf("UpsertDocument: %v", err)
 	}
@@ -36,8 +36,9 @@ func TestDocumentContentEndpoint(t *testing.T) {
 		t.Fatalf("code = %d, body %s", rr.Code, rr.Body.String())
 	}
 	got := decode[contentResponse](t, rr)
-	if got.Document.ID != res.ID || got.Document.Title != "Content doc" {
-		t.Errorf("document = %+v, want id %s title Content doc", got.Document, res.ID)
+	if got.Document.ID != res.ID || got.Document.Title != "Content doc" ||
+		got.Document.TitleSource != "caller" || !strings.Contains(rr.Body.String(), `"title_source":"caller"`) {
+		t.Errorf("document = %+v, want id %s with caller title Content doc", got.Document, res.ID)
 	}
 	if len(got.Chunks) != 2 {
 		t.Fatalf("chunks = %+v, want 2 entries", got.Chunks)

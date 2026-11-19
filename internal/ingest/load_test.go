@@ -365,6 +365,33 @@ func TestDecodePDFFromBytes(t *testing.T) {
 	}
 }
 
+func TestDecodePDFTitle(t *testing.T) {
+	body, err := os.ReadFile("testdata/sample.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Replace an equally sized region of the existing fixture's info
+	// dictionary so the PDF's cross-reference offsets remain valid.
+	start := bytes.Index(body, []byte("/Producer ("))
+	if start < 0 {
+		t.Fatal("PDF fixture has no producer entry")
+	}
+	size := bytes.Index(body[start:], []byte(" /CreationDate"))
+	const entry = "/Title (Fixture PDF - Phase B)"
+	if size < len(entry) {
+		t.Fatal("PDF fixture has no room for a title entry")
+	}
+	copy(body[start:start+size], entry+strings.Repeat(" ", size-len(entry)))
+	loaded, err := Decode(body, "application/pdf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Title != "Fixture PDF - Phase B" || loaded.TitleSource != "pdf" ||
+		!strings.Contains(loaded.Text, "GKG sample PDF fixture text") {
+		t.Fatalf("Decode PDF title=%q origin=%q text=%q", loaded.Title, loaded.TitleSource, loaded.Text)
+	}
+}
+
 // TestDecodePDFFromURLBody pins the PDF-over-URL fix: the %PDF magic wins
 // over a generic content type.
 func TestDecodePDFFromURLBody(t *testing.T) {
@@ -416,22 +443,22 @@ func TestPDFToTextNeverPanics(t *testing.T) {
 
 func TestIdentityRules(t *testing.T) {
 	cases := []struct {
-		name string
-		in   Input
-		kind string
-		src  string
-		err  bool
+		name        string
+		in          Input
+		kind, src   string
+		synthesized bool
+		err         bool
 	}{
-		{"url", Input{URL: "https://x.example/y"}, "url", "https://x.example/y", false},
-		{"url with source override", Input{URL: "https://x.example/y", Source: "custom"}, "url", "custom", false},
-		{"file with source", Input{Bytes: []byte("x"), Source: "notes.md"}, "file", "notes.md", false},
-		{"file without source", Input{Bytes: []byte("x")}, "", "", true},
-		{"text with source", Input{Text: "x", Source: "readme"}, "text", "readme", false},
-		{"text without source", Input{Text: "x"}, "text", "abc12345", false},
+		{"url", Input{URL: "https://x.example/y"}, "url", "https://x.example/y", false, false},
+		{"url with source override", Input{URL: "https://x.example/y", Source: "custom"}, "url", "custom", false, false},
+		{"file with source", Input{Bytes: []byte("x"), Source: "notes.md"}, "file", "notes.md", false, false},
+		{"file without source", Input{Bytes: []byte("x")}, "", "", false, true},
+		{"text with source", Input{Text: "x", Source: "abc12345"}, "text", "abc12345", false, false},
+		{"text without source", Input{Text: "x"}, "text", "abc12345", true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			kind, source, err := resolveIdentity(tc.in, "abc12345ffff")
+			kind, source, synthesized, err := resolveIdentity(tc.in, "abc12345ffff")
 			if tc.err {
 				if err == nil {
 					t.Fatalf("resolveIdentity(%+v) = %s/%s, want error", tc.in, kind, source)
@@ -441,8 +468,8 @@ func TestIdentityRules(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolveIdentity: %v", err)
 			}
-			if kind != tc.kind || source != tc.src {
-				t.Errorf("resolveIdentity = %s/%s, want %s/%s", kind, source, tc.kind, tc.src)
+			if kind != tc.kind || source != tc.src || synthesized != tc.synthesized {
+				t.Errorf("resolveIdentity = (%q, %q, %t), want (%q, %q, %t)", kind, source, synthesized, tc.kind, tc.src, tc.synthesized)
 			}
 		})
 	}

@@ -66,18 +66,19 @@ type ingestResponse struct {
 }
 
 type documentDTO struct {
-	Domain     string    `json:"domain"`
-	ID         string    `json:"id"`
-	SourceKind string    `json:"source_kind"`
-	Source     string    `json:"source"`
-	FinalURL   string    `json:"final_url,omitempty"`
-	Title      string    `json:"title,omitempty"`
-	Status     string    `json:"status"`
-	Error      string    `json:"error,omitempty"`
-	Labels     string    `json:"labels,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	Supersedes string    `json:"supersedes,omitempty"`
+	Domain      string    `json:"domain"`
+	ID          string    `json:"id"`
+	SourceKind  string    `json:"source_kind"`
+	Source      string    `json:"source"`
+	FinalURL    string    `json:"final_url,omitempty"`
+	Title       string    `json:"title,omitempty"`
+	TitleSource string    `json:"title_source"`
+	Status      string    `json:"status"`
+	Error       string    `json:"error,omitempty"`
+	Labels      string    `json:"labels,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Supersedes  string    `json:"supersedes,omitempty"`
 }
 
 type documentsResponse struct {
@@ -572,18 +573,19 @@ func queryBool(r *http.Request, name string) bool {
 
 func toDocumentDTO(d graph.Document) documentDTO {
 	return documentDTO{
-		Domain:     d.Domain,
-		ID:         d.ID,
-		SourceKind: d.SourceKind,
-		Source:     d.Source,
-		FinalURL:   d.FinalURL,
-		Title:      d.Title,
-		Status:     string(d.Status),
-		Error:      d.Error,
-		Labels:     d.Labels,
-		CreatedAt:  d.CreatedAt,
-		UpdatedAt:  d.UpdatedAt,
-		Supersedes: d.Supersedes,
+		Domain:      d.Domain,
+		ID:          d.ID,
+		SourceKind:  d.SourceKind,
+		Source:      d.Source,
+		FinalURL:    d.FinalURL,
+		Title:       d.Title,
+		TitleSource: d.TitleSource,
+		Status:      string(d.Status),
+		Error:       d.Error,
+		Labels:      d.Labels,
+		CreatedAt:   d.CreatedAt,
+		UpdatedAt:   d.UpdatedAt,
+		Supersedes:  d.Supersedes,
 	}
 }
 
