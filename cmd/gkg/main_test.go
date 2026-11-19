@@ -143,9 +143,13 @@ func TestEvalBuiltinWithoutLabels(t *testing.T) {
 	t.Setenv("GKG_LABELS_PRESETS_DIR", "labels")
 	t.Setenv("GKG_JUDGE_MODE", "off")
 	var out, errb bytes.Buffer
-	code := run([]string{"eval", "--golden", golden, "--provider", "mock"}, &out, &errb)
-	if code != 0 || errb.Len() != 0 || !strings.Contains(out.String(), "entities F1") {
-		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errb.String())
+	for _, extra := range [][]string{nil, {"ignored", "--also-ignored"}} {
+		out.Reset()
+		errb.Reset()
+		code := run(append([]string{"eval", "--golden", golden, "--provider", "mock"}, extra...), &out, &errb)
+		if code != 0 || errb.Len() != 0 || !strings.Contains(out.String(), "entities F1") {
+			t.Fatalf("extra args=%q exit=%d stdout=%q stderr=%q", extra, code, out.String(), errb.String())
+		}
 	}
 }
 

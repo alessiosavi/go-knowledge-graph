@@ -83,16 +83,21 @@ func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 // ErrSchemaNewer when it is newer: check the error before the boolean, since
 // a newer graph must never be treated as one to migrate.
 func (s *Store) ExtractionSchemaCurrent(ctx context.Context) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	version, err := s.extractionSchemaVersion(ctx)
+	version, err := s.CheckExtractionSchema(ctx)
+	return err == nil && version == ExtractionSchemaVersion, err
+}
+
+// CheckExtractionSchema reads the marker and rejects versions newer than
+// this binary with ErrSchemaNewer. Older versions are returned for diagnostics.
+func (s *Store) CheckExtractionSchema(ctx context.Context) (int, error) {
+	version, err := s.SchemaVersion(ctx)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	if version > ExtractionSchemaVersion {
-		return false, schemaNewerError{version: version}
+		return 0, schemaNewerError{version: version}
 	}
-	return version == ExtractionSchemaVersion, nil
+	return version, nil
 }
 
 // MigrateExtractionSchema clears outdated derived data and requeues its live

@@ -1,7 +1,9 @@
 package ingest
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -135,6 +137,34 @@ func TestLoadPresetAllowsMappingKeysAcrossKinds(t *testing.T) {
 	}
 	if len(entities) != 1 || entities[0].Text != "uses" || len(relations) != 1 || relations[0].Text != "uses" {
 		t.Fatalf("labels = %+v / %+v", entities, relations)
+	}
+}
+
+func TestLoadPresetWarnsOnUnknownKeys(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+	data := []byte("entities: [{name: kind, threshold: 0, synthetic_hint: true}]\n" +
+		"code_tokens: true\nallowlist: [Zorbax]\nstoplist: {patterns: ['^Zorbax$'], synthetic_rule: []}\n" +
+		"synthetic_setting: true\n")
+	if err := os.WriteFile(filepath.Join(dir, "synthetic.yaml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entities, _, err := LoadPreset(dir, "synthetic")
+	if err != nil || len(entities) != 1 || entities[0].Threshold != 0 {
+		t.Fatalf("lenient loader returned %+v, %v", entities, err)
+	}
+	got := logs.String()
+	if strings.Count(got, "level=WARN") != 3 {
+		t.Errorf("expected three unknown-key warnings, got %s", got)
+	}
+	for _, name := range []string{"synthetic_hint", "synthetic_rule", "synthetic_setting"} {
+		if !strings.Contains(got, name) {
+			t.Errorf("warnings omitted %q: %s", name, got)
+		}
 	}
 }
 

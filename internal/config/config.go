@@ -71,6 +71,7 @@ type OpenAIConfig struct {
 type SidecarConfig struct {
 	URL      string `yaml:"url"`
 	Model    string `yaml:"model"`
+	Image    string `yaml:"image"` // optional image reference for replay provenance
 	TimeoutS int    `yaml:"timeout_s"`
 }
 

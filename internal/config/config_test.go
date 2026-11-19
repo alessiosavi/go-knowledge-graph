@@ -272,6 +272,7 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_EXTRACTOR_OPENAI_MODEL", "om", "om", func(c config.Config) any { return c.Extractor.OpenAI.Model }},
 		{"GKG_EXTRACTOR_SIDECAR_URL", "http://localhost:9999", "http://localhost:9999", func(c config.Config) any { return c.Extractor.Sidecar.URL }},
 		{"GKG_EXTRACTOR_SIDECAR_MODEL", "glinerel-314m", "glinerel-314m", func(c config.Config) any { return c.Extractor.Sidecar.Model }},
+		{"GKG_EXTRACTOR_SIDECAR_IMAGE", "synthetic:tag", "synthetic:tag", func(c config.Config) any { return c.Extractor.Sidecar.Image }},
 		{"GKG_EXTRACTOR_SIDECAR_TIMEOUT_S", "42", 42, func(c config.Config) any { return c.Extractor.Sidecar.TimeoutS }},
 		{"GKG_INGEST_SPOOL_DIR", "custom-spool", "custom-spool", func(c config.Config) any { return c.Ingest.SpoolDir }},
 		{"GKG_INGEST_SPOOL_MAX_COUNT", "12", 12, func(c config.Config) any { return c.Ingest.SpoolMaxCount }},

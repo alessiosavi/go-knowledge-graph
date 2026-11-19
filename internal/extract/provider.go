@@ -17,6 +17,14 @@ type Label struct {
 	Definition string `yaml:"definition" json:"-"`
 }
 
+// SidecarText is the label sent to the sidecar model.
+func (l Label) SidecarText() string {
+	if l.Text != "" {
+		return l.Text
+	}
+	return l.Name
+}
+
 // RequestChunk is one chunk submitted for extraction. The JSON tags are
 // part of the frozen sidecar wire contract ({"id", "text"}).
 type RequestChunk struct {

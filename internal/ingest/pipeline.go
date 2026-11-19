@@ -114,8 +114,8 @@ type submission struct {
 // pipelineStore is the graph surface used by the pipeline. Production uses
 // graph.Store; tests can exercise durable admission/recovery without a server.
 type pipelineStore interface {
+	duplicateRootStore
 	UpsertDocument(context.Context, graph.DocumentInput) (graph.UpsertResult, error)
-	Document(context.Context, string) (*graph.Document, error)
 	InFlight(context.Context) ([]graph.Document, error)
 	DoneDocumentIDs(context.Context) ([]string, error)
 	ResetExtraction(context.Context, string, string) error
@@ -139,7 +139,6 @@ type pipelineStore interface {
 	Supersede(context.Context, string, string) error
 	SameIdentityDocumentIDs(context.Context, string, string) (map[string]bool, error)
 	ChunkRefsByExactKey(context.Context, string, []string, string) ([]graph.ChunkRef, error)
-	ChunkByID(context.Context, string) (graph.Chunk, error)
 	DomainProfiles(context.Context, string) ([]domain.DocProfile, error)
 	AssignDomain(context.Context, graph.Assignment) error
 	UpdateNameProfile(context.Context, string, domain.Profile) error
@@ -536,13 +535,8 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		if err != nil {
 			return fail("labels", err)
 		}
-		docScoped := make(map[string]bool)
-		for _, l := range ents {
-			if l.Scope == "document" {
-				docScoped[l.Name] = true
-			}
-		}
-		var roots map[string]graph.Chunk
+		docScoped := documentScopedLabels(ents)
+		var roots map[string]DuplicateRoot
 		if p.writeMode.Domains {
 			roots, err = p.duplicateRoots(ctx, chunks)
 			if err != nil {
@@ -592,7 +586,7 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 			var clear []string
 			for i := range chunks {
 				c := &chunks[i]
-				if c.DuplicateOf != "" && roots[c.ID].DocID != doc.ID && roots[c.ID].Domain != doc.Domain {
+				if c.DuplicateOf != "" && !roots[c.ID].CanBorrow(doc.ID, doc.Domain) {
 					clear = append(clear, c.ID)
 					c.DuplicateOf = ""
 					second.Chunks = append(second.Chunks, extract.RequestChunk{ID: c.ID, Text: c.Text})
@@ -661,8 +655,8 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 			// Judge exactly what was written: UpsertExtraction dedupes per
 			// (head, rel, tail) keeping max confidence, so re-apply that
 			// before collecting judge candidates.
-			for _, f := range dedupeFactCandidates(facts) {
-				judgeCandidates = append(judgeCandidates, judgeCandidate{fact: f, chunkText: c.Text, chunkID: c.ID})
+			for _, i := range graph.FactWinnerIndices(facts) {
+				judgeCandidates = append(judgeCandidates, judgeCandidate{fact: facts[i], chunkText: c.Text, chunkID: c.ID})
 			}
 		}
 		if p.writeMode.Domains {
@@ -803,29 +797,6 @@ type judgeCandidate struct {
 	fact      graph.FactUpsert
 	chunkText string
 	chunkID   string
-}
-
-// dedupeFactCandidates mirrors UpsertExtraction's per-chunk dedupe: one
-// candidate per (head, rel, tail), keeping the highest confidence.
-func dedupeFactCandidates(facts []graph.FactUpsert) []graph.FactUpsert {
-	best := make(map[string]graph.FactUpsert, len(facts))
-	order := make([]string, 0, len(facts))
-	for _, f := range facts {
-		k := f.HeadKey + "\x00" + graph.SanitizeRel(f.Rel) + "\x00" + f.TailKey
-		if cur, ok := best[k]; ok {
-			if f.Confidence > cur.Confidence {
-				best[k] = f
-			}
-			continue
-		}
-		best[k] = f
-		order = append(order, k)
-	}
-	out := make([]graph.FactUpsert, 0, len(order))
-	for _, k := range order {
-		out = append(out, best[k])
-	}
-	return out
 }
 
 // judgeName is the entity name shown to the judge: the mention text as it
@@ -1306,47 +1277,23 @@ func (p *Pipeline) buildChunks(ctx context.Context, doc *graph.Document, text st
 
 // duplicateRoots validates the complete chain before extraction. Broken chains,
 // cycles and roots being processed by another document cannot supply names safely.
-func (p *Pipeline) duplicateRoots(ctx context.Context, chunks []graph.Chunk) (map[string]graph.Chunk, error) {
-	roots := make(map[string]graph.Chunk)
+func (p *Pipeline) duplicateRoots(ctx context.Context, chunks []graph.Chunk) (map[string]DuplicateRoot, error) {
+	roots := make(map[string]DuplicateRoot)
 	var clear []string
 	for i := range chunks {
 		c := &chunks[i]
 		if c.DuplicateOf == "" {
 			continue
 		}
-		seen := map[string]bool{c.ID: true}
-		next := c.DuplicateOf
-		valid := false
-		for next != "" && !seen[next] {
-			seen[next] = true
-			root, err := p.store.ChunkByID(ctx, next)
-			if errors.Is(err, graph.ErrNotFound) {
-				break
-			}
-			if err != nil {
-				return nil, err
-			}
-			if root.DuplicateOf != "" {
-				next = root.DuplicateOf
-				continue
-			}
-			doc, err := p.store.Document(ctx, root.DocID)
-			if errors.Is(err, graph.ErrNotFound) {
-				break
-			}
-			if err != nil {
-				return nil, err
-			}
-			if root.DocID == c.DocID || doc.Status == graph.StatusDone {
-				root.Domain = doc.Domain
-				roots[c.ID] = root
-				valid = true
-			}
-			break
+		root, err := ResolveDuplicateRoot(ctx, p.store, *c)
+		if err != nil {
+			return nil, err
 		}
-		if !valid {
+		if root.ID == "" {
 			clear = append(clear, c.ID)
 			c.DuplicateOf = ""
+		} else {
+			roots[c.ID] = root
 		}
 	}
 	if err := p.store.ClearDuplicateOf(ctx, clear); err != nil {
@@ -1373,7 +1320,7 @@ func (p *Pipeline) extractChunks(ctx context.Context, req extract.Request) ([]ex
 // nameProfile builds the domain profile from global entity names only:
 // document-scoped labels (dates, amounts) are values, not domain vocabulary,
 // and would make unrelated documents look alike.
-func (p *Pipeline) nameProfile(ctx context.Context, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk, onlyDomain string, docScoped map[string]bool) (domain.Profile, map[string]string, error) {
+func (p *Pipeline) nameProfile(ctx context.Context, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]DuplicateRoot, onlyDomain string, docScoped map[string]bool) (domain.Profile, map[string]string, error) {
 	var ids []string
 	seen := make(map[string]bool)
 	for _, c := range chunks {
@@ -1429,7 +1376,7 @@ func domainParams(cfg config.DomainConfig) domain.Params {
 	return domain.ParamsFromConfig(cfg.Tau, cfg.Delta, cfg.TauOverride)
 }
 
-func (p *Pipeline) detectDomain(ctx context.Context, doc *graph.Document, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]graph.Chunk, docScoped map[string]bool) error {
+func (p *Pipeline) detectDomain(ctx context.Context, doc *graph.Document, chunks []graph.Chunk, cleaned map[string]hygiene.Result, roots map[string]DuplicateRoot, docScoped map[string]bool) error {
 	p.domainMu.Lock()
 	defer p.domainMu.Unlock()
 	olds, err := p.store.OlderLiveVersions(ctx, doc.ID)
@@ -1500,12 +1447,36 @@ func rawExtraction(r extract.ChunkResult) hygiene.Result {
 	return out
 }
 
+func documentScopedLabels(labels []extract.Label) map[string]bool {
+	scoped := make(map[string]bool)
+	for _, l := range labels {
+		if l.Scope == "document" {
+			scoped[l.Name] = true
+		}
+	}
+	return scoped
+}
+
 // buildExtraction turns one provider chunk result into store upserts,
 // applying the confidence floors: below store_floor the fact is dropped and
 // audited; below assert_floor it is stored as low-confidence.
 func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r hygiene.Result, version string, docScoped map[string]bool) ([]graph.EntityUpsert, []graph.FactUpsert, []graph.FactAudit) {
+	return buildExtraction(doc, c, r, version, docScoped, p.cfg.Ingest, p.writeMode.Domains, nil)
+}
+
+type extractionTrace struct {
+	mentionKeys    []string
+	factSources    []int // built fact -> cleaned candidate index
+	storeFloorDrop []bool
+}
+
+func buildExtraction(doc *graph.Document, c graph.Chunk, r hygiene.Result, version string, docScoped map[string]bool, cfg config.IngestConfig, domains bool, trace *extractionTrace) ([]graph.EntityUpsert, []graph.FactUpsert, []graph.FactAudit) {
 	ents := make(map[string]graph.EntityUpsert, len(r.Mentions))
 	keys := make([]string, len(r.Mentions))
+	if trace != nil {
+		trace.mentionKeys = keys
+		trace.storeFloorDrop = make([]bool, len(r.Candidates))
+	}
 	bestScores := make(map[string]float64, len(r.Mentions))
 	type mentionKey struct {
 		key        string
@@ -1523,7 +1494,7 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r hygiene
 		}
 		if docScoped[m.Label] {
 			key = graph.ScopedEntityKey(doc.ID, m.Name)
-		} else if p.writeMode.Domains {
+		} else if domains {
 			key = graph.DomainKey(doc.Domain, key)
 		}
 		keys[i] = key
@@ -1558,7 +1529,7 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r hygiene
 
 	facts := make([]graph.FactUpsert, 0, len(r.Candidates))
 	audits := make([]graph.FactAudit, 0)
-	for _, cand := range r.Candidates {
+	for i, cand := range r.Candidates {
 		if cand.Head < 0 || cand.Head >= len(r.Mentions) || cand.Tail < 0 || cand.Tail >= len(r.Mentions) {
 			continue
 		}
@@ -1571,7 +1542,10 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r hygiene
 		if headKey == "" || tailKey == "" {
 			continue
 		}
-		if cand.Score < p.cfg.Ingest.StoreFloor {
+		if cand.Score < cfg.StoreFloor {
+			if trace != nil {
+				trace.storeFloorDrop[i] = true
+			}
 			audits = append(audits, graph.FactAudit{
 				HeadKey: headKey, Rel: cand.Label, TailKey: tailKey,
 				DocID: doc.ID, ChunkID: c.ID, Score: cand.Score,
@@ -1580,11 +1554,14 @@ func (p *Pipeline) buildExtraction(doc *graph.Document, c graph.Chunk, r hygiene
 			})
 			continue
 		}
+		if trace != nil {
+			trace.factSources = append(trace.factSources, i)
+		}
 		facts = append(facts, graph.FactUpsert{
 			HeadKey: headKey, TailKey: tailKey, Rel: cand.Label, Confidence: cand.Score,
 			HeadMention:   graph.Span{Start: hm.Start, End: hm.End, Text: hm.Text},
 			TailMention:   graph.Span{Start: tm.Start, End: tm.End, Text: tm.Text},
-			LowConfidence: cand.Score < p.cfg.Ingest.AssertFloor,
+			LowConfidence: cand.Score < cfg.AssertFloor,
 		})
 	}
 

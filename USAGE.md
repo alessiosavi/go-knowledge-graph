@@ -341,6 +341,94 @@ gkg eval --provider sidecar --labels documentation \
   --sweep 'entity=0.2:0.7:0.05 relation=0.1:0.5:0.05' --out documentation-sweep
 ```
 
+### Sample stored chunks and replay extraction
+
+```sh
+gkg eval-sample -domain zorvax -out sample.jsonl -docs 30 -seed 42
+gkg eval -replay sample.jsonl -predictions predictions.jsonl -labels general
+```
+
+`eval-sample` opens the configured Memgraph for reads and exports done
+documents in the requested domain with their titles, sources and verbatim
+stored chunks. The document's `labels` field records the preset name used
+at ingest. An empty string means built-in labels. Omit `-docs` or use `-docs 0`
+to export the whole domain.
+Sampling uses the document IDs and seed, which defaults to 0. A chunk's
+`duplicate_of` and `dup_doc_id` identify the effective root and its owning
+document, even when the root is outside the sample. Both fields are empty
+when ingest would extract the chunk itself. A root in another document is
+eligible for borrowing only if that document is `done` and in the same
+domain. The export flags cyclic chains with `duplicate_root` set to `cycle`
+and treats those chunks as roots for extraction. Standard output contains
+document and chunk counts.
+
+Replay verifies the sample's header, counts and digest and reads the
+configured Memgraph's extraction schema marker without changing the graph.
+Replay requires the binary's current extraction schema and exits 1 for an
+older or newer schema before contacting the sidecar at
+`extractor.sidecar.url`. Replay uses the selected preset or the built-in labels
+and policy when `-labels` is omitted.
+`-golden`, `-sweep`, `-out` and an explicit provider other than `sidecar`
+are usage errors (exit 2).
+
+Predictions include the input and preset hashes, effective hygiene and
+confidence floors, ingest's `write_mode` (`hygiene`, `domains` and
+`facts_as_candidates`), the sidecar's health-reported model when available,
+the extractor version string and the gkg version. `sidecar_image` records
+the configured `extractor.sidecar.image` (`GKG_EXTRACTOR_SIDECAR_IMAGE`).
+`sidecar_image_digest` records the SHA-256 digest from a pinned image
+reference or a bare `sha256:` digest. When the digest is unavailable,
+replay records `unknown` and warns on standard error.
+The header's `label_mismatches` lists documents whose stored `labels` differ
+from the selected preset. Each chunk has one result row with the document's stored
+`labels` and a `label_mismatch` flag. Older samples without stored labels
+show `null` for `labels`.
+
+Replay checks sidecar health once for a nonempty sample and batches each
+document's nonduplicate chunks in sequence order as ingest does. A
+failed batch is retried one chunk at a time. Chunks with zero extracted
+relations are `empty`. Each relation occurrence
+has the original endpoint text and chunk-relative byte offsets, cleaned names
+and entity keys, endpoint types, relation, model label text, confidence,
+evidence, document title and disposition. `stored_winner` marks the occurrence
+selected by ingest's per-chunk storage rules before judging. With
+`facts.require_confirmation=true`, the winner would be stored as a candidate.
+Duplicates borrow occurrences from their root in the sample, with
+`source_chunk_id` identifying the chunk the evidence and offsets come from.
+Their winner flags are false. A duplicate whose root is outside the sample
+is `empty` after a successful health check and has `duplicate_root` set to
+`outside_sample`; exclude those rows from the fidelity comparison. A cyclic
+chain is flagged as `cycle`: `eval-sample` exports it without
+`duplicate_of`, and replay extracts it as ingest does, so its occurrences
+stay comparable. The `empty` count includes `outside_sample` rows; the trailer
+counts the flagged rows in `duplicate_roots_outside_sample` and
+`duplicate_root_cycles`.
+A kept relation below the assert floor is marked `low_confidence`.
+If any chunk still fails after retry, or the sidecar fails its health check,
+replay preserves the completed predictions with per-chunk error rows
+and exits 1.
+
+Both JSONL commands create new files with mode 0600. Each trailer's SHA-256
+covers all preceding lines, including the header and line endings. The replay
+header's input SHA-256 covers the entire sample file, including its trailer.
+Named presets are hashed as file bytes. Built-in labels are hashed as
+serialized defaults and the effective hygiene policy is recorded separately.
+
+### Validate a preset
+
+```sh
+gkg preset check labels/general.yaml
+gkg preset check labels/general.yaml -stoplist /path/to/stop-words.txt
+```
+
+The check and replay use the same strict schema for extraction labels and name
+hygiene. Pass `-stoplist FILE` to apply the same stoplist overlay as ingest's
+`ingest.stoplist_file`. The check and replay reject unknown keys, ambiguous
+sidecar aliases, relation names that sanitize to the same type, and invalid
+hygiene values. Thresholds must be finite and in (0, 1], with up to 30 entity
+and 15 relation labels and at most 60 characters in each label sent to the
+model. Ingest continues to accept unknown keys and logs a warning for each.
+
 ### Judge backfill and audit
 
 Judge pending fact candidates with the configured judge provider:

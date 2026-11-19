@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,6 +50,15 @@ func NewSidecar(cfg config.Config) *Sidecar {
 	}
 }
 
+// NewReplaySidecar restricts HTTP requests to the configured sidecar endpoint.
+func NewReplaySidecar(cfg config.Config) *Sidecar {
+	s := NewSidecar(cfg)
+	s.client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return s
+}
+
 // Name implements Provider.
 func (s *Sidecar) Name() string { return "sidecar" }
 
@@ -76,19 +86,54 @@ func (s *Sidecar) Extract(ctx context.Context, req Request) ([]ChunkResult, erro
 	if len(req.Chunks) == 0 {
 		return nil, nil
 	}
-	if err := s.healthy(ctx); err != nil {
+	if _, err := s.health(ctx); err != nil {
 		return nil, err
 	}
 	out := make([]ChunkResult, 0, len(req.Chunks))
-	for start := 0; start < len(req.Chunks); start += sidecarBatch {
-		end := min(start+sidecarBatch, len(req.Chunks))
-		results, err := s.extractBatch(ctx, req, req.Chunks[start:end])
+	for batch := range slices.Chunk(req.Chunks, sidecarBatch) {
+		results, err := s.extractBatch(ctx, req, batch)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, results...)
 	}
 	return out, nil
+}
+
+// ReplayChunkResult is the outcome of one chunk in a replay request.
+type ReplayChunkResult struct {
+	ChunkResult
+	Err error
+}
+
+// ExtractReplay uses the same batches as Extract after a successful run-wide
+// HealthModel check. A failed batch is retried as individual chunks.
+func (s *Sidecar) ExtractReplay(ctx context.Context, req Request) ([]ReplayChunkResult, error) {
+	out := make([]ReplayChunkResult, 0, len(req.Chunks))
+	for batch := range slices.Chunk(req.Chunks, sidecarBatch) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		results, err := s.extractBatch(ctx, req, batch)
+		if err == nil {
+			for _, result := range results {
+				out = append(out, ReplayChunkResult{ChunkResult: result})
+			}
+			continue
+		}
+		for i := range batch {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			results, err := s.extractBatch(ctx, req, batch[i:i+1])
+			result := ReplayChunkResult{ChunkResult: ChunkResult{ChunkID: batch[i].ID}, Err: err}
+			if err == nil {
+				result.ChunkResult = results[0]
+			}
+			out = append(out, result)
+		}
+	}
+	return out, ctx.Err()
 }
 
 // extractBatch posts one batch and validates its results.
@@ -164,33 +209,44 @@ func (s *Sidecar) extractBatch(ctx context.Context, req Request, chunks []Reques
 	return out, nil
 }
 
-// healthy performs the pre-extraction health gate, surfacing the service's
+// HealthModel checks sidecar health and returns the reported model if available.
+func (s *Sidecar) HealthModel(ctx context.Context) (string, error) {
+	data, err := s.health(ctx)
+	if err != nil {
+		return "", err
+	}
+	var health struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(data, &health); err != nil {
+		return "", nil
+	}
+	return health.Model, nil
+}
+
+// health performs the pre-extraction health gate, surfacing the service's
 // diagnostic body (e.g. "model load failed: ...") on failure.
-func (s *Sidecar) healthy(ctx context.Context) error {
+func (s *Sidecar) health(ctx context.Context) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/healthz", nil)
 	if err != nil {
-		return fmt.Errorf("extract sidecar: build health request: %w", err)
+		return nil, fmt.Errorf("extract sidecar: build health request: %w", err)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("extract sidecar: unhealthy: %w", err)
+		return nil, fmt.Errorf("extract sidecar: unhealthy: %w", err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("extract sidecar: unhealthy: HTTP %d: %s", resp.StatusCode, previewContent(string(data)))
+		return nil, fmt.Errorf("extract sidecar: unhealthy: HTTP %d: %s", resp.StatusCode, previewContent(string(data)))
 	}
-	return nil
+	return data, nil
 }
 
 func wireLabels(labels []Label) []sidecarLabel {
 	out := make([]sidecarLabel, 0, len(labels))
 	for _, l := range labels {
-		text := l.Text
-		if text == "" {
-			text = l.Name
-		}
-		out = append(out, sidecarLabel{Label: text, Threshold: l.Threshold})
+		out = append(out, sidecarLabel{Label: l.SidecarText(), Threshold: l.Threshold})
 	}
 	return out
 }

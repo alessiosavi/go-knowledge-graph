@@ -259,27 +259,23 @@ func sanitizeRel(s string) string { return SanitizeRel(s) }
 
 type factKey struct{ head, rel, tail string }
 
-// dedupeFacts collapses duplicate triples inside one extraction call,
-// keeping the highest confidence; the relative order is preserved.
-func dedupeFacts(facts []FactUpsert) []FactUpsert {
-	best := make(map[factKey]FactUpsert, len(facts))
-	order := make([]factKey, 0, len(facts))
-	for _, f := range facts {
+// FactWinnerIndices selects one occurrence for each sanitized triple. Highest
+// confidence wins, ties keep the first occurrence, and triple order is preserved.
+func FactWinnerIndices(facts []FactUpsert) []int {
+	positions := make(map[factKey]int, len(facts))
+	winners := make([]int, 0, len(facts))
+	for i, f := range facts {
 		k := factKey{f.HeadKey, sanitizeRel(f.Rel), f.TailKey}
-		if cur, ok := best[k]; ok {
-			if f.Confidence > cur.Confidence {
-				best[k] = f
+		if pos, ok := positions[k]; ok {
+			if f.Confidence > facts[winners[pos]].Confidence {
+				winners[pos] = i
 			}
 			continue
 		}
-		best[k] = f
-		order = append(order, k)
+		positions[k] = len(winners)
+		winners = append(winners, i)
 	}
-	out := make([]FactUpsert, 0, len(order))
-	for _, k := range order {
-		out = append(out, best[k])
-	}
-	return out
+	return winners
 }
 
 type mentionEdge struct {
@@ -376,7 +372,12 @@ func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extrac
 			return fmt.Errorf("graph: fact %q -[%q]-> %q: endpoint not among this chunk's entities", f.HeadKey, f.Rel, f.TailKey)
 		}
 	}
-	facts = dedupeFacts(facts)
+	winners := FactWinnerIndices(facts)
+	deduped := make([]FactUpsert, 0, len(winners))
+	for _, i := range winners {
+		deduped = append(deduped, facts[i])
+	}
+	facts = deduped
 	mentions := mentionEdges(ents, facts)
 
 	touched := make(map[string]bool, len(ents))
