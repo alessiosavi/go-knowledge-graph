@@ -3,6 +3,7 @@ package eval
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -32,6 +33,8 @@ type replayHeader struct {
 	SidecarImageDigest string                `json:"sidecar_image_digest"`
 	ExtractorVersion   string                `json:"extractor_version"`
 	GKGVersion         string                `json:"gkg_version"`
+	AttemptID          string                `json:"attempt_id,omitempty"`
+	NoBorrow           bool                  `json:"no_borrow,omitempty"`
 }
 
 type replayWriteMode struct {
@@ -66,8 +69,9 @@ type replayOccurrence struct {
 }
 
 type replayAssessment struct {
-	occurrences []ingest.OccurrenceDecision
-	err         error
+	ingest.ReplayAssessment
+	raw extract.ChunkResult
+	err error
 }
 
 type ReplayCounts struct {
@@ -86,9 +90,52 @@ const (
 	duplicateRootCycle         = "cycle"
 )
 
+type ReplayOptions struct {
+	MentionsPath string
+	NoBorrow     bool
+}
+
+var newReplayAttemptID = func() (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(nonce[:]), nil
+}
+
 // Replay predicts relations from an intact, frozen sample. It reads the
 // graph's schema marker and runs extraction on the configured sidecar.
 func Replay(ctx context.Context, cfg config.Config, input, output, presetName, gkgVersion string, stderr io.Writer) (ReplayCounts, error) {
+	return ReplayWithOptions(ctx, cfg, input, output, presetName, gkgVersion, ReplayOptions{}, stderr)
+}
+
+// ReplayWithOptions can also write validated mentions and extract duplicates locally.
+func ReplayWithOptions(ctx context.Context, cfg config.Config, input, output, presetName, gkgVersion string, opts ReplayOptions, stderr io.Writer) (ReplayCounts, error) {
+	paths := []string{output}
+	if opts.MentionsPath != "" {
+		paths = append(paths, opts.MentionsPath)
+	}
+	var counts ReplayCounts
+	err := writeArtifacts(paths, func(encoders []*json.Encoder) ([]any, error) {
+		var mentions *replayMentions
+		if len(encoders) == 2 {
+			mentions = &replayMentions{enc: encoders[1]}
+		}
+		var err error
+		counts, err = replay(ctx, cfg, input, presetName, gkgVersion, opts.NoBorrow, encoders[0], mentions, stderr)
+		if err != nil {
+			return nil, err
+		}
+		trailers := []any{counts}
+		if mentions != nil {
+			trailers = append(trailers, mentions.trailerCounts())
+		}
+		return trailers, nil
+	})
+	return counts, err
+}
+
+func replay(ctx context.Context, cfg config.Config, input, presetName, gkgVersion string, noBorrow bool, enc *json.Encoder, mentions *replayMentions, stderr io.Writer) (ReplayCounts, error) {
 	frozen, err := readSample(input)
 	if err != nil {
 		return ReplayCounts{}, fmt.Errorf("read sample: %w", err)
@@ -105,123 +152,179 @@ func Replay(ctx context.Context, cfg config.Config, input, output, presetName, g
 	provider := extract.NewReplaySidecar(cfg)
 	extractorVersion := provider.Version()
 	counts := ReplayCounts{Chunks: frozen.Header.Counts.Chunks}
-	err = writeArtifact(output, func(enc *json.Encoder) (any, error) {
-		image := cfg.Extractor.Sidecar.Image
-		digest := replaySidecarImageDigest(image)
-		if digest == "unknown" {
-			fmt.Fprintln(stderr, "gkg eval: warning: sidecar image digest is unknown")
+	image := cfg.Extractor.Sidecar.Image
+	digest := replaySidecarImageDigest(image)
+	if digest == "unknown" {
+		fmt.Fprintln(stderr, "gkg eval: warning: sidecar image digest is unknown")
+	}
+	model := ""
+	var healthErr error
+	if counts.Chunks > 0 {
+		model, healthErr = provider.HealthModel(ctx)
+	}
+	mismatches := make([]replayLabelMismatch, 0)
+	for _, d := range frozen.Documents {
+		if d.Labels != nil && *d.Labels != presetName {
+			mismatches = append(mismatches, replayLabelMismatch{DocID: d.DocID, Labels: *d.Labels})
 		}
-		model := ""
-		var healthErr error
-		if counts.Chunks > 0 {
-			model, healthErr = provider.HealthModel(ctx)
-		}
-		mismatches := make([]replayLabelMismatch, 0)
-		for _, d := range frozen.Documents {
-			if d.Labels != nil && *d.Labels != presetName {
-				mismatches = append(mismatches, replayLabelMismatch{DocID: d.DocID, Labels: *d.Labels})
-			}
-		}
-		if err := enc.Encode(replayHeader{
-			Type: "header", InputSHA256: frozen.SHA256, Preset: presetName, PresetSHA256: preset.SHA256,
-			LabelMismatches: mismatches,
-			WriteMode:       replayWriteMode{Hygiene: mode.Hygiene, Domains: mode.Domains, FactsAsCandidates: mode.RequireConfirmation},
-			Hygiene:         preset.Hygiene, StoreFloor: cfg.Ingest.StoreFloor, AssertFloor: cfg.Ingest.AssertFloor,
-			SidecarModel: model, SidecarImage: image, SidecarImageDigest: digest,
-			ExtractorVersion: extractorVersion, GKGVersion: gkgVersion,
-		}); err != nil {
-			return nil, err
-		}
+	}
+	header := replayHeader{
+		Type: "header", InputSHA256: frozen.SHA256, Preset: presetName, PresetSHA256: preset.SHA256,
+		LabelMismatches: mismatches,
+		WriteMode:       replayWriteMode{Hygiene: mode.Hygiene, Domains: mode.Domains, FactsAsCandidates: mode.RequireConfirmation},
+		Hygiene:         preset.Hygiene, StoreFloor: cfg.Ingest.StoreFloor, AssertFloor: cfg.Ingest.AssertFloor,
+		SidecarModel: model, SidecarImage: image, SidecarImageDigest: digest,
+		ExtractorVersion: extractorVersion, GKGVersion: gkgVersion, NoBorrow: noBorrow,
+	}
+	if mentions != nil {
+		mentions.counts.ChunksRequested = counts.Chunks
+	}
+	if err := writeReplayHeaders(enc, mentions, header, preset); err != nil {
+		return counts, err
+	}
 
-		// Assess roots before writing result rows so a duplicate can refer to a
-		// chunk in a later document while preserving the sample's result order.
-		assessments := make(map[string]replayAssessment)
-		duplicateLinks := make(map[string]string, counts.Chunks)
-		for _, d := range frozen.Documents {
-			slices.SortStableFunc(d.Chunks, func(a, b sampleChunk) int { return cmp.Compare(a.Seq, b.Seq) })
-			req := extract.Request{
-				Chunks: make([]extract.RequestChunk, 0, len(d.Chunks)), Entities: preset.Entities, Relations: preset.Relations,
+	// Assess roots before writing result rows so a duplicate can refer to a
+	// chunk in a later document. Keep the stored order for the mentions file.
+	assessments := make(map[string]replayAssessment)
+	duplicateLinks := make(map[string]string, counts.Chunks)
+	chunksBySequence := make([][]sampleChunk, len(frozen.Documents))
+	compareSeq := func(a, b sampleChunk) int { return cmp.Compare(a.Seq, b.Seq) }
+	for i, d := range frozen.Documents {
+		chunks := d.Chunks
+		if !slices.IsSortedFunc(chunks, compareSeq) {
+			if mentions != nil {
+				chunks = slices.Clone(chunks)
 			}
-			for _, c := range d.Chunks {
-				duplicateLinks[c.ChunkID] = c.DuplicateOf
-				if c.DuplicateOf == "" {
-					req.Chunks = append(req.Chunks, extract.RequestChunk{ID: c.ChunkID, Text: c.Text})
-				}
-			}
-			if healthErr != nil {
-				continue
-			}
-			results, err := provider.ExtractReplay(ctx, req)
-			if err != nil {
-				return nil, err
-			}
-			doc := graph.Document{ID: d.DocID, Domain: frozen.Header.Domain, Title: d.Title}
-			for i, raw := range results {
-				c := req.Chunks[i]
-				assessment := replayAssessment{err: raw.Err}
-				if raw.Err == nil && len(raw.Candidates) > 0 {
-					chunk := graph.Chunk{ID: c.ID, DocID: d.DocID, Text: c.Text}
-					assessment.occurrences = ingest.AssessReplay(cfg.Ingest, preset, doc, chunk, raw.ChunkResult, extractorVersion, mode)
-				}
-				assessments[c.ID] = assessment
+			slices.SortStableFunc(chunks, compareSeq)
+		}
+		chunksBySequence[i] = chunks
+		req := extract.Request{
+			Chunks: make([]extract.RequestChunk, 0, len(chunks)), Entities: preset.Entities, Relations: preset.Relations,
+		}
+		for _, c := range chunks {
+			duplicateLinks[c.ChunkID] = c.DuplicateOf
+			if noBorrow || c.DuplicateOf == "" {
+				req.Chunks = append(req.Chunks, extract.RequestChunk{ID: c.ChunkID, Text: c.Text})
 			}
 		}
+		if healthErr != nil {
+			continue
+		}
+		results, err := provider.ExtractReplay(ctx, req)
+		if err != nil {
+			return counts, err
+		}
+		doc := graph.Document{ID: d.DocID, Domain: frozen.Header.Domain, Title: d.Title}
+		for i, raw := range results {
+			c := req.Chunks[i]
+			assessment := replayAssessment{err: raw.Err}
+			if raw.Err == nil {
+				chunk := graph.Chunk{ID: c.ID, DocID: d.DocID, Text: c.Text}
+				assessment.ReplayAssessment = ingest.AssessReplay(cfg.Ingest, preset, doc, chunk, raw.ChunkResult, extractorVersion, mode)
+				if mentions != nil {
+					assessment.raw = raw.ChunkResult
+				} else {
+					assessment.Mentions = nil
+				}
+			}
+			assessments[c.ID] = assessment
+		}
+	}
+	failed := make(map[string]error)
+	borrowedRoots := make(map[string]string)
+	for i, d := range frozen.Documents {
+		labelMismatch := d.Labels != nil && *d.Labels != presetName
+		for _, c := range chunksBySequence[i] {
+			if err := ctx.Err(); err != nil {
+				return counts, err
+			}
+			res := replayResult{Type: "result", ChunkID: c.ChunkID, DocID: d.DocID, Labels: d.Labels, LabelMismatch: labelMismatch}
+			extractedID := c.ChunkID
+			var sourceChunkID string
+			if c.DuplicateOf != "" {
+				var rootID string
+				rootID, res.DuplicateRoot = replayRoot(c.ChunkID, duplicateLinks)
+				if !noBorrow {
+					extractedID, sourceChunkID = rootID, rootID
+					if mentions != nil && rootID != "" {
+						borrowedRoots[c.ChunkID] = rootID
+					}
+				}
+			} else if c.DuplicateRoot == duplicateRootCycle {
+				res.DuplicateRoot = duplicateRootCycle
+			}
+			switch res.DuplicateRoot {
+			case duplicateRootOutsideSample:
+				counts.DuplicateRootsOutsideSample++
+			case duplicateRootCycle:
+				counts.DuplicateRootCycles++
+			}
+			assessment := assessments[extractedID]
+			if healthErr != nil {
+				assessment.err = healthErr
+			}
+			switch {
+			case assessment.err != nil:
+				res.Status, res.Error = "error", assessment.err.Error()
+				counts.Errors++
+				if mentions != nil {
+					failed[c.ChunkID] = assessment.err
+				}
+			case len(assessment.Occurrences) == 0:
+				res.Status = "empty"
+				counts.Empty++
+			default:
+				res.Status = "ok"
+				counts.OK++
+			}
+			if err := enc.Encode(res); err != nil {
+				return counts, err
+			}
+			for _, decision := range assessment.Occurrences {
+				decision.StoredWinner = (noBorrow || c.DuplicateOf == "") && decision.StoredWinner
+				if err := enc.Encode(replayOccurrence{
+					Type: "occurrence", ChunkID: c.ChunkID, DocID: d.DocID, Title: d.Title, SourceChunkID: sourceChunkID, OccurrenceDecision: decision,
+				}); err != nil {
+					return counts, err
+				}
+				counts.Occurrences++
+				if decision.StoredWinner {
+					counts.StoredWinners++
+				}
+			}
+		}
+	}
+	if mentions != nil {
 		for _, d := range frozen.Documents {
-			labelMismatch := d.Labels != nil && *d.Labels != presetName
 			for _, c := range d.Chunks {
 				if err := ctx.Err(); err != nil {
-					return nil, err
+					return counts, err
 				}
-				res := replayResult{Type: "result", ChunkID: c.ChunkID, DocID: d.DocID, Labels: d.Labels, LabelMismatch: labelMismatch}
-				rootID := c.ChunkID
-				var sourceChunkID string
-				if c.DuplicateOf != "" {
-					rootID, res.DuplicateRoot = replayRoot(c.ChunkID, duplicateLinks)
-					sourceChunkID = rootID
-				} else if c.DuplicateRoot == duplicateRootCycle {
-					res.DuplicateRoot = duplicateRootCycle
-				}
-				switch res.DuplicateRoot {
-				case duplicateRootOutsideSample:
-					counts.DuplicateRootsOutsideSample++
-				case duplicateRootCycle:
-					counts.DuplicateRootCycles++
-				}
-				assessment := assessments[rootID]
-				if healthErr != nil {
-					assessment.err = healthErr
-				}
-				switch {
-				case assessment.err != nil:
-					res.Status, res.Error = "error", assessment.err.Error()
-					counts.Errors++
-				case len(assessment.occurrences) == 0:
-					res.Status = "empty"
-					counts.Empty++
-				default:
-					res.Status = "ok"
-					counts.OK++
-				}
-				if err := enc.Encode(res); err != nil {
-					return nil, err
-				}
-				for _, decision := range assessment.occurrences {
-					decision.StoredWinner = c.DuplicateOf == "" && decision.StoredWinner
-					if err := enc.Encode(replayOccurrence{
-						Type: "occurrence", ChunkID: c.ChunkID, DocID: d.DocID, Title: d.Title, SourceChunkID: sourceChunkID, OccurrenceDecision: decision,
-					}); err != nil {
-						return nil, err
-					}
-					counts.Occurrences++
-					if decision.StoredWinner {
-						counts.StoredWinners++
-					}
+				// Borrowed prediction evidence has offsets in the root chunk.
+				// Only local extraction can supply mentions for this chunk.
+				assessment := assessments[c.ChunkID]
+				assessment.err = failed[c.ChunkID]
+				if err := mentions.writeChunk(d, c, assessment, borrowedRoots[c.ChunkID]); err != nil {
+					return counts, err
 				}
 			}
 		}
-		return counts, ctx.Err()
-	})
-	return counts, err
+	}
+	return counts, ctx.Err()
+}
+
+func writeReplayHeaders(enc *json.Encoder, mentions *replayMentions, header replayHeader, preset ingest.CheckedPreset) error {
+	if mentions != nil {
+		attemptID, err := newReplayAttemptID()
+		if err != nil {
+			return fmt.Errorf("generate replay attempt ID: %w", err)
+		}
+		header.AttemptID = attemptID
+		if err := mentions.writeHeader(header, preset); err != nil {
+			return err
+		}
+	}
+	return enc.Encode(header)
 }
 
 func replayRoot(id string, duplicateLinks map[string]string) (rootID, issue string) {

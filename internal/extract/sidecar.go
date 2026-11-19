@@ -96,9 +96,9 @@ type sidecarDiagnostic struct {
 // Extract implements Provider: health check, then POST /v1/extract in
 // batches of at most sidecarBatch chunks (the service batches internally
 // as well), then contract validation. The result slice always carries one
-// entry per submitted chunk, in submitted order (model omissions become
-// empty results; unknown chunk ids drop). Empty requests short-circuit
-// with no HTTP call.
+// entry per submitted chunk, in submitted order. Stage B will close the
+// production validation gap: omissions become empty results, duplicates
+// overwrite and unrequested IDs drop. Empty requests make no HTTP call.
 func (s *Sidecar) Extract(ctx context.Context, req Request) ([]ChunkResult, error) {
 	if len(req.Chunks) == 0 {
 		return nil, nil
@@ -108,7 +108,7 @@ func (s *Sidecar) Extract(ctx context.Context, req Request) ([]ChunkResult, erro
 	}
 	out := make([]ChunkResult, 0, len(req.Chunks))
 	for batch := range slices.Chunk(req.Chunks, sidecarBatch) {
-		results, err := s.extractBatch(ctx, req, batch)
+		results, err := s.extractBatch(ctx, req, batch, false)
 		if err != nil {
 			return nil, err
 		}
@@ -131,7 +131,7 @@ func (s *Sidecar) ExtractReplay(ctx context.Context, req Request) ([]ReplayChunk
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		results, err := s.extractBatch(ctx, req, batch)
+		results, err := s.extractBatch(ctx, req, batch, true)
 		if err == nil {
 			for _, result := range results {
 				out = append(out, ReplayChunkResult{ChunkResult: result})
@@ -142,7 +142,7 @@ func (s *Sidecar) ExtractReplay(ctx context.Context, req Request) ([]ReplayChunk
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			results, err := s.extractBatch(ctx, req, batch[i:i+1])
+			results, err := s.extractBatch(ctx, req, batch[i:i+1], true)
 			result := ReplayChunkResult{ChunkResult: ChunkResult{ChunkID: batch[i].ID}, Err: err}
 			if err == nil {
 				result.ChunkResult = results[0]
@@ -154,7 +154,7 @@ func (s *Sidecar) ExtractReplay(ctx context.Context, req Request) ([]ReplayChunk
 }
 
 // extractBatch posts one batch and validates its results.
-func (s *Sidecar) extractBatch(ctx context.Context, req Request, chunks []RequestChunk) ([]ChunkResult, error) {
+func (s *Sidecar) extractBatch(ctx context.Context, req Request, chunks []RequestChunk, strictIDs bool) ([]ChunkResult, error) {
 	body, err := json.Marshal(sidecarRequest{
 		Chunks:    chunks,
 		Entities:  wireLabels(req.Entities),
@@ -199,13 +199,31 @@ func (s *Sidecar) extractBatch(ctx context.Context, req Request, chunks []Reques
 		relationSet[l.Name] = true
 	}
 	byID := make(map[string]sidecarChunk, len(wire.Results))
+	var requested map[string]bool
+	if strictIDs {
+		requested = make(map[string]bool, len(chunks))
+		for _, c := range chunks {
+			requested[c.ID] = true
+		}
+	}
 	for _, wc := range wire.Results {
+		if strictIDs {
+			if !requested[wc.ChunkID] {
+				return nil, fmt.Errorf("extract sidecar: result for unrequested chunk %q", wc.ChunkID)
+			}
+			if _, seen := byID[wc.ChunkID]; seen {
+				return nil, fmt.Errorf("extract sidecar: duplicate result for chunk %q", wc.ChunkID)
+			}
+		}
 		byID[wc.ChunkID] = wc
 	}
 	out := make([]ChunkResult, 0, len(chunks))
 	for _, c := range chunks {
 		wc, ok := byID[c.ID]
 		if !ok {
+			if strictIDs {
+				return nil, fmt.Errorf("extract sidecar: missing result for chunk %q", c.ID)
+			}
 			wc.ChunkID = c.ID
 		}
 		// Map the sidecar's answer (label text or name, any case) back to the

@@ -31,12 +31,35 @@ type OccurrenceDecision struct {
 	StoredWinner  bool               `json:"stored_winner"`
 }
 
+// MentionDecision records a normalized mention or the rule that dropped it.
+type MentionDecision struct {
+	Name     string
+	Aliases  []string
+	Key      string
+	DropRule hygiene.Rule
+}
+
+// ReplayAssessment follows the validated mention and candidate orders.
+type ReplayAssessment struct {
+	Mentions    []MentionDecision
+	Occurrences []OccurrenceDecision
+}
+
 // AssessReplay uses ingest's extraction builder and the store's fact
-// selection on a frozen root chunk. It needs no pipeline or graph connection.
-func AssessReplay(cfg config.IngestConfig, preset CheckedPreset, doc graph.Document, c graph.Chunk, raw extract.ChunkResult, version string, mode WriteMode) []OccurrenceDecision {
+// selection on a frozen chunk. It needs no pipeline or graph connection.
+func AssessReplay(cfg config.IngestConfig, preset CheckedPreset, doc graph.Document, c graph.Chunk, raw extract.ChunkResult, version string, mode WriteMode) ReplayAssessment {
 	cleaned, trace := hygiene.ApplyWithTrace(raw, c.Text, preset.Hygiene)
 	var built extractionTrace
 	_, facts, _ := buildExtraction(&doc, c, cleaned, version, documentScopedLabels(preset.Entities), cfg, mode.Domains, &built)
+	mentions := make([]MentionDecision, len(raw.Mentions))
+	for i, j := range trace.MentionIndices {
+		if j < 0 {
+			mentions[i].DropRule = trace.MentionDrops[i]
+			continue
+		}
+		m := cleaned.Mentions[j]
+		mentions[i] = MentionDecision{Name: m.Name, Aliases: m.Aliases, Key: built.mentionKeys[j]}
+	}
 	texts := make(map[string]string, len(preset.Relations))
 	for _, label := range preset.Relations {
 		texts[label.Name] = label.SidecarText()
@@ -44,20 +67,17 @@ func AssessReplay(cfg config.IngestConfig, preset CheckedPreset, doc graph.Docum
 
 	endpoint := func(i int) OccurrenceEndpoint {
 		m := raw.Mentions[i]
-		e := OccurrenceEndpoint{Text: m.Text, Start: m.Start, End: m.End, Type: m.Label}
-		if j := trace.MentionIndices[i]; j >= 0 {
-			e.Name = cleaned.Mentions[j].Name
-			e.Key = built.mentionKeys[j]
+		return OccurrenceEndpoint{
+			Text: m.Text, Start: m.Start, End: m.End, Type: m.Label, Name: mentions[i].Name, Key: mentions[i].Key,
 		}
-		return e
 	}
 	out := make([]OccurrenceDecision, len(raw.Candidates))
 	for i, cand := range raw.Candidates {
 		// The sidecar has already validated the mention indices and spans.
 		head, tail := endpoint(cand.Head), endpoint(cand.Tail)
-		rule := trace.MentionDrops[cand.Head]
+		rule := mentions[cand.Head].DropRule
 		if rule == "" {
-			rule = trace.MentionDrops[cand.Tail]
+			rule = mentions[cand.Tail].DropRule
 		}
 		if rule == "" {
 			rule = "empty_key" // the builder can also skip unusable endpoints
@@ -84,5 +104,5 @@ func AssessReplay(cfg config.IngestConfig, preset CheckedPreset, doc graph.Docum
 	for _, i := range graph.FactWinnerIndices(facts) {
 		out[trace.CandidateSources[built.factSources[i]]].StoredWinner = true
 	}
-	return out
+	return ReplayAssessment{Mentions: mentions, Occurrences: out}
 }
