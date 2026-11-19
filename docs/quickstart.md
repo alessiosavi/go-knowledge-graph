@@ -442,7 +442,10 @@ docker compose --env-file .env -f deploy/docker-compose.yml run --rm --no-deps \
 (The container's entrypoint is already `gkg`: `run` appends the command to
 it, while `exec` takes a full command — hence `exec gkg gkg ingest …` vs
 `run … gkg eval …`.)
-`--no-deps` keeps model services stopped: eval never opens the graph.
+`--no-deps` keeps model services stopped: golden and sweep evaluation never
+open the graph. `gkg eval -replay` reads the graph's extraction schema
+marker and calls the sidecar, so it needs Memgraph and the sidecar running
+(use `exec` on the running stack instead of `run --no-deps`).
 
 Real extraction numbers need a configured provider/key (or the sidecar);
 `--sweep 'entity=0.2:0.8:0.1 relation=0.1:0.6:0.1'` (one quoted argument)
