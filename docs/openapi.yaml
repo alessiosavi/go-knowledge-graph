@@ -1043,6 +1043,10 @@ components:
         source: { type: string }
         final_url: { type: string }
         title: { type: string }
+        title_source:
+          type: string
+          enum: [caller, pdf, html, frontmatter, h1, slug, ""]
+          description: Origin of the stored title. Empty means no origin is recorded.
         status:
           type: string
           enum:

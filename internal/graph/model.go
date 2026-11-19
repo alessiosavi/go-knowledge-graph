@@ -37,19 +37,20 @@ const timeLayout = "2006-01-02T15:04:05.000000000Z"
 
 // Document is one content version of one source.
 type Document struct {
-	Domain     string
-	ID         string
-	SourceKind string
-	Source     string
-	FinalURL   string
-	Title      string
-	Hash       string
-	Status     Status
-	Error      string
-	Labels     string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	Supersedes string
+	Domain      string
+	ID          string
+	SourceKind  string
+	Source      string
+	FinalURL    string
+	Title       string
+	TitleSource string
+	Hash        string
+	Status      Status
+	Error       string
+	Labels      string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Supersedes  string
 }
 
 // Chunk is a piece of a document's cleaned text with absolute byte offsets.
@@ -77,14 +78,15 @@ type DocumentInput struct {
 	// Domain applies when a document version is created (new or changed content).
 	// Force and Noop leave an existing document's domain untouched; assigning
 	// domains to existing documents belongs to task 37.14b.
-	Domain   string
-	Kind     string
-	Source   string
-	FinalURL string
-	Title    string
-	Hash     string
-	Labels   string
-	Force    bool // reset an existing live version without changing its version order
+	Domain      string
+	Kind        string
+	Source      string
+	FinalURL    string
+	Title       string
+	TitleSource string
+	Hash        string
+	Labels      string
+	Force       bool // reset an existing live version without changing its version order
 }
 
 // UpsertResult tells the pipeline what the upsert did. Noop means the same

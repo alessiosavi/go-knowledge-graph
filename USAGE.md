@@ -787,6 +787,23 @@ If repair fails partway through, the error includes the partial counts on
 stderr. Rerunning the repair is safe and idempotent because it skips names
 that are already clean.
 
+### Repair stored document titles
+
+Run `gkg repair-titles` to preview titles for documents with an empty or
+missing title. The command checks the leading 8 KiB of stored chunks in
+sequence for Markdown front matter and an early H1, then tries the stored
+source's filename or URL slug. Run `gkg repair-titles -apply` to write the
+derived titles and their origins in batches. The command leaves existing
+titles alone and can be rerun after an interruption.
+
+Use `-domain SLUG` to limit the scan to one domain. Add `-out FILE` to write
+the proposed changes as JSONL records with `id`, `title`, and `title_source`.
+The path must be new and the file is created with mode `0600`. With
+`-apply -out FILE`, the command writes and closes the report, then scans for
+empty titles again and applies the titles derived in that second pass.
+Stdout prints the total scanned, counts by origin, and the unchanged count.
+The repair updates title metadata without running extraction or judging.
+
 ### Repair stored section labels
 
 Run `gkg repair-labels -dry-run` to count section-label mentions and their

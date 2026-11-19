@@ -64,6 +64,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRepairNames(args[1:], stdout, stderr)
 	case "repair-labels":
 		return runRepairLabels(args[1:], stdout, stderr)
+	case "repair-titles":
+		return runRepairTitles(args[1:], stdout, stderr)
 	case "eval":
 		return runEval(args[1:], stdout, stderr)
 	case "domain":
@@ -85,6 +87,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "pdf-extract":
 		// Hidden subcommand: the isolated PDF parser (parent kills on
 		// timeout; see ingest.PDFToText).
+		if len(args) == 2 && args[1] == "--with-title" {
+			return ingest.PDFExtractWithTitle(os.Stdin, stdout, stderr)
+		}
 		return ingest.PDFExtract(os.Stdin, stdout, stderr)
 	case "mcp":
 		return runMCP(args[1:], stdout, stderr)
@@ -723,6 +728,7 @@ commands:
   migrate --schema-only  upgrade schema and leave re-extraction to serve
   repair-names [-dry-run]  clean stored entity display names in place
   repair-labels [-dry-run] [-domain slug] [-report path]  remove stored section labels
+  repair-titles [-apply] [-domain SLUG] [-out FILE]  fill missing document titles
   help      show this help (-h, --help)
   pdf-extract  internal isolated PDF parser
   version   print the version

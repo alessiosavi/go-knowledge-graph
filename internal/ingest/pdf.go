@@ -3,6 +3,7 @@ package ingest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ import (
 var pdfParseTimeout = 30 * time.Second
 
 const pdfTextCap = 32 << 20
+const pdfTitleCap = 8 << 10 // encoded title limit in the child response
 
 // PDFToText is the best-effort pure-Go PDF text extraction (dslipak/pdf
 // v0.0.2), run in a killable subprocess so parser hangs cannot wedge the
@@ -48,9 +50,9 @@ func PDFToText(body []byte) (text, title string, err error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), pdfParseTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, "pdf-extract")
+	cmd := exec.CommandContext(ctx, exe, "pdf-extract", "--with-title")
 	cmd.Stdin = bytes.NewReader(body)
-	stdout := &limitedBuffer{limit: pdfTextCap}
+	stdout := &limitedBuffer{limit: pdfTextCap + pdfTitleCap + 1}
 	stderr := &limitedBuffer{limit: 64 << 10}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -65,11 +67,15 @@ func PDFToText(body []byte) (text, title string, err error) {
 		}
 		return "", "", fmt.Errorf("ingest: pdf: %s", msg)
 	}
-	text = strings.TrimSpace(stdout.String())
+	header, text, ok := strings.Cut(stdout.String(), "\n")
+	if !ok || len(header) > pdfTitleCap || json.Unmarshal([]byte(header), &title) != nil {
+		return "", "", errors.New("ingest: pdf: invalid parser output")
+	}
+	text = strings.TrimSpace(text)
 	if text == "" {
 		return "", "", errors.New("ingest: pdf: no extractable text (scanned document?)")
 	}
-	return text, "", nil
+	return text, title, nil
 }
 
 // PDFExtract is the isolated parser entry point ("pdf-extract" subcommand):
@@ -79,25 +85,43 @@ func PDFToText(body []byte) (text, title string, err error) {
 // parent dies, a spinning parser cannot outlive this process — returning
 // exits it and takes the spinner down.
 func PDFExtract(stdin io.Reader, stdout, stderr io.Writer) int {
+	return pdfExtract(stdin, stdout, stderr, false)
+}
+
+// PDFExtractWithTitle prefixes the isolated parser's text with a JSON title line.
+func PDFExtractWithTitle(stdin io.Reader, stdout, stderr io.Writer) int {
+	return pdfExtract(stdin, stdout, stderr, true)
+}
+
+func pdfExtract(stdin io.Reader, stdout, stderr io.Writer, withTitle bool) int {
 	body, err := io.ReadAll(io.LimitReader(stdin, 64<<20))
 	if err != nil {
 		fmt.Fprintln(stderr, "ingest: pdf: read input:", err)
 		return 1
 	}
 	type result struct {
-		text string
-		err  error
+		text, title string
+		err         error
 	}
 	done := make(chan result, 1)
 	go func() {
-		text, _, err := pdfExtractInProcess(body)
-		done <- result{text, err}
+		text, title, err := pdfExtractInProcess(body, withTitle)
+		done <- result{text, title, err}
 	}()
 	select {
 	case r := <-done:
 		if r.err != nil {
 			fmt.Fprintln(stderr, r.err)
 			return 1
+		}
+		if withTitle {
+			// JSON string escapes can occupy up to six bytes per input
+			// byte. Normalize oversized metadata before encoding it.
+			if len(r.title) > (pdfTitleCap-2)/6 {
+				r.title = normalizeTitle(r.title)
+			}
+			encoded, _ := json.Marshal(r.title)
+			fmt.Fprintln(stdout, string(encoded))
 		}
 		fmt.Fprint(stdout, r.text)
 		return 0
@@ -109,7 +133,7 @@ func PDFExtract(stdin io.Reader, stdout, stderr io.Writer) int {
 
 // pdfExtractInProcess is the actual parser call (only ever reached inside
 // the isolated child or the unit tests' extraction mode).
-func pdfExtractInProcess(body []byte) (text, title string, err error) {
+func pdfExtractInProcess(body []byte, withTitle bool) (text, title string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			text, title = "", ""
@@ -135,7 +159,20 @@ func pdfExtractInProcess(body []byte) (text, title string, err error) {
 	if text == "" {
 		return "", "", fmt.Errorf("ingest: pdf: no extractable text (scanned document?)")
 	}
-	return text, "", nil
+	if withTitle {
+		title = pdfMetadataTitle(reader)
+	}
+	return text, title, nil
+}
+
+func pdfMetadataTitle(reader *pdf.Reader) (title string) {
+	// An invalid optional metadata object must not discard usable text.
+	defer func() {
+		if recover() != nil {
+			title = ""
+		}
+	}()
+	return reader.Trailer().Key("Info").Key("Title").Text()
 }
 
 // limitedBuffer caps child output: once the limit would be exceeded it

@@ -40,20 +40,17 @@ func Decode(body []byte, contentType string, src *url.URL) (Loaded, error) {
 		if err != nil {
 			return Loaded{}, err
 		}
-		return Loaded{Text: text, Title: title, Hash: sha256Hex(text)}, nil
+		return withLoaderTitle(text, title, titleSourcePDF), nil
 	}
 
 	ct := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 	if ct == "text/html" || ct == "application/xhtml+xml" || looksLikeHTML(body) {
-		text, err := HTMLToText(body, src)
-		if err != nil {
-			return Loaded{}, fmt.Errorf("ingest: decode html: %w", err)
-		}
+		text, title := htmlToTextAndTitle(body, src)
 		text = strings.TrimSpace(text)
 		if text == "" {
 			return Loaded{}, errors.New("ingest: decode html: no text content")
 		}
-		return Loaded{Text: text, Hash: sha256Hex(text)}, nil
+		return withLoaderTitle(text, title, titleSourceHTML), nil
 	}
 
 	if strings.HasPrefix(ct, "text/") || ct == "application/markdown" || utf8.Valid(body) {
@@ -61,6 +58,13 @@ func Decode(body []byte, contentType string, src *url.URL) (Loaded, error) {
 		return Loaded{Text: text, Hash: sha256Hex(text)}, nil
 	}
 	return Loaded{}, fmt.Errorf("ingest: decode: undecodable binary content (content-type %q)", contentType)
+}
+
+func withLoaderTitle(text, title, origin string) Loaded {
+	if title == "" {
+		origin = ""
+	}
+	return Loaded{Text: text, Title: title, TitleSource: origin, Hash: sha256Hex(text)}
 }
 
 // looksLikeHTML sniffs a leading doctype or <html tag (with a tag
@@ -131,8 +135,8 @@ func DefaultLoader(f *Fetcher, conv convert.Converter) TextLoader {
 			if err != nil {
 				return Loaded{}, err
 			}
-			if l.Title == "" {
-				l.Title = in.Title
+			if l.Title == "" && in.Title != "" {
+				l.Title, l.TitleSource = in.Title, titleSourceCaller
 			}
 			return l, nil
 		case "file":
@@ -143,15 +147,15 @@ func DefaultLoader(f *Fetcher, conv convert.Converter) TextLoader {
 			if err != nil {
 				return Loaded{}, err
 			}
-			if l.Title == "" {
-				l.Title = in.Title
+			if l.Title == "" && in.Title != "" {
+				l.Title, l.TitleSource = in.Title, titleSourceCaller
 			}
 			return l, nil
 		case "text":
 			if in.Text == "" {
 				return Loaded{}, fmt.Errorf("ingest: cannot reload text input %q after restart; resubmit the content", in.Source)
 			}
-			return Loaded{Text: in.Text, Title: in.Title, Hash: sha256Hex(in.Text)}, nil
+			return withLoaderTitle(in.Text, in.Title, titleSourceCaller), nil
 		default:
 			return Loaded{}, fmt.Errorf("ingest: unknown input kind %q", kind)
 		}

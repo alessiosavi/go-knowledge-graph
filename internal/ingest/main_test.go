@@ -11,6 +11,9 @@ import (
 // are killed by the parent's timeout instead of wedging the test process.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "pdf-extract" {
+		if len(os.Args) == 3 && os.Args[2] == "--with-title" {
+			os.Exit(PDFExtractWithTitle(os.Stdin, os.Stdout, os.Stderr))
+		}
 		os.Exit(PDFExtract(os.Stdin, os.Stdout, os.Stderr))
 	}
 	os.Exit(m.Run())

@@ -32,9 +32,10 @@ import (
 
 // Loaded is the decoded document handed over by the text loader.
 type Loaded struct {
-	Text  string
-	Title string
-	Hash  string
+	Text        string
+	Title       string
+	TitleSource string `json:",omitempty"`
+	Hash        string
 }
 
 // TextLoader decodes an input into cleaned text. T8 uses a stub; T11 wires
@@ -258,22 +259,29 @@ func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 		return Result{}, fmt.Errorf("ingest: load: %w", err)
 	}
 	hash := sha256Hex(loaded.Text)
-	kind, source, err := resolveIdentity(in, hash)
+	kind, source, synthesized, err := resolveIdentity(in, hash)
 	if err != nil {
 		return Result{}, err
 	}
-	title := in.Title
+	title, titleSource := normalizeTitle(in.Title), titleSourceCaller
 	if title == "" {
-		title = loaded.Title
+		title, titleSource = normalizeTitle(loaded.Title), loaded.TitleSource
+	}
+	if title == "" {
+		derivationSource := source
+		if synthesized {
+			derivationSource = ""
+		}
+		title, titleSource = DeriveTitle(loaded.Text, derivationSource)
 	}
 	finalURL := ""
 	if kind == "url" {
 		finalURL = in.URL
 	}
 	loaded.Hash = hash
-	loaded.Title = title
+	loaded.Title, loaded.TitleSource = title, titleSource
 	res, err := p.admit(ctx, graph.DocumentInput{
-		Kind: kind, Source: source, FinalURL: finalURL, Title: title, Hash: hash, Labels: in.Labels,
+		Kind: kind, Source: source, FinalURL: finalURL, Title: title, TitleSource: titleSource, Hash: hash, Labels: in.Labels,
 	}, submission{loaded: loaded, labels: in.Labels}, in.Force)
 	if err != nil || res.Noop {
 		return res, err
@@ -1593,9 +1601,9 @@ func (p *Pipeline) labelsFor(name string) ([]extract.Label, []extract.Label, err
 }
 
 // resolveIdentity derives (source_kind, source) per the design: url uses
-// the submitted URL, file requires a caller-supplied source, text falls
-// back to the first hash bytes.
-func resolveIdentity(in Input, hash string) (kind, source string, err error) {
+// the submitted URL, file requires a caller-supplied source, text can use
+// a synthesized source from the start of the hash.
+func resolveIdentity(in Input, hash string) (kind, source string, synthesized bool, err error) {
 	kind = in.Kind
 	if kind == "" {
 		switch {
@@ -1614,22 +1622,23 @@ func resolveIdentity(in Input, hash string) (kind, source string, err error) {
 			source = in.URL
 		}
 		if source == "" {
-			return "", "", errors.New("ingest: url input without a URL")
+			return "", "", false, errors.New("ingest: url input without a URL")
 		}
 	case "file":
 		source = in.Source
 		if source == "" {
-			return "", "", errors.New("ingest: file input requires a source (filename)")
+			return "", "", false, errors.New("ingest: file input requires a source (filename)")
 		}
 	case "text":
 		source = in.Source
 		if source == "" {
 			source = hash[:8]
+			synthesized = true
 		}
 	default:
-		return "", "", fmt.Errorf("ingest: unknown input kind %q", kind)
+		return "", "", false, fmt.Errorf("ingest: unknown input kind %q", kind)
 	}
-	return kind, source, nil
+	return kind, source, synthesized, nil
 }
 
 func chunkFP(c graph.Chunk) dedup.FP {
