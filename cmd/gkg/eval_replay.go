@@ -73,7 +73,7 @@ func runEvalSample(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runEvalReplay(input, output, preset string, stdout, stderr io.Writer) int {
+func runEvalReplay(input, output, preset string, opts eval.ReplayOptions, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cfg, err := loadConfig()
@@ -81,9 +81,12 @@ func runEvalReplay(input, output, preset string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg eval: %v\n", err)
 		return 1
 	}
-	counts, err := eval.Replay(ctx, cfg, input, output, preset, version, stderr)
+	counts, err := eval.ReplayWithOptions(ctx, cfg, input, output, preset, version, opts, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg eval: %v\n", err)
+		if errors.Is(err, os.ErrExist) {
+			return 2
+		}
 		return 1
 	}
 	fmt.Fprintf(stdout, "chunks=%d ok=%d empty=%d errors=%d occurrences=%d stored_winners=%d duplicate_roots_outside_sample=%d duplicate_root_cycles=%d\n",

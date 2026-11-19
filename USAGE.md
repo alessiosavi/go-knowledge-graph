@@ -431,22 +431,29 @@ from the selected preset. Each chunk has one result row with the document's stor
 show `null` for `labels`.
 
 Replay checks sidecar health once for a nonempty sample and batches each
-document's nonduplicate chunks in sequence order as ingest does. A
-failed batch is retried one chunk at a time. Chunks with zero extracted
-relations are `empty`. Each relation occurrence
+document's nonduplicate chunks (every chunk with `-no-borrow`) in sequence
+order as ingest does. In replay,
+each batch must return exactly one result for every requested chunk ID.
+Missing, duplicate or unrequested IDs fail the batch, which is retried one
+chunk at a time. Predictions for chunks with zero extracted relations are
+`empty`. Each relation occurrence
 has the original endpoint text and chunk-relative byte offsets, cleaned names
 and entity keys, endpoint types, relation, model label text, confidence,
 evidence, document title and disposition. `stored_winner` marks the occurrence
 selected by ingest's per-chunk storage rules before judging. With
 `facts.require_confirmation=true`, the winner would be stored as a candidate.
-Duplicates borrow occurrences from their root in the sample, with
-`source_chunk_id` identifying the chunk the evidence and offsets come from.
-Their winner flags are false. A duplicate whose root is outside the sample
-is `empty` after a successful health check and has `duplicate_root` set to
-`outside_sample`; exclude those rows from the fidelity comparison. A cyclic
+With normal borrowing, duplicates borrow occurrences from their root in the
+sample, with `source_chunk_id` identifying the chunk the evidence and offsets
+come from. Their winner flags are false. A duplicate whose root is outside the
+sample is `empty` after a successful health check and has `duplicate_root` set
+to `outside_sample`; exclude those rows from the fidelity comparison. With
+`-no-borrow`, every duplicate (including one whose root is outside the sample)
+is extracted locally: its rows carry their own occurrences and winner flags,
+no `source_chunk_id`, and `duplicate_root` stays informational. A cyclic
 chain is flagged as `cycle`: `eval-sample` exports it without
 `duplicate_of`, and replay extracts it as ingest does, so its occurrences
-stay comparable. The `empty` count includes `outside_sample` rows. The replay
+stay comparable. With normal borrowing, the `empty` count includes `outside_sample` rows; with
+`-no-borrow` those rows are extracted locally and counted by their own status. The replay
 summary on standard output and the JSONL trailer count the flagged rows in
 `duplicate_roots_outside_sample` and `duplicate_root_cycles`.
 A kept relation below the assert floor is marked `low_confidence`.
@@ -459,6 +466,74 @@ covers all preceding lines, including the header and line endings. The replay
 header's input SHA-256 covers the entire sample file, including its trailer.
 Named presets are hashed as file bytes. Built-in labels are hashed as
 serialized defaults and the effective hygiene policy is recorded separately.
+
+#### Validated mentions for scoring
+
+```sh
+gkg eval -replay sample.jsonl -predictions predictions.jsonl -labels general \
+  -mentions mentions.jsonl -no-borrow
+```
+
+`-mentions` and `-no-borrow` require `-replay`. Use a distinct path for
+each file. Replay reserves both outputs with mode 0600 before contacting
+the sidecar. An existing output is a usage error (exit 2). A fatal replay
+error removes both outputs. Per-chunk errors leave both files available
+with error rows and exit 1.
+
+`-no-borrow` sends every chunk, including duplicates, to the sidecar and
+computes each chunk's winners locally. Prediction occurrences then omit
+`source_chunk_id`. The `duplicate_root` field still records root issues.
+With normal borrowing, the mentions file has a chunk row for every sample
+chunk. A chunk that borrows from a sampled root has status `borrowed` and
+records the root ID in `source_chunk_id`. It has no `entity`, `relation`,
+or `ambiguous_relation` rows. If its root failed, the chunk has status
+`error`. Only `borrowed` chunk rows include `source_chunk_id`.
+
+The file uses the following JSONL rows.
+
+- `header` records `format: "gkg-mentions/v1"`, `no_borrow`, and
+  `offsets: "utf8_bytes_chunk"`. The shared 32-character hexadecimal
+  `attempt_id` links this file to its predictions. The header also records
+  `input_sha256`, `preset`, `preset_sha256`, `hygiene`, `write_mode`,
+  `store_floor`, `assert_floor`, `sidecar_model` when available,
+  `sidecar_image`, `sidecar_image_digest`, `extractor_version`, and `gkg_version`.
+- `chunk` rows follow sample file order and include `chunk_id`, `doc_id`,
+  any raw JSON `product_id` and `kind`, `status` (`ok`, `empty`, `borrowed`,
+  or `error`), `error`, and counts for `entities`, `relations`, and
+  `ambiguous_relations`. A chunk without borrowed evidence or an error
+  is `empty` when all three counts are zero.
+- `entity` rows follow each chunk row in validated index order. They carry
+  `chunk_id`, `index`, `label`, `text`, `start`, `end`, `score` and
+  `hygiene`. A `kept` outcome includes `name`, `aliases`, and `key`.
+  A `dropped` outcome includes its `rule`.
+- `relation` rows follow entities in candidate index order. They include
+  `chunk_id`, `index`, `label`, `score`, `head` and `tail` (each with
+  `index`, `start`, `end`, and `label`), `disposition` (`kept`,
+  `floor:store_floor`, or `hygiene:<rule>`), `low_confidence`, and
+  `stored_winner`.
+- `ambiguous_relation` rows follow relations and have `type` set to
+  `"ambiguous_relation"`. They carry `chunk_id`, `index`, `label`, `score`,
+  `head_candidates`, and `tail_candidates`. The `index` is the diagnostic's
+  zero-based position in the full diagnostics list. The candidate lists
+  use the same validated endpoint fields as relation rows.
+- `trailer` carries `sha256` and `counts` with `chunks_requested`,
+  `chunks_ok`, `chunks_empty`, `chunks_borrowed`, `chunks_error`, `entities`,
+  `relations`, `ambiguous_relations`, and `complete`. The file is complete
+  when `chunks_error` is zero and `chunks_ok + chunks_empty + chunks_borrowed`
+  equals `chunks_requested`. For scoring, use complete mentions files and
+  check the attempt ID against each corresponding predictions file.
+
+The header's `labels_sha256` is the lowercase hexadecimal SHA-256 of the
+exact bytes of the `labels` JSON value as emitted in the mentions header line.
+Verify it by hashing that substring directly and skipping re-serialization.
+
+For reference, Go's `encoding/json.Marshal` encodes
+the object with `entities` then `relations`, arrays in preset order
+(empty arrays are `[]`), and keys in the order `name`, `text`,
+`threshold`, then `scope` for entities. The `text` field is the model
+label text, falling back to `name`. The `scope` field is present even when
+empty. This encoding uses Go's default number and string encoding,
+including escaping `&`, `<`, `>`, U+2028, and U+2029.
 
 ### Validate a preset
 

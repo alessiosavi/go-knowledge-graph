@@ -117,6 +117,8 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 	sweep := fs.String("sweep", "", "threshold sweep, e.g. entity=0.2:0.8:0.1 relation=0.1:0.6:0.1")
 	replay := fs.String("replay", "", "replay stored chunks from an eval-sample JSONL file")
 	predictions := fs.String("predictions", "", "create a private JSONL predictions file in replay mode")
+	mentions := fs.String("mentions", "", "create a private JSONL file of validated replay mentions")
+	noBorrow := fs.Bool("no-borrow", false, "extract every replay chunk locally, including duplicates")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -141,11 +143,33 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "gkg eval: replay requires the sidecar provider")
 			return 2
 		}
-		return runEvalReplay(*replay, *predictions, *labels, stdout, stderr)
+		if flags["mentions"] {
+			if *mentions == "" {
+				fmt.Fprintln(stderr, "gkg eval: -mentions requires a file path")
+				return 2
+			}
+			paths := [...]string{*mentions, *replay, *predictions}
+			for i, path := range paths {
+				absolute, err := filepath.Abs(path)
+				if err != nil {
+					fmt.Fprintf(stderr, "gkg eval: resolve path: %v\n", err)
+					return 2
+				}
+				paths[i] = absolute
+			}
+			if paths[0] == paths[1] || paths[0] == paths[2] {
+				fmt.Fprintln(stderr, "gkg eval: -mentions must use a different path from -replay and -predictions")
+				return 2
+			}
+		}
+		opts := eval.ReplayOptions{MentionsPath: *mentions, NoBorrow: *noBorrow}
+		return runEvalReplay(*replay, *predictions, *labels, opts, stdout, stderr)
 	}
-	if flags["predictions"] {
-		fmt.Fprintln(stderr, "gkg eval: -predictions requires -replay")
-		return 2
+	for _, name := range []string{"predictions", "mentions", "no-borrow"} {
+		if flags[name] {
+			fmt.Fprintf(stderr, "gkg eval: -%s requires -replay\n", name)
+			return 2
+		}
 	}
 	if *sweep != "" {
 		if _, _, err := eval.ParseSweep(*sweep); err != nil {

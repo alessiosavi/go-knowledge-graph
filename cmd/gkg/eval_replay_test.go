@@ -269,7 +269,7 @@ CREATE (:GkgMeta {id:'extraction_schema', value:$schema}),
 					default:
 						t.Error("extra extraction request")
 					}
-					fmt.Fprint(w, `{"results":[]}`)
+					fmt.Fprintf(w, `{"results":[{"chunk_id":%q}]}`, req.Chunks[0].ID)
 				default:
 					t.Errorf("unexpected sidecar request %s %s", r.Method, r.URL.Path)
 					http.NotFound(w, r)
@@ -381,7 +381,8 @@ func TestEvalReplaySidecarOnly(t *testing.T) {
 			var results []map[string]any
 			for _, c := range req.Chunks {
 				if c.ID != "chunk-good" {
-					continue // exercise omitted results
+					results = append(results, map[string]any{"chunk_id": c.ID})
+					continue
 				}
 				if c.Text != text {
 					t.Errorf("sidecar text = %q, want stored text", c.Text)
@@ -539,7 +540,7 @@ func TestEvalReplaySidecarOnly(t *testing.T) {
 		t.Errorf("trailer counts = %+v", rows[len(rows)-1])
 	}
 
-	assertEvalCLI(t, args, 1, "", "file exists")
+	assertEvalCLI(t, args, 2, "", "file exists")
 	if _, again := readEvalArtifact(t, "predictions.jsonl"); !bytes.Equal(again, data) {
 		t.Fatal("existing predictions were changed")
 	}
@@ -622,7 +623,7 @@ func TestEvalReplayMatchesIngestBatches(t *testing.T) {
 			mu.Lock()
 			batches = append(batches, req.Chunks)
 			mu.Unlock()
-			fmt.Fprint(w, `{"results":[]}`)
+			writeEmptyReplayResults(t, w, req.Chunks)
 		default:
 			t.Errorf("unexpected sidecar request %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -731,7 +732,15 @@ func TestEvalReplayWriteMode(t *testing.T) {
 		case "/healthz":
 			fmt.Fprint(w, `{"status":"ok"}`)
 		case "/v1/extract":
-			fmt.Fprint(w, `{"results":[]}`)
+			var req struct {
+				Chunks []extract.RequestChunk `json:"chunks"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("decode request: %v", err)
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			writeEmptyReplayResults(t, w, req.Chunks)
 		default:
 			http.NotFound(w, r)
 		}
@@ -941,5 +950,16 @@ func writeEvalFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func writeEmptyReplayResults(t *testing.T, w http.ResponseWriter, chunks []extract.RequestChunk) {
+	t.Helper()
+	results := make([]map[string]string, 0, len(chunks))
+	for _, c := range chunks {
+		results = append(results, map[string]string{"chunk_id": c.ID})
+	}
+	if err := json.NewEncoder(w).Encode(map[string]any{"results": results}); err != nil {
+		t.Error(err)
 	}
 }
