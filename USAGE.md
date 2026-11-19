@@ -737,6 +737,45 @@ among the rows the rebuild maintains. Rows skipped by the rebuild appear in
 `rows_skipped`. The stale count requires matching fold versions. A version
 mismatch reports that fold matching is off.
 
+### Plan entity merges by fold
+
+```sh
+gkg merge-folds -plan -out merge-plan.jsonl
+gkg merge-folds -plan -out demo-merge-plan.jsonl -domain demo -timeout 10m
+```
+
+Run this after a complete `gkg fold rebuild` with the current fold version.
+The planner uses the rebuild's eligibility rule. An entity needs a non-empty
+key and ID to be included in `entity_count`, the stale hint check or any group.
+Other rows are counted in `skipped_rows`. The planner folds persisted names
+using the stored exceptions. Document-scoped and vetoed entity keys are
+excluded from groups. With `-domain SLUG`, the planner scans the key range
+for the `@SLUG:` prefix. Only rows in that scope contribute to its counts.
+
+The planner reads one graph snapshot in a single read transaction and holds
+the whole plan in memory. It is intended for the current boxes with about
+30,000 entities. Audit ID lookups can scan the graph when there is no
+`RejectedFact(id)` index. `-timeout` limits the graph connection and planning
+reads and defaults to `10m`.
+
+The command creates a new private JSONL file with mode `0600` and refuses an
+existing path. The header records the fold version, exception digest, entity
+count, skipped rows and generation time. Each group identifies the canonical
+key by stored mention count, with ties going to the smallest key. Members
+include their distinct supporting documents, incoming and outgoing typed
+edges by judge status, candidates, rejected facts and embedding presence.
+Rewire counts each stored mention, typed edge, candidate or audit touching a
+loser once per group. Candidate and audit ID checks report same-tuple
+collapses and list different-tuple conflicts in `blocking`. The trailer's
+`sha256` hashes the exact bytes of the header and group lines, including their
+newlines.
+
+Stdout reports group and member counts, type mismatches, blocking groups,
+maximum and nearest-rank p95 rewire counts, stale hints and `skipped_rows`.
+Exit `0` means the report was produced, including any blocking findings.
+Exit `1` means an operational error. Exit `2` means invalid arguments or a
+missing, outdated or incomplete fold record.
+
 ### Repair stored entity names
 
 Run `gkg repair-names -dry-run` to preview the number of stored entity names
