@@ -526,7 +526,8 @@ func (s *Store) Document(ctx context.Context, id string) (*Document, error) {
 	recs, err := s.runRead(ctx, `
 MATCH (d:Document {id: $id})
 RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
-       d.title AS title, d.title_source AS title_source, d.hash AS hash, d.status AS status, d.error AS error,
+       coalesce(d.title, '') AS title, coalesce(d.title_source, '') AS title_source,
+       d.hash AS hash, d.status AS status, d.error AS error,
        coalesce(d.labels, '') AS labels, d.domain AS domain,
        d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes`,
 		map[string]any{"id": id})
@@ -567,7 +568,8 @@ func (s *Store) DocumentsIn(ctx context.Context, status Status, slug string, lim
 	}
 	q += `
  RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url AS final_url,
- d.title AS title, d.title_source AS title_source, d.hash AS hash, d.status AS status, d.error AS error,
+ coalesce(d.title, '') AS title, coalesce(d.title_source, '') AS title_source,
+ d.hash AS hash, d.status AS status, d.error AS error,
  coalesce(d.labels, '') AS labels, d.domain AS domain,
  d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
  ORDER BY d.updated_at DESC`

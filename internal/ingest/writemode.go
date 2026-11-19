@@ -8,6 +8,13 @@ type WriteMode struct {
 	Hygiene, Domains, RequireConfirmation bool
 }
 
+// WriteModeForSchema derives the write mode from the extraction schema marker
+// and the configured fact confirmation setting.
+func WriteModeForSchema(schemaVersion int, requireConfirmation bool) WriteMode {
+	v4 := schemaVersion >= graph.SchemaVersionV4
+	return WriteMode{Hygiene: v4, Domains: v4, RequireConfirmation: v4 && requireConfirmation}
+}
+
 // SetWriteMode configures the pipeline before processing documents.
 func (p *Pipeline) SetWriteMode(m WriteMode) { p.writeMode = m }
 

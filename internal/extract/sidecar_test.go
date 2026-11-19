@@ -3,10 +3,13 @@ package extract
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -322,6 +325,73 @@ func TestSidecarBatchesBy8Chunks(t *testing.T) {
 	}
 	if len(res) != 17 {
 		t.Errorf("results = %d, want 17", len(res))
+	}
+}
+
+func TestSidecarExtractReplayRetriesInRequestOrder(t *testing.T) {
+	var mu sync.Mutex
+	var batches [][]string
+	s := newTestSidecar(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/extract" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		var req sidecarRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		var ids []string
+		for _, chunk := range req.Chunks {
+			ids = append(ids, chunk.ID)
+		}
+		mu.Lock()
+		batches = append(batches, ids)
+		mu.Unlock()
+		if slices.Contains(ids, "c2") {
+			http.Error(w, "synthetic c2 failure", http.StatusServiceUnavailable)
+			return
+		}
+		var results []map[string]any
+		for _, chunk := range slices.Backward(req.Chunks) {
+			results = append(results, map[string]any{
+				"chunk_id": chunk.ID,
+				"entities": []map[string]any{{"label": "kind", "text": chunk.Text, "start": 0, "end": len(chunk.Text), "score": .9}},
+			})
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{"results": results}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	})
+	req := Request{Entities: []Label{{Name: "kind", Threshold: .5}}}
+	for i := range 11 {
+		req.Chunks = append(req.Chunks, RequestChunk{ID: fmt.Sprintf("c%d", i), Text: fmt.Sprintf("Zorvax%d", i)})
+	}
+	results, err := s.ExtractReplay(t.Context(), req)
+	if err != nil || len(results) != len(req.Chunks) {
+		t.Fatalf("ExtractReplay returned %d results, error %v", len(results), err)
+	}
+	for i, result := range results {
+		chunk := req.Chunks[i]
+		if result.ChunkID != chunk.ID {
+			t.Errorf("result %d has chunk ID %q, want %q", i, result.ChunkID, chunk.ID)
+		}
+		if chunk.ID == "c2" {
+			if result.Err == nil || !strings.Contains(result.Err.Error(), "HTTP 503: synthetic c2 failure") || len(result.Mentions) != 0 {
+				t.Errorf("failed result = %+v", result)
+			}
+		} else if result.Err != nil || len(result.Mentions) != 1 || result.Mentions[0].Text != chunk.Text {
+			t.Errorf("result %s = %+v, want mention %q", chunk.ID, result, chunk.Text)
+		}
+	}
+	want := [][]string{{"c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7"},
+		{"c0"}, {"c1"}, {"c2"}, {"c3"}, {"c4"}, {"c5"}, {"c6"}, {"c7"}, {"c8", "c9", "c10"}}
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(batches, want) {
+		t.Errorf("batches = %v, want %v", batches, want)
 	}
 }
 

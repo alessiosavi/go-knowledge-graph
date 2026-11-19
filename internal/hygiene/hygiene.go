@@ -25,6 +25,13 @@ type Result struct {
 	Renamed    int
 }
 
+// Trace links a cleaned extraction to the original provider occurrences.
+type Trace struct {
+	MentionIndices   []int // original mention -> cleaned index, or -1
+	MentionDrops     []Rule
+	CandidateSources []int // cleaned candidate -> original index
+}
+
 // NameOnly applies the rules that do not require chunk text.
 func NameOnly(name, label string, p Preset) (normalized string, aliases []string, dropped Rule) {
 	return cleanName(name, label, false, p)
@@ -47,8 +54,23 @@ func cleanName(name, label string, wholeHeading bool, p Preset) (string, []strin
 // Apply cleans every mention, then drops facts with missing endpoints and
 // reindexes the surviving candidates. It never mutates the provider's result.
 func Apply(r extract.ChunkResult, chunkText string, p Preset) Result {
+	return apply(r, chunkText, p, nil)
+}
+
+// ApplyWithTrace also records the source indices and the rules that dropped
+// mentions, so callers can account for relations with dropped endpoints.
+func ApplyWithTrace(r extract.ChunkResult, chunkText string, p Preset) (Result, Trace) {
+	trace := Trace{MentionDrops: make([]Rule, len(r.Mentions))}
+	out := apply(r, chunkText, p, &trace)
+	return out, trace
+}
+
+func apply(r extract.ChunkResult, chunkText string, p Preset, trace *Trace) Result {
 	out := Result{ChunkID: r.ChunkID, Dropped: make(map[Rule]int)}
 	indices := make([]int, len(r.Mentions))
+	if trace != nil {
+		trace.MentionIndices = indices
+	}
 	for i, m := range r.Mentions {
 		indices[i] = -1
 		name, aliases, rule := cleanName(m.Text, m.Label, isHeadingLine(m.Text, chunkText, m.Start, m.End), p)
@@ -58,6 +80,9 @@ func Apply(r extract.ChunkResult, chunkText string, p Preset) Result {
 		}
 		if rule != "" {
 			out.Dropped[rule]++
+			if trace != nil {
+				trace.MentionDrops[i] = rule
+			}
 			continue
 		}
 		indices[i] = len(out.Mentions)
@@ -66,7 +91,7 @@ func Apply(r extract.ChunkResult, chunkText string, p Preset) Result {
 			out.Renamed++
 		}
 	}
-	for _, c := range r.Candidates {
+	for i, c := range r.Candidates {
 		if c.Head < 0 || c.Head >= len(indices) || c.Tail < 0 || c.Tail >= len(indices) {
 			continue
 		}
@@ -75,6 +100,9 @@ func Apply(r extract.ChunkResult, chunkText string, p Preset) Result {
 		}
 		c.Head, c.Tail = indices[c.Head], indices[c.Tail]
 		out.Candidates = append(out.Candidates, c)
+		if trace != nil {
+			trace.CandidateSources = append(trace.CandidateSources, i)
+		}
 	}
 	return out
 }

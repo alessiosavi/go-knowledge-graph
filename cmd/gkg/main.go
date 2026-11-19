@@ -68,6 +68,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRepairTitles(args[1:], stdout, stderr)
 	case "eval":
 		return runEval(args[1:], stdout, stderr)
+	case "eval-sample":
+		return runEvalSample(args[1:], stdout, stderr)
+	case "preset":
+		return runPreset(args[1:], stdout, stderr)
 	case "domain":
 		return runDomain(args[1:], stdout, stderr)
 	case "judge":
@@ -100,7 +104,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// runEval runs the golden-set evaluation harness.
+// runEval selects the golden-set harness or the sidecar-only replay.
 func runEval(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -109,7 +113,36 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 	labels := fs.String("labels", "", "label preset from config labels.presets_dir (default: built-in labels)")
 	out := fs.String("out", "", "write the report to <out>.md and <out>.json")
 	sweep := fs.String("sweep", "", "threshold sweep, e.g. entity=0.2:0.8:0.1 relation=0.1:0.6:0.1")
+	replay := fs.String("replay", "", "replay stored chunks from an eval-sample JSONL file")
+	predictions := fs.String("predictions", "", "create a private JSONL predictions file in replay mode")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	flags := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { flags[f.Name] = true })
+	if flags["replay"] {
+		if fs.NArg() != 0 {
+			fmt.Fprintf(stderr, "gkg eval: unexpected argument %q\n", fs.Arg(0))
+			return 2
+		}
+		if *replay == "" || *predictions == "" {
+			fmt.Fprintln(stderr, "gkg eval: replay requires -replay FILE and -predictions OUT")
+			return 2
+		}
+		for _, name := range []string{"golden", "sweep", "out"} {
+			if flags[name] {
+				fmt.Fprintf(stderr, "gkg eval: -%s is incompatible with -replay\n", name)
+				return 2
+			}
+		}
+		if flags["provider"] && *providerName != "sidecar" {
+			fmt.Fprintln(stderr, "gkg eval: replay requires the sidecar provider")
+			return 2
+		}
+		return runEvalReplay(*replay, *predictions, *labels, stdout, stderr)
+	}
+	if flags["predictions"] {
+		fmt.Fprintln(stderr, "gkg eval: -predictions requires -replay")
 		return 2
 	}
 	if *sweep != "" {
@@ -375,8 +408,8 @@ func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*in
 	if err != nil {
 		return nil, nil, err
 	}
-	v4 := schemaVersion >= graph.SchemaVersionV4
-	if v4 {
+	writeMode := ingest.WriteModeForSchema(schemaVersion, cfg.Facts.RequireConfirmation)
+	if writeMode.Hygiene {
 		if err := validateStoplistOverlay(cfg); err != nil {
 			return nil, nil, err
 		}
@@ -396,7 +429,7 @@ func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*in
 		return nil, nil, err
 	}
 	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg), conv))
-	pipe.SetWriteMode(ingest.WriteMode{Hygiene: v4, Domains: v4, RequireConfirmation: v4 && cfg.Facts.RequireConfirmation})
+	pipe.SetWriteMode(writeMode)
 	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
 		pipe.SetJudge(newFactJudge(cfg, st))
 	}
@@ -717,6 +750,9 @@ commands:
   serve     run the REST API, MCP endpoint and ingestion workers
   ingest    ingest a file, URL or stdin into the knowledge graph (-source <s> overrides the identity)
   eval      run the golden-set evaluation harness
+  eval -replay FILE -predictions OUT [-labels PRESET]  replay stored chunks with the sidecar
+  eval-sample -domain SLUG -out FILE [-docs N -seed S]  export done documents and stored chunks read-only
+  preset check FILE [-stoplist FILE]  validate a label and hygiene preset
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
   domain    list, inspect, evaluate and administer domains through serve
   judge     backfill candidates, audit facts, or evaluate judge v2
