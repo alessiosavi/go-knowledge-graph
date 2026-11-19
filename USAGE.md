@@ -654,7 +654,9 @@ Apply requires a finalized directory, the approved digest, the sealed preset
 rules and lexicon, and a graph with no live judge lease or previous validity run.
 Every Document must have a terminal status. A missing status blocks apply.
 Apply checks the live inventory and collision inputs before taking the lease
-and rebuilds the evidence and requests in each row's transaction. Ambiguous and
+and rebuilds the evidence and requests in each row's transaction. Preflight also
+requires rebuilt request bytes for every planned source and judged rewrite
+candidate to match the sealed bulk and rewrites manifests. Ambiguous and
 unverifiable rows are counted and left untouched.
 
 Choose a fresh `-report` path. Apply checks that the path is absent during
