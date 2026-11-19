@@ -27,9 +27,13 @@ var (
 	errFoldFirstRun  = argerr.New("the first rebuild requires -exceptions FILE or -clear-exceptions")
 )
 
-const foldPageQuery = `MATCH (e:Entity) WHERE e.key > $last
+const foldPageQuery = `MATCH (e:Entity) WHERE e.key > $last` + foldPageProjection
+
+const foldPageProjection = `
 RETURN e.key AS key, e.id AS id, e.name AS name, e.fold_key AS fold_key
 ORDER BY e.key LIMIT $limit`
+
+const foldKeylessCountQuery = `MATCH (e:Entity) WHERE e.key IS NULL OR e.key = '' RETURN count(e) AS n`
 
 // FoldRebuildResult counts committed entity changes and rows without a usable
 // key or id. MissingExceptions lists exact exception keys absent at startup.
@@ -91,7 +95,7 @@ func (s *Store) rebuildFold(ctx context.Context, replacement *FoldExceptions, af
 
 	// The key cursor cannot visit missing or empty keys. Count these once,
 	// independently of missing ids on the rows the cursor does visit.
-	rows, err := s.runRead(ctx, `MATCH (e:Entity) WHERE e.key IS NULL OR e.key = '' RETURN count(e) AS n`, nil)
+	rows, err := s.runRead(ctx, foldKeylessCountQuery, nil)
 	if err != nil {
 		return out, fmt.Errorf("graph: count entities without a key: %w", err)
 	}
