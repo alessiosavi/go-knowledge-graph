@@ -741,33 +741,27 @@ func (s *Store) WriteFactAudit(ctx context.Context, a FactAudit) error {
 
 // txWriteFactAudit merges one audit row inside an existing transaction.
 func txWriteFactAudit(ctx context.Context, tx neo4j.ManagedTransaction, a FactAudit) error {
-	a.Rel = sanitizeRel(a.Rel)
 	// An audit for a document that no longer exists (deleted while its
 	// judge call was in flight) is not written: nothing could delete it.
 	err := txRun(ctx, tx, `
 OPTIONAL MATCH (d:Document {id: $doc})
 WITH d WHERE $doc = '' OR d IS NOT NULL
 MERGE (rf:RejectedFact {id: $id})
-SET rf.head_key = $head, rf.rel = $rel, rf.tail_key = $tail, rf.doc_id = $doc,
-    rf.chunk_id = $chunk, rf.score = $score, rf.judge_verdict = $verdict,
-    rf.reason = $reason, rf.at = $at, rf.extractor_version = $ever`,
-		map[string]any{
-			"id":      FactAuditID(a.HeadKey, a.Rel, a.TailKey, a.ChunkID),
-			"head":    a.HeadKey,
-			"rel":     a.Rel,
-			"tail":    a.TailKey,
-			"doc":     a.DocID,
-			"chunk":   a.ChunkID,
-			"score":   a.Score,
-			"verdict": a.JudgeVerdict,
-			"reason":  a.Reason,
-			"at":      time.Now().UTC().Format(timeLayout),
-			"ever":    a.ExtractorVersion,
-		})
+SET rf += $props`,
+		map[string]any{"id": FactAuditID(a.HeadKey, a.Rel, a.TailKey, a.ChunkID), "doc": a.DocID, "props": factAuditProperties(a)})
 	if err != nil {
 		return fmt.Errorf("graph: write fact audit: %w", err)
 	}
 	return nil
+}
+
+func factAuditProperties(a FactAudit) map[string]any {
+	return map[string]any{
+		"head_key": a.HeadKey, "rel": sanitizeRel(a.Rel), "tail_key": a.TailKey,
+		"doc_id": a.DocID, "chunk_id": a.ChunkID, "score": a.Score,
+		"judge_verdict": a.JudgeVerdict, "reason": a.Reason, "extractor_version": a.ExtractorVersion,
+		"at": time.Now().UTC().Format(timeLayout),
+	}
 }
 
 // SetFactJudge records a judge verdict (confirmed|unclear) on the fact edge

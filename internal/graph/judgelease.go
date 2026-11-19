@@ -12,12 +12,27 @@ import (
 // with force, a live lease. The unique id constraint arbitrates new owners
 // across processes; conditional updates and renewals stay transactional.
 func (s *Store) AcquireLease(ctx context.Context, name, owner string, ttl time.Duration, force bool) (bool, error) {
+	return s.acquireLease(ctx, name, owner, ttl, force, nil)
+}
+
+func (s *Store) acquireLease(ctx context.Context, name, owner string, ttl time.Duration, force bool, previous *map[string]any) (bool, error) {
 	if name == "" || owner == "" || ttl <= 0 {
 		return false, fmt.Errorf("graph: lease needs a name, owner and positive TTL")
 	}
 	acquired := false
 	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
 		acquired = false
+		if previous != nil {
+			*previous = nil
+			rows, err := txRows(ctx, tx, `MATCH (l:JudgeLease {id:$name}) RETURN l.owner AS owner, l.expires_at AS expires_at`,
+				map[string]any{"name": name})
+			if err != nil {
+				return err
+			}
+			if len(rows) != 0 {
+				*previous = rows[0].AsMap()
+			}
+		}
 		now := time.Now()
 		res, err := tx.Run(ctx, `
 MERGE (l:JudgeLease {id: $name})

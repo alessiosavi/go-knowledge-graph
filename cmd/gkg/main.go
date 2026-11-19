@@ -767,7 +767,7 @@ commands:
   migrate --schema-only  upgrade schema and leave re-extraction to serve
   repair-names [-dry-run]  clean stored entity display names in place
   repair-labels [-dry-run] [-domain slug] [-report path]  remove stored section labels
-  repair-validity  classify, plan and finalize a catalog validity repair read-only
+  repair-validity  classify, plan, finalize or apply a catalog validity repair
   repair-titles [-apply] [-domain SLUG] [-out FILE]  fill missing document titles
   help      show this help (-h, --help)
   pdf-extract  internal isolated PDF parser
