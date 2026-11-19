@@ -689,6 +689,33 @@ plain `gkg migrate` completes it synchronously. Unknown migrate flags fail with
 exit 2. After a rebuild, run `gkg judge backfill --budget-calls N` with an
 owner-approved budget to recover unjudged candidates.
 
+### Rebuild the advisory entity fold index
+
+Run `gkg fold rebuild` against a graph with the current extraction schema.
+On the first run, pass `-exceptions FILE` or `-clear-exceptions`. Use
+`-exceptions FILE` to replace the stored list and `-clear-exceptions` to empty
+it. Later runs with neither flag reuse the stored list. The file takes one
+exact entity key per line. Use qualified keys such as `@demo:zorbulo` on
+graphs with domains. The command warns about exception keys absent from the graph.
+
+With Compose, copy the file into the `gkg-data` volume and use its container path.
+
+```sh
+docker compose exec -T gkg mkdir -p /var/lib/gkg/fold
+docker compose exec -T gkg sh -c 'umask 077; cat > /var/lib/gkg/fold/exceptions.txt' < exceptions.txt
+docker compose exec gkg gkg fold rebuild -exceptions /var/lib/gkg/fold/exceptions.txt
+```
+
+The rebuild can run while the service is ingesting. It reports committed row
+changes and the number of rows skipped for missing keys or IDs. Rerun after an
+interruption or after running an older binary that can leave stale fold hints.
+`gkg quality` shows the latest exception digest and rebuild status. The status
+stays `running` after an interruption. A completed rebuild sets `complete` and
+records its timestamp and counters. Older records without a status show
+`unknown`. Add `--fold-check` for a read-only count of keyed entities with
+missing or stale hints. The count requires matching fold versions. A version
+mismatch reports that fold matching is off.
+
 ### Repair stored entity names
 
 Run `gkg repair-names -dry-run` to preview the number of stored entity names

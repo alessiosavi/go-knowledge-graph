@@ -478,6 +478,10 @@ func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extrac
 			return fmt.Errorf("graph: clear fact candidates: %w", err)
 		}
 		if len(entRows) > 0 {
+			foldRecord, err := txReadFoldRecord(ctx, tx)
+			if err != nil {
+				return err
+			}
 			// Merge stored aliases with this call's aliases instead of
 			// clobbering them; a call without aliases keeps the stored list.
 			keyList := make([]string, 0, len(entRows))
@@ -515,8 +519,15 @@ func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extrac
 				mergedByKey[key] = merged
 			}
 			for _, row := range entRows {
-				if merged := mergedByKey[row["key"].(string)]; len(merged) > 0 {
+				key := row["key"].(string)
+				if merged := mergedByKey[key]; len(merged) > 0 {
 					row["aliases"] = merged
+				}
+				if foldRecord != nil {
+					row["fold_key"] = nil
+					if fold := FoldKeyFor(key, row["name"].(string), foldRecord.Exceptions); fold != nil {
+						row["fold_key"] = *fold
+					}
 				}
 			}
 
@@ -524,11 +535,14 @@ func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extrac
 UNWIND $ents AS ent
 MERGE (e:Entity {key: ent.key})
 ON CREATE SET e.id = ent.id, e.mention_count = 0, e.type = ent.type
+WITH e, ent
+FOREACH (_ IN CASE WHEN $fold_enabled AND (e.name IS NULL OR e.name <> ent.name) THEN [1] ELSE [] END |
+    SET e.fold_key = ent.fold_key)
 SET e.name = ent.name, e.name_key = ent.name_key,
     e.domain = CASE WHEN $domain <> '' THEN $domain ELSE e.domain END,
     e.domain_tok = CASE WHEN $domain <> '' THEN $domain_tok ELSE e.domain_tok END,
     e.aliases = CASE WHEN size(ent.aliases) > 0 THEN ent.aliases ELSE coalesce(e.aliases, []) END`,
-				map[string]any{"ents": entRows, "domain": opt.Domain, "domain_tok": domainTokenOrNil(opt.Domain)}); err != nil {
+				map[string]any{"ents": entRows, "domain": opt.Domain, "domain_tok": domainTokenOrNil(opt.Domain), "fold_enabled": foldRecord != nil}); err != nil {
 				return fmt.Errorf("graph: merge entities: %w", err)
 			}
 		}

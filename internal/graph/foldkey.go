@@ -10,6 +10,9 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// FoldKeyVersion identifies the fold key format stored in Memgraph.
+const FoldKeyVersion = 1
+
 var (
 	foldKeyReference        = regexp.MustCompile(`&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]+|#[xX][0-9A-Fa-f]+);`)
 	foldKeyTrademarkSymbols = strings.NewReplacer("™", "", "®", "", "©", "", "℠", "")

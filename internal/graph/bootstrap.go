@@ -46,6 +46,7 @@ var secondaryIndexes = []struct {
 	{"Entity", []string{"id"}},
 	{"Entity", []string{"key"}},
 	{"Entity", []string{"name_key"}},
+	{"GkgMeta", []string{"id"}},
 	{"Domain", []string{"id"}},
 	{"DomainOp", []string{"op_id"}},
 	{"DomainDecision", []string{"op_id"}},
@@ -217,20 +218,24 @@ func (s *Store) textIndexExists(ctx context.Context, name, label string, props [
 // ensureIndexes creates the secondary indexes idempotently.
 func (s *Store) ensureIndexes(ctx context.Context) error {
 	for _, ix := range secondaryIndexes {
-		ok, err := s.indexExists(ctx, ix.Label, ix.Props)
-		if err != nil {
-			return fmt.Errorf("graph: inspect indexes: %w", err)
+		if err := s.ensureIndex(ctx, ix.Label, ix.Props); err != nil {
+			return err
 		}
-		if ok {
-			continue
-		}
-		ddl := fmt.Sprintf("CREATE INDEX ON :%s(%s)", ix.Label, strings.Join(ix.Props, ", "))
-		if err := s.runAuto(ctx, ddl, nil); err != nil {
-			if strings.Contains(err.Error(), "already exists") {
-				continue
-			}
-			return fmt.Errorf("graph: create index on (%s) %v: %w", ix.Label, ix.Props, err)
-		}
+	}
+	return nil
+}
+
+func (s *Store) ensureIndex(ctx context.Context, label string, props []string) error {
+	ok, err := s.indexExists(ctx, label, props)
+	if err != nil {
+		return fmt.Errorf("graph: inspect indexes: %w", err)
+	}
+	if ok {
+		return nil
+	}
+	ddl := fmt.Sprintf("CREATE INDEX ON :%s(%s)", label, strings.Join(props, ", "))
+	if err := s.runAuto(ctx, ddl, nil); err != nil && !strings.Contains(err.Error(), "already exists") {
+		return fmt.Errorf("graph: create index on (%s) %v: %w", label, props, err)
 	}
 	return nil
 }

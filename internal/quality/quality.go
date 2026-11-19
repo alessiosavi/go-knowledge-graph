@@ -24,6 +24,7 @@ type Options struct {
 	Seed          *domain.Seed
 	HygieneSample int
 	SampleSeed    uint64
+	FoldCheck     bool
 }
 
 // Report contains aggregates only. Undefined metrics encode as null; Sample is
@@ -60,7 +61,21 @@ type Report struct {
 	NoiseRuleShare        *float64         `json:"noise_rule_share"`
 	CoMention             CoMentionMetrics `json:"co_mention"`
 	HygienePolicy         string           `json:"hygiene_policy"`
+	Fold                  *FoldStatus      `json:"fold"`
 	Sample                HygieneSample    `json:"-"`
+}
+
+// FoldStatus describes the graph-wide rebuild record without disclosing keys.
+type FoldStatus struct {
+	Version          int    `json:"version"`
+	ExceptionsDigest string `json:"exceptions_digest"`
+	ExceptionsCount  int    `json:"exceptions_count"`
+	Status           string `json:"status"`
+	RebuiltAt        string `json:"rebuilt_at"`
+	RowsWritten      int    `json:"rows_written"`
+	RowsSkipped      int    `json:"rows_skipped"`
+	RowsStale        *int   `json:"rows_stale,omitempty"`
+	Matching         string `json:"matching,omitempty"`
 }
 
 type FactCounts struct {
@@ -175,6 +190,10 @@ func computeReport(ctx context.Context, st *graph.Store, opt Options, duplicates
 		presets[doc.preset] = preset
 	}
 	var report Report
+	fold, err := st.ReadFoldRecord(ctx)
+	if err != nil {
+		return Report{}, summary, err
+	}
 	if duplicates == nil {
 		report = compute(data, opt, presets)
 	} else {
@@ -183,6 +202,21 @@ func computeReport(ctx context.Context, st *graph.Store, opt Options, duplicates
 		summary, err = writeDuplicates(ctx, st, duplicates, groups)
 		if err != nil {
 			return Report{}, DuplicateSummary{}, err
+		}
+	}
+	if fold != nil {
+		report.Fold = &FoldStatus{
+			Version: fold.Version, ExceptionsDigest: fold.ExceptionsDigest, ExceptionsCount: len(fold.Exceptions.Keys()),
+			Status: fold.Status, RebuiltAt: fold.RebuiltAt, RowsWritten: fold.RowsWritten, RowsSkipped: fold.RowsSkipped,
+		}
+		if opt.FoldCheck && fold.Version != graph.FoldKeyVersion {
+			report.Fold.Matching = "off (version mismatch)"
+		} else if opt.FoldCheck {
+			count, err := st.CountStaleFolds(ctx, fold.Exceptions)
+			if err != nil {
+				return Report{}, summary, err
+			}
+			report.Fold.RowsStale = &count
 		}
 	}
 	if err := ctx.Err(); err != nil {

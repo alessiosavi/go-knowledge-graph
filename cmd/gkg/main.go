@@ -72,6 +72,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runJudge(args[1:], stdout, stderr)
 	case "quality":
 		return runQuality(args[1:], stdout, stderr)
+	case "fold":
+		return runFold(args[1:], stdout, stderr)
 	case "eval-retrieval":
 		return runEvalRetrieval(args[1:], stdout, stderr)
 	case "serve":
@@ -712,6 +714,7 @@ commands:
   domain    list, inspect, evaluate and administer domains through serve
   judge     backfill candidates, audit facts, or evaluate judge v2
   quality   report read-only graph quality metrics and optional private hygiene samples
+  fold rebuild [-exceptions FILE | -clear-exceptions]  rebuild advisory entity folds
   preflight check schema, seed and stoplist read-only (exit 0=current/empty, 3=seed or stoplist overlay invalid, 10=migration ready)
   migrate   upgrade the Memgraph schema and re-extract in-flight documents
   migrate --schema-only  upgrade schema and leave re-extraction to serve
