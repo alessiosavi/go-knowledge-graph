@@ -76,6 +76,23 @@ type sidecarRequest struct {
 	Relations []sidecarLabel `json:"relations"`
 }
 
+type sidecarResponse struct {
+	Results []sidecarChunk `json:"results"`
+}
+
+type sidecarChunk struct {
+	wireChunk
+	Diagnostics []sidecarDiagnostic `json:"diagnostics,omitempty"`
+}
+
+type sidecarDiagnostic struct {
+	Type           string   `json:"type"`
+	Label          string   `json:"label"`
+	Score          *float64 `json:"score"`
+	HeadCandidates []int    `json:"head_candidates"`
+	TailCandidates []int    `json:"tail_candidates"`
+}
+
 // Extract implements Provider: health check, then POST /v1/extract in
 // batches of at most sidecarBatch chunks (the service batches internally
 // as well), then contract validation. The result slice always carries one
@@ -166,7 +183,7 @@ func (s *Sidecar) extractBatch(ctx context.Context, req Request, chunks []Reques
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("extract sidecar: HTTP %d: %s", resp.StatusCode, previewContent(string(data)))
 	}
-	var wire wireResponse
+	var wire sidecarResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, fmt.Errorf("extract sidecar: decode response: %w (content preview: %q)", err, previewContent(string(data)))
 	}
@@ -181,7 +198,7 @@ func (s *Sidecar) extractBatch(ctx context.Context, req Request, chunks []Reques
 	for _, l := range req.Relations {
 		relationSet[l.Name] = true
 	}
-	byID := make(map[string]wireChunk, len(wire.Results))
+	byID := make(map[string]sidecarChunk, len(wire.Results))
 	for _, wc := range wire.Results {
 		byID[wc.ChunkID] = wc
 	}
@@ -189,7 +206,7 @@ func (s *Sidecar) extractBatch(ctx context.Context, req Request, chunks []Reques
 	for _, c := range chunks {
 		wc, ok := byID[c.ID]
 		if !ok {
-			wc = wireChunk{ChunkID: c.ID}
+			wc.ChunkID = c.ID
 		}
 		// Map the sidecar's answer (label text or name, any case) back to the
 		// stored name, then validate against the requested names: a label
@@ -204,9 +221,40 @@ func (s *Sidecar) extractBatch(ctx context.Context, req Request, chunks []Reques
 				wc.Relations[i].Label = name
 			}
 		}
-		out = append(out, validateChunkResult(c.Text, wc, entitySet, relationSet))
+		result, keptIdx := validateChunkResult(c.Text, wc.wireChunk, entitySet, relationSet)
+		for _, d := range wc.Diagnostics {
+			if name, ok := relationNames[strings.ToLower(strings.TrimSpace(d.Label))]; ok {
+				d.Label = name
+			}
+			if strings.TrimSpace(d.Label) == "" || (len(relationSet) > 0 && !relationSet[d.Label]) {
+				continue
+			}
+			head := remapDiagnosticCandidates(d.HeadCandidates, keptIdx)
+			tail := remapDiagnosticCandidates(d.TailCandidates, keptIdx)
+			if len(head) == 0 || len(tail) == 0 {
+				continue
+			}
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{
+				Type:           d.Type,
+				Label:          d.Label,
+				Score:          clampScore(d.Score),
+				HeadCandidates: head,
+				TailCandidates: tail,
+			})
+		}
+		out = append(out, result)
 	}
 	return out, nil
+}
+
+func remapDiagnosticCandidates(indexes []int, keptIdx map[int]int) []int {
+	remapped := make([]int, 0, len(indexes))
+	for _, index := range indexes {
+		if kept, ok := keptIdx[index]; ok {
+			remapped = append(remapped, kept)
+		}
+	}
+	return remapped
 }
 
 // HealthModel checks sidecar health and returns the reported model if available.

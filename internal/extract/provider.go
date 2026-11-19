@@ -57,11 +57,22 @@ type Candidate struct {
 	Score float64
 }
 
+// Diagnostic records a provider observation for a chunk. Its candidate indexes
+// refer to validated Mentions, so filtered mentions are omitted from the lists.
+type Diagnostic struct {
+	Type           string
+	Label          string
+	Score          float64
+	HeadCandidates []int
+	TailCandidates []int
+}
+
 // ChunkResult is the provider's answer for one chunk.
 type ChunkResult struct {
-	ChunkID    string
-	Mentions   []Mention
-	Candidates []Candidate
+	ChunkID     string
+	Mentions    []Mention
+	Candidates  []Candidate
+	Diagnostics []Diagnostic `json:"diagnostics,omitempty"`
 }
 
 // Provider extracts entities and relations from chunks.

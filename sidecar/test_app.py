@@ -1,10 +1,9 @@
 """Contract tests for the gkg sidecar service.
 
 The tests pin the frozen HTTP contract (design section 5.4) end to end with
-a stub that emits the *real* GLiNEREL runtime shapes (label mappings in,
-span objects and character offsets out), so the adaptation layer is
-exercised: byte-offset conversion, relation span -> entity-index mapping,
-strict batching and honest health.
+a stub that accepts label mappings and returns entities with character offsets.
+They exercise byte-offset conversion, relation endpoint resolution, strict
+batching and honest health.
 """
 
 import threading
@@ -136,9 +135,120 @@ def test_extract_contract_shape_and_thresholds():
     relation = results[0]["relations"][0]
     assert relation["label"] == "wrote"
     assert relation["head"] == 0 and relation["tail"] == 1
+    assert "diagnostics" not in results[0]
     # Thresholds arrived as a label mapping.
     assert fake.entities_seen[0] == {"person": 0.4}
     assert fake.relations_seen[0] == {"wrote": 0.25}
+
+
+SHARED_SPAN = {"text": "Città", "start": 0, "end": 5}
+UNIQUE_SPAN = {"text": "Notes", "start": 12, "end": 17}
+
+
+@pytest.mark.parametrize(
+    ("head", "tail", "binding", "ambiguity"),
+    [
+        (SHARED_SPAN, UNIQUE_SPAN, None, ([0, 1], [2])),
+        (UNIQUE_SPAN, SHARED_SPAN, None, ([2], [0, 1])),
+        (1, UNIQUE_SPAN, (1, 2), None),
+        ({**SHARED_SPAN, "index": 1}, UNIQUE_SPAN, (1, 2), None),
+        ({**UNIQUE_SPAN, "index": 0}, {**SHARED_SPAN, "label": "work"}, (2, 1), None),
+        ({**SHARED_SPAN, "index": 2}, UNIQUE_SPAN, None, ([0, 1], [2])),
+        ({**SHARED_SPAN, "index": 0, "label": "work"}, UNIQUE_SPAN, (1, 2), None),
+        ({**SHARED_SPAN, "index": 3}, UNIQUE_SPAN, None, ([0, 1], [2])),
+        ({**SHARED_SPAN, "label": "work"}, UNIQUE_SPAN, (1, 2), None),
+        (SHARED_SPAN, {"start": 6, "end": 11}, None, None),
+        ({**SHARED_SPAN, "label": "person"}, UNIQUE_SPAN, None, None),
+    ],
+    ids=[
+        "head",
+        "tail",
+        "index",
+        "object-index",
+        "conflict-unique-span",
+        "conflict-shared-span",
+        "conflict-label",
+        "out-of-range-index",
+        "label",
+        "missing-span",
+        "missing-label",
+    ],
+)
+def test_extract_shared_span_relation(head, tail, binding, ambiguity):
+    class SharedSpanModel:
+        def extract(self, texts, entities, relations):
+            return [
+                {
+                    "entities": [
+                        {**SHARED_SPAN, "label": "place"},
+                        {**SHARED_SPAN, "label": "work"},
+                        {**UNIQUE_SPAN, "label": "work"},
+                    ],
+                    "relations": [
+                        {"label": "mentions", "head": head, "tail": tail, "score": 0.7}
+                    ],
+                }
+            ]
+
+    resp = client_with(SharedSpanModel()).post(
+        "/v1/extract",
+        json={
+            "chunks": [{"id": "c1", "text": "Città cites Notes"}],
+            "entities": ["place", "work"],
+            "relations": ["mentions"],
+        },
+    )
+    assert resp.status_code == 200
+    (result,) = resp.json()["results"]
+    assert [e["label"] for e in result["entities"]] == ["place", "work", "work"]
+    expected_relations = []
+    if binding:
+        expected_relations.append(
+            {"label": "mentions", "head": binding[0], "tail": binding[1], "score": 0.7}
+        )
+    assert result["relations"] == expected_relations
+    if ambiguity:
+        assert result["diagnostics"] == [
+            {
+                "type": "ambiguous_relation",
+                "label": "mentions",
+                "score": 0.7,
+                "head_candidates": ambiguity[0],
+                "tail_candidates": ambiguity[1],
+            }
+        ]
+    else:
+        assert "diagnostics" not in result
+
+
+@pytest.mark.parametrize("distinct_text", [False, True], ids=["identical", "distinct-text"])
+def test_adapt_collapses_duplicate_span_candidates(distinct_text):
+    first = {**SHARED_SPAN, "label": "place", "score": 0.6}
+    entities = [first, {**first, "score": 0.9}, {**UNIQUE_SPAN, "label": "work"}]
+    if distinct_text:
+        entities.append({**first, "text": "CITTA"})
+    result = sidecar._adapt(
+        "Città cites Notes",
+        {
+            "entities": entities,
+            "relations": [{"label": "mentions", "head": SHARED_SPAN, "tail": UNIQUE_SPAN}],
+        },
+    )
+    assert [e["text"] for e in result["entities"]] == [e["text"] for e in entities]
+    if distinct_text:
+        assert result["relations"] == []
+        assert result["diagnostics"] == [
+            {
+                "type": "ambiguous_relation",
+                "label": "mentions",
+                "score": 0.5,
+                "head_candidates": [0, 3],
+                "tail_candidates": [2],
+            }
+        ]
+    else:
+        assert result["relations"] == [{"label": "mentions", "head": 0, "tail": 2, "score": 0.5}]
+        assert "diagnostics" not in result
 
 
 def test_extract_accepts_plain_string_labels():

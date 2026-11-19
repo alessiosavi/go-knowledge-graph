@@ -95,7 +95,121 @@ func TestSidecarParsesContract(t *testing.T) {
 		t.Fatalf("Extract: %v", err)
 	}
 	if len(res) != 1 || res[0].ChunkID != "c1" || len(res[0].Mentions) != 1 || res[0].Mentions[0].Text != "Ada" {
-		t.Errorf("results = %+v", res)
+		t.Fatalf("results = %+v", res)
+	}
+	if len(res[0].Diagnostics) != 0 {
+		t.Errorf("diagnostics = %+v, want empty for a legacy response", res[0].Diagnostics)
+	}
+}
+
+func TestSidecarCarriesAmbiguousRelationDiagnostic(t *testing.T) {
+	s := newTestSidecar(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			w.Write([]byte(`{"status":"ok"}`))
+		case "/v1/extract":
+			w.Write([]byte(`{"results":[{"chunk_id":"c1","entities":[
+				{"label":"unrequested","text":"Città","start":0,"end":6},
+				{"label":"place","text":"Città","start":0,"end":6},
+				{"label":"work","text":"Città","start":0,"end":6},
+				{"label":"work","text":"Notes","start":13,"end":18}],
+				"relations":[],"diagnostics":[{"type":"ambiguous_relation","label":" CITES WORK ","score":0.7,
+				"head_candidates":[0,1,2],"tail_candidates":[3]}]}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	res, err := s.Extract(t.Context(), Request{
+		Chunks:    []RequestChunk{{ID: "c1", Text: "Città cites Notes"}},
+		Entities:  []Label{{Name: "place"}, {Name: "work"}},
+		Relations: []Label{{Name: "cites_work", Text: "cites work"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || len(res[0].Mentions) != 3 || len(res[0].Candidates) != 0 {
+		t.Fatalf("results = %+v, want three validated mentions and no candidates", res)
+	}
+	want := []Diagnostic{{
+		Type: "ambiguous_relation", Label: "cites_work", Score: 0.7,
+		HeadCandidates: []int{0, 1}, TailCandidates: []int{2},
+	}}
+	if got := res[0].Diagnostics; !reflect.DeepEqual(got, want) {
+		t.Errorf("diagnostics = %+v, want %+v", got, want)
+	}
+}
+
+func TestSidecarFiltersAmbiguousRelationDiagnostics(t *testing.T) {
+	requested := []Label{{Name: "cites_work", Text: "cites work"}}
+	for _, tc := range []struct {
+		name      string
+		label     string
+		head      string
+		tail      string
+		relations []Label
+		wantLabel string
+	}{
+		{"unrequested label", "related_to", "[0,1]", "[2]", requested, ""},
+		{"no relation filter", "related_to", "[0,1]", "[2]", nil, "related_to"},
+		{"blank label", " ", "[0,1]", "[2]", nil, ""},
+		{"empty head after validation", "Cites Work", "[0]", "[2]", requested, ""},
+		{"empty tail after validation", "Cites Work", "[1]", "[0]", requested, ""},
+		{"single survivors stay diagnostic", "Cites Work", "[0,1]", "[2]", requested, "cites_work"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSidecar(t, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/healthz":
+					w.Write([]byte(`{"status":"ok"}`))
+				case "/v1/extract":
+					fmt.Fprintf(w, `{"results":[{"chunk_id":"c1","entities":[
+						{"label":"unrequested","text":"Ada","start":0,"end":3},
+						{"label":"person","text":"Ada","start":0,"end":3},
+						{"label":"work","text":"Notes","start":10,"end":15}],
+						"relations":[],"diagnostics":[{"type":"ambiguous_relation","label":%q,
+						"head_candidates":%s,"tail_candidates":%s}]}]}`, tc.label, tc.head, tc.tail)
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			res, err := s.Extract(t.Context(), Request{
+				Chunks:    []RequestChunk{{ID: "c1", Text: "Ada cites Notes"}},
+				Entities:  []Label{{Name: "person"}, {Name: "work"}},
+				Relations: tc.relations,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res) != 1 || len(res[0].Mentions) != 2 || len(res[0].Candidates) != 0 {
+				t.Fatalf("results = %+v, want two validated mentions and no candidates", res)
+			}
+			var want []Diagnostic
+			if tc.wantLabel != "" {
+				want = []Diagnostic{{
+					Type: "ambiguous_relation", Label: tc.wantLabel, Score: 0.5,
+					HeadCandidates: []int{0}, TailCandidates: []int{1},
+				}}
+			}
+			if got := res[0].Diagnostics; !reflect.DeepEqual(got, want) {
+				t.Errorf("diagnostics = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestChunkResultDiagnosticsJSON(t *testing.T) {
+	for _, diagnostics := range [][]Diagnostic{nil, {}, {{Type: "ambiguous_relation"}}} {
+		data, err := json.Marshal(ChunkResult{Diagnostics: diagnostics})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := fields["diagnostics"]; ok != (len(diagnostics) > 0) {
+			t.Errorf("diagnostics = %+v, JSON = %s", diagnostics, data)
+		}
 	}
 }
 
