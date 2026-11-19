@@ -73,7 +73,7 @@ func TestRepairLabelsCLI(t *testing.T) {
 	t.Setenv("GKG_MEMGRAPH_PASSWORD", "")
 	t.Setenv("GKG_INGEST_STOPLIST_FILE", "")
 	const labelLine = "## Part 3: " // 11 bytes, so a 2-byte rune straddles byte 200.
-	text := labelLine + strings.Repeat("è", 100) + "\n## Approved: details\n- **Remove**: details"
+	text := labelLine + strings.Repeat("è", 100) + "\n## Approved: details\n- **Remove**: details\n## Kelmora (14)"
 	const docID = "label-doc"
 	const chunkID = "label-chunk"
 	const scope = "repair-labels-cli"
@@ -82,7 +82,7 @@ func TestRepairLabelsCLI(t *testing.T) {
 OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
 DETACH DELETE c, d`, map[string]any{"scope": scope})
 		migrationQuery(t, `MATCH (e:Entity)
-WHERE e.key IN ['label-cli-part', 'label-cli-approved', 'label-cli-remove', 'label-cli-skipped']
+WHERE e.key IN ['label-cli-part', 'label-cli-approved', 'label-cli-remove', 'label-cli-skipped', 'label-cli-kelmora']
 DETACH DELETE e`, nil)
 	})
 	migrationQuery(t, `CREATE (d:Document {id: $doc, domain: $scope, labels: 'custom', status: 'done'}),
@@ -91,12 +91,15 @@ DETACH DELETE e`, nil)
 (e:Entity {id: 'label-cli-entity', key: 'label-cli-part', name: 'Part 3', mention_count: 999}),
 (a:Entity {id: 'allowed-cli-entity', key: 'label-cli-approved', name: 'Approved'}),
 (r:Entity {id: 'remove-cli-entity', key: 'label-cli-remove', name: 'Remove'}),
+(l:Entity {id: 'location-cli-entity', key: 'label-cli-kelmora', name: 'Kelmora'}),
 (c)-[:MENTIONS {start: 3, end: 9, type: 'topic'}]->(e),
 (c)-[:MENTIONS {start: $allowed, end: $allowed + 8, type: 'topic'}]->(a),
 (c)-[:MENTIONS {start: $remove, end: $remove + 6, type: 'topic'}]->(r),
+(c)-[:MENTIONS {start: $location, end: $location + 7, type: 'location'}]->(l),
 (b)-[:MENTIONS {start: 0, end: 6, type: 'topic'}]->(e)`, map[string]any{
 		"doc": docID, "chunk": chunkID, "scope": scope,
 		"text": text, "allowed": strings.Index(text, "Approved"), "remove": strings.Index(text, "Remove"),
+		"location": strings.Index(text, "Kelmora"),
 	})
 	migrationQuery(t, `MATCH (d:Document {id: $doc})
 UNWIND range(1, 201) AS n
@@ -171,6 +174,11 @@ CREATE (d)-[:HAS_CHUNK]->(:Chunk {id: d.id + '-c' + toString(n), text: '## Skipp
 		t.Fatalf("apply report = %q, %v, want %q", appliedReport, err, data)
 	}
 	check("scanned_chunks=207 spans=0 heading_lead=0 lead_in=0 facts_confirmed=0 facts_other=0 candidates=0 rejected=0 entities_removed=0 skipped_docs=2\n", "-dry-run")
+	locationRows := migrationQuery(t, `MATCH (:Chunk {id: $chunk})-[m:MENTIONS {type: 'location'}]->(:Entity {key: 'label-cli-kelmora'})
+RETURN count(m) AS n`, map[string]any{"chunk": chunkID})
+	if n, _ := locationRows[0].Get("n"); n != int64(1) {
+		t.Errorf("location mentions after repair = %v, want 1", n)
+	}
 	rows := migrationQuery(t, `MATCH (:Chunk)-[m:MENTIONS]->(:Entity {key: 'label-cli-skipped'}) RETURN count(m) AS n`, nil)
 	if n, _ := rows[0].Get("n"); n != int64(4) {
 		t.Errorf("skipped mentions = %v, want 4", n)

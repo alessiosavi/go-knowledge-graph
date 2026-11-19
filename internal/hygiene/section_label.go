@@ -26,7 +26,7 @@ var (
 // chunk.Split starts new chunks at short ATX lines, so a heading-shaped comment
 // lead can be dropped when its fence opener is in an earlier chunk. Ingest and
 // repair-labels use the same chunk-local classification.
-func SectionLabel(chunkText string, start, end int, preset Preset) string {
+func SectionLabel(chunkText string, start, end int, mentionType string, preset Preset) string {
 	if start < 0 || end <= start || end > len(chunkText) {
 		return ""
 	}
@@ -40,6 +40,9 @@ func SectionLabel(chunkText string, start, end int, preset Preset) string {
 	start, end = start-lineStart, end-lineStart
 
 	rule := classifySectionLine(line, start, end)
+	if rule == HeadingLead && preset.SectionLabelKeepTypes[strings.ToLower(mentionType)] {
+		return ""
+	}
 	if rule != "" && insideCodeFence(chunkText[:lineStart]) {
 		return ""
 	}

@@ -177,7 +177,7 @@ func scanRepairLabels(ctx context.Context, st *graph.Store, cfg config.Config, s
 			rules := make(map[graph.ChunkMentionSpan]string)
 			matched := make(map[graph.ChunkMentionSpan]int)
 			for _, m := range chunk.Mentions {
-				rule := hygiene.SectionLabel(chunk.Text, m.Start, m.End, preset)
+				rule := hygiene.SectionLabel(chunk.Text, m.Start, m.End, m.Type, preset)
 				if rule == "" {
 					continue
 				}

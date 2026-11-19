@@ -106,11 +106,17 @@ and `documentation`):
 
 ```yaml
 allowlist: [AI, EU, UK, US, UE, IT]
+section_label_keep_types: [location]
 stoplist:
   exact: [Descrizione, Informazioni, Indice, Introduzione]
   patterns: ['^Sezione \d+$', '^Section \d+$']
 code_tokens: true
 ```
+
+`section_label_keep_types` exempts the listed mention types from the
+`heading_lead` rule during ingest and `gkg repair-labels`. Type matching is
+case-insensitive. Omit the key to use `[location]` or set it to `[]` to apply
+`heading_lead` to all types. The `lead_in` rule still applies to every type.
 
 Entity labels with `scope: document` are value labels: they skip the no-letter,
 short-name, CLI-flag, path and code shape rules, while normalization and newline,
