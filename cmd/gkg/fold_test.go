@@ -151,6 +151,36 @@ REMOVE m.rebuilt_at, m.rows_written, m.rows_skipped`, nil)
 	}
 }
 
+func TestFoldQualitySkipsLegacyEntityWithoutID(t *testing.T) {
+	st := preflightCommandStore(t)
+	if err := st.Bootstrap(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	migrationQuery(t, `CREATE (:Entity {id:'one', key:'zorbon', name:'Zorbon'}),
+	(:Entity {key:'no-id', name:'Zorbulo'})`, nil)
+
+	var out, stderr bytes.Buffer
+	if code := run([]string{"fold", "rebuild", "-clear-exceptions"}, &out, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("rebuild exit %d, stderr %q", code, &stderr)
+	}
+	if out.String() != "rows_written=1 rows_skipped=1\n" {
+		t.Fatalf("rebuild output = %q", &out)
+	}
+
+	out.Reset()
+	if code := run([]string{"quality", "--json", "--fold-check"}, &out, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("quality exit %d, stderr %q", code, &stderr)
+	}
+	var report quality.Report
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	fold := report.Fold
+	if fold == nil || fold.Status != "complete" || fold.RowsSkipped != 1 || fold.RowsStale == nil || *fold.RowsStale != 0 {
+		t.Fatalf("quality must report one skipped row and zero stale rows after rebuild: %s", &out)
+	}
+}
+
 func TestFoldQualityVersionMismatch(t *testing.T) {
 	st := preflightCommandStore(t)
 	if err := st.Bootstrap(t.Context()); err != nil {

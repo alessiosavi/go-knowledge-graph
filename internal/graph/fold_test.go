@@ -93,7 +93,13 @@ func foldIntegrationStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	wipe := func() { foldTestWrite(t, st, "MATCH (n) DETACH DELETE n", nil) }
+	wipe := func() {
+		// Clear vectors first: deleting a node that still has an embedding
+		// leaves a stale vector-index entry that breaks later vector searches
+		// in the shared test database (see txGCCount).
+		foldTestWrite(t, st, "MATCH (n) WHERE n.embedding IS NOT NULL SET n.embedding = null", nil)
+		foldTestWrite(t, st, "MATCH (n) DETACH DELETE n", nil)
+	}
 	wipe()
 	t.Cleanup(wipe)
 	if err := st.Bootstrap(t.Context()); err != nil {

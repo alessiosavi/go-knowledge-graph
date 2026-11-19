@@ -246,7 +246,7 @@ func txRebuildFoldBatch(ctx context.Context, tx neo4j.ManagedTransaction, owner,
 	updates := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		batch.last = getString(row, "key")
-		if getString(row, "id") == "" {
+		if !foldRowEligible(row) {
 			batch.skipped++
 			continue
 		}
@@ -261,7 +261,11 @@ func txRebuildFoldBatch(ctx context.Context, tx neo4j.ManagedTransaction, owner,
 	return batch, txApplyFoldUpdates(ctx, tx, updates)
 }
 
-// CountStaleFolds checks stored hints against the supplied record in bounded
+func foldRowEligible(row *neo4j.Record) bool {
+	return getString(row, "key") != "" && getString(row, "id") != ""
+}
+
+// CountStaleFolds checks hints for entities maintained by the rebuild in bounded
 // read-only pages. Online writes can change the result between pages.
 func (s *Store) CountStaleFolds(ctx context.Context, ex FoldExceptions) (int, error) {
 	count, last := 0, ""
@@ -271,6 +275,9 @@ func (s *Store) CountStaleFolds(ctx context.Context, ex FoldExceptions) (int, er
 			return 0, fmt.Errorf("graph: check fold hints: %w", err)
 		}
 		for _, row := range rows {
+			if !foldRowEligible(row) {
+				continue
+			}
 			if _, differs := foldUpdate(row, ex); differs {
 				count++
 			}
