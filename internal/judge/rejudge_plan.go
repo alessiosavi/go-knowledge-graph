@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 	"golang.org/x/text/cases"
@@ -111,17 +112,7 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 		}
 	}
 	err := st.WalkRejudgeFacts(ctx, opt.Domain, ids, opt.Limit, func(facts []graph.RejudgeFact) error {
-		// Try the current chunk first. Only table rows with a missing header
-		// can benefit from loading the previous chunk.
-		type pendingRequest struct {
-			fact          graph.RejudgeFact
-			input         V2Input
-			bytes         []byte
-			headerPresent bool
-			tryPrevious   bool
-		}
-		batch := make([]pendingRequest, 0, len(facts))
-		previous := make(map[string]string)
+		batch := make([]rejudgeEvidence, 0, len(facts))
 		for _, fact := range facts {
 			if seen[fact.ID] {
 				return fmt.Errorf("multiple typed edges share audit id %s", fact.ID)
@@ -138,52 +129,32 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 				unverifiable(fact.ID, "unavailable label preset "+fmt.Sprintf("%q", fact.Preset))
 				continue
 			}
-			input := V2Input{
-				ChunkText: fact.Text, DocTitle: fact.Title, Rel: fact.Relation,
-				Definition:  definitions[fact.Preset][fact.Relation],
-				Head:        EvidenceMention{fact.HeadStart, fact.HeadEnd, fact.HeadType, fact.HeadTypeFallback},
-				Tail:        EvidenceMention{fact.TailStart, fact.TailEnd, fact.TailType, fact.TailTypeFallback},
-				HeadSurface: fact.HeadSurface,
+			evidence, reason, err := buildRejudgeEvidence(fact, definitions[fact.Preset][fact.Relation])
+			if err != nil {
+				return err
 			}
-			payloadBytes, tableRow, reason := buildV2Request(input)
 			if reason != "" {
 				unverifiable(fact.ID, reason)
 				continue
 			}
-			var payload v2Payload
-			if err := json.Unmarshal(payloadBytes, &payload); err != nil {
-				return err
-			}
 			if label := labels[fact.ID]; scoredRejudgeLabel(label.Label) {
-				if reason := reconcileRejudgeLabel(label, fact, payload); reason != "" {
+				if reason := reconcileRejudgeLabel(label, fact, evidence.payload); reason != "" {
 					result.Mismatches = append(result.Mismatches, RejudgeMismatch{fact.ID, fact.Domain, reason})
 					continue
 				}
 				result.Reconciled++
 			}
-			tryPrevious := tableRow && payload.TableHeader == nil
-			if tryPrevious {
-				previous[fact.ChunkID] = fact.DocID
-			}
-			batch = append(batch, pendingRequest{fact, input, payloadBytes, payload.TableHeader != nil, tryPrevious})
+			batch = append(batch, evidence)
 		}
-		previousText, err := st.RejudgePreviousChunks(ctx, previous)
-		if err != nil {
+		if err := completeRejudgeEvidence(batch, func(chunks map[string]string) (map[string]string, error) {
+			return st.RejudgePreviousChunks(ctx, chunks)
+		}); err != nil {
 			return err
 		}
-		for _, pending := range batch {
-			fact, input, payloadBytes := pending.fact, pending.input, pending.bytes
-			headerPresent := pending.headerPresent
-			if input.PreviousChunkText = previousText[fact.ChunkID]; pending.tryPrevious && input.PreviousChunkText != "" {
-				payloadBytes, _ = BuildV2Request(input)
-				var payload v2Payload
-				if err := json.Unmarshal(payloadBytes, &payload); err != nil {
-					return err
-				}
-				headerPresent = payload.TableHeader != nil
-			}
+		for _, evidence := range batch {
+			fact := evidence.fact
 			headers := result.Headers[fact.Relation]
-			if !headerPresent {
+			if evidence.payload.TableHeader == nil {
 				headers.Null++
 			} else {
 				headers.Present++
@@ -201,7 +172,7 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 			}
 			manifest.rows = append(manifest.rows, rejudgeManifestRow{
 				RejudgeIdentity: fact.RejudgeIdentity, Before: fact.Before, Preset: fact.Preset, Prior: prior,
-				Request: Request{Profile: profile, RequestBytes: payloadBytes, DocID: fact.DocID}, Label: labels[fact.ID].Label,
+				Request: Request{Profile: profile, RequestBytes: evidence.bytes, DocID: fact.DocID}, Label: labels[fact.ID].Label,
 			})
 		}
 		return nil
@@ -249,11 +220,65 @@ func PlanRejudge(ctx context.Context, st *graph.Store, model, presetsDir, path s
 	})
 }
 
+// The initial build identifies the table rows that need a previous-chunk read.
+type rejudgeEvidence struct {
+	fact        graph.RejudgeFact
+	input       V2Input
+	bytes       []byte
+	payload     v2Payload
+	tryPrevious bool
+}
+
+func buildRejudgeEvidence(fact graph.RejudgeFact, definition string) (e rejudgeEvidence, reason string, err error) {
+	e.fact = fact
+	e.input = V2Input{
+		ChunkText: fact.Text, DocTitle: fact.Title, Rel: fact.Relation, Definition: definition,
+		Head:        EvidenceMention{fact.HeadStart, fact.HeadEnd, fact.HeadType, fact.HeadTypeFallback},
+		Tail:        EvidenceMention{fact.TailStart, fact.TailEnd, fact.TailType, fact.TailTypeFallback},
+		HeadSurface: fact.HeadSurface,
+	}
+	var tableRow bool
+	e.bytes, tableRow, reason = buildV2Request(e.input)
+	if reason == "" {
+		err = json.Unmarshal(e.bytes, &e.payload)
+		e.tryPrevious = tableRow && e.payload.TableHeader == nil
+	}
+	return
+}
+
+func completeRejudgeEvidence(batch []rejudgeEvidence, lookup func(map[string]string) (map[string]string, error)) error {
+	chunks := make(map[string]string)
+	for _, e := range batch {
+		if e.tryPrevious {
+			chunks[e.fact.ChunkID] = e.fact.DocID
+		}
+	}
+	previous, err := lookup(chunks)
+	if err != nil {
+		return err
+	}
+	for i := range batch {
+		e := &batch[i]
+		if text := previous[e.fact.ChunkID]; e.tryPrevious && text != "" {
+			e.input.PreviousChunkText = text
+			e.bytes, _ = BuildV2Request(e.input)
+			if err := json.Unmarshal(e.bytes, &e.payload); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func loadRejudgeDefinitions(dir, name string) (map[string]string, error) {
 	_, relations, err := ingest.LoadPreset(dir, name)
 	if err != nil {
 		return nil, err
 	}
+	return rejudgeRelationDefinitions(name, relations)
+}
+
+func rejudgeRelationDefinitions(name string, relations []extract.Label) (map[string]string, error) {
 	definitions := make(map[string]string, len(relations))
 	for _, relation := range relations {
 		key := graph.SanitizeRel(relation.Name)
