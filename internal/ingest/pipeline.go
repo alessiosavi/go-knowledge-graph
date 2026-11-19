@@ -14,7 +14,6 @@ import (
 	"os"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -257,31 +256,11 @@ func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("ingest: load: %w", err)
 	}
-	hash := sha256Hex(loaded.Text)
-	kind, source, synthesized, err := resolveIdentity(in, hash)
+	doc, err := prepareSubmission(in, &loaded)
 	if err != nil {
 		return Result{}, err
 	}
-	title, titleSource := normalizeTitle(in.Title), titleSourceCaller
-	if title == "" {
-		title, titleSource = normalizeTitle(loaded.Title), loaded.TitleSource
-	}
-	if title == "" {
-		derivationSource := source
-		if synthesized {
-			derivationSource = ""
-		}
-		title, titleSource = DeriveTitle(loaded.Text, derivationSource)
-	}
-	finalURL := ""
-	if kind == "url" {
-		finalURL = in.URL
-	}
-	loaded.Hash = hash
-	loaded.Title, loaded.TitleSource = title, titleSource
-	res, err := p.admit(ctx, graph.DocumentInput{
-		Kind: kind, Source: source, FinalURL: finalURL, Title: title, TitleSource: titleSource, Hash: hash, Labels: in.Labels,
-	}, submission{loaded: loaded, labels: in.Labels}, in.Force)
+	res, err := p.admit(ctx, doc, submission{loaded: loaded, labels: in.Labels}, in.Force)
 	if err != nil || res.Noop {
 		return res, err
 	}
@@ -1131,13 +1110,11 @@ func (p *Pipeline) index(chunkID string, fp dedup.FP) {
 	}
 }
 
-// buildChunks splits the text, fingerprints every chunk and marks
-// near-duplicates per the configured mode (off | exact | near). Exact
-// matches run first, including against earlier chunks of the same document.
-func (p *Pipeline) buildChunks(ctx context.Context, doc *graph.Document, text string) ([]graph.Chunk, error) {
+// prepareChunks splits and fingerprints loaded text without consulting the graph.
+func prepareChunks(cfg config.IngestConfig, text string) ([]graph.Chunk, error) {
 	spans := chunk.Split(text, chunk.Options{
-		TargetWords:      p.cfg.Ingest.ChunkWords,
-		OverlapSentences: p.cfg.Ingest.OverlapSentences,
+		TargetWords:      cfg.ChunkWords,
+		OverlapSentences: cfg.OverlapSentences,
 	})
 	chunks := make([]graph.Chunk, 0, len(spans))
 	for _, s := range spans {
@@ -1153,7 +1130,17 @@ func (p *Pipeline) buildChunks(ctx context.Context, doc *graph.Document, text st
 		}
 		chunks = append(chunks, c)
 	}
+	return chunks, nil
+}
 
+// buildChunks prepares chunks and marks near-duplicates per the configured
+// mode (off | exact | near). Exact matches run first, including against
+// earlier chunks of the same document.
+func (p *Pipeline) buildChunks(ctx context.Context, doc *graph.Document, text string) ([]graph.Chunk, error) {
+	chunks, err := prepareChunks(p.cfg.Ingest, text)
+	if err != nil {
+		return nil, err
+	}
 	mode := p.cfg.Ingest.ChunkDedup
 	if mode == "" {
 		mode = "near"
@@ -1192,7 +1179,7 @@ func (p *Pipeline) buildChunks(ctx context.Context, doc *graph.Document, text st
 		if len(c.MinhashSig) == 0 {
 			continue
 		}
-		cid := doc.ID + "-c" + strconv.Itoa(c.Seq)
+		cid := graph.ChunkID(doc.ID, c.Seq)
 
 		if prev, ok := seenExact[c.ExactKey]; ok {
 			c.DuplicateOf = prev

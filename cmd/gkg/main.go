@@ -752,6 +752,7 @@ commands:
   eval      run the golden-set evaluation harness
   eval -replay FILE -predictions OUT [-labels PRESET]  replay stored chunks with the sidecar
   eval-sample -domain SLUG -out FILE [-docs N -seed S]  export done documents and stored chunks read-only
+  eval-sample -from FILE.jsonl -domain SLUG -out FILE   build a replay sample from external text
   preset check FILE [-stoplist FILE]  validate a label and hygiene preset
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
   domain    list, inspect, evaluate and administer domains through serve
