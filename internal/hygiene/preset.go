@@ -67,7 +67,7 @@ func LoadPreset(dir, name, overlayPath string) (Preset, error) {
 func BuildPreset(name string, entities []extract.Label, settings PresetSettings, overlayPath string) (Preset, error) {
 	p := Preset{Name: name, Allow: make(map[string]bool), Stop: make(map[string]bool), Values: make(map[string]bool)}
 	keepTypes := settings.SectionLabelKeepTypes
-	if name == "" || keepTypes == nil {
+	if keepTypes == nil {
 		keepTypes = []string{"location"}
 	}
 	p.SectionLabelKeepTypes = make(map[string]bool, len(keepTypes))

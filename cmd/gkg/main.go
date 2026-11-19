@@ -118,13 +118,13 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "gkg eval: unexpected argument %q\n", fs.Arg(0))
+		return 2
+	}
 	flags := make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) { flags[f.Name] = true })
 	if flags["replay"] {
-		if fs.NArg() != 0 {
-			fmt.Fprintf(stderr, "gkg eval: unexpected argument %q\n", fs.Arg(0))
-			return 2
-		}
 		if *replay == "" || *predictions == "" {
 			fmt.Fprintln(stderr, "gkg eval: replay requires -replay FILE and -predictions OUT")
 			return 2

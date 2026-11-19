@@ -132,3 +132,26 @@ func TestApplySectionLabelKeepTypes(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildPresetSectionLabelKeepTypesWithoutName(t *testing.T) {
+	const chunk = "## Kelmora (14)"
+	const start, end = len("## "), len("## Kelmora")
+	for _, tt := range []struct {
+		name      string
+		keepTypes []string
+		want      string
+	}{
+		{name: "built-in default"},
+		{name: "explicit empty", keepTypes: []string{}, want: HeadingLead},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			preset, err := BuildPreset("", nil, PresetSettings{SectionLabelKeepTypes: tt.keepTypes}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := SectionLabel(chunk, start, end, "location", preset); got != tt.want {
+				t.Errorf("SectionLabel = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -142,14 +142,21 @@ func TestEvalBuiltinWithoutLabels(t *testing.T) {
 	t.Setenv("GKG_CONFIG", "")
 	t.Setenv("GKG_LABELS_PRESETS_DIR", "labels")
 	t.Setenv("GKG_JUDGE_MODE", "off")
-	var out, errb bytes.Buffer
-	for _, extra := range [][]string{nil, {"ignored", "--also-ignored"}} {
-		out.Reset()
-		errb.Reset()
-		code := run(append([]string{"eval", "--golden", golden, "--provider", "mock"}, extra...), &out, &errb)
-		if code != 0 || errb.Len() != 0 || !strings.Contains(out.String(), "entities F1") {
-			t.Fatalf("extra args=%q exit=%d stdout=%q stderr=%q", extra, code, out.String(), errb.String())
-		}
+	for _, tc := range []struct {
+		name  string
+		flags []string
+	}{
+		{name: "golden"},
+		{name: "sweep", flags: []string{"--sweep", "entity=0.2:0.2:0.1 relation=0.1:0.1:0.1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"eval", "--golden", golden, "--provider", "mock"}, tc.flags...)
+			var out, errb bytes.Buffer
+			if code := run(args, &out, &errb); code != 0 || errb.Len() != 0 || !strings.Contains(out.String(), "entities F1") {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errb.String())
+			}
+			assertEvalCLI(t, append(args, "unexpected", "--extra"), 2, "", "gkg eval: unexpected argument \"unexpected\"\n")
+		})
 	}
 }
 
