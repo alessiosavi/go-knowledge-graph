@@ -31,6 +31,7 @@ type RejudgeFact struct {
 	DocID, Title, Preset, Text         string
 	ChunkOwned                         bool
 	HeadName, TailName                 string
+	HeadSurface                        *string // nil when the edge has no head_surface property
 	HeadType, TailType                 string
 	HeadTypeFallback, TailTypeFallback bool
 }
@@ -45,6 +46,9 @@ RETURN h.key AS head_key, type(r) AS rel, t.key AS tail_key, coalesce(r.chunk_id
        id(r) AS edge, coalesce(h.domain, '') AS domain
 ORDER BY head_key, rel, tail_key, chunk_id, edge`
 
+// The V2b/V3 rewrite writer must set head_surface to the trimmed target entity
+// name. A re-attached edge keeps the original head span as an evidence anchor.
+// Skip its head mention lookup so the type and fallback come from the head entity.
 const rejudgeHydrate = `UNWIND $refs AS f
 MATCH (h:Entity {key:f.head_key})-[r]->(t:Entity)
 WHERE id(r) = f.edge AND type(r) = f.rel AND t.key = f.tail_key
@@ -53,7 +57,7 @@ OPTIONAL MATCH (d:Document {id:r.doc_id})
 OPTIONAL MATCH (c:Chunk {id:r.chunk_id})
 WHERE c.doc_id = d.id AND (d)-[:HAS_CHUNK]->(c)
 OPTIONAL MATCH (c)-[hm:MENTIONS]->(h)
-WHERE hm.start = r.head_start AND hm.end = r.head_end AND hm.type <> ''
+WHERE r.head_surface IS NULL AND hm.start = r.head_start AND hm.end = r.head_end AND hm.type <> ''
 WITH f, r, d, c, t, h, min(hm.type) AS ht
 OPTIONAL MATCH (c)-[tm:MENTIONS]->(t)
 WHERE tm.start = r.tail_start AND tm.end = r.tail_end AND tm.type <> ''
@@ -63,6 +67,7 @@ RETURN f AS ref, properties(r) AS before, r.doc_id AS doc_id, d.title AS title, 
        r.head_start AS head_start, r.head_end AS head_end, r.tail_start AS tail_start, r.tail_end AS tail_end,
        r.confidence AS confidence, r.low_confidence AS low_confidence,
        coalesce(h.name, f.head_key) AS head_name, coalesce(t.name, f.tail_key) AS tail_name,
+       r.head_surface AS head_surface,
        coalesce(ht, h.type, '') AS head_type, coalesce(tt, t.type, '') AS tail_type,
        ht IS NULL AS head_fallback, tt IS NULL AS tail_fallback
 ORDER BY f.idx`
@@ -141,6 +146,13 @@ func (s *Store) rejudgeFacts(ctx context.Context, refs []map[string]any) ([]Reju
 		before, _ := rawBefore.(map[string]any)
 		rawRef, _ := row.Get("ref")
 		ref := rawRef.(map[string]any)
+		rawHeadSurface, _ := row.Get("head_surface")
+		var headSurface *string
+		if rawHeadSurface != nil {
+			// A non-string property is present but invalid, just like an empty string.
+			surface, _ := rawHeadSurface.(string)
+			headSurface = &surface
+		}
 		facts = append(facts, RejudgeFact{
 			RejudgeIdentity: RejudgeIdentity{
 				ID: ref["id"].(string), Domain: ref["domain"].(string), HeadKey: ref["head_key"].(string),
@@ -153,7 +165,8 @@ func (s *Store) rejudgeFacts(ctx context.Context, refs []map[string]any) ([]Reju
 			Before: before, DocID: getString(row, "doc_id"), Title: getString(row, "title"),
 			Preset: getString(row, "preset"), Text: getString(row, "text"), ChunkOwned: getBool(row, "owned"),
 			HeadName: getString(row, "head_name"), TailName: getString(row, "tail_name"),
-			HeadType: getString(row, "head_type"), TailType: getString(row, "tail_type"),
+			HeadSurface: headSurface,
+			HeadType:    getString(row, "head_type"), TailType: getString(row, "tail_type"),
 			HeadTypeFallback: getBool(row, "head_fallback"), TailTypeFallback: getBool(row, "tail_fallback"),
 		})
 	}
