@@ -82,6 +82,48 @@ func TestGeneralPresetMatchesDefaults(t *testing.T) {
 	}
 }
 
+func TestCheckedPresetSectionLabelKeepTypes(t *testing.T) {
+	const labels = "entities: [{name: service, text: system component, threshold: 1}]\n" +
+		"relations: [{name: depends_on, threshold: 1}]\n"
+	for _, tc := range []struct {
+		name, setting string
+		wantKeep      string
+		wantErr       string
+	}{
+		{name: "absent", wantKeep: "location"},
+		{name: "empty", setting: "section_label_keep_types: []\n"},
+		{name: "mixed case", setting: "section_label_keep_types: [SeRvIcE]\n", wantKeep: "service"},
+		{name: "unknown", setting: "section_label_keep_types: [service, Location]\n", wantErr: "Location"},
+		{name: "entity alias", setting: "section_label_keep_types: [system component]\n", wantErr: "system component"},
+		{name: "relation name", setting: "section_label_keep_types: [depends_on]\n", wantErr: "depends_on"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "custom.yaml"), []byte(labels+tc.setting), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			preset, err := LoadCheckedPreset(dir, "custom", "")
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), "section_label_keep_types") ||
+					!strings.Contains(err.Error(), fmt.Sprintf("%q", tc.wantErr)) {
+					t.Errorf("LoadCheckedPreset error = %v, want section_label_keep_types error naming %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]bool{}
+			if tc.wantKeep != "" {
+				want[tc.wantKeep] = true
+			}
+			if got := preset.Hygiene.SectionLabelKeepTypes; !reflect.DeepEqual(got, want) {
+				t.Errorf("keep types = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func TestLoadPresetRejectsAmbiguousText(t *testing.T) {
 	for _, kind := range []string{"entities", "relations"} {
 		for _, tc := range []struct {

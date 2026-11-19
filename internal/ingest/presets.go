@@ -209,6 +209,15 @@ func (raw presetFile) checked(name, overlayPath string, data []byte) (CheckedPre
 		}
 		sanitized[key] = l.Name
 	}
+	entityNames := make(map[string]bool, len(raw.Entities))
+	for _, l := range raw.Entities {
+		entityNames[strings.ToLower(l.Name)] = true
+	}
+	for _, keepType := range raw.SectionLabelKeepTypes {
+		if !entityNames[strings.ToLower(keepType)] {
+			return CheckedPreset{}, fmt.Errorf("label preset %q: unknown entity label name %q in section_label_keep_types", name, keepType)
+		}
+	}
 	policy, err := hygiene.BuildPreset(name, raw.Entities, raw.PresetSettings, overlayPath)
 	if err != nil {
 		return CheckedPreset{}, err

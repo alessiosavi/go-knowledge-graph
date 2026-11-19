@@ -145,19 +145,23 @@ CREATE (:GkgMeta {id:'extraction_schema', value:$schema}),
 				t.Fatalf("sampled chunk = %+v", chunk)
 			}
 
-			assertEvalCLI(t, []string{"eval", "-replay", input, "-predictions", output},
-				0, "chunks=1 ok=0 empty=1 errors=0 occurrences=0 stored_winners=0\n", "")
+			wantOutside, wantCycles := 0, 0
+			switch tc.issue {
+			case "outside_sample":
+				wantOutside = 1
+			case "cycle":
+				wantCycles = 1
+			}
+			summary := fmt.Sprintf("chunks=1 ok=0 empty=1 errors=0 occurrences=0 stored_winners=0 duplicate_roots_outside_sample=%d duplicate_root_cycles=%d\n",
+				wantOutside, wantCycles)
+			assertEvalCLI(t, []string{"eval", "-replay", input, "-predictions", output}, 0, summary, "")
 			rows, _ := readEvalArtifact(t, output)
 			issue, _ := rows[1]["duplicate_root"].(string)
 			if len(rows) != 3 || rows[1]["chunk_id"] != "child-chunk" || issue != tc.issue {
 				t.Fatalf("replay rows = %+v, want duplicate root issue %q", rows, tc.issue)
 			}
 			counts := rows[2]["counts"].(map[string]any)
-			for field, kind := range map[string]string{"duplicate_roots_outside_sample": "outside_sample", "duplicate_root_cycles": "cycle"} {
-				want := float64(0)
-				if tc.issue == kind {
-					want = 1
-				}
+			for field, want := range map[string]float64{"duplicate_roots_outside_sample": float64(wantOutside), "duplicate_root_cycles": float64(wantCycles)} {
 				if counts[field] != want {
 					t.Errorf("trailer %s = %v, want %v", field, counts[field], want)
 				}
@@ -284,7 +288,7 @@ func TestEvalReplaySidecarOnly(t *testing.T) {
 	}
 	input := evalReplaySample(t, text)
 	args := []string{"eval", "-replay", "sample.jsonl", "-predictions", "predictions.jsonl", "-labels", "synthetic"}
-	const summary = "chunks=14 ok=3 empty=10 errors=1 occurrences=18 stored_winners=2\n"
+	const summary = "chunks=14 ok=3 empty=10 errors=1 occurrences=18 stored_winners=2 duplicate_roots_outside_sample=1 duplicate_root_cycles=0\n"
 	assertEvalCLI(t, args, 1, summary, "")
 	rows, data := readEvalArtifact(t, "predictions.jsonl")
 	if rows[0]["input_sha256"] != fmt.Sprintf("%x", sha256.Sum256(input)) ||
@@ -419,7 +423,7 @@ func TestEvalReplaySidecarOnly(t *testing.T) {
 	writeEvalFile(t, "sample.jsonl", input)
 	args[4] = "unhealthy.jsonl"
 	failHealth.Store(true)
-	assertEvalCLI(t, args, 1, "chunks=14 ok=0 empty=0 errors=14 occurrences=0 stored_winners=0\n", "")
+	assertEvalCLI(t, args, 1, "chunks=14 ok=0 empty=0 errors=14 occurrences=0 stored_winners=0 duplicate_roots_outside_sample=1 duplicate_root_cycles=0\n", "")
 	unhealthy, _ := readEvalArtifact(t, args[4])
 	for _, row := range unhealthy[1 : len(unhealthy)-1] {
 		if row["type"] != "result" || row["status"] != "error" || !strings.Contains(fmt.Sprint(row["error"]), "synthetic health failure") {
@@ -527,7 +531,7 @@ func TestEvalReplayMatchesIngestBatches(t *testing.T) {
 
 	assertEvalCLI(t, []string{"eval-sample", "-domain", "zorbax", "-out", "sample.jsonl"}, 0, "documents=1 chunks=11\n", "")
 	assertEvalCLI(t, []string{"eval", "-replay", "sample.jsonl", "-predictions", "predictions.jsonl"},
-		0, "chunks=11 ok=0 empty=11 errors=0 occurrences=0 stored_winners=0\n", "")
+		0, "chunks=11 ok=0 empty=11 errors=0 occurrences=0 stored_winners=0 duplicate_roots_outside_sample=0 duplicate_root_cycles=0\n", "")
 	mu.Lock()
 	defer mu.Unlock()
 	if !reflect.DeepEqual(batches, ingestBatches) {
@@ -608,7 +612,7 @@ func TestEvalReplayWriteMode(t *testing.T) {
 		defer before.AssertUnchanged(t, "supported eval replay")
 		const output = "supported.jsonl"
 		args := []string{"eval", "-replay", "sample.jsonl", "-predictions", output}
-		assertEvalCLI(t, args, 0, "chunks=14 ok=0 empty=14 errors=0 occurrences=0 stored_winners=0\n",
+		assertEvalCLI(t, args, 0, "chunks=14 ok=0 empty=14 errors=0 occurrences=0 stored_winners=0 duplicate_roots_outside_sample=1 duplicate_root_cycles=0\n",
 			"gkg eval: warning: sidecar image digest is unknown")
 		rows, _ := readEvalArtifact(t, output)
 		want := []any{map[string]any{"doc_id": "doc-a", "labels": "synthetic"}}
@@ -703,6 +707,7 @@ func evalReplaySample(t *testing.T, text string) []byte {
 			duplicate, owner = "chunk-good", "doc-a"
 			chunkText = "Zorvax note."
 		case "chunk-dup-missing":
+			// Cover legacy samples pointing to a root missing from the graph, a shape eval-sample no longer emits.
 			duplicate, owner = "outside-chunk", "outside-doc"
 		}
 		rows = append(rows, map[string]any{"type": "chunk", "doc_id": "doc-a", "chunk_id": id, "text": chunkText,

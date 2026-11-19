@@ -113,10 +113,12 @@ stoplist:
 code_tokens: true
 ```
 
-`section_label_keep_types` exempts the listed mention types from the
-`heading_lead` rule during ingest and `gkg repair-labels`. Type matching is
-case-insensitive. Omit the key to use `[location]` or set it to `[]` to apply
-`heading_lead` to all types. The `lead_in` rule still applies to every type.
+`section_label_keep_types` lists entity label names whose mentions are exempt
+from `heading_lead` during ingest and `gkg repair-labels`. Matching is
+case-insensitive. Omit the key (or leave it empty) to use `[location]`; write `[]`
+to apply `heading_lead` to all types. The `lead_in` rule still applies to every type.
+`gkg preset check` and `gkg eval -replay` reject a name that is not an entity label
+of the preset; ingest and `gkg repair-labels` ignore such a name.
 
 Entity labels with `scope: document` are value labels: they skip the no-letter,
 short-name, CLI-flag, path and code shape rules, while normalization and newline,
@@ -406,9 +408,9 @@ is `empty` after a successful health check and has `duplicate_root` set to
 `outside_sample`; exclude those rows from the fidelity comparison. A cyclic
 chain is flagged as `cycle`: `eval-sample` exports it without
 `duplicate_of`, and replay extracts it as ingest does, so its occurrences
-stay comparable. The `empty` count includes `outside_sample` rows; the trailer
-counts the flagged rows in `duplicate_roots_outside_sample` and
-`duplicate_root_cycles`.
+stay comparable. The `empty` count includes `outside_sample` rows. The replay
+summary on standard output and the JSONL trailer count the flagged rows in
+`duplicate_roots_outside_sample` and `duplicate_root_cycles`.
 A kept relation below the assert floor is marked `low_confidence`.
 If any chunk still fails after retry, or the sidecar fails its health check,
 replay preserves the completed predictions with per-chunk error rows

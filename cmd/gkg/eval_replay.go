@@ -63,8 +63,9 @@ func runEvalReplay(input, output, preset string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg eval: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "chunks=%d ok=%d empty=%d errors=%d occurrences=%d stored_winners=%d\n",
-		counts.Chunks, counts.OK, counts.Empty, counts.Errors, counts.Occurrences, counts.StoredWinners)
+	fmt.Fprintf(stdout, "chunks=%d ok=%d empty=%d errors=%d occurrences=%d stored_winners=%d duplicate_roots_outside_sample=%d duplicate_root_cycles=%d\n",
+		counts.Chunks, counts.OK, counts.Empty, counts.Errors, counts.Occurrences, counts.StoredWinners,
+		counts.DuplicateRootsOutsideSample, counts.DuplicateRootCycles)
 	if counts.Errors > 0 {
 		return 1
 	}
