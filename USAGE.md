@@ -452,7 +452,8 @@ is extracted locally: its rows carry their own occurrences and winner flags,
 no `source_chunk_id`, and `duplicate_root` stays informational. A cyclic
 chain is flagged as `cycle`: `eval-sample` exports it without
 `duplicate_of`, and replay extracts it as ingest does, so its occurrences
-stay comparable. The `empty` count includes `outside_sample` rows. The replay
+stay comparable. With normal borrowing, the `empty` count includes `outside_sample` rows; with
+`-no-borrow` those rows are extracted locally and counted by their own status. The replay
 summary on standard output and the JSONL trailer count the flagged rows in
 `duplicate_roots_outside_sample` and `duplicate_root_cycles`.
 A kept relation below the assert floor is marked `low_confidence`.
