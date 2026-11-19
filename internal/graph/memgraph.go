@@ -150,12 +150,12 @@ func (s *Store) runWrite(ctx context.Context, query string, params map[string]an
 
 // runWriteTx executes work inside one managed write transaction. All
 // statements run by fn are atomic together.
-func (s *Store) runWriteTx(ctx context.Context, fn func(tx neo4j.ManagedTransaction) error) error {
+func (s *Store) runWriteTx(ctx context.Context, fn func(tx neo4j.ManagedTransaction) error, opts ...func(*neo4j.TransactionConfig)) error {
 	sess := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer sess.Close(ctx)
 	_, err := sess.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 		return nil, fn(tx)
-	})
+	}, opts...)
 	return err
 }
 
@@ -184,6 +184,14 @@ func txRun(ctx context.Context, tx neo4j.ManagedTransaction, query string, param
 	}
 	_, err = res.Consume(ctx)
 	return err
+}
+
+func txRows(ctx context.Context, tx neo4j.ManagedTransaction, query string, params map[string]any) ([]*neo4j.Record, error) {
+	res, err := tx.Run(ctx, query, params)
+	if err != nil {
+		return nil, err
+	}
+	return res.Collect(ctx)
 }
 
 // runAuto executes a single query in an autocommit (implicit) transaction.

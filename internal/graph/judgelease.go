@@ -53,22 +53,22 @@ func (s *Store) RenewLease(ctx context.Context, name, owner string, ttl time.Dur
 	}
 	renewed := false
 	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
-		renewed = false
-		now := time.Now()
-		res, err := tx.Run(ctx, `MATCH (l:JudgeLease {id: $name})
-WHERE l.owner = $owner AND l.expires_at > $now
-SET l.expires_at = $expires RETURN l.id`, map[string]any{"name": name, "owner": owner, "now": now.UnixMilli(), "expires": now.Add(ttl).UnixMilli()})
-		if err != nil {
-			return err
-		}
-		rows, err := res.Collect(ctx)
-		renewed = len(rows) > 0
+		var err error
+		renewed, err = txRenewLease(ctx, tx, name, owner, ttl)
 		return err
 	})
 	if err != nil {
 		return false, fmt.Errorf("graph: renew judge lease: %w", err)
 	}
 	return renewed, nil
+}
+
+func txRenewLease(ctx context.Context, tx neo4j.ManagedTransaction, name, owner string, ttl time.Duration) (bool, error) {
+	now := time.Now()
+	rows, err := txRows(ctx, tx, `MATCH (l:JudgeLease {id: $name})
+WHERE l.owner = $owner AND l.expires_at > $now
+SET l.expires_at = $expires RETURN l.id`, map[string]any{"name": name, "owner": owner, "now": now.UnixMilli(), "expires": now.Add(ttl).UnixMilli()})
+	return len(rows) > 0, err
 }
 
 // ReleaseLease cannot remove another owner's lease after a takeover.

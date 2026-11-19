@@ -50,19 +50,31 @@ func (s *Store) repairEntityNamePage(ctx context.Context, rows []*neo4j.Record, 
 	}
 	changed := 0
 	if err := s.runWriteTx(ctx, func(tx neo4j.ManagedTransaction) error {
-		result, err := tx.Run(ctx, `UNWIND $updates AS u
+		foldRecord, err := txReadFoldRecord(ctx, tx)
+		if err != nil {
+			return err
+		}
+		repaired, err := txRows(ctx, tx, `UNWIND $updates AS u
 MATCH (e:Entity {id: u.id}) WHERE e.name = u.old
 SET e.name = u.name, e.name_key = u.name_key
-RETURN count(e) AS changed`, map[string]any{"updates": updates})
+RETURN e.key AS key, e.name AS name, e.fold_key AS fold_key`, map[string]any{"updates": updates})
 		if err != nil {
 			return err
 		}
-		row, err := result.Single(ctx)
-		if err != nil {
-			return err
+		changed = len(repaired)
+		if foldRecord == nil {
+			return nil
 		}
-		changed = getInt(row, "changed")
-		return nil
+		foldUpdates := make([]map[string]any, 0, len(repaired))
+		for _, row := range repaired {
+			if getString(row, "key") == "" {
+				continue
+			}
+			if update, differs := foldUpdate(row, foldRecord.Exceptions); differs {
+				foldUpdates = append(foldUpdates, update)
+			}
+		}
+		return txApplyFoldUpdates(ctx, tx, foldUpdates)
 	}); err != nil {
 		return 0, fmt.Errorf("graph: repair entity names: %w", err)
 	}

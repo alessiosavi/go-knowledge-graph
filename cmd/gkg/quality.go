@@ -25,12 +25,13 @@ func runQuality(args []string, stdout, stderr io.Writer) int {
 	scope := fs.String("domain", "", "restrict done documents to this domain slug")
 	seedPath := fs.String("seed", "", "domain seed JSON file, or - for stdin; longest prefix of the full source")
 	asJSON := fs.Bool("json", false, "print aggregate JSON (undefined metrics are null; text prints n/a)")
+	foldCheck := fs.Bool("fold-check", false, "scan the graph for stale or missing fold hints")
 	sampleN := fs.Int("hygiene-sample", 0, "sample up to N dropped and N renamed names; requires --out")
 	sampleSeed := fs.Uint64("sample-seed", 1, "deterministic hygiene sample seed")
 	outPath := fs.String("out", "", "private hygiene sample file (mode 0600); requires --hygiene-sample")
 	duplicatesPath := fs.String("duplicates-out", "", "new private duplicate census JSONL file (mode 0600)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: gkg quality [--domain d] [--seed <file>|-] [--json] [--hygiene-sample N --sample-seed s --out <file>] [--duplicates-out <file>]")
+		fmt.Fprintln(stderr, "usage: gkg quality [--domain d] [--seed <file>|-] [--json] [--fold-check] [--hygiene-sample N --sample-seed s --out <file>] [--duplicates-out <file>]")
 		fmt.Fprintln(stderr, "Report read-only metrics over done documents and their derived data; no graph writes or Bootstrap DDL.")
 		fmt.Fprintf(stderr, "Noise and samples use a %s.\n", quality.HygienePolicy)
 		fs.PrintDefaults()
@@ -60,7 +61,7 @@ func runQuality(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	opt := quality.Options{Domain: *scope, HygieneSample: *sampleN, SampleSeed: *sampleSeed}
+	opt := quality.Options{Domain: *scope, HygieneSample: *sampleN, SampleSeed: *sampleSeed, FoldCheck: *foldCheck}
 	if *seedPath != "" {
 		var input io.Reader = os.Stdin
 		if *seedPath != "-" {

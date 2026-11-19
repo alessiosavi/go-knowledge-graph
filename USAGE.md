@@ -549,6 +549,16 @@ candidates and rejected facts.
 | `co_mention.weight1_share` | Co-mention pairs sharing exactly one distinct chunk / `co_mention.edges`. |
 | `co_mention.giant_share` | Nodes in the largest undirected co-mention component / `co_mention.nodes`. |
 | `hygiene_policy` | Text identifying the hygiene policy used for noise and samples; no denominator. |
+| `fold` | Advisory fold rebuild record, or `null` if there is no record. The entire object is graph-wide, even with `--domain`. |
+| `fold.version` | Fold key algorithm version stored in the rebuild record. |
+| `fold.exceptions_digest` | Digest identifying the stored exception list. |
+| `fold.exceptions_count` | Number of stored exception keys. |
+| `fold.status` | `running`, `complete`, or `unknown` for older records without a status. |
+| `fold.rebuilt_at` | UTC completion timestamp, or an empty string when no timestamp is recorded. |
+| `fold.rows_written` | Number of entity rows changed by the completed rebuild. Zero when no count is recorded. |
+| `fold.rows_skipped` | Number of entity rows skipped by the completed rebuild for a missing or empty key or ID. Zero when no count is recorded. |
+| `fold.rows_stale` | Number of rows maintained by the rebuild whose stored hints differ from the expected hints. Present with `--fold-check` when the stored and current fold versions match. |
+| `fold.matching` | `off (version mismatch)` when `--fold-check` encounters a different stored fold version. Omitted otherwise. |
 
 Co-mention pairs are uncapped; memory grows with Σ(entities per chunk)².
 
@@ -688,6 +698,34 @@ documents without extracting them. `gkg serve` completes the re-extraction;
 plain `gkg migrate` completes it synchronously. Unknown migrate flags fail with
 exit 2. After a rebuild, run `gkg judge backfill --budget-calls N` with an
 owner-approved budget to recover unjudged candidates.
+
+### Rebuild the advisory entity fold index
+
+Run `gkg fold rebuild` against a graph with the current extraction schema.
+On the first run, pass `-exceptions FILE` or `-clear-exceptions`. Use
+`-exceptions FILE` to replace the stored list and `-clear-exceptions` to empty
+it. Later runs with neither flag reuse the stored list. The file takes one
+exact entity key per line. Use qualified keys such as `@demo:zorbulo` on
+graphs with domains. The command warns about exception keys absent from the graph.
+
+With Compose, copy the file into the `gkg-data` volume and use its container path.
+
+```sh
+docker compose exec -T gkg mkdir -p /var/lib/gkg/fold
+docker compose exec -T gkg sh -c 'umask 077; cat > /var/lib/gkg/fold/exceptions.txt' < exceptions.txt
+docker compose exec gkg gkg fold rebuild -exceptions /var/lib/gkg/fold/exceptions.txt
+```
+
+The rebuild can run while the service is ingesting. It reports committed row
+changes and the number of rows skipped for missing keys or IDs. Rerun after an
+interruption or after running an older binary that can leave stale fold hints.
+`gkg quality` shows the latest exception digest and rebuild status. The status
+stays `running` after an interruption. A completed rebuild sets `complete` and
+records its timestamp and counters. Older records without a status show
+`unknown`. Add `--fold-check` for a read-only count of missing or stale hints
+among the rows the rebuild maintains. Rows skipped by the rebuild appear in
+`rows_skipped`. The stale count requires matching fold versions. A version
+mismatch reports that fold matching is off.
 
 ### Repair stored entity names
 
