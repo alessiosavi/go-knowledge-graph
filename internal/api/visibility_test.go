@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -34,6 +36,48 @@ func TestLegacyReadJSONUnchanged(t *testing.T) {
 			}
 			if string(raw) != tc.want {
 				t.Errorf("wire=%s, want %s", raw, tc.want)
+			}
+		})
+	}
+}
+
+func TestRESTMergedSelectorProvenance(t *testing.T) {
+	f := graphtest.Visibility(t)
+	oldID, oldKey := graph.EntityID("retired-"+f.Key), "retired-"+f.Key
+	graphtest.SeedMergedEntity(t, oldID, oldKey, f.ID)
+	h := apiHandler(t, config.Config{}, f.Store, nil)
+	for route, request := range map[string]func(string) *httptest.ResponseRecorder{
+		"entity": func(sel string) *httptest.ResponseRecorder {
+			return do(t, h, http.MethodGet, "/v1/entities/"+url.PathEscape(sel), nil, nil)
+		},
+		"traverse": func(sel string) *httptest.ResponseRecorder {
+			return doJSON(t, h, http.MethodPost, "/v1/traverse", fmt.Sprintf(`{"entity":%q}`, sel))
+		},
+	} {
+		t.Run(route, func(t *testing.T) {
+			var exact map[string]any
+			for _, sel := range []string{f.ID, f.Key, oldID, oldKey} {
+				rr := request(sel)
+				if rr.Code != http.StatusOK {
+					t.Fatalf("selector %q: status %d, body %s", sel, rr.Code, rr.Body)
+				}
+				out := decode[map[string]any](t, rr)
+				requested, hasRequested := out["requested"]
+				via, hasVia := out["resolved_via"]
+				if sel == oldID || sel == oldKey {
+					if requested != sel || via != "merged" {
+						t.Errorf("selector %q: provenance %v/%v", sel, requested, via)
+					}
+				} else if hasRequested || hasVia {
+					t.Errorf("exact selector %q carried provenance: %v", sel, out)
+				}
+				delete(out, "requested")
+				delete(out, "resolved_via")
+				if exact == nil {
+					exact = out
+				} else if !reflect.DeepEqual(out, exact) {
+					t.Errorf("selector %q: payload differs from live ID", sel)
+				}
 			}
 		})
 	}

@@ -1212,6 +1212,13 @@ components:
       type: object
       required: [id, key, name, type, domain, aliases, mention_count, facts, together]
       properties:
+        requested:
+          type: string
+          description: Retired entity ID or key supplied in the request. Present only after a merge redirect.
+        resolved_via:
+          type: string
+          enum: [merged]
+          description: Present when a merge redirect selected the returned entity.
         id: { type: string }
         key: { type: string }
         name: { type: string }
@@ -1307,6 +1314,13 @@ components:
       type: object
       required: [nodes, edges]
       properties:
+        requested:
+          type: string
+          description: Retired start entity ID or key supplied in the request. Present only after a merge redirect.
+        resolved_via:
+          type: string
+          enum: [merged]
+          description: Present when a merge redirect selected the traversal start.
         hidden:
           $ref: "#/components/schemas/HiddenCounts"
         unverified_ignored:

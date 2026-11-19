@@ -70,7 +70,7 @@ RETURN e.key AS key, e.name AS name, e.fold_key AS fold_key`, map[string]any{"up
 			if getString(row, "key") == "" {
 				continue
 			}
-			if update, differs := foldUpdate(row, foldRecord.Exceptions); differs {
+			if update, _ := foldUpdate(row, foldRecord.Exceptions); update != nil {
 				foldUpdates = append(foldUpdates, update)
 			}
 		}

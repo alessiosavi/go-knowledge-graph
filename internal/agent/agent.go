@@ -80,7 +80,7 @@ type graphStore interface {
 	chunkread.Store
 	Document(context.Context, string) (*graph.Document, error)
 	DocumentsIn(context.Context, graph.Status, string, int) ([]graph.Document, error)
-	EntityCandidatesByName(context.Context, string, string) ([]graph.EntityRef, error)
+	EntityCandidatesByName(context.Context, string, string) ([]graph.EntityCandidate, error)
 	EntityViewOpts(context.Context, string, graph.ViewOptions) (graph.EntityView, error)
 	RunReadQuery(context.Context, string, map[string]any, int) (graph.QueryResult, error)
 	TraverseOpts(context.Context, string, string, string, int, int, graph.ViewOptions) (graph.Subgraph, error)

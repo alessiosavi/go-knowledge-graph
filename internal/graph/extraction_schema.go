@@ -43,6 +43,7 @@ func (e schemaNewerError) Unwrap() error { return ErrSchemaNewer }
 
 const extractionSchemaMetaID = "extraction_schema"
 const extractionMigrationBatch = 1000
+const extractionSchemaVersionQuery = `MATCH (m:GkgMeta {id: $id}) RETURN m.value AS version`
 
 // MigrationResult describes an extraction schema upgrade. Counts include
 // completed batches even if a later batch fails; Migrated is true only after
@@ -53,8 +54,10 @@ type MigrationResult struct {
 }
 
 func (s *Store) extractionSchemaVersion(ctx context.Context) (int, error) {
-	recs, err := s.runRead(ctx, `MATCH (m:GkgMeta {id: $id}) RETURN m.value AS version`,
-		map[string]any{"id": extractionSchemaMetaID})
+	return decodeExtractionSchemaVersion(s.runRead(ctx, extractionSchemaVersionQuery, map[string]any{"id": extractionSchemaMetaID}))
+}
+
+func decodeExtractionSchemaVersion(recs []*neo4j.Record, err error) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("graph: read extraction schema: %w", err)
 	}

@@ -68,6 +68,14 @@ type entityOut struct {
 	Facts        []factOut           `json:"facts"`
 	Together     []coMentionOut      `json:"together"`
 	Hidden       *graph.HiddenCounts `json:"hidden,omitempty"`
+	Requested    string              `json:"requested,omitempty"`
+	ResolvedVia  string              `json:"resolved_via,omitempty"`
+	Match        string              `json:"match,omitempty"`
+}
+
+type nameCandidateOut struct {
+	entityRefOut
+	Match string `json:"match,omitempty"`
 }
 
 type edgeOut struct {
@@ -83,9 +91,11 @@ type edgeOut struct {
 }
 
 type traverseOut struct {
-	Nodes  []entityRefOut      `json:"nodes"`
-	Edges  []edgeOut           `json:"edges"`
-	Hidden *graph.HiddenCounts `json:"hidden,omitempty"`
+	Nodes       []entityRefOut      `json:"nodes"`
+	Edges       []edgeOut           `json:"edges"`
+	Hidden      *graph.HiddenCounts `json:"hidden,omitempty"`
+	Requested   string              `json:"requested,omitempty"`
+	ResolvedVia string              `json:"resolved_via,omitempty"`
 }
 
 type documentOut struct {
@@ -135,12 +145,12 @@ func toolDefs() []toolDef {
 				"required": []string{"query"},
 			}),
 		functionTool("get_entity",
-			"One entity with aliases, a together co-mention list (entities sharing chunks, with shared chunk counts), and evidenced facts (excerpt, confidence, judge status); resolve by id or name. At schema v4, names use EntityKey folding (possessives and edge punctuation); legacy graphs use case folding. Unscoped ambiguous names return candidates, one per domain.",
+			"One entity with aliases, co-mentions and evidenced facts. A merge redirect includes requested and resolved_via=merged. Name lookup tries exact matches first, then verified folds marked match=fold. Unscoped ambiguous names return one candidate per domain.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"id":                     map[string]any{"type": "string", "description": "entity id"},
-					"name":                   map[string]any{"type": "string", "description": "entity name (EntityKey folding at v4; case folding on legacy graphs; used when id is omitted)"},
+					"id":                     map[string]any{"type": "string", "description": "live or retired entity id or key"},
+					"name":                   map[string]any{"type": "string", "description": "entity name, used when id is omitted"},
 					"include_low_confidence": map[string]any{"type": "boolean", "description": "include facts below the assert floor. Judge-confirmed facts are always shown"},
 				},
 			}),
@@ -155,7 +165,7 @@ func toolDefs() []toolDef {
 				"required": []string{"ids"},
 			}),
 		functionTool("traverse",
-			"Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. Start with limit 10.",
+			"Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. A merge redirect includes requested and resolved_via=merged. Start with limit 10.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -313,6 +323,7 @@ func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, e
 		return nil, err
 	}
 	id := args.ID
+	var match string
 	switch {
 	case id == "" && args.Name == "":
 		return nil, argerr.New("id or name is required")
@@ -324,20 +335,19 @@ func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, e
 		if len(refs) == 0 {
 			return nil, fmt.Errorf("no entity matching %q: %w", args.Name, graph.ErrNotFound)
 		}
-		candidates := []entityRefOut{}
-		seen := map[string]bool{}
-		for _, ref := range refs {
-			if !seen[ref.Domain] {
-				seen[ref.Domain] = true
-				candidates = append(candidates, entityRefOut{ID: ref.ID, Key: ref.Key, Name: ref.Name, Type: ref.Type, Domain: ref.Domain})
+		if len(refs) > 1 {
+			candidates := make([]nameCandidateOut, 0, len(refs))
+			for _, ref := range refs {
+				candidates = append(candidates, toNameCandidateOut(ref))
 			}
-		}
-		if len(candidates) > 1 {
 			return struct {
-				Candidates []entityRefOut `json:"candidates"`
+				Candidates []nameCandidateOut `json:"candidates"`
 			}{candidates}, nil
 		}
 		id = refs[0].ID
+		if refs[0].Match == graph.EntityMatchFold {
+			match = refs[0].Match
+		}
 	}
 	view, err := s.store.EntityViewOpts(ctx, id, graph.ViewOptions{Domain: requestDomain(ctx), IncludeLowConfidence: args.IncludeLowConfidence, IncludeUnverified: false})
 	if err != nil {
@@ -383,7 +393,20 @@ func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, e
 		Facts:        facts,
 		Together:     together,
 		Hidden:       hidden,
+		Requested:    view.Requested,
+		ResolvedVia:  view.ResolvedVia,
+		Match:        match,
 	}, nil
+}
+
+func toNameCandidateOut(candidate graph.EntityCandidate) nameCandidateOut {
+	out := nameCandidateOut{entityRefOut: entityRefOut{
+		ID: candidate.ID, Key: candidate.Key, Name: candidate.Name, Type: candidate.Type, Domain: candidate.Domain,
+	}}
+	if candidate.Match == graph.EntityMatchFold {
+		out.Match = candidate.Match
+	}
+	return out
 }
 
 func (s *Server) toolTraverse(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -450,7 +473,7 @@ func (s *Server) toolTraverse(ctx context.Context, raw json.RawMessage) (any, er
 	if sub.Hidden != (graph.HiddenCounts{}) {
 		hidden = &sub.Hidden
 	}
-	return traverseOut{Nodes: nodes, Edges: edges, Hidden: hidden}, nil
+	return traverseOut{Nodes: nodes, Edges: edges, Hidden: hidden, Requested: sub.Requested, ResolvedVia: sub.ResolvedVia}, nil
 }
 
 func (s *Server) toolListDocuments(ctx context.Context, raw json.RawMessage) (any, error) {
