@@ -312,3 +312,17 @@ test("stream transport fallback uses the settings captured at submission", async
   assert.equal(asks[0].body, asks[1].body);
   assert.deepEqual(JSON.parse(asks[1].body).generation, { temperature: 0.8 });
 });
+
+for (const kind of ["auth_permanent", "auth_transient"]) {
+  test(`stream ${kind} is terminal and does not fall back to the JSON ask`, async () => {
+    const p = await page(savedKey, { enabled: true, stream: true, generation: capabilities });
+    p.elements.get("ask-input").value = "Q";
+    p.replies.set("/v1/agent/ask/stream", () => ({
+      ok: false, status: 502, statusText: "Bad Gateway",
+      json: async () => ({ error: kind, detail: "credential failure" }),
+    }));
+    await p.fire("ask-form", "submit");
+    const asks = p.requests.filter((r) => r.path.startsWith("/v1/agent/ask"));
+    assert.equal(asks.length, 1);
+  });
+}

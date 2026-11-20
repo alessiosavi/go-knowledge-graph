@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 )
 
 // responseCap bounds one provider response (4 MiB, matching the other
@@ -74,11 +75,12 @@ func functionTool(name, description string, parameters map[string]any) toolDef {
 // chatMessage is one chat turn; tool results carry ToolCallID, assistant
 // turns carry ToolCalls.
 type chatMessage struct {
-	Role             string     `json:"role"`
-	Content          string     `json:"content,omitempty"`
-	ToolCalls        []toolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	Role             string          `json:"role"`
+	Content          string          `json:"content,omitempty"`
+	ToolCalls        []toolCall      `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ExtraContent     json.RawMessage `json:"extra_content,omitempty"`
 }
 
 // toolCall is one requested function call.
@@ -89,6 +91,7 @@ type toolCall struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"function"`
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
 }
 
 type chatRequest struct {
@@ -98,11 +101,70 @@ type chatRequest struct {
 	ToolChoice       string            `json:"tool_choice,omitempty"`
 	ResponseFormat   map[string]string `json:"response_format,omitempty"`
 	Temperature      float64           `json:"temperature"`
+	MaxTokens        *int              `json:"max_tokens,omitempty"`
 	TopP             *float64          `json:"top_p,omitempty"`
 	TopK             *int              `json:"top_k,omitempty"`
 	ReasoningEffort  *string           `json:"reasoning_effort,omitempty"`
 	Stream           bool              `json:"stream,omitempty"`
 	customGeneration bool
+}
+
+// marshalChatRequest preserves provider-owned extra_content bytes. The JSON
+// encoder compacts RawMessage values and escapes HTML, so reserve their slots
+// in the transcript and fill them after encoding the rest of the request.
+func marshalChatRequest(req chatRequest) ([]byte, error) {
+	placeholder := json.RawMessage("null")
+	var extras []json.RawMessage
+	var messages []chatMessage
+	for i, message := range req.Messages {
+		var calls []toolCall
+		for j, call := range message.ToolCalls {
+			if len(call.ExtraContent) == 0 {
+				continue
+			}
+			if calls == nil {
+				calls = slices.Clone(message.ToolCalls)
+			}
+			extras = append(extras, call.ExtraContent)
+			calls[j].ExtraContent = placeholder
+		}
+		if calls != nil {
+			message.ToolCalls = calls
+		}
+		// tool_calls precedes the message's own extra_content on the wire.
+		if len(message.ExtraContent) != 0 {
+			extras = append(extras, message.ExtraContent)
+			message.ExtraContent = placeholder
+		} else if calls == nil {
+			continue
+		}
+		if messages == nil {
+			messages = slices.Clone(req.Messages)
+		}
+		messages[i] = message
+	}
+	if messages != nil {
+		req.Messages = messages
+	}
+	body, err := json.Marshal(req)
+	if err != nil || len(extras) == 0 {
+		return body, err
+	}
+	// Messages precede the tool definitions, and their string fields cannot
+	// contain the unescaped JSON key used to locate each reserved slot.
+	const key = `"extra_content":`
+	var result []byte
+	for _, extra := range extras {
+		before, after, found := bytes.Cut(body, []byte(key+"null"))
+		if !found || !json.Valid(extra) {
+			return nil, errors.New("invalid extra_content in agent transcript")
+		}
+		result = append(result, before...)
+		result = append(result, key...)
+		result = append(result, extra...)
+		body = after
+	}
+	return append(result, body...), nil
 }
 
 // DeepSeek tool continuations with explicit reasoning can require the prior
@@ -112,9 +174,22 @@ func (req chatRequest) keepToolReasoning() bool {
 }
 
 type chatReply struct {
-	Content          string     `json:"content"`
-	ToolCalls        []toolCall `json:"tool_calls"`
-	ReasoningContent string     `json:"reasoning_content"`
+	Content          string          `json:"content"`
+	ToolCalls        []toolCall      `json:"tool_calls"`
+	ReasoningContent string          `json:"reasoning_content"`
+	ExtraContent     json.RawMessage `json:"extra_content"`
+}
+
+func (r *chatReply) redact(replace func(string) string) {
+	r.Content = replace(r.Content)
+	r.ReasoningContent = replace(r.ReasoningContent)
+	for i := range r.ToolCalls {
+		call := &r.ToolCalls[i]
+		call.ID = replace(call.ID)
+		call.Type = replace(call.Type)
+		call.Function.Name = replace(call.Function.Name)
+		call.Function.Arguments = replace(call.Function.Arguments)
+	}
 }
 
 type chatWireResponse struct {
@@ -138,6 +213,7 @@ var errStreamClosedBeforeEvent = errors.New("agent: stream closed before the fir
 type client struct {
 	baseURL string
 	apiKey  string
+	tokens  llmauth.TokenProvider
 	model   string
 	http    *http.Client
 	backoff []time.Duration
@@ -182,19 +258,68 @@ func newClient(cfg config.AgentConfig) *client {
 	if model == "" {
 		model = "deepseek-v4.1-flash"
 	}
-	return &client{
+	c := &client{
 		baseURL: base,
 		apiKey:  cfg.APIKey,
 		model:   model,
 		http:    &http.Client{Timeout: 120 * time.Second},
 		backoff: []time.Duration{time.Second, 4 * time.Second},
 	}
+	if cfg.Auth == config.AuthGCP {
+		c.tokens = llmauth.GCE()
+		c.http.CheckRedirect = llmauth.RejectRedirect
+	}
+	return c
+}
+
+// preparedAuthorization carries the SSE preflight credential into the
+// first attempt. Only the ask goroutine consumes it, and retries fetch anew.
+type preparedAuthorization struct{ value string }
+type authorizationContextKey struct{}
+
+func (c *client) prepareStream(ctx context.Context) (context.Context, error) {
+	if c.tokens == nil {
+		return ctx, nil
+	}
+	value, err := llmauth.Bearer(ctx, c.tokens)
+	if err != nil {
+		return ctx, err
+	}
+	return context.WithValue(ctx, authorizationContextKey{}, &preparedAuthorization{value}), nil
+}
+
+func (c *client) authorize(req *http.Request) (func(string) string, error) {
+	if c.tokens == nil {
+		if c.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
+		return c.redactAPIKey, nil
+	}
+
+	var value string
+	ctx := req.Context()
+	if prepared, ok := ctx.Value(authorizationContextKey{}).(*preparedAuthorization); ok && prepared.value != "" {
+		value, prepared.value = prepared.value, ""
+	} else {
+		var err error
+		value, err = llmauth.Bearer(ctx, c.tokens)
+		if err != nil {
+			return nil, err
+		}
+	}
+	req.Header.Set("Authorization", value)
+	return llmauth.Redactor(value), nil
+}
+
+func retryableAttempt(err error) bool {
+	var pe *providerError
+	return llmauth.Class(err) == llmauth.TransientClass || (errors.As(err, &pe) && pe.retryable())
 }
 
 // chat performs one chat-completions call, retrying retryable failures with
 // the configured backoff. The caller's context bounds the whole loop.
 func (c *client) chat(ctx context.Context, req chatRequest) (chatReply, error) {
-	body, err := json.Marshal(req)
+	body, err := marshalChatRequest(req)
 	if err != nil {
 		return chatReply{}, fmt.Errorf("agent: encode request: %w", err)
 	}
@@ -216,8 +341,7 @@ func (c *client) chat(ctx context.Context, req chatRequest) (chatReply, error) {
 		}
 		err = req.classifyRejection(err)
 		lastErr = err
-		var pe *providerError
-		if !errors.As(err, &pe) || !pe.retryable() {
+		if !retryableAttempt(err) {
 			return chatReply{}, err
 		}
 	}
@@ -232,40 +356,53 @@ func (c *client) doChat(ctx context.Context, body []byte) (chatReply, error) {
 		return chatReply{}, &providerError{status: 0, permanent: true}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	redact, err := c.authorize(req)
+	if err != nil {
+		return chatReply{}, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return chatReply{}, err
 		}
-		slog.Warn("agent: provider request failed", "err", c.redactAPIKey(err.Error()))
+		slog.Warn("agent: provider request failed", "err", redact(err.Error()))
 		return chatReply{}, &providerError{status: 0}
 	}
 	defer resp.Body.Close()
+	if c.tokens != nil {
+		if err := llmauth.VertexStatus(resp, redact); err != nil {
+			return chatReply{}, err
+		}
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, responseCap+1))
 	if err != nil {
-		slog.Warn("agent: provider response read failed", "err", c.redactAPIKey(err.Error()))
+		slog.Warn("agent: provider response read failed", "err", redact(err.Error()))
 		return chatReply{}, &providerError{status: 0}
 	}
 	if len(data) > responseCap {
 		return chatReply{}, fmt.Errorf("agent: response exceeds the %d MiB cap", responseCap>>20)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return chatReply{}, &providerError{status: resp.StatusCode, detail: trimPreview(c.redactAPIKey(string(data)))}
+		return chatReply{}, &providerError{status: resp.StatusCode, detail: llmauth.TrimPreview(redact(string(data)), llmauth.PreviewPrefixBytes)}
 	}
 	var wire chatWireResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
+		if c.tokens != nil {
+			return chatReply{}, fmt.Errorf("agent: decode response: %s", redact(err.Error()))
+		}
 		return chatReply{}, fmt.Errorf("agent: decode response: %w", err)
 	}
 	if wire.Error != nil {
-		return chatReply{}, &providerError{status: http.StatusBadGateway, inBand: true, detail: trimPreview(c.redactAPIKey(wire.Error.Message))}
+		return chatReply{}, &providerError{status: http.StatusBadGateway, inBand: true, detail: llmauth.TrimPreview(redact(wire.Error.Message), llmauth.PreviewPrefixBytes)}
 	}
 	if len(wire.Choices) == 0 {
 		return chatReply{}, fmt.Errorf("agent: response without choices")
 	}
-	return wire.Choices[0].Message, nil
+	reply := wire.Choices[0].Message
+	if c.tokens != nil {
+		reply.redact(redact)
+	}
+	return reply, nil
 }
 
 // chatStream performs one streamed chat-completions call, forwarding every
@@ -279,7 +416,7 @@ func (c *client) doChat(ctx context.Context, body []byte) (chatReply, error) {
 // caller can fall back to the non-streamed path once.
 func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(string) error) (chatReply, error) {
 	req.Stream = true
-	body, err := json.Marshal(req)
+	body, err := marshalChatRequest(req)
 	if err != nil {
 		return chatReply{}, fmt.Errorf("agent: encode request: %w", err)
 	}
@@ -309,8 +446,7 @@ func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(s
 		}
 		err = req.classifyRejection(err)
 		lastErr = err
-		var pe *providerError
-		if !errors.As(err, &pe) || !pe.retryable() {
+		if !retryableAttempt(err) {
 			return chatReply{}, err
 		}
 		if delivered {
@@ -328,31 +464,49 @@ func (c *client) doStream(ctx context.Context, body []byte, keepReasoning bool, 
 		return chatReply{}, &providerError{status: 0, permanent: true}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	redact, err := c.authorize(req)
+	if err != nil {
+		return chatReply{}, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return chatReply{}, err
 		}
-		slog.Warn("agent: provider stream request failed", "err", c.redactAPIKey(err.Error()))
+		slog.Warn("agent: provider stream request failed", "err", redact(err.Error()))
 		return chatReply{}, &providerError{status: 0}
 	}
 	defer resp.Body.Close()
+	if c.tokens != nil {
+		if err := llmauth.VertexStatus(resp, redact); err != nil {
+			return chatReply{}, err
+		}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, responseCap+1))
-		return chatReply{}, &providerError{status: resp.StatusCode, detail: trimPreview(c.redactAPIKey(string(data)))}
+		return chatReply{}, &providerError{status: resp.StatusCode, detail: llmauth.TrimPreview(redact(string(data)), llmauth.PreviewPrefixBytes)}
 	}
-	return readSSE(resp.Body, keepReasoning, onDelta, c.redactAPIKey)
+	if c.tokens == nil {
+		return readSSE(resp.Body, keepReasoning, onDelta, redact)
+	}
+	var forward func(string) error
+	if onDelta != nil {
+		forward = func(delta string) error { return onDelta(redact(delta)) }
+	}
+	reply, err := readSSE(resp.Body, keepReasoning, forward, redact)
+	if err == nil {
+		reply.redact(redact)
+	}
+	return reply, err
 }
 
 // streamWireChunk is one SSE frame of a chat-completions stream.
 type streamWireChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
+			Content          string          `json:"content"`
+			ReasoningContent string          `json:"reasoning_content"`
+			ExtraContent     json.RawMessage `json:"extra_content"`
 			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
@@ -360,12 +514,39 @@ type streamWireChunk struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
 				} `json:"function"`
+				ExtraContent json.RawMessage `json:"extra_content"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// mergeStreamExtra preserves native JSON values. A structured value split
+// across JSON frames starts with a quoted fragment containing '{' or '['.
+func mergeStreamExtra(current, next json.RawMessage) json.RawMessage {
+	if len(next) == 0 {
+		return current
+	}
+	if len(current) != 0 && (bytes.Equal(next, []byte("null")) ||
+		(next[0] == '{' && next[len(next)-1] == '}' && len(bytes.TrimSpace(next[1:len(next)-1])) == 0)) {
+		return current
+	}
+	assembling := len(current) != 0 && !json.Valid(current)
+	if next[0] == '"' {
+		var fragment string
+		// The stream frame has already been validated by json.Unmarshal.
+		_ = json.Unmarshal(next, &fragment)
+		start := strings.TrimLeft(fragment, " \t\r\n")
+		if assembling || strings.HasPrefix(start, "{") || strings.HasPrefix(start, "[") {
+			next = json.RawMessage(fragment)
+		}
+	}
+	if assembling {
+		return append(current, next...)
+	}
+	return next
 }
 
 // streamRawCap bounds the bytes read from one streamed body, framing
@@ -385,6 +566,7 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 	var (
 		content   strings.Builder
 		reasoning strings.Builder
+		extra     json.RawMessage
 		calls     = map[int]*toolCall{}
 		order     []int
 		frames    int
@@ -400,10 +582,23 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 			data := strings.TrimPrefix(trimmed, "data:")
 			data = strings.TrimPrefix(data, " ")
 			if data == "[DONE]" {
-				reply := chatReply{Content: content.String(), ReasoningContent: reasoning.String()}
+				invalidExtra := false
+				validateExtra := func(value json.RawMessage) json.RawMessage {
+					if len(value) != 0 && !json.Valid(value) {
+						invalidExtra = true
+						return nil
+					}
+					return value
+				}
+				reply := chatReply{Content: content.String(), ReasoningContent: reasoning.String(), ExtraContent: validateExtra(extra)}
 				slices.Sort(order)
 				for _, i := range order {
-					reply.ToolCalls = append(reply.ToolCalls, *calls[i])
+					call := *calls[i]
+					call.ExtraContent = validateExtra(call.ExtraContent)
+					reply.ToolCalls = append(reply.ToolCalls, call)
+				}
+				if invalidExtra {
+					slog.Warn("agent: discarded invalid extra_content in provider stream")
 				}
 				return reply, nil
 			}
@@ -417,11 +612,11 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 			} else {
 				frames++
 				if chunk.Error != nil {
-					return chatReply{}, &providerError{status: http.StatusBadGateway, inBand: true, detail: trimPreview(redact(chunk.Error.Message))}
+					return chatReply{}, &providerError{status: http.StatusBadGateway, inBand: true, detail: llmauth.TrimPreview(redact(chunk.Error.Message), llmauth.PreviewPrefixBytes)}
 				}
 				if len(chunk.Choices) > 0 {
 					delta := chunk.Choices[0].Delta
-					assembled += len(delta.Content)
+					assembled += len(delta.Content) + len(delta.ExtraContent)
 					if keepReasoning {
 						assembled += len(delta.ReasoningContent)
 					}
@@ -431,6 +626,7 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 					if keepReasoning {
 						reasoning.WriteString(delta.ReasoningContent)
 					}
+					extra = mergeStreamExtra(extra, delta.ExtraContent)
 					if delta.Content != "" {
 						content.WriteString(delta.Content)
 						if onDelta != nil {
@@ -440,7 +636,7 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 						}
 					}
 					for _, frag := range delta.ToolCalls {
-						assembled += len(frag.Function.Arguments) + len(frag.Function.Name)
+						assembled += len(frag.Function.Arguments) + len(frag.Function.Name) + len(frag.ExtraContent)
 						if assembled > responseCap {
 							return chatReply{}, fmt.Errorf("agent: streamed response exceeds the %d MiB cap", responseCap>>20)
 						}
@@ -453,6 +649,7 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 						if frag.ID != "" {
 							call.ID = frag.ID
 						}
+						call.ExtraContent = mergeStreamExtra(call.ExtraContent, frag.ExtraContent)
 						call.Function.Name += frag.Function.Name
 						call.Function.Arguments += frag.Function.Arguments
 					}
@@ -483,13 +680,4 @@ func (c *client) redactAPIKey(s string) string {
 	}
 	quoted, _ := json.Marshal(c.apiKey)
 	return strings.NewReplacer(string(quoted[1:len(quoted)-1]), "[redacted]", c.apiKey, "[redacted]").Replace(s)
-}
-
-// trimPreview caps a provider payload preview; previews are the provider's
-// own words about the failed request.
-func trimPreview(s string) string {
-	if len(s) > 200 {
-		return s[:200] + "…"
-	}
-	return s
 }

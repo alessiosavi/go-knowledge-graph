@@ -49,11 +49,16 @@ func TestPipelineStoredJudgeInputMatchesWire(t *testing.T) {
 	}))
 	defer server.Close()
 	env.cfg.Judge.BaseURL = server.URL
+	env.cfg.Judge.Model = "wire-judge-model"
 	var previousBody, previousKey string
 	for _, opt := range []struct {
 		mode, verdict string
 		enable        bool
-	}{{"all", "confirmed", false}, {"all", "confirmed", true}, {"all", "refuted", true}, {"off", "confirmed", true}} {
+	}{
+		{"all", "confirmed", false}, {"all", "unclear", false}, {"all", "refuted", false},
+		{"all", "confirmed", true}, {"all", "unclear", true}, {"all", "refuted", true},
+		{"off", "confirmed", true},
+	} {
 		providerVerdict.Store(opt.verdict)
 		env.cfg.Judge.Mode = opt.mode
 		env.cfg.Judge.StoreInputs = opt.enable
@@ -80,13 +85,16 @@ func TestPipelineStoredJudgeInputMatchesWire(t *testing.T) {
 				t.Fatalf("refuted edges=%v requests=%d err=%v", after.Rows, len(requests), err)
 			}
 			recorded := <-requests
-			if recorded.body != previousBody || recorded.props["judge_input"] == nil {
-				t.Fatal("refuted iteration did not judge the original stored bytes")
+			if recorded.body != previousBody || (recorded.props["judge_input"] != nil) != opt.enable {
+				t.Fatal("refuted iteration did not judge the original request")
 			}
 			audits, err := env.st.RunReadQuery(t.Context(), `MATCH (a:RejectedFact {doc_id:$doc})
-RETURN a.judge_verdict AS verdict, a.reason AS reason`, map[string]any{"doc": doc.DocumentID}, 2)
+RETURN a.judge_verdict AS verdict, a.reason AS reason, a.judge_model AS model`, map[string]any{"doc": doc.DocumentID}, 2)
 			if err != nil || len(audits.Rows) != 1 || audits.Rows[0]["verdict"] != "refuted" || audits.Rows[0]["reason"] != "provider reason" {
 				t.Fatalf("refuted audits = %+v, %v", audits, err)
+			}
+			if got := audits.Rows[0]["model"]; got != client.Model() {
+				t.Errorf("stored=%t refuted audit model = %v, want %q", opt.enable, got, client.Model())
 			}
 			if err := env.st.DeleteDocument(t.Context(), doc.DocumentID); err != nil {
 				t.Fatal(err)
@@ -98,7 +106,7 @@ RETURN a.judge_verdict AS verdict, a.reason AS reason`, map[string]any{"doc": do
 		}
 		props, _ := after.Rows[0]["props"].(map[string]any)
 		if opt.mode == "off" {
-			if len(requests) != 0 || props["judge_input"] == nil || props["judge"] != "" {
+			if len(requests) != 0 || props["judge_input"] == nil || props["judge"] != "" || props["judge_model"] != nil {
 				t.Fatalf("mode off requests = %d, edge = %v", len(requests), props)
 			}
 			break
@@ -118,8 +126,11 @@ RETURN a.judge_verdict AS verdict, a.reason AS reason`, map[string]any{"doc": do
 		if cached, ok, err := env.st.JudgeVerdict(t.Context(), key); err != nil || !ok || cached.DocID != doc.DocumentID {
 			t.Fatalf("cache row = %+v, %v, %v", cached, ok, err)
 		}
-		if props["judge"] != "confirmed" || props["judge_input"] != nil || recorded.props["judge"] != "" {
+		if props["judge"] != opt.verdict || props["judge_input"] != nil || recorded.props["judge"] != "" || recorded.props["judge_model"] != nil {
 			t.Fatalf("before edge = %v, after edge = %v", recorded.props, props)
+		}
+		if got := props["judge_model"]; got != client.Model() {
+			t.Errorf("stored=%t %s edge model = %v, want %q", opt.enable, opt.verdict, got, client.Model())
 		}
 		if opt.enable {
 			if recorded.body != previousBody || key != previousKey || recorded.props["judge_input"] != payload {
@@ -133,8 +144,8 @@ RETURN a.judge_verdict AS verdict, a.reason AS reason`, map[string]any{"doc": do
 			}
 		} else {
 			previousBody, previousKey = recorded.body, key
-			if len(recorded.props) != 12 || len(props) != 12 {
-				t.Fatalf("unexpected legacy properties: before = %v, after = %v", recorded.props, props)
+			if len(recorded.props) != 12 || len(props) != 13 {
+				t.Errorf("unexpected legacy properties: before = %v, after = %v", recorded.props, props)
 			}
 		}
 		// Each mode gets a cache miss for exactly the same v1 bytes.

@@ -14,8 +14,10 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 )
 
 func runJudge(args []string, stdout, stderr io.Writer) int {
@@ -96,20 +98,24 @@ func runJudgeBackfill(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if *edges {
-		if cfg.Judge.APIKey == "" {
+		if cfg.Judge.Auth != config.AuthGCP && cfg.Judge.APIKey == "" {
 			fmt.Fprintln(stderr, "gkg judge backfill: warning: judge API key is empty")
 		}
 		return runJudgeBackfillEdges(ctx, st, edgeClient, opt, stdout, stderr)
 	}
 	cached, client := newFactJudgeClient(cfg, st)
 	r, runErr := judge.Backfill(ctx, st, cached, client, opt)
+	return writeCandidateBackfillResult(r, runErr, stdout, stderr)
+}
+
+func writeCandidateBackfillResult(r judge.BackfillResult, runErr error, stdout, stderr io.Writer) int {
 	if _, err := fmt.Fprintf(stdout, "judged=%d confirmed=%d unclear=%d refuted=%d vanished=%d orphaned=%d failed=%d cache_hits=%d attempts=%d stopped_for_budget=%t\n", r.Judged, r.Confirmed, r.Unclear, r.Refuted, r.Vanished, r.Orphaned, r.Failed, r.CacheHits, r.Attempts, r.StoppedForBudget); err != nil {
 		fmt.Fprintf(stderr, "gkg judge backfill: %v\n", err)
 		return 1
 	}
 	if runErr != nil {
 		fmt.Fprintf(stderr, "gkg judge backfill: %v\n", runErr)
-		return 1
+		return judgeRunErrorExitCode(runErr)
 	}
 	return 0
 }
@@ -132,7 +138,23 @@ func runJudgeBackfillEdges(ctx context.Context, st *graph.Store, client *judge.C
 		fmt.Fprintf(stderr, "gkg judge backfill: %v\n", err)
 		return 1
 	}
+	if r.StoppedProvider {
+		if llmauth.Class(r.ProviderStop) != "" {
+			fmt.Fprintf(stderr, "gkg judge backfill: %v\n", r.ProviderStop)
+		}
+		return judgeRunErrorExitCode(r.ProviderStop)
+	}
 	return 0
+}
+
+func judgeRunErrorExitCode(err error) int {
+	if llmauth.Class(err) == llmauth.PermanentClass {
+		return 2
+	}
+	if judge.IsProviderStop(err) || llmauth.Class(err) == llmauth.TransientClass {
+		return 3
+	}
+	return 1
 }
 
 func runJudgeAudit(args []string, stdout, stderr io.Writer) int {

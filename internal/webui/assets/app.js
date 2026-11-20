@@ -656,7 +656,7 @@
       try {
         const body = await res.json();
         if (body && body.detail) detail = body.detail;
-        if (body && ["agent_error", "agent_timeout", "agent_disabled", "body_too_large"].includes(body.error)) {
+        if (body && ["agent_error", "agent_timeout", "agent_disabled", "body_too_large", "auth_permanent", "auth_transient"].includes(body.error)) {
           classified = true;
         }
       } catch (_) {

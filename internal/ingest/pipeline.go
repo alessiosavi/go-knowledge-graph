@@ -28,6 +28,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 	"github.com/alessiosavi/go-knowledge-graph/internal/textclean"
 )
 
@@ -133,11 +134,11 @@ type pipelineStore interface {
 	PutFingerprint(context.Context, string, dedup.FP) error
 	UpsertExtractionOpts(context.Context, string, string, string, []graph.EntityUpsert, []graph.FactUpsert, graph.WriteOptions) error
 	WriteFactAudit(context.Context, graph.FactAudit) error
-	SetFactJudge(context.Context, string, string, string, string, string) error
+	SetFactJudge(context.Context, string, string, string, string, string, string) error
 	RejectFact(context.Context, string, string, string, string, graph.FactAudit) error
-	ApplyStoredFactVerdict(context.Context, graph.StoredFactRef, string, string, graph.StoredFactVerdictOptions) (bool, error)
-	PromoteCandidate(context.Context, string, string) (bool, error)
-	SetCandidateJudge(context.Context, string, string, string) (bool, error)
+	ApplyStoredFactVerdict(context.Context, graph.StoredFactRef, string, string, string, graph.StoredFactVerdictOptions) (bool, error)
+	PromoteCandidate(context.Context, string, string, string) (bool, error)
+	SetCandidateJudge(context.Context, string, string, string, string) (bool, error)
 	RefuteCandidate(context.Context, string, string, graph.FactAudit) (bool, error)
 	EnsureVectorIndex(context.Context, int) error
 	SetEntityEmbeddings(context.Context, []string, [][]float64) (int, error)
@@ -166,7 +167,7 @@ type Metrics interface {
 	ExtractorError()
 	ExtractSeconds(seconds float64)
 	JudgeVerdict(status string)
-	JudgeFailure()
+	JudgeFailure(class string)
 	JudgeSeconds(seconds float64)
 }
 
@@ -881,7 +882,7 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 			slog.Warn("ingest: judge unavailable, fact left unverified",
 				"doc", doc.ID, "head", f.HeadKey, "rel", f.Rel, "err", err)
 			if p.metrics != nil {
-				p.metrics.JudgeFailure()
+				p.metrics.JudgeFailure(llmauth.Class(err))
 			}
 			continue
 		}
@@ -893,7 +894,7 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 				HeadKey: f.HeadKey, Rel: f.Rel, TailKey: f.TailKey, ChunkID: cand.chunkID,
 				JudgeGen: f.JudgeGen, InputHash: cand.inputHash,
 			}
-			applied, err := p.store.ApplyStoredFactVerdict(ctx, ref, verdict.Status, verdict.Reason, graph.StoredFactVerdictOptions{})
+			applied, err := p.store.ApplyStoredFactVerdict(ctx, ref, verdict.Status, verdict.Reason, verdict.Model, graph.StoredFactVerdictOptions{})
 			if err != nil {
 				slog.Warn("ingest: could not apply stored fact verdict", "doc", doc.ID, "err", err)
 			} else if !applied {
@@ -908,17 +909,17 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 			var err error
 			switch verdict.Status {
 			case "confirmed":
-				applied, err = p.store.PromoteCandidate(ctx, id, inputHash)
+				applied, err = p.store.PromoteCandidate(ctx, id, inputHash, verdict.Model)
 				if err == nil && applied && p.metrics != nil {
 					p.metrics.Facts(1)
 				}
 			case "unclear":
-				applied, err = p.store.SetCandidateJudge(ctx, id, inputHash, verdict.Status)
+				applied, err = p.store.SetCandidateJudge(ctx, id, inputHash, verdict.Status, verdict.Model)
 			case "refuted":
 				applied, err = p.store.RefuteCandidate(ctx, id, inputHash, graph.FactAudit{
 					HeadKey: f.HeadKey, Rel: f.Rel, TailKey: f.TailKey,
 					DocID: doc.ID, ChunkID: cand.chunkID, Score: f.Confidence,
-					JudgeVerdict: "refuted", Reason: verdict.Reason, ExtractorVersion: version,
+					JudgeVerdict: "refuted", JudgeModel: verdict.Model, Reason: verdict.Reason, ExtractorVersion: version,
 				})
 			default:
 				slog.Warn("ingest: judge returned an unknown verdict status", "doc", doc.ID, "status", verdict.Status)
@@ -933,14 +934,14 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 		}
 		switch verdict.Status {
 		case "confirmed", "unclear":
-			if err := p.store.SetFactJudge(ctx, f.HeadKey, f.Rel, f.TailKey, cand.chunkID, verdict.Status); err != nil {
+			if err := p.store.SetFactJudge(ctx, f.HeadKey, f.Rel, f.TailKey, cand.chunkID, verdict.Status, verdict.Model); err != nil {
 				slog.Warn("ingest: could not record verdict", "doc", doc.ID, "err", err)
 			}
 		case "refuted":
 			audit := graph.FactAudit{
 				HeadKey: f.HeadKey, Rel: f.Rel, TailKey: f.TailKey,
 				DocID: doc.ID, ChunkID: cand.chunkID, Score: f.Confidence,
-				JudgeVerdict: "refuted", Reason: verdict.Reason,
+				JudgeVerdict: "refuted", JudgeModel: verdict.Model, Reason: verdict.Reason,
 				ExtractorVersion: version,
 			}
 			if err := p.store.RejectFact(ctx, f.HeadKey, f.Rel, f.TailKey, cand.chunkID, audit); err != nil {

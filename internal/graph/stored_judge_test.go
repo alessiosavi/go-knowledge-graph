@@ -44,7 +44,7 @@ func TestApplyStoredFactVerdict(t *testing.T) {
 	}
 	apply := func(status string, done, want bool) {
 		t.Helper()
-		if applied, err := st.ApplyStoredFactVerdict(ctx, ref, status, "provider reason", graph.StoredFactVerdictOptions{RequireDone: done}); err != nil || applied != want {
+		if applied, err := st.ApplyStoredFactVerdict(ctx, ref, status, "provider reason", "", graph.StoredFactVerdictOptions{RequireDone: done}); err != nil || applied != want {
 			t.Fatalf("ApplyStoredFactVerdict(%s, done=%v) = %v, %v; want %v, nil", status, done, applied, err, want)
 		}
 	}
@@ -70,7 +70,7 @@ func TestApplyStoredFactVerdict(t *testing.T) {
 	if len(before) != 1 || before[0]["judge_input"] != string(f.fact.JudgeInput) || before[0]["judge_gen"] != gen || before[0]["input_hash"] != f.hash {
 		t.Fatalf("stored edge properties = %v", before)
 	}
-	if err := st.SetFactJudge(ctx, ref.HeadKey, ref.Rel, ref.TailKey, ref.ChunkID, "confirmed"); err != nil {
+	if err := st.SetFactJudge(ctx, ref.HeadKey, ref.Rel, ref.TailKey, ref.ChunkID, "confirmed", ""); err != nil {
 		t.Fatal(err)
 	}
 	audit := graph.FactAudit{HeadKey: ref.HeadKey, Rel: ref.Rel, TailKey: ref.TailKey, ChunkID: ref.ChunkID, DocID: f.doc}
@@ -97,7 +97,7 @@ func TestApplyStoredFactVerdict(t *testing.T) {
 
 	rawRun(t, uri, match+" CREATE (a)-[dup:joined]->(b) SET dup = properties(r)")
 	for _, status := range []string{"confirmed", "refuted"} {
-		if applied, err := st.ApplyStoredFactVerdict(ctx, ref, status, "", graph.StoredFactVerdictOptions{}); err == nil || applied {
+		if applied, err := st.ApplyStoredFactVerdict(ctx, ref, status, "", "", graph.StoredFactVerdictOptions{}); err == nil || applied {
 			t.Fatalf("duplicate %s = %v, %v; want error and no apply", status, applied, err)
 		}
 	}

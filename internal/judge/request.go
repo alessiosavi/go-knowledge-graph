@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"unicode/utf8"
 )
@@ -13,6 +14,9 @@ const (
 	profileVersionV2 = "3"
 	requestSchemaV2  = "2"
 )
+
+// ErrV3GCPAuth is returned before using a v3 judge profile with GCP auth.
+var ErrV3GCPAuth = errors.New("judge: v3 profiles do not support auth=gcp")
 
 // Profile identifies the prompt, model and definition set for a frozen request.
 type Profile struct {

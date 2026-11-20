@@ -22,6 +22,9 @@ info:
     the server and answered `504 query_timeout`. The agent ask routes are bounded
     by `Agent.TimeoutS` instead: `POST /v1/agent/ask` answers `504 agent_timeout`;
     the stream route reports it as an `agent_timeout` SSE error event.
+    With GCP auth, the ask routes return JSON `502` with `auth_permanent` or
+    `auth_transient` for credential failures before streaming starts. Once SSE
+    headers are sent, those kinds appear in SSE error events.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -750,14 +753,18 @@ paths:
         "501":
           $ref: "#/components/responses/AgentDisabled"
         "502":
-          description: Provider or agent failure (error agent_error); detail is classified and excludes endpoint/key secrets.
+          description: Provider or agent failure (agent_error), or GCP authentication failure (auth_permanent or auth_transient). Detail excludes endpoint and key secrets.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-              example:
-                error: agent_error
-                detail: agent provider request failed
+              examples:
+                agent_error:
+                  value: { error: agent_error, detail: agent provider request failed }
+                auth_permanent:
+                  value: { error: auth_permanent, detail: "auth_permanent: default GCE service account is missing" }
+                auth_transient:
+                  value: { error: auth_transient, detail: "auth_transient: GCE metadata token request timed out" }
         "504":
           description: Agent deadline exceeded.
           content:
@@ -774,12 +781,14 @@ paths:
       summary: Ask the agent with Server-Sent Events
       description: |
         Same question and limits as /v1/agent/ask. Disabled-agent and request
-        validation errors are JSON before the SSE response starts. Once the
-        response starts, HTTP status stays 200, including agent/provider errors.
+        validation errors are JSON. A GCP credential failure while obtaining the
+        first token returns JSON 502 before SSE headers are sent. Once the response
+        starts, HTTP status stays 200, including agent/provider errors.
         Each named event has a JSON data payload: `tool` has name and arguments,
         `delta` has text, `done` has the authoritative full AgentAnswer (including
         answer_html when present), and `error` has error and detail. A terminal
-        error is agent_timeout for deadline expiry, otherwise agent_error.
+        error is `agent_timeout` for deadline expiry, `auth_permanent` or
+        `auth_transient` for a GCP auth failure, or `agent_error` for other failures.
         The stream sends `: ping` comment heartbeats every 15 seconds and stops
         on disconnect. With provider streaming off it remains SSE and sends tool
         and done events only, plus heartbeats or a terminal error. Clients should
@@ -814,7 +823,13 @@ paths:
                 done:
                   $ref: "#/components/schemas/AgentAnswer"
                 error:
-                  $ref: "#/components/schemas/Error"
+                  type: object
+                  required: [error, detail]
+                  properties:
+                    error:
+                      type: string
+                      enum: [agent_error, agent_timeout, auth_permanent, auth_transient]
+                    detail: { type: string }
               example: |
                 : ping
 
@@ -839,6 +854,17 @@ paths:
           $ref: "#/components/responses/BodyTooLarge"
         "501":
           $ref: "#/components/responses/AgentDisabled"
+        "502":
+          description: GCP credential failure before SSE headers are sent (auth_permanent or auth_transient).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                auth_permanent:
+                  value: { error: auth_permanent, detail: "auth_permanent: default GCE service account is missing" }
+                auth_transient:
+                  value: { error: auth_transient, detail: "auth_transient: GCE metadata token request timed out" }
   /v1/agent/status:
     get:
       tags: [agent]

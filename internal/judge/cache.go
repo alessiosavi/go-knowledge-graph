@@ -4,20 +4,55 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 )
 
 // RequestKey identifies the complete judge request, model and prompt version.
 func RequestKey(judgeInput []byte, model string) string {
+	return v1RequestKey(judgeInput, model, "")
+}
+
+func v1RequestKey(judgeInput []byte, model, namespace string) string {
 	h := sha256.New()
 	_, _ = h.Write(judgeInput)
 	_, _ = h.Write([]byte("\n" + model + "\n" + PromptVersion))
+	if namespace != "" {
+		_, _ = h.Write([]byte("\n" + namespace))
+	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func v1Namespace(baseURL string, settings judgeSettings, auth string) string {
+	if auth != config.AuthGCP && settings == (judgeSettings{}) {
+		return ""
+	}
+	if u, err := url.Parse(baseURL); err == nil {
+		u.RawQuery, u.ForceQuery = "", false
+		u.Fragment, u.RawFragment = "", ""
+		u.Host = strings.ToLower(u.Host)
+		path := strings.TrimRight(u.EscapedPath(), "/")
+		u.Path, _ = url.PathUnescape(path)
+		u.RawPath = path
+		baseURL = u.String()
+	}
+	identity := struct {
+		BaseURL string `json:"base_url"`
+		judgeSettings
+		ResponseFormat string `json:"response_format"`
+	}{baseURL, settings, judgeResponseFormat}
+	// Load validates that the temperature is finite.
+	encoded, _ := json.Marshal(identity)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
 }
 
 // VerdictStore persists verdicts independently of derived extraction data.
@@ -28,17 +63,24 @@ type VerdictStore interface {
 
 // Cached reuses durable verdicts for identical requests.
 type Cached struct {
-	inner   ingest.FactJudge
-	store   VerdictStore
-	model   string
-	metrics ingest.JudgeCacheMetrics
+	inner     ingest.FactJudge
+	store     VerdictStore
+	model     string
+	metrics   ingest.JudgeCacheMetrics
+	namespace string
+	gcpAuth   bool
 }
 
 var _ ingest.FactJudge = (*Cached)(nil)
 
 // NewCached wraps a judge with a persistent verdict cache.
 func NewCached(inner ingest.FactJudge, st VerdictStore, model string) *Cached {
-	return &Cached{inner: inner, store: st, model: model}
+	c := &Cached{inner: inner, store: st, model: model}
+	if client, ok := inner.(*Client); ok {
+		c.namespace = client.cacheNamespace
+		c.gcpAuth = client.tokens != nil
+	}
+	return c
 }
 
 // SetCacheMetrics attaches the counter of cache results (hit, miss,
@@ -61,7 +103,7 @@ func (c *Cached) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 	if payload == nil {
 		return ingest.Verdict{}, fmt.Errorf("judge: encode payload: confidence must be finite")
 	}
-	return c.verify(ctx, RequestKey(payload, c.model), PromptVersion, in.DocID, verdictCachePolicy{}, func() (ingest.Verdict, error) {
+	return c.verify(ctx, v1RequestKey(payload, c.model, c.namespace), PromptVersion, in.DocID, verdictCachePolicy{}, func() (ingest.Verdict, error) {
 		return c.inner.VerifyFact(ctx, in)
 	})
 }
@@ -76,7 +118,7 @@ func (c *Cached) verifyPayload(ctx context.Context, p ingest.JudgePayload, docID
 	if err := validatePayload(p); err != nil {
 		return ingest.Verdict{}, err
 	}
-	return c.verify(ctx, RequestKey(p.Bytes, c.model), PromptVersion, docID, policy, func() (ingest.Verdict, error) {
+	return c.verify(ctx, v1RequestKey(p.Bytes, c.model, c.namespace), PromptVersion, docID, policy, func() (ingest.Verdict, error) {
 		inner, ok := c.inner.(interface {
 			VerifyPayload(context.Context, ingest.JudgePayload) (ingest.Verdict, error)
 		})
@@ -92,6 +134,9 @@ func (c *Cached) verifyPayload(ctx context.Context, p ingest.JudgePayload, docID
 // write error returns the paid verdict with the error so the caller can record
 // it before stopping.
 func (c *Cached) VerifyRequest(ctx context.Context, req Request, definitions map[string]map[string]string) (ingest.Verdict, error) {
+	if c.gcpAuth {
+		return ingest.Verdict{}, ErrV3GCPAuth
+	}
 	if _, err := req.validate(c.model, definitions); err != nil {
 		return ingest.Verdict{}, err
 	}
@@ -127,7 +172,7 @@ func (c *Cached) verify(ctx context.Context, key, promptVersion, docID string, p
 		}
 	case ok:
 		c.count("hit")
-		return ingest.Verdict{Status: v.Status, Confidence: v.Confidence, Reason: v.Reason}, nil
+		return ingest.Verdict{Status: v.Status, Confidence: v.Confidence, Reason: v.Reason, Model: v.Model}, nil
 	default:
 		c.count("miss")
 	}
@@ -140,6 +185,9 @@ func (c *Cached) verify(ctx context.Context, key, promptVersion, docID string, p
 	default:
 		return ingest.Verdict{}, fmt.Errorf("judge: invalid verdict status %q", verdict.Status)
 	}
+	if verdict.Model == "" {
+		verdict.Model = c.model
+	}
 	if policy.detachedWrite {
 		// A paid verdict remains reusable even if the run loses its lease
 		// or is canceled before it can apply the edge update.
@@ -149,7 +197,7 @@ func (c *Cached) verify(ctx context.Context, key, promptVersion, docID string, p
 	}
 	if err := c.store.PutJudgeVerdict(ctx, graph.JudgeVerdict{
 		Key: key, Status: verdict.Status, Confidence: verdict.Confidence, Reason: verdict.Reason,
-		Model: c.model, PromptVersion: promptVersion, DocID: docID, At: time.Now().UTC(),
+		Model: verdict.Model, PromptVersion: promptVersion, DocID: docID, At: time.Now().UTC(),
 	}); err != nil {
 		if policy.detachedWrite {
 			slog.Warn("judge: edge backfill verdict cache write failed", "key", key, "err", err)

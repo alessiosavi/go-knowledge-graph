@@ -12,6 +12,7 @@ import (
 	"slices"
 	"syscall"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
 )
@@ -72,6 +73,9 @@ func runJudgeRejudge(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(1, err)
 	}
+	if cfg.Judge.Auth == config.AuthGCP {
+		return fail(2, judge.ErrV3GCPAuth)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	st, err := graph.Open(ctx, cfg)
@@ -108,7 +112,7 @@ func runJudgeRejudge(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if runErr != nil {
-		return fail(1, runErr)
+		return fail(judgeRunErrorExitCode(runErr), runErr)
 	}
 	if result.Gate != nil {
 		if err := result.Gate.Write(stdout); err != nil {

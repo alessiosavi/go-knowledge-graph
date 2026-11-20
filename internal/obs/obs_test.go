@@ -23,7 +23,7 @@ func TestCountersIncrement(t *testing.T) {
 	m.FactsDropped(1)
 	m.JudgeVerdict("confirmed")
 	m.JudgeVerdict("refuted")
-	m.JudgeFailure()
+	m.JudgeFailure("")
 	m.ExtractorError()
 	m.ExtractSeconds(0.5)
 	m.JudgeSeconds(0.25)
@@ -57,6 +57,30 @@ judge_verdicts_total{status="confirmed"} 1
 judge_verdicts_total{status="refuted"} 1
 `), "judge_verdicts_total"); err != nil {
 		t.Errorf("judge_verdicts_total: %v", err)
+	}
+}
+
+func TestJudgeFailureMetricShape(t *testing.T) {
+	const metadata = `# HELP judge_failures_total Judge calls that failed (fact left unverified).
+# TYPE judge_failures_total counter
+`
+	for _, tc := range []struct {
+		name     string
+		classify bool
+		series   string
+	}{
+		{"static", false, "judge_failures_total 0\n"},
+		{"gcp", true, `judge_failures_total{class="auth_permanent"} 0
+judge_failures_total{class="auth_transient"} 0
+judge_failures_total{class="provider"} 0
+`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewWithJudgeFailureClasses(tc.classify)
+			if err := testutil.GatherAndCompare(m.Registry(), strings.NewReader(metadata+tc.series), "judge_failures_total"); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

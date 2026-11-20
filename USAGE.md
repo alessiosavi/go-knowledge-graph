@@ -271,13 +271,15 @@ reader’s policy. The UI falls back to plain text if `answer_html` is absent.
 The browser never sees the provider key.
 
 Open **Generation settings** before asking a question. Temperature ranges
-from 0 to 2 and defaults to 0. Top-p ranges from 0 to 1 and uses the provider
+from 0 to 2. An ask without a temperature uses the deployment setting, which
+defaults to 0. Top-p ranges from 0 to 1 and uses the provider
 default when blank. Sampling top-k accepts a positive integer when the
 operator enables `GKG_AGENT_TOP_K_ENABLED=true` after confirming provider
 support. It controls token sampling. The graph search result limit is separate.
 
-For the `DeepSeek-V4.1-Flash-1017` deployment name, reasoning effort offers
-**Provider default**, **None**, **High** and **Max**. The default leaves the
+`GKG_AGENT_REASONING_EFFORTS` sets the allowed reasoning choices for the
+deployment. Without that setting, the `DeepSeek-V4.1-Flash-1017` deployment
+name offers **Provider default**, **None**, **High** and **Max**. The default leaves the
 choice to the model. Each provider determines which sampling parameters take
 effect in a given reasoning mode. The form keeps your choices until reload.
 
@@ -299,7 +301,11 @@ events when a read-only call is about to run, `delta` fragments of the
 answer as the model produces them, and one authoritative `done` event with
 the same `{"answer","answer_html","evidence","steps"}` payload (`error` events are
 classified). It disables proxy buffering (`X-Accel-Buffering: no`) and
-sends a `: ping` heartbeat every ~15s.
+sends a `: ping` heartbeat every ~15s. With GCP auth, the stream obtains its first
+token before sending SSE headers. Token acquisition failure at that point returns
+JSON with HTTP 502. Once streaming starts, authentication failures arrive as
+`error` events. JSON asks return HTTP 502 for authentication failures. Both
+surfaces report `auth_permanent` or `auth_transient` in the `error` field.
 
 ```sh
 curl -N -s localhost:8080/v1/agent/ask/stream -H 'Content-Type: application/json' \
@@ -332,10 +338,55 @@ when unset (90 by default). An explicit value below the agent timeout plus
 15 seconds prevents edge startup. For a 300-second agent timeout, leaving
 the edge timeout unset produces 330 seconds for both JSON and streamed asks.
 
+Set `EDGE_MAINTENANCE_MODE=1` and recreate the edge service to pause writes
+during maintenance. Both edge listeners return HTTP `503` with
+`{"error":"maintenance"}` for `POST`, `PUT`, `PATCH`, and `DELETE` other than
+`/healthz`. This also pauses POST-based search and asks from the UI while
+pages and GET requests remain available. Set the flag to `0` (the default)
+and recreate the edge to restore write access.
+
 While the agent is disabled the endpoint
 answers `501` and the panel stays hidden. Answers are LLM-generated — the
 `evidence` array is the source of truth
 ([known limits](docs/known-limitations.md)).
+
+### Judge and agent provider configuration
+
+`judge.auth` and `agent.auth` select authentication independently. The default
+`static` sends the role's configured API key as a bearer credential when a key
+is present. On Compute Engine, `gcp` obtains OAuth access tokens for the VM's
+default service account from the metadata server. Give the service account
+Vertex access in the configured project. The GCP credential type is
+`metadata` in this release.
+
+Both GCP roles use the approved `gcp.route` tuple. For each role using it, clear
+its API key and set its base URL to
+`https://<host>/v1/projects/<project>/locations/<location>/endpoints/openapi`.
+A trailing slash is accepted. Configuration is checked after YAML and
+environment overrides, and the GCP clients reject redirects. See the
+[Vertex configuration example](docs/quickstart.md#vertex-ai-on-compute-engine).
+
+| YAML settings | Environment overrides | Behavior |
+| --- | --- | --- |
+| `judge.auth`, `agent.auth` | `GKG_JUDGE_AUTH`, `GKG_AGENT_AUTH` | `static` or `gcp` |
+| `gcp.credentials` | `GKG_GCP_CREDENTIALS` | `metadata` |
+| `gcp.route.host`, `project`, `location` | `GKG_GCP_ROUTE_HOST`, `GKG_GCP_ROUTE_PROJECT`, `GKG_GCP_ROUTE_LOCATION` | Approved HTTPS route tuple |
+| `judge.temperature`, `agent.temperature` | `GKG_JUDGE_TEMPERATURE`, `GKG_AGENT_TEMPERATURE` | Default 0. An explicit ask temperature takes precedence over the agent deployment setting. |
+| `judge.max_tokens`, `agent.max_tokens` | `GKG_JUDGE_MAX_TOKENS`, `GKG_AGENT_MAX_TOKENS` | Omitted by default. The agent limit applies to each provider turn. |
+| `judge.reasoning_effort` | `GKG_JUDGE_REASONING_EFFORT` | Omitted by default. |
+| `agent.reasoning_efforts` | `GKG_AGENT_REASONING_EFFORTS` | YAML list or comma-separated env value. An explicitly empty list disables the capability. |
+
+The judge uses `json_object` as its response format. Judge v1 requests use a
+separate cache identity for GCP auth or non-default generation settings. The
+identity includes the base URL without its query and the generation settings.
+Restoring static auth and default settings restores the original v1 cache keys.
+V3 rejudge and validity planning require static judge auth and retain their
+frozen generation settings.
+
+Online ingest leaves a fact unjudged when verification fails. With GCP judge
+auth, `judge_failures_total` labels Vertex HTTP 401/403 and missing service
+accounts as `auth_permanent`, metadata timeouts, server failures and malformed
+tokens as `auth_transient`, and other judge failures as `provider`.
 
 ## 5. API reference and third-party access
 
@@ -632,6 +683,12 @@ audits. The backfill selects edges with an empty verdict and a stored request
 on a `done` document. Confirmation and unclear verdicts remove the stored
 request from the edge. Refutation removes the edge and writes a rejection audit.
 
+Online judging and both backfill modes record `judge_model` on confirmed and
+unclear typed edges, unclear candidates, and rejection audits from refuted
+verdicts. Promoted candidates carry the model on the resulting edge. Cache hits
+use the cached verdict's model. Existing graph records keep their historical
+properties, and rows without known provenance have no `judge_model` property.
+
 Run the typed-edge backfill inside the running service container so it uses the
 same judge model and cache as ingest.
 
@@ -646,8 +703,9 @@ attempt, including retries, counts toward the budget. Cache hits use no
 attempts. A rerun can apply a previously obtained verdict without another call
 when its cache write succeeded and the same request and model are still in the
 cache. Provider-wide failures stop the run with `stopped_provider=true` and
-leave the edge pending. These include HTTP 401, 403, 404, 405, 415, 429, and
-5xx, and network errors and timeouts. Row-specific failures such as HTTP 400,
+leave the edge pending. The command exits `2` on `auth_permanent` and `3` on
+other provider stops, including `auth_transient`. Provider stops include HTTP
+401, 403, 404, 405, 415, 429, and 5xx, and network errors and timeouts. Row-specific failures such as HTTP 400,
 an undecodable response, or an unknown verdict leave the edge pending for a
 later run and allow this run to continue.
 
@@ -680,8 +738,10 @@ negative budgets exit 2 with usage. The budget counts provider attempts,
 including retries; cache hits use no calls.
 Rerunning recovers verdicts whose cache write succeeded before application,
 for the same request and model.
-Per-candidate errors are logged and counted as `failed`; later candidates are
-still judged, and a rerun may retry failed candidates. An unchanged candidate
+Provider-wide failures leave the affected candidate pending. Candidate backfill
+exits `2` on `auth_permanent`, `3` on other provider stops including
+`auth_transient`, and `1` on other run errors. Per-candidate errors are logged
+and counted as `failed`, and judging continues. An unchanged candidate
 whose endpoint disappeared is deleted and counted as `orphaned`, separately
 from `vanished` candidates whose identity or input changed during judging.
 A lease lasts 120 seconds and renews every 30 seconds. `--force` takes over a
@@ -769,9 +829,9 @@ ok and kept bad ids with reasons. Apply is not part of this command yet.
 | Exit code | Meaning |
 | --- | --- |
 | `0` | Success. |
-| `1` | Operational error, including manifest, graph or provider failures, or a plan with zero rows when `-ids` is absent. |
-| `2` | Invalid arguments or audit input, including an invalid label, an empty or duplicate ID, a requested ID with no eligible or verifiable edge, or a `-ids` selection that leaves zero rows to plan. |
-| `3` | The labelled gate failed. |
+| `1` | Operational error such as an invalid manifest, graph failure, or a plan with zero rows when `-ids` is absent. |
+| `2` | Invalid arguments or audit input, including an invalid label, an empty or duplicate ID, a requested ID with no eligible or verifiable edge, or a `-ids` selection that leaves zero rows to plan. GCP judge auth for v3 rejudge and permanent authentication stops also map to this code. |
+| `3` | The labelled gate failed or the run stopped on another provider-wide failure. |
 | `4` | The run ended before all planned rows had verdicts and had no scored gate. This includes runs whose labels are all `skip` or blank. |
 
 ### Catalog validity repair planning
@@ -1071,6 +1131,77 @@ scope returns not found.
 `gkg eval-retrieval --questions questions.json --domain zorbo` applies that
 scope to all questions, including gold resolution and null checks. Without
 `--domain`, each question's optional `domain` is used.
+
+## Product feature observations
+
+```sh
+gkg features check R.json
+gkg products emit -registry R.json records.jsonl > record-obs.jsonl
+gkg products emit -registry R.json -release CANDIDATES.json -out released.jsonl records.jsonl
+```
+
+`features check` validates the JSON registry against `gkg-features/v1`.
+On success, it prints the SHA-256 of the registry file bytes and the counts
+of stores, features and mapped keys. It exits 0 for a valid registry, 1 for
+a read or validation error, and 2 for incorrect usage.
+
+`products emit` converts A1 product-envelope JSONL to canonical
+`gkg-record-obs/v1` JSONL using the records file and the registry. Product
+lines omit the Part A audit fields `partition` and `page_present`.
+
+`-release` accepts a candidates file with `registry_sha256` and `keys`
+containing `store`, `feature` and `source_key` triples. Conflicts are
+calculated across all mapped aliases before the projection. Every product
+still gets a product record, including products with zero emitted
+observations. Use `-out PATH` for an atomically published file with mode
+`0600`. Both commands run offline.
+
+### Product registries and releases
+
+Run the graph-backed commands against the configured Memgraph after
+`gkg migrate -schema-only` or a successful `gkg serve` startup.
+
+```sh
+gkg features import R.json
+gkg products release create -registry REV -candidates release-candidates.json \
+  -store-domain example.test=example -approved-by owner \
+  -pin R.json=R.json -pin score.json=score.json -pin report.json=report.json \
+  -pin freeze.json=freeze.json -pin rf_kit.py=rf_kit.py \
+  -pin E2=e2-raw.jsonl -pin record-obs.jsonl=record-obs.jsonl
+gkg products release list
+gkg products release activate ID
+```
+
+Import prints the registry revision, the first 16 hex characters of the
+SHA-256 of the registry file. Re-importing those bytes prints `unchanged`.
+A reused feature ID must retain its definition, kind, cardinality, canonical
+unit, aliases and separators for shared mapped store keys across all
+historical revisions. Display names can change.
+
+Release create requires a `-pin` for each of `R.json`, `rf_kit.py`, `score.json`,
+`report.json`, `freeze.json`, `E2` and `record-obs.jsonl`. Missing pins cause
+exit 2 and the usage message names them. The candidates must name the imported
+registry digest and contain only mapped triples. A successful create prints
+the release ID and manifest digest.
+
+Use a repeatable `-store-domain` to bind exactly the stores in the released
+triples to existing domains. An extra binding causes exit 5 without writing
+a release or any bindings. Each binding is immutable and every domain operation
+touching the domain must be completed. Omit `-id` to derive a stable ID from
+the inputs. Repeating the same create returns the original manifest.
+
+`score.json` and `report.json` pins must reference the registry and candidates
+digests. The report must have `release_allowed: true` and
+`owner_decision_required: false`. The `freeze.json` pin must reference the
+registry digest and matching `rf_kit.py` and `E2` pins. Additional pin names
+record the SHA-256 of the named file.
+
+`release list` prints JSON with each release's ID, state, registry revision,
+approver, approval time and stores. Activating a created or retired release
+retires the previous active release and immediately removes edges outside the
+new triples or registry revision. These commands exit 0 on success, 1 on
+runtime failure, 2 on incorrect usage and 5 on data rejection.
+`-materialize` currently returns exit 2.
 
 ## Domain administration
 

@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"math"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 )
 
@@ -102,6 +104,36 @@ func TestSetJudgeRequiresStoredPayloadSupportAtSetup(t *testing.T) {
 			}
 		} else if err != nil || p.judge != j {
 			t.Fatalf("legacy attachment err=%v judge=%v", err, p.judge)
+		}
+	}
+}
+
+type failedAuthJudge struct{ err error }
+
+func (j failedAuthJudge) VerifyFact(context.Context, FactInput) (Verdict, error) {
+	return Verdict{}, fmt.Errorf("verification failed: %w", j.err)
+}
+
+func TestJudgeAuthFailuresLeaveFactsUnjudged(t *testing.T) {
+	metrics := obs.NewWithJudgeFailureClasses(true)
+	p := &Pipeline{cfg: config.Config{Judge: config.JudgeConfig{Auth: config.AuthGCP, Mode: "all"}}, metrics: metrics}
+	doc := &graph.Document{ID: "doc"}
+	f := graph.FactUpsert{HeadKey: "a", Rel: "uses", TailKey: "b"}
+	for _, err := range []error{
+		&llmauth.AuthPermanent{Detail: "fake IAM rejection"},
+		&llmauth.AuthTransient{Detail: "fake metadata timeout"},
+	} {
+		if err := p.SetJudge(failedAuthJudge{err}); err != nil {
+			t.Fatal(err)
+		}
+		// A nil graph store also detects any attempted fact write.
+		p.verifyFacts(t.Context(), doc, []judgeCandidate{{fact: f}}, "test")
+	}
+	rec := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	for _, class := range []string{llmauth.PermanentClass, llmauth.TransientClass} {
+		if want := fmt.Sprintf("judge_failures_total{class=%q} 1", class); !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("scrape missing %q: %s", want, rec.Body)
 		}
 	}
 }

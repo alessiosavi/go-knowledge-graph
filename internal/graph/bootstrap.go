@@ -25,6 +25,11 @@ var uniqueConstraints = []struct {
 	{"Domain", "id"},
 	{"DomainOp", "op_id"},
 	{"JudgeLease", "id"},
+	{"FeatureRegistry", "rev"},
+	{"FeatureRev", "key"},
+	{"ProductRelease", "id"},
+	{"ProductStore", "store"},
+	{"Product", "id"},
 }
 
 // secondaryIndexes are non-unique label-property indexes bootstrapped for
@@ -68,6 +73,14 @@ var secondaryIndexes = []struct {
 	{"RejectedFact", []string{"head_key"}},
 	{"RejectedFact", []string{"tail_key"}},
 	{"RejectedFact", []string{"doc_id"}},
+	{"FeatureRegistry", []string{"rev"}},
+	{"FeatureRev", []string{"key"}},
+	{"FeatureRev", []string{"id"}},
+	{"ProductRelease", []string{"id"}},
+	{"ProductStore", []string{"store"}},
+	{"Product", []string{"id"}},
+	{"Product", []string{"store", "product_id"}},
+	{"Product", []string{"domain"}},
 }
 
 // textIndexes are the Tantivy text indexes backing search.Query.

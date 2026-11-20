@@ -140,10 +140,10 @@ func (j *countingJudge) VerifyFact(context.Context, ingest.FactInput) (ingest.Ve
 func TestCachedHit(t *testing.T) {
 	in := ingest.FactInput{Head: "Acme-Max"}
 	key := judge.RequestKey(ingest.CanonicalJudgeInput(in), "test-model")
-	st := &memoryVerdicts{values: map[string]graph.JudgeVerdict{key: {Key: key, Status: "refuted", Reason: "contradicted", Confidence: 0.6}}}
+	st := &memoryVerdicts{values: map[string]graph.JudgeVerdict{key: {Key: key, Status: "refuted", Reason: "contradicted", Confidence: 0.6, Model: "cached-model"}}}
 	inner := &countingJudge{}
 	v, err := judge.NewCached(inner, st, "test-model").VerifyFact(t.Context(), in)
-	if err != nil || v.Status != "refuted" || v.Reason != "contradicted" || v.Confidence != 0.6 || inner.calls != 0 || st.puts != 0 {
+	if err != nil || v.Status != "refuted" || v.Reason != "contradicted" || v.Confidence != 0.6 || v.Model != "cached-model" || inner.calls != 0 || st.puts != 0 {
 		t.Fatalf("hit: verdict=%+v err=%v calls=%d puts=%d", v, err, inner.calls, st.puts)
 	}
 }
@@ -156,7 +156,9 @@ func TestCachedMissPersists(t *testing.T) {
 			in := ingest.FactInput{Head: "Acme-Max", DocID: "doc-zorbo"}
 			before := time.Now()
 			v, err := judge.NewCached(inner, st, "test-model").VerifyFact(t.Context(), in)
-			if err != nil || v != inner.verdict {
+			want := inner.verdict
+			want.Model = "test-model"
+			if err != nil || v != want {
 				t.Fatalf("miss = %+v, %v", v, err)
 			}
 			key := judge.RequestKey(ingest.CanonicalJudgeInput(in), "test-model")
@@ -166,7 +168,7 @@ func TestCachedMissPersists(t *testing.T) {
 			}
 			// Recreate the wrapper to prove the hit comes from persistence.
 			v, err = judge.NewCached(inner, st, "test-model").VerifyFact(t.Context(), in)
-			if err != nil || v.Status != status || v.Reason != "evidence" || v.Confidence != 0.8 || inner.calls != 1 || st.puts != 1 {
+			if err != nil || v != want || inner.calls != 1 || st.puts != 1 {
 				t.Fatalf("second call = %+v, %v calls=%d puts=%d", v, err, inner.calls, st.puts)
 			}
 		})
@@ -202,7 +204,7 @@ func (r cacheResults) JudgeCache(result string) { r[result]++ }
 // lookup asks the provider as on a miss, and a failed write still returns
 // the verdict that was paid for. Both are counted.
 func TestCachedStoreErrorsFallBack(t *testing.T) {
-	want := ingest.Verdict{Status: "confirmed", Reason: "supported", Confidence: 0.7}
+	want := ingest.Verdict{Status: "confirmed", Reason: "supported", Confidence: 0.7, Model: "resolved-model"}
 	for _, tc := range []struct {
 		name              string
 		readErr, writeErr error

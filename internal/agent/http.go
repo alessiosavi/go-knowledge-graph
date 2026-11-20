@@ -77,13 +77,12 @@ func (s *Server) AskHandler() http.Handler {
 		resp, err := s.runWithEvents(ctx, req, askEvents{})
 		if err != nil {
 			slog.Warn("agent: ask failed", "err", err)
-			if errors.Is(err, context.DeadlineExceeded) {
-				writeError(w, http.StatusGatewayTimeout, "agent_timeout", "the agent timed out before answering")
-				return
+			kind, detail := classifyStreamError(err)
+			status := http.StatusBadGateway
+			if kind == "agent_timeout" {
+				status = http.StatusGatewayTimeout
 			}
-			// Provider failures are pre-classified: the message never
-			// carries the endpoint or the API key.
-			writeError(w, http.StatusBadGateway, "agent_error", err.Error())
+			writeError(w, status, kind, detail)
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)

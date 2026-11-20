@@ -24,6 +24,7 @@ type EdgeBackfillResult struct {
 	Confirmed, Unclear, Refuted, Failed, Discarded int
 	StoppedForBudget, StoppedProvider, LeaseLost   bool
 	Model                                          string
+	ProviderStop                                   error
 }
 
 // NewEdgeBackfillClient checks the effective HTTP endpoint before a run can
@@ -123,7 +124,6 @@ func BackfillEdges(ctx context.Context, st *graph.Store, j *Cached, gate *Client
 }
 
 func backfillStoredEdge(ctx context.Context, st *graph.Store, j *Cached, edge graph.StoredJudgeEdge, apply graph.StoredFactVerdictOptions, result *EdgeBackfillResult) error {
-	var providerError providerWideError
 	payload := ingest.JudgePayload{Bytes: []byte(edge.JudgeInput), InputHash: edge.InputHash}
 	verdict, err := j.verifyPayload(ctx, payload, edge.DocID, verdictCachePolicy{detachedWrite: true})
 	if err == nil {
@@ -144,8 +144,9 @@ func backfillStoredEdge(ctx context.Context, st *graph.Store, j *Cached, edge gr
 	case errors.Is(err, ingest.ErrInvalidJudgePayload):
 		result.Invalid++
 		return nil
-	case errors.As(err, &providerError):
+	case IsProviderStop(err):
 		result.StoppedProvider = true
+		result.ProviderStop = err
 		return nil
 	case err != nil:
 		// A failed attempt gate must stop the run, including graph errors.
@@ -159,7 +160,7 @@ func backfillStoredEdge(ctx context.Context, st *graph.Store, j *Cached, edge gr
 		return nil
 	}
 
-	applied, err := st.ApplyStoredFactVerdict(ctx, edge.StoredFactRef, verdict.Status, verdict.Reason, apply)
+	applied, err := st.ApplyStoredFactVerdict(ctx, edge.StoredFactRef, verdict.Status, verdict.Reason, verdict.Model, apply)
 	if err != nil {
 		return errors.Join(err, context.Cause(ctx))
 	}

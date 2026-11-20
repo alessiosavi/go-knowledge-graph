@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 )
 
 // streamPing is the SSE heartbeat interval; tests override it.
@@ -40,6 +42,12 @@ func (s *Server) StreamHandler() http.Handler {
 		}
 		ctx, cancel := context.WithTimeout(withDomain(r.Context(), req.Domain), s.timeout)
 		defer cancel()
+		ctx, err := s.llm.prepareStream(ctx)
+		if err != nil {
+			kind, detail := classifyStreamError(err)
+			writeError(w, http.StatusBadGateway, kind, detail)
+			return
+		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -127,6 +135,9 @@ func eventPayload(ev streamEvent) any {
 // classifyStreamError maps an ask failure onto the SSE error event,
 // mirroring the JSON endpoint's classifications (never the endpoint or key).
 func classifyStreamError(err error) (kind, detail string) {
+	if class := llmauth.Class(err); class != "" {
+		return class, err.Error()
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "agent_timeout", "the agent timed out before answering"
 	}

@@ -412,6 +412,39 @@ func TestTextIndexesV2(t *testing.T) {
 	}
 }
 
+func TestBootstrapProductSchema(t *testing.T) {
+	st := graphtest.Store(t)
+	uri := os.Getenv(graphtest.URIEnv)
+	for range 2 {
+		if err := st.Bootstrap(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, key := range []struct{ label, prop string }{
+		{"FeatureRegistry", "rev"}, {"FeatureRev", "key"}, {"ProductRelease", "id"},
+		{"ProductStore", "store"}, {"Product", "id"},
+	} {
+		if !rawUniqueConstraintExists(t, uri, key.label, key.prop) {
+			t.Errorf("missing unique constraint %s(%s)", key.label, key.prop)
+		}
+		if !rawIndexExists(t, uri, key.label, key.prop) {
+			t.Errorf("missing index %s(%s)", key.label, key.prop)
+		}
+	}
+	for _, index := range []struct {
+		label string
+		props []string
+	}{
+		{"Product", []string{"store", "product_id"}},
+		{"Product", []string{"domain"}},
+		{"FeatureRev", []string{"id"}},
+	} {
+		if !rawIndexExists(t, uri, index.label, index.props...) {
+			t.Errorf("missing index %s(%v)", index.label, index.props)
+		}
+	}
+}
+
 func rawNamedTextIndex(t *testing.T, uri, name string) bool {
 	t.Helper()
 	for _, r := range rawRecords(t, uri, "SHOW INDEX INFO") {

@@ -130,9 +130,14 @@ func TestJudgeBackfillCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	migrationQuery(t, "MATCH (c:FactCandidate {doc_id: $doc}) SET c.domain = $domain", map[string]any{"doc": doc.ID, "domain": tag})
-	calls := 0
+	var calls atomic.Int32
+	var healthy atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
+		if !healthy.Load() {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"verdict\":\"confirmed\"}"}}]}`))
 	}))
 	defer srv.Close()
@@ -143,10 +148,22 @@ func TestJudgeBackfillCLI(t *testing.T) {
 	t.Setenv("GKG_CONFIG", cfgPath)
 	t.Setenv("GKG_MEMGRAPH_URI", os.Getenv(graphtest.URIEnv))
 	t.Setenv("GKG_JUDGE_BASE_URL", srv.URL)
+	t.Run("candidate_provider_404", func(t *testing.T) {
+		var out, stderr bytes.Buffer
+		const stopped = "judged=0 confirmed=0 unclear=0 refuted=0 vanished=0 orphaned=0 failed=0 cache_hits=0 attempts=1 stopped_for_budget=false\n"
+		if code := run([]string{"judge", "backfill", "--domain", tag, "--budget-calls", "3"}, &out, &stderr); code != 3 || calls.Load() != 1 || out.String() != stopped || !strings.Contains(stderr.String(), "HTTP 404") {
+			t.Errorf("provider stop exit=%d calls=%d stdout=%s stderr=%s", code, calls.Load(), &out, &stderr)
+		}
+		pending, err := st.UnjudgedCandidates(t.Context(), tag, 0)
+		if err != nil || len(pending) != 1 {
+			t.Fatalf("pending=%+v err=%v", pending, err)
+		}
+	})
+	healthy.Store(true)
 	var out, stderr bytes.Buffer
 	const want = "judged=1 confirmed=1 unclear=0 refuted=0 vanished=0 orphaned=0 failed=0 cache_hits=0 attempts=1 stopped_for_budget=false\n"
-	if code := run([]string{"judge", "backfill", "--domain", tag, "--budget-calls", "1"}, &out, &stderr); code != 0 || calls != 1 || out.String() != want {
-		t.Fatalf("exit=%d calls=%d stdout=%s stderr=%s", code, calls, &out, &stderr)
+	if code := run([]string{"judge", "backfill", "--domain", tag, "--budget-calls", "1"}, &out, &stderr); code != 0 || calls.Load() != 2 || out.String() != want {
+		t.Fatalf("exit=%d calls=%d stdout=%s stderr=%s", code, calls.Load(), &out, &stderr)
 	}
 	candidates, err := st.UnjudgedCandidates(t.Context(), tag, 0)
 	if err != nil || len(candidates) != 0 {
@@ -204,7 +221,7 @@ func TestJudgeBackfillEdgesProviderNotFound(t *testing.T) {
 	var out, stderr bytes.Buffer
 	code := run([]string{"judge", "backfill", "--edges", "--domain", tag, "--budget-calls", "3"}, &out, &stderr)
 	rows := migrationQuery(t, `MATCH ()-[r:uses]->() WHERE r.doc_id=$doc RETURN r.judge AS judge, r.judge_input AS input`, map[string]any{"doc": doc.ID})
-	if code != 0 || calls.Load() != 1 || !strings.Contains(out.String(), "selected=1 ") ||
+	if code != 3 || calls.Load() != 1 || !strings.Contains(out.String(), "selected=1 ") ||
 		!strings.Contains(out.String(), "attempts=1 ") || !strings.Contains(out.String(), "failed=0 ") || !strings.Contains(out.String(), "stopped_provider=true ") {
 		t.Errorf("exit=%d calls=%d stdout=%q stderr=%q", code, calls.Load(), out.String(), stderr.String())
 	}

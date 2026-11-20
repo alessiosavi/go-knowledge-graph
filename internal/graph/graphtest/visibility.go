@@ -71,7 +71,7 @@ func visibility(t *testing.T, mixed bool) VisibilityFixture {
 		t.Fatal(err)
 	}
 	unclear := facts[2]
-	if ok, err := st.SetCandidateJudge(ctx, graph.CandidateID(unclear.HeadKey, unclear.Rel, unclear.TailKey, cid), fmt.Sprintf("%x", sha256.Sum256(unclear.JudgeInput)), "unclear"); err != nil || !ok {
+	if ok, err := st.SetCandidateJudge(ctx, graph.CandidateID(unclear.HeadKey, unclear.Rel, unclear.TailKey, cid), fmt.Sprintf("%x", sha256.Sum256(unclear.JudgeInput)), "unclear", ""); err != nil || !ok {
 		t.Fatalf("set unclear: %v, %v", ok, err)
 	}
 	if err := st.WriteFactAudit(ctx, graph.FactAudit{HeadKey: ents[0].Key, TailKey: ents[1].Key, Rel: "declined", DocID: doc.ID, ChunkID: cid, JudgeVerdict: "refuted", Reason: "synthetic refusal"}); err != nil {
@@ -101,7 +101,7 @@ func visibility(t *testing.T, mixed bool) VisibilityFixture {
 	}
 	for _, f := range edges {
 		if judge := judges[f.Rel]; judge != "" {
-			if err := st.SetFactJudge(ctx, f.HeadKey, f.Rel, f.TailKey, doc.ID+"-c1", judge); err != nil {
+			if err := st.SetFactJudge(ctx, f.HeadKey, f.Rel, f.TailKey, doc.ID+"-c1", judge, ""); err != nil {
 				t.Fatal(err)
 			}
 		}

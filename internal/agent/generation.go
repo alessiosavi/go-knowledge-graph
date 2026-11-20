@@ -34,9 +34,12 @@ type generationCapabilities struct {
 }
 
 func (s *Server) generationCapabilities() generationCapabilities {
-	efforts := []string{}
-	if strings.EqualFold(s.llm.model, "DeepSeek-V4.1-Flash-1017") {
-		efforts = []string{"none", "high", "max"}
+	efforts := s.cfg.Agent.ReasoningEfforts
+	if efforts == nil {
+		efforts = []string{}
+		if strings.EqualFold(s.llm.model, "DeepSeek-V4.1-Flash-1017") {
+			efforts = []string{"none", "high", "max"}
+		}
 	}
 	return generationCapabilities{TopK: s.cfg.Agent.TopKEnabled, ReasoningEfforts: efforts}
 }
@@ -60,8 +63,11 @@ func (g *GenerationSettings) validate(caps generationCapabilities) error {
 	return nil
 }
 
-func (g *GenerationSettings) chatRequest(model string, messages []chatMessage) chatRequest {
-	req := chatRequest{Model: model, Messages: messages}
+func (s *Server) chatRequest(g *GenerationSettings, messages []chatMessage) chatRequest {
+	req := chatRequest{Model: s.llm.model, Messages: messages, MaxTokens: s.cfg.Agent.MaxTokens}
+	if s.cfg.Agent.Temperature != nil {
+		req.Temperature = *s.cfg.Agent.Temperature
+	}
 	if g != nil {
 		if g.Temperature != nil {
 			req.Temperature = *g.Temperature
