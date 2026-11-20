@@ -31,6 +31,7 @@ type Config struct {
 	Embedder  EmbedderConfig  `yaml:"embedder"`
 	Converter ConverterConfig `yaml:"converter"`
 	Judge     JudgeConfig     `yaml:"judge"`
+	GCP       GCPConfig       `yaml:"gcp"`
 	Facts     FactsConfig     `yaml:"facts"`
 	Domain    DomainConfig    `yaml:"domain"`
 	Agent     AgentConfig     `yaml:"agent"`
@@ -104,13 +105,17 @@ type ConverterConfig struct {
 
 // JudgeConfig configures the optional online verification judge.
 type JudgeConfig struct {
-	Mode        string  `yaml:"mode"` // off | low-confidence | sample | all
-	StoreInputs bool    `yaml:"store_inputs"`
-	VerifyFloor float64 `yaml:"verify_floor"`
-	SamplePct   float64 `yaml:"sample_pct"`
-	BaseURL     string  `yaml:"base_url"`
-	APIKey      string  `yaml:"api_key"`
-	Model       string  `yaml:"model"`
+	Auth            string   `yaml:"auth"`
+	Temperature     *float64 `yaml:"temperature"`
+	MaxTokens       *int     `yaml:"max_tokens"`
+	ReasoningEffort *string  `yaml:"reasoning_effort"`
+	Mode            string   `yaml:"mode"` // off | low-confidence | sample | all
+	StoreInputs     bool     `yaml:"store_inputs"`
+	VerifyFloor     float64  `yaml:"verify_floor"`
+	SamplePct       float64  `yaml:"sample_pct"`
+	BaseURL         string   `yaml:"base_url"`
+	APIKey          string   `yaml:"api_key"`
+	Model           string   `yaml:"model"`
 }
 
 // FactsConfig controls fact confirmation and read visibility.
@@ -131,15 +136,19 @@ type DomainConfig struct {
 // POST /v1/agent/ask. Disabled by default; the endpoint answers 501 while
 // disabled and the web UI hides its ask panel.
 type AgentConfig struct {
-	TopKEnabled     bool   `yaml:"top_k_enabled"`
-	Enabled         bool   `yaml:"enabled"`
-	Stream          bool   `yaml:"stream"` // stream the provider response (GKG_AGENT_STREAM; default true)
-	BaseURL         string `yaml:"base_url"`
-	APIKey          string `yaml:"api_key"`
-	Model           string `yaml:"model"`
-	MaxSteps        int    `yaml:"max_steps"`         // tool-turn budget per ask (clamped 1..30; each turn executes up to 8 calls)
-	TimeoutS        int    `yaml:"timeout_s"`         // whole-ask budget in seconds
-	ContextBudgetKB int    `yaml:"context_budget_kb"` // cumulative tool-result transcript budget (default 256 KiB)
+	Auth             string   `yaml:"auth"`
+	Temperature      *float64 `yaml:"temperature"`
+	MaxTokens        *int     `yaml:"max_tokens"`
+	ReasoningEfforts []string `yaml:"reasoning_efforts"`
+	TopKEnabled      bool     `yaml:"top_k_enabled"`
+	Enabled          bool     `yaml:"enabled"`
+	Stream           bool     `yaml:"stream"` // stream the provider response (GKG_AGENT_STREAM; default true)
+	BaseURL          string   `yaml:"base_url"`
+	APIKey           string   `yaml:"api_key"`
+	Model            string   `yaml:"model"`
+	MaxSteps         int      `yaml:"max_steps"`         // tool-turn budget per ask (clamped 1..30; each turn executes up to 8 calls)
+	TimeoutS         int      `yaml:"timeout_s"`         // whole-ask budget in seconds
+	ContextBudgetKB  int      `yaml:"context_budget_kb"` // cumulative tool-result transcript budget (default 256 KiB)
 }
 
 // IngestConfig tunes the ingestion pipeline.
@@ -208,7 +217,9 @@ func defaults() Config {
 			OCRLang:       "eng",
 			MaxImageMP:    12.5,
 		},
+		GCP: GCPConfig{Credentials: "metadata"},
 		Judge: JudgeConfig{
+			Auth:        AuthStatic,
 			Mode:        "off",
 			VerifyFloor: 0.35,
 			SamplePct:   10,
@@ -216,6 +227,7 @@ func defaults() Config {
 		},
 		Domain: DomainConfig{Tau: 0.05, Delta: 0.02, TauOverride: 0.15},
 		Agent: AgentConfig{
+			Auth:            AuthStatic,
 			Enabled:         false,
 			Stream:          true,
 			BaseURL:         "https://api.openai.com/v1",
@@ -261,6 +273,9 @@ func Load(path string) (Config, error) {
 		}
 	}
 	if err := applyEnv(&cfg, os.LookupEnv); err != nil {
+		return Config{}, err
+	}
+	if err := cfg.validateLLM(); err != nil {
 		return Config{}, err
 	}
 	if cfg.Ingest.SpoolDir == "" {
@@ -347,42 +362,68 @@ func walkEnv(v reflect.Value, prefix string, lookup func(string) (string, bool))
 			}
 		}
 		key := prefix + "_" + seg
-		switch fv.Kind() {
-		case reflect.Struct:
+		if fv.Kind() == reflect.Struct {
 			if err := walkEnv(fv, key, lookup); err != nil {
 				return err
 			}
-		case reflect.String:
-			if val, ok := lookup(key); ok {
-				fv.SetString(val)
-			}
-		case reflect.Int:
-			if val, ok := lookup(key); ok {
-				n, err := strconv.Atoi(val)
-				if err != nil {
-					return fmt.Errorf("config: env %s=%q: %w", key, val, err)
-				}
-				fv.SetInt(int64(n))
-			}
-		case reflect.Float64:
-			if val, ok := lookup(key); ok {
-				n, err := strconv.ParseFloat(val, 64)
-				if err != nil {
-					return fmt.Errorf("config: env %s=%q: %w", key, val, err)
-				}
-				fv.SetFloat(n)
-			}
-		case reflect.Bool:
-			if val, ok := lookup(key); ok {
-				n, err := strconv.ParseBool(val)
-				if err != nil {
-					return fmt.Errorf("config: env %s=%q: %w", key, val, err)
-				}
-				fv.SetBool(n)
-			}
-		default:
-			return fmt.Errorf("config: unsupported field type %s (field %s)", fv.Kind(), f.Name)
+			continue
 		}
+		val, ok := lookup(key)
+		if !ok {
+			continue
+		}
+		if err := setEnvField(fv, val); err != nil {
+			return fmt.Errorf("config: env %s=%q: %w", key, val, err)
+		}
+	}
+	return nil
+}
+
+func setEnvField(field reflect.Value, val string) error {
+	switch field.Kind() {
+	case reflect.Pointer:
+		value := reflect.New(field.Type().Elem())
+		if err := setEnvField(value.Elem(), val); err != nil {
+			return err
+		}
+		field.Set(value)
+	case reflect.String:
+		field.SetString(val)
+	case reflect.Int:
+		n, err := strconv.Atoi(val)
+		if err != nil {
+			return err
+		}
+		field.SetInt(int64(n))
+	case reflect.Float64:
+		n, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return err
+		}
+		field.SetFloat(n)
+	case reflect.Bool:
+		n, err := strconv.ParseBool(val)
+		if err != nil {
+			return err
+		}
+		field.SetBool(n)
+	case reflect.Slice:
+		if field.Type() != reflect.TypeFor[[]string]() {
+			return fmt.Errorf("unsupported field type %s", field.Type())
+		}
+		items := []string{}
+		if strings.TrimSpace(val) != "" {
+			for item := range strings.SplitSeq(val, ",") {
+				item = strings.TrimSpace(item)
+				if item == "" {
+					return errors.New("list contains an empty item")
+				}
+				items = append(items, item)
+			}
+		}
+		field.Set(reflect.ValueOf(items))
+	default:
+		return fmt.Errorf("unsupported field type %s", field.Type())
 	}
 	return nil
 }

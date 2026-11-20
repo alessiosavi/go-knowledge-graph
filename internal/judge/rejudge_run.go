@@ -68,6 +68,9 @@ func JudgeRejudge(ctx context.Context, st *graph.Store, client *Client, presetsD
 }
 
 func judgeRejudge(ctx context.Context, leases rejudgeLeases, store VerdictStore, client *Client, presetsDir string, opt RejudgeOptions) (result RejudgeResult, err error) {
+	if client.tokens != nil {
+		return result, ErrV3GCPAuth
+	}
 	if opt.BudgetAttempts <= 0 {
 		return result, fmt.Errorf("judge: budget-attempts must be positive")
 	}

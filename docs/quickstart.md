@@ -356,6 +356,45 @@ without them search is text-only. The judge verifies facts after extraction
 against their evidence sentence and removes refuted ones with an audit
 trail.
 
+### Vertex AI on Compute Engine
+
+The example uses the global route and the Compute Engine VM's attached default
+service account. Replace `YOUR_PROJECT_ID` in all three places with the approved
+project. Keep the judge and agent API keys empty. The judge uses temperature 0,
+a 512-token cap, and the default reasoning effort. Agent settings for Gemini
+use the provider's default reasoning effort unless the ask selects one.
+
+```yaml
+gcp:
+  credentials: metadata
+  route:
+    host: aiplatform.googleapis.com
+    project: YOUR_PROJECT_ID
+    location: global
+judge:
+  auth: gcp
+  base_url: https://aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/global/endpoints/openapi
+  api_key: ""
+  model: google/gemini-3.5-flash-lite
+  mode: low-confidence
+  temperature: 0
+  max_tokens: 512
+agent:
+  enabled: false
+  auth: gcp
+  base_url: https://aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/global/endpoints/openapi
+  api_key: ""
+  model: google/gemini-3.5-flash-lite
+  max_tokens: 2048
+  reasoning_efforts: [minimal, low, high]
+```
+
+The example leaves the Gemini agent disabled until its tool turns can pass
+through Vertex thought signatures. See [provider configuration](../USAGE.md#judge-and-agent-provider-configuration)
+for environment overrides and failure classes.
+
+### Deferred judging of typed edges
+
 Set `GKG_JUDGE_STORE_INPUTS=true` on the service to enable deferred judging
 of typed edges. It defaults to false and is incompatible with
 `GKG_FACTS_REQUIRE_CONFIRMATION=true`.
@@ -381,9 +420,10 @@ request and model can reuse it on the next run.
 
 HTTP 401, 403, 404, 405, 415, 429, and 5xx, along with network errors and
 timeouts, stop the run with `stopped_provider=true` when attempts for the
-request are exhausted. The edge stays pending. Row-specific errors such as
-HTTP 400, an undecodable response, or an unknown verdict are logged and the
-run continues.
+request are exhausted. The edge stays pending. Exit `2` means a permanent
+authentication failure and exit `3` means another provider stop. The run logs
+row-specific errors such as HTTP 400, an undecodable response, or an unknown
+verdict and continues.
 
 Run backfill in the service container to share the online judge configuration
 and verdict cache.

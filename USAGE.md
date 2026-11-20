@@ -228,13 +228,15 @@ reader’s policy. The UI falls back to plain text if `answer_html` is absent.
 The browser never sees the provider key.
 
 Open **Generation settings** before asking a question. Temperature ranges
-from 0 to 2 and defaults to 0. Top-p ranges from 0 to 1 and uses the provider
+from 0 to 2. An ask without a temperature uses the deployment setting, which
+defaults to 0. Top-p ranges from 0 to 1 and uses the provider
 default when blank. Sampling top-k accepts a positive integer when the
 operator enables `GKG_AGENT_TOP_K_ENABLED=true` after confirming provider
 support. It controls token sampling. The graph search result limit is separate.
 
-For the `DeepSeek-V4.1-Flash-1017` deployment name, reasoning effort offers
-**Provider default**, **None**, **High** and **Max**. The default leaves the
+`GKG_AGENT_REASONING_EFFORTS` sets the allowed reasoning choices for the
+deployment. Without that setting, the `DeepSeek-V4.1-Flash-1017` deployment
+name offers **Provider default**, **None**, **High** and **Max**. The default leaves the
 choice to the model. Each provider determines which sampling parameters take
 effect in a given reasoning mode. The form keeps your choices until reload.
 
@@ -256,7 +258,11 @@ events when a read-only call is about to run, `delta` fragments of the
 answer as the model produces them, and one authoritative `done` event with
 the same `{"answer","answer_html","evidence","steps"}` payload (`error` events are
 classified). It disables proxy buffering (`X-Accel-Buffering: no`) and
-sends a `: ping` heartbeat every ~15s.
+sends a `: ping` heartbeat every ~15s. With GCP auth, the stream obtains its first
+token before sending SSE headers. Token acquisition failure at that point returns
+JSON with HTTP 502. Once streaming starts, authentication failures arrive as
+`error` events. JSON asks return HTTP 502 for authentication failures. Both
+surfaces report `auth_permanent` or `auth_transient` in the `error` field.
 
 ```sh
 curl -N -s localhost:8080/v1/agent/ask/stream -H 'Content-Type: application/json' \
@@ -293,6 +299,44 @@ While the agent is disabled the endpoint
 answers `501` and the panel stays hidden. Answers are LLM-generated — the
 `evidence` array is the source of truth
 ([known limits](docs/known-limitations.md)).
+
+### Judge and agent provider configuration
+
+`judge.auth` and `agent.auth` select authentication independently. The default
+`static` sends the role's configured API key as a bearer credential when a key
+is present. On Compute Engine, `gcp` obtains OAuth access tokens for the VM's
+default service account from the metadata server. Give the service account
+Vertex access in the configured project. The GCP credential type is
+`metadata` in this release.
+
+Both GCP roles use the approved `gcp.route` tuple. For each role using it, clear
+its API key and set its base URL to
+`https://<host>/v1/projects/<project>/locations/<location>/endpoints/openapi`.
+A trailing slash is accepted. Configuration is checked after YAML and
+environment overrides, and the GCP clients reject redirects. See the
+[Vertex configuration example](docs/quickstart.md#vertex-ai-on-compute-engine).
+
+| YAML settings | Environment overrides | Behavior |
+| --- | --- | --- |
+| `judge.auth`, `agent.auth` | `GKG_JUDGE_AUTH`, `GKG_AGENT_AUTH` | `static` or `gcp` |
+| `gcp.credentials` | `GKG_GCP_CREDENTIALS` | `metadata` |
+| `gcp.route.host`, `project`, `location` | `GKG_GCP_ROUTE_HOST`, `GKG_GCP_ROUTE_PROJECT`, `GKG_GCP_ROUTE_LOCATION` | Approved HTTPS route tuple |
+| `judge.temperature`, `agent.temperature` | `GKG_JUDGE_TEMPERATURE`, `GKG_AGENT_TEMPERATURE` | Default 0. An explicit ask temperature takes precedence over the agent deployment setting. |
+| `judge.max_tokens`, `agent.max_tokens` | `GKG_JUDGE_MAX_TOKENS`, `GKG_AGENT_MAX_TOKENS` | Omitted by default. The agent limit applies to each provider turn. |
+| `judge.reasoning_effort` | `GKG_JUDGE_REASONING_EFFORT` | Omitted by default. |
+| `agent.reasoning_efforts` | `GKG_AGENT_REASONING_EFFORTS` | YAML list or comma-separated env value. An explicitly empty list disables the capability. |
+
+The judge uses `json_object` as its response format. Judge v1 requests use a
+separate cache identity for GCP auth or non-default generation settings. The
+identity includes the base URL without its query and the generation settings.
+Restoring static auth and default settings restores the original v1 cache keys.
+V3 rejudge and validity planning require static judge auth and retain their
+frozen generation settings.
+
+Online ingest leaves a fact unjudged when verification fails. With GCP judge
+auth, `judge_failures_total` labels Vertex HTTP 401/403 and missing service
+accounts as `auth_permanent`, metadata timeouts, server failures and malformed
+tokens as `auth_transient`, and other judge failures as `provider`.
 
 ## 5. API reference and third-party access
 
@@ -603,8 +647,9 @@ attempt, including retries, counts toward the budget. Cache hits use no
 attempts. A rerun can apply a previously obtained verdict without another call
 when its cache write succeeded and the same request and model are still in the
 cache. Provider-wide failures stop the run with `stopped_provider=true` and
-leave the edge pending. These include HTTP 401, 403, 404, 405, 415, 429, and
-5xx, and network errors and timeouts. Row-specific failures such as HTTP 400,
+leave the edge pending. The command exits `2` on `auth_permanent` and `3` on
+other provider stops, including `auth_transient`. Provider stops include HTTP
+401, 403, 404, 405, 415, 429, and 5xx, and network errors and timeouts. Row-specific failures such as HTTP 400,
 an undecodable response, or an unknown verdict leave the edge pending for a
 later run and allow this run to continue.
 
@@ -726,9 +771,9 @@ ok and kept bad ids with reasons. Apply is not part of this command yet.
 | Exit code | Meaning |
 | --- | --- |
 | `0` | Success. |
-| `1` | Operational error, including manifest, graph or provider failures, or a plan with zero rows when `-ids` is absent. |
-| `2` | Invalid arguments or audit input, including an invalid label, an empty or duplicate ID, a requested ID with no eligible or verifiable edge, or a `-ids` selection that leaves zero rows to plan. |
-| `3` | The labelled gate failed. |
+| `1` | Operational error such as an invalid manifest, graph failure, or a plan with zero rows when `-ids` is absent. |
+| `2` | Invalid arguments or audit input, including an invalid label, an empty or duplicate ID, a requested ID with no eligible or verifiable edge, or a `-ids` selection that leaves zero rows to plan. GCP judge auth for v3 rejudge and permanent authentication stops also map to this code. |
+| `3` | The labelled gate failed or the run stopped on another provider-wide failure. |
 | `4` | The run ended before all planned rows had verdicts and had no scored gate. This includes runs whose labels are all `skip` or blank. |
 
 ### Catalog validity repair planning

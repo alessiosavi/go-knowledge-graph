@@ -28,6 +28,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 )
 
 // Loaded is the decoded document handed over by the text loader.
@@ -160,7 +161,7 @@ type Metrics interface {
 	ExtractorError()
 	ExtractSeconds(seconds float64)
 	JudgeVerdict(status string)
-	JudgeFailure()
+	JudgeFailure(class string)
 	JudgeSeconds(seconds float64)
 }
 
@@ -872,7 +873,7 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 			slog.Warn("ingest: judge unavailable, fact left unverified",
 				"doc", doc.ID, "head", f.HeadKey, "rel", f.Rel, "err", err)
 			if p.metrics != nil {
-				p.metrics.JudgeFailure()
+				p.metrics.JudgeFailure(llmauth.Class(err))
 			}
 			continue
 		}

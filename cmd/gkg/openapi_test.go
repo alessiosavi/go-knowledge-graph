@@ -10,6 +10,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/docs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 	"go.yaml.in/yaml/v4"
 )
@@ -22,6 +23,41 @@ func TestOpenAPIRoutes(t *testing.T) {
 	_ = s.Handler()
 	if findings := openAPIRouteFindings(s.RoutePatterns(), docs.OpenAPI); len(findings) != 0 {
 		t.Fatalf("OpenAPI drift:\n%s", strings.Join(findings, "\n"))
+	}
+}
+
+func TestOpenAPIAgentAuthErrors(t *testing.T) {
+	type media struct {
+		Examples map[string]struct{ Value struct{ Error string } }
+		Events   map[string]struct {
+			Properties map[string]struct{ Enum []string }
+		} `yaml:"x-sse-events"`
+	}
+	var spec struct {
+		Paths map[string]struct {
+			Post struct {
+				Responses map[string]struct{ Content map[string]media }
+			}
+		}
+	}
+	if err := yaml.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatal(err)
+	}
+	ask := spec.Paths["/v1/agent/ask"].Post.Responses
+	stream := spec.Paths["/v1/agent/ask/stream"].Post.Responses
+	eventKinds := stream["200"].Content["text/event-stream"].Events["error"].Properties["error"].Enum
+	for _, kind := range []string{llmauth.PermanentClass, llmauth.TransientClass} {
+		for path, examples := range map[string]media{
+			"ask":    ask["502"].Content["application/json"],
+			"stream": stream["502"].Content["application/json"],
+		} {
+			if examples.Examples[kind].Value.Error != kind {
+				t.Errorf("%s JSON 502 lacks an example for %s", path, kind)
+			}
+		}
+		if !slices.Contains(eventKinds, kind) {
+			t.Errorf("SSE error kinds %q omit %s", eventKinds, kind)
+		}
 	}
 }
 

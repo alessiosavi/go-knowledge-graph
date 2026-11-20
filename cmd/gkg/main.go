@@ -532,7 +532,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
 		return 1
 	}
-	metrics := obs.New()
+	metrics := obs.NewWithJudgeFailureClasses(cfg.Judge.Auth == config.AuthGCP)
 	st.SetWriteLockWaitObserver(metrics.ObserveWriteLockWait)
 	pipe.SetMetrics(metrics)
 	workers := &ingest.Worker{Workers: serveWorkers, Pipeline: pipe}

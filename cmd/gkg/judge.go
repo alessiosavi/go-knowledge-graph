@@ -14,8 +14,10 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 )
 
 func runJudge(args []string, stdout, stderr io.Writer) int {
@@ -96,7 +98,7 @@ func runJudgeBackfill(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if *edges {
-		if cfg.Judge.APIKey == "" {
+		if cfg.Judge.Auth != config.AuthGCP && cfg.Judge.APIKey == "" {
 			fmt.Fprintln(stderr, "gkg judge backfill: warning: judge API key is empty")
 		}
 		return runJudgeBackfillEdges(ctx, st, edgeClient, opt, stdout, stderr)
@@ -132,7 +134,23 @@ func runJudgeBackfillEdges(ctx context.Context, st *graph.Store, client *judge.C
 		fmt.Fprintf(stderr, "gkg judge backfill: %v\n", err)
 		return 1
 	}
+	if r.StoppedProvider {
+		if llmauth.Class(r.ProviderStop) != "" {
+			fmt.Fprintf(stderr, "gkg judge backfill: %v\n", r.ProviderStop)
+		}
+		return judgeRunErrorExitCode(r.ProviderStop)
+	}
 	return 0
+}
+
+func judgeRunErrorExitCode(err error) int {
+	if llmauth.Class(err) == llmauth.PermanentClass {
+		return 2
+	}
+	if judge.IsProviderStop(err) || llmauth.Class(err) == llmauth.TransientClass {
+		return 3
+	}
+	return 1
 }
 
 func runJudgeAudit(args []string, stdout, stderr io.Writer) int {

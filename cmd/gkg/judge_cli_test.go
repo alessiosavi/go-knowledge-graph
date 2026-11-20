@@ -204,7 +204,7 @@ func TestJudgeBackfillEdgesProviderNotFound(t *testing.T) {
 	var out, stderr bytes.Buffer
 	code := run([]string{"judge", "backfill", "--edges", "--domain", tag, "--budget-calls", "3"}, &out, &stderr)
 	rows := migrationQuery(t, `MATCH ()-[r:uses]->() WHERE r.doc_id=$doc RETURN r.judge AS judge, r.judge_input AS input`, map[string]any{"doc": doc.ID})
-	if code != 0 || calls.Load() != 1 || !strings.Contains(out.String(), "selected=1 ") ||
+	if code != 3 || calls.Load() != 1 || !strings.Contains(out.String(), "selected=1 ") ||
 		!strings.Contains(out.String(), "attempts=1 ") || !strings.Contains(out.String(), "failed=0 ") || !strings.Contains(out.String(), "stopped_provider=true ") {
 		t.Errorf("exit=%d calls=%d stdout=%q stderr=%q", code, calls.Load(), out.String(), stderr.String())
 	}

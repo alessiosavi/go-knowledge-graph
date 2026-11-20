@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -23,26 +24,31 @@ import (
 type Metrics struct {
 	reg *prometheus.Registry
 
-	documents       *prometheus.CounterVec
-	chunks          prometheus.Counter
-	entities        prometheus.Counter
-	facts           prometheus.Counter
-	factsDropped    prometheus.Counter
-	hygieneDropped  *prometheus.CounterVec
-	hygieneRenamed  prometheus.Counter
-	judgeVerdicts   *prometheus.CounterVec
-	judgeFailures   prometheus.Counter
-	judgeCache      *prometheus.CounterVec
-	judgeInput      *prometheus.CounterVec
-	extractorErrors prometheus.Counter
-	extractSeconds  prometheus.Histogram
-	judgeSeconds    prometheus.Histogram
-	requestDuration *prometheus.HistogramVec
-	writeLockWait   prometheus.Histogram
+	documents           *prometheus.CounterVec
+	chunks              prometheus.Counter
+	entities            prometheus.Counter
+	facts               prometheus.Counter
+	factsDropped        prometheus.Counter
+	hygieneDropped      *prometheus.CounterVec
+	hygieneRenamed      prometheus.Counter
+	judgeVerdicts       *prometheus.CounterVec
+	judgeFailures       prometheus.Counter
+	judgeFailureClasses *prometheus.CounterVec
+	judgeCache          *prometheus.CounterVec
+	judgeInput          *prometheus.CounterVec
+	extractorErrors     prometheus.Counter
+	extractSeconds      prometheus.Histogram
+	judgeSeconds        prometheus.Histogram
+	requestDuration     *prometheus.HistogramVec
+	writeLockWait       prometheus.Histogram
 }
 
 // New builds the registry and registers every metric.
-func New() *Metrics {
+func New() *Metrics { return NewWithJudgeFailureClasses(false) }
+
+// NewWithJudgeFailureClasses enables classified failures for the GCP judge.
+// Static deployments retain the original unlabeled counter.
+func NewWithJudgeFailureClasses(classify bool) *Metrics {
 	reg := prometheus.NewRegistry()
 	m := &Metrics{
 		reg: reg,
@@ -76,10 +82,6 @@ func New() *Metrics {
 			Name: "judge_verdicts_total",
 			Help: "Judge verdicts by status.",
 		}, []string{"status"}),
-		judgeFailures: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "judge_failures_total",
-			Help: "Judge calls that failed (fact left unverified).",
-		}),
 		judgeCache: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "judge_cache_total",
 			Help: "Verdict-cache lookups by result: hit, miss, read_error, write_error.",
@@ -111,8 +113,22 @@ func New() *Metrics {
 			Buckets: []float64{.000001, .00001, .0001, .001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60},
 		}),
 	}
+	judgeFailures := prometheus.CounterOpts{
+		Name: "judge_failures_total",
+		Help: "Judge calls that failed (fact left unverified).",
+	}
+	if classify {
+		m.judgeFailureClasses = prometheus.NewCounterVec(judgeFailures, []string{"class"})
+		for _, class := range []string{llmauth.PermanentClass, llmauth.TransientClass, "provider"} {
+			m.judgeFailureClasses.WithLabelValues(class)
+		}
+		reg.MustRegister(m.judgeFailureClasses)
+	} else {
+		m.judgeFailures = prometheus.NewCounter(judgeFailures)
+		reg.MustRegister(m.judgeFailures)
+	}
 	reg.MustRegister(m.documents, m.chunks, m.entities, m.facts, m.factsDropped,
-		m.hygieneDropped, m.hygieneRenamed, m.judgeVerdicts, m.judgeFailures, m.judgeCache, m.judgeInput, m.extractorErrors, m.extractSeconds, m.judgeSeconds,
+		m.hygieneDropped, m.hygieneRenamed, m.judgeVerdicts, m.judgeCache, m.judgeInput, m.extractorErrors, m.extractSeconds, m.judgeSeconds,
 		m.requestDuration, m.writeLockWait)
 	return m
 }
@@ -174,7 +190,16 @@ func (m *Metrics) HygieneRenamed(n int) {
 func (m *Metrics) JudgeVerdict(status string) { m.judgeVerdicts.WithLabelValues(status).Inc() }
 
 // JudgeFailure counts one failed judge call.
-func (m *Metrics) JudgeFailure() { m.judgeFailures.Inc() }
+func (m *Metrics) JudgeFailure(class string) {
+	if m.judgeFailureClasses == nil {
+		m.judgeFailures.Inc()
+		return
+	}
+	if class == "" {
+		class = "provider"
+	}
+	m.judgeFailureClasses.WithLabelValues(class).Inc()
+}
 
 // JudgeCache counts one verdict-cache result.
 func (m *Metrics) JudgeCache(result string) { m.judgeCache.WithLabelValues(result).Inc() }
