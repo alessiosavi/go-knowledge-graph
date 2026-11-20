@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -16,6 +18,115 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 )
+
+func TestThoughtSignatureRoundTrip(t *testing.T) {
+	const first = `{ "google": {"thought_signature":"first\u002b<&"}, "future": [1, 2] }`
+	const second = `{"google": { "thought_signature":"second+/=" }}`
+	const assistant = `{"opaque": [ "message", "<&" ]}`
+	type signatureDelta struct{ assistant, tool string }
+	whole := signatureDelta{assistant, second}
+	scalar := signatureDelta{`"opaque\u002b"`, `42`}
+	quote := func(s string) string {
+		wire, _ := json.Marshal(s)
+		return string(wire)
+	}
+	left := signatureDelta{quote(assistant[:18]), quote(second[:18])}
+	right := signatureDelta{quote(assistant[18:]), quote(second[18:])}
+	for _, tc := range []struct {
+		name     string
+		deltas   []signatureDelta
+		want     signatureDelta
+		warnings int
+	}{
+		{name: "stream=false", want: whole},
+		{name: "stream=true", deltas: []signatureDelta{whole}, want: whole},
+		{name: "duplicate", deltas: []signatureDelta{whole, whole}, want: whole},
+		{name: "empty_and_null", deltas: []signatureDelta{whole, {`{ }`, `null`}, {`null`, `{}`}}, want: whole},
+		{name: "opaque_scalar", deltas: []signatureDelta{scalar}, want: scalar},
+		{name: "split", deltas: []signatureDelta{left, right}, want: whole},
+		{name: "incomplete", deltas: []signatureDelta{left}, warnings: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			streaming := len(tc.deltas) != 0
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Stream   bool
+					Messages []struct {
+						Role         string
+						ExtraContent json.RawMessage `json:"extra_content"`
+						ToolCalls    []struct {
+							ID           string
+							ExtraContent json.RawMessage `json:"extra_content"`
+						} `json:"tool_calls"`
+					}
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if req.Stream != streaming {
+					t.Errorf("provider stream flag = %t, want %t", req.Stream, streaming)
+				}
+				switch calls.Add(1) {
+				case 1:
+					if streaming {
+						w.Header().Set("Content-Type", "text/event-stream")
+						writeSignature := func(delta signatureDelta) {
+							fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"extra_content\":%s,\"tool_calls\":[{\"index\":1,\"extra_content\":%s}]}}]}\n\n", delta.assistant, delta.tool)
+						}
+						writeSignature(tc.deltas[0])
+						fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c0\",\"extra_content\":%s,\"function\":{\"name\":\"status\",\"arguments\":\"{\"}}]}}]}\n\n", first)
+						for _, delta := range tc.deltas[1:] {
+							writeSignature(delta)
+						}
+						fmt.Fprint(w, sseTool(1, "c1", "status", "{}"), sseTool(0, "", "", "}"), sseDone)
+					} else {
+						fmt.Fprintf(w, `{"choices":[{"message":{"extra_content":%s,"tool_calls":[{"id":"c0","type":"function","function":{"name":"status","arguments":"{}"},"extra_content":%s},{"id":"c1","type":"function","function":{"name":"status","arguments":"{}"},"extra_content":%s}]}}]}`, assistant, first, second)
+					}
+				case 2:
+					if len(req.Messages) != 5 || req.Messages[2].Role != "assistant" || string(req.Messages[2].ExtraContent) != tc.want.assistant {
+						http.Error(w, "Function call is missing a thought_signature", http.StatusBadRequest)
+						return
+					}
+					tools := req.Messages[2].ToolCalls
+					if len(tools) != 2 || tools[0].ID != "c0" || tools[1].ID != "c1" ||
+						string(tools[0].ExtraContent) != first || string(tools[1].ExtraContent) != tc.want.tool {
+						http.Error(w, "Function call is missing a thought_signature", http.StatusBadRequest)
+						return
+					}
+					if streaming {
+						w.Header().Set("Content-Type", "text/event-stream")
+						fmt.Fprint(w, sseContent("answered"), sseDone)
+					} else {
+						fmt.Fprint(w, `{"choices":[{"message":{"content":"answered"}}]}`)
+					}
+				default:
+					t.Error("unexpected provider request")
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			}))
+			defer upstream.Close()
+			s := NewServer(config.Config{Agent: config.AgentConfig{BaseURL: upstream.URL, Stream: streaming}}, nil, nil)
+			var emit func(streamEvent) error
+			if streaming {
+				emit = func(streamEvent) error { return nil }
+			}
+			answer, err := s.run(t.Context(), "question", emit)
+			if err != nil || answer.Answer != "answered" || calls.Load() != 2 {
+				t.Fatalf("answer=%+v calls=%d err=%v", answer, calls.Load(), err)
+			}
+			if got := strings.Count(logs.String(), "invalid extra_content"); got != tc.warnings {
+				t.Errorf("invalid extra_content warnings = %d, want %d", got, tc.warnings)
+			}
+		})
+	}
+}
 
 func TestStaticChatRequestWire(t *testing.T) {
 	bodies := make(chan string, 2)

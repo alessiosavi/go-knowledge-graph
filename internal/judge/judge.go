@@ -236,6 +236,7 @@ func (c *Client) verify(ctx context.Context, prompt string, payload []byte, sett
 		}
 		verdict, retryable, retryAfter, err := c.doVerify(ctx, body)
 		if err == nil {
+			verdict.Model = c.model
 			return verdict, nil
 		}
 		if !retryable {
@@ -373,7 +374,7 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 }
 
 // providerWideError preserves existing diagnostics and retry rules while
-// identifying failures that an edge backfill should not repeat for other rows.
+// identifying failures that backfills should not repeat for other rows.
 type providerWideError struct{ error }
 
 func (e providerWideError) Unwrap() error { return e.error }

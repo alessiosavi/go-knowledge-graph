@@ -48,14 +48,14 @@ map "${EDGE_HTTPS_PORT}" $edge_https_suffix {
     default ":${EDGE_HTTPS_PORT}";
     "443" "";
 }
-limit_req_zone $binary_remote_addr zone=edge:10m rate=20r/s;
+${EDGE_MAINTENANCE_MAP}limit_req_zone $binary_remote_addr zone=edge:10m rate=20r/s;
 
 server {
     listen 8080;
     server_name ${SERVER_NAME};
     absolute_redirect off;
     server_tokens off;
-    if ($edge_encoded_path) { return 400; }
+${EDGE_MAINTENANCE_SERVER}    if ($edge_encoded_path) { return 400; }
     location ^~ /.well-known/acme-challenge/ {
         auth_basic off;
         root /var/www/acme;
@@ -70,7 +70,7 @@ server {
     server_name ${SERVER_NAME};
     absolute_redirect off;
     server_tokens off;
-    if ($edge_encoded_path) { return 400; }
+${EDGE_MAINTENANCE_SERVER}    if ($edge_encoded_path) { return 400; }
     ssl_certificate /etc/nginx/edge-certs/current.pem;
     ssl_certificate_key /etc/nginx/edge-certs/current.pem;
     ssl_protocols TLSv1.2 TLSv1.3;

@@ -232,11 +232,17 @@ func TestEdgeBackfillBudgetAndSeparateCache(t *testing.T) {
 	if v, err := cache.VerifyPayload(t.Context(), shared, seed.doc); err != nil || v.Status != "confirmed" {
 		t.Fatalf("seed verdict=%+v, %v", v, err)
 	}
+	key := judge.RequestKey(shared.Bytes, j.Model())
+	backfillQuery(t, "MATCH (v:JudgeVerdict {key:$key}) SET v.model = 'cached-model'", map[string]any{"key": key})
 	opt := f.opt()
 	opt.BudgetCalls = 2
 	r, err := judge.BackfillEdges(t.Context(), f.st, f.cached(j), j, opt)
 	if err != nil || r.CacheHits != 1 || r.Confirmed != 1 || r.Attempts != 0 || calls.Load() != 1 {
 		t.Fatalf("separately seeded cache run = %+v, %v, HTTP calls=%d", r, err, calls.Load())
+	}
+	rows, err := f.st.RunReadQuery(t.Context(), fixtureEdges+" RETURN r.judge_model AS model", map[string]any{"doc": f.doc}, 0)
+	if err != nil || len(rows.Rows) != 1 || rows.Rows[0]["model"] != "cached-model" {
+		t.Errorf("backfilled edge provenance = %+v, %v", rows, err)
 	}
 	f.add(t, 2, 1, uncached)
 	r, err = judge.BackfillEdges(t.Context(), f.st, f.cached(j), j, opt)
@@ -531,7 +537,7 @@ func TestEdgeBackfillAndOnlineVerdictRace(t *testing.T) {
 				if onlineFirst {
 					status = "confirmed"
 				}
-				applied, err := online.ApplyStoredFactVerdict(t.Context(), ref, status, "online reason", graph.StoredFactVerdictOptions{})
+				applied, err := online.ApplyStoredFactVerdict(t.Context(), ref, status, "online reason", "", graph.StoredFactVerdictOptions{})
 				onlineResult = appliedResult{applied, err}
 			}()
 			j := newTestJudge(t, func(w http.ResponseWriter, _ *http.Request) {

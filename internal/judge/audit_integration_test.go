@@ -23,7 +23,7 @@ func TestAuditSnapshot(t *testing.T) {
 	if err != nil || len(cs) != 1 {
 		t.Fatalf("candidates=%+v err=%v", cs, err)
 	}
-	if ok, err := f.st.PromoteCandidate(t.Context(), cs[0].ID, cs[0].InputHash); err != nil || !ok {
+	if ok, err := f.st.PromoteCandidate(t.Context(), cs[0].ID, cs[0].InputHash, ""); err != nil || !ok {
 		t.Fatalf("promote %v %v", ok, err)
 	}
 	backfillQuery(t, "MATCH (c:Chunk {id: $chunk}) SET c.text = 'Before. Acme-Max uses Zorbo. After.'", map[string]any{"chunk": f.chunk})
@@ -73,7 +73,7 @@ func TestAuditPopulationConfirmedOnly(t *testing.T) {
 	if err != nil || len(cs) != 1 {
 		t.Fatalf("candidates=%+v err=%v", cs, err)
 	}
-	if ok, err := f.st.PromoteCandidate(t.Context(), cs[0].ID, cs[0].InputHash); err != nil || !ok {
+	if ok, err := f.st.PromoteCandidate(t.Context(), cs[0].ID, cs[0].InputHash, ""); err != nil || !ok {
 		t.Fatalf("promote %v %v", ok, err)
 	}
 	for _, status := range []string{"", "unclear", "refuted", "absent", "confirmed"} {
@@ -107,7 +107,7 @@ func TestAuditSampleFixedSeedRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range cs {
-		if ok, err := f.st.PromoteCandidate(t.Context(), c.ID, c.InputHash); err != nil || !ok {
+		if ok, err := f.st.PromoteCandidate(t.Context(), c.ID, c.InputHash, ""); err != nil || !ok {
 			t.Fatalf("promote %v %v", ok, err)
 		}
 	}

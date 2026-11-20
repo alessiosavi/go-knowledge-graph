@@ -75,11 +75,12 @@ func functionTool(name, description string, parameters map[string]any) toolDef {
 // chatMessage is one chat turn; tool results carry ToolCallID, assistant
 // turns carry ToolCalls.
 type chatMessage struct {
-	Role             string     `json:"role"`
-	Content          string     `json:"content,omitempty"`
-	ToolCalls        []toolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	Role             string          `json:"role"`
+	Content          string          `json:"content,omitempty"`
+	ToolCalls        []toolCall      `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ExtraContent     json.RawMessage `json:"extra_content,omitempty"`
 }
 
 // toolCall is one requested function call.
@@ -90,6 +91,7 @@ type toolCall struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"function"`
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
 }
 
 type chatRequest struct {
@@ -107,6 +109,64 @@ type chatRequest struct {
 	customGeneration bool
 }
 
+// marshalChatRequest preserves provider-owned extra_content bytes. The JSON
+// encoder compacts RawMessage values and escapes HTML, so reserve their slots
+// in the transcript and fill them after encoding the rest of the request.
+func marshalChatRequest(req chatRequest) ([]byte, error) {
+	placeholder := json.RawMessage("null")
+	var extras []json.RawMessage
+	var messages []chatMessage
+	for i, message := range req.Messages {
+		var calls []toolCall
+		for j, call := range message.ToolCalls {
+			if len(call.ExtraContent) == 0 {
+				continue
+			}
+			if calls == nil {
+				calls = slices.Clone(message.ToolCalls)
+			}
+			extras = append(extras, call.ExtraContent)
+			calls[j].ExtraContent = placeholder
+		}
+		if calls != nil {
+			message.ToolCalls = calls
+		}
+		// tool_calls precedes the message's own extra_content on the wire.
+		if len(message.ExtraContent) != 0 {
+			extras = append(extras, message.ExtraContent)
+			message.ExtraContent = placeholder
+		} else if calls == nil {
+			continue
+		}
+		if messages == nil {
+			messages = slices.Clone(req.Messages)
+		}
+		messages[i] = message
+	}
+	if messages != nil {
+		req.Messages = messages
+	}
+	body, err := json.Marshal(req)
+	if err != nil || len(extras) == 0 {
+		return body, err
+	}
+	// Messages precede the tool definitions, and their string fields cannot
+	// contain the unescaped JSON key used to locate each reserved slot.
+	const key = `"extra_content":`
+	var result []byte
+	for _, extra := range extras {
+		before, after, found := bytes.Cut(body, []byte(key+"null"))
+		if !found || !json.Valid(extra) {
+			return nil, errors.New("invalid extra_content in agent transcript")
+		}
+		result = append(result, before...)
+		result = append(result, key...)
+		result = append(result, extra...)
+		body = after
+	}
+	return append(result, body...), nil
+}
+
 // DeepSeek tool continuations with explicit reasoning can require the prior
 // assistant reasoning on the provider wire. It is never an answer delta.
 func (req chatRequest) keepToolReasoning() bool {
@@ -114,9 +174,10 @@ func (req chatRequest) keepToolReasoning() bool {
 }
 
 type chatReply struct {
-	Content          string     `json:"content"`
-	ToolCalls        []toolCall `json:"tool_calls"`
-	ReasoningContent string     `json:"reasoning_content"`
+	Content          string          `json:"content"`
+	ToolCalls        []toolCall      `json:"tool_calls"`
+	ReasoningContent string          `json:"reasoning_content"`
+	ExtraContent     json.RawMessage `json:"extra_content"`
 }
 
 func (r *chatReply) redact(replace func(string) string) {
@@ -258,7 +319,7 @@ func retryableAttempt(err error) bool {
 // chat performs one chat-completions call, retrying retryable failures with
 // the configured backoff. The caller's context bounds the whole loop.
 func (c *client) chat(ctx context.Context, req chatRequest) (chatReply, error) {
-	body, err := json.Marshal(req)
+	body, err := marshalChatRequest(req)
 	if err != nil {
 		return chatReply{}, fmt.Errorf("agent: encode request: %w", err)
 	}
@@ -355,7 +416,7 @@ func (c *client) doChat(ctx context.Context, body []byte) (chatReply, error) {
 // caller can fall back to the non-streamed path once.
 func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(string) error) (chatReply, error) {
 	req.Stream = true
-	body, err := json.Marshal(req)
+	body, err := marshalChatRequest(req)
 	if err != nil {
 		return chatReply{}, fmt.Errorf("agent: encode request: %w", err)
 	}
@@ -443,8 +504,9 @@ func (c *client) doStream(ctx context.Context, body []byte, keepReasoning bool, 
 type streamWireChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
+			Content          string          `json:"content"`
+			ReasoningContent string          `json:"reasoning_content"`
+			ExtraContent     json.RawMessage `json:"extra_content"`
 			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
@@ -452,12 +514,39 @@ type streamWireChunk struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
 				} `json:"function"`
+				ExtraContent json.RawMessage `json:"extra_content"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// mergeStreamExtra preserves native JSON values. A structured value split
+// across JSON frames starts with a quoted fragment containing '{' or '['.
+func mergeStreamExtra(current, next json.RawMessage) json.RawMessage {
+	if len(next) == 0 {
+		return current
+	}
+	if len(current) != 0 && (bytes.Equal(next, []byte("null")) ||
+		(next[0] == '{' && next[len(next)-1] == '}' && len(bytes.TrimSpace(next[1:len(next)-1])) == 0)) {
+		return current
+	}
+	assembling := len(current) != 0 && !json.Valid(current)
+	if next[0] == '"' {
+		var fragment string
+		// The stream frame has already been validated by json.Unmarshal.
+		_ = json.Unmarshal(next, &fragment)
+		start := strings.TrimLeft(fragment, " \t\r\n")
+		if assembling || strings.HasPrefix(start, "{") || strings.HasPrefix(start, "[") {
+			next = json.RawMessage(fragment)
+		}
+	}
+	if assembling {
+		return append(current, next...)
+	}
+	return next
 }
 
 // streamRawCap bounds the bytes read from one streamed body, framing
@@ -477,6 +566,7 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 	var (
 		content   strings.Builder
 		reasoning strings.Builder
+		extra     json.RawMessage
 		calls     = map[int]*toolCall{}
 		order     []int
 		frames    int
@@ -492,10 +582,23 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 			data := strings.TrimPrefix(trimmed, "data:")
 			data = strings.TrimPrefix(data, " ")
 			if data == "[DONE]" {
-				reply := chatReply{Content: content.String(), ReasoningContent: reasoning.String()}
+				invalidExtra := false
+				validateExtra := func(value json.RawMessage) json.RawMessage {
+					if len(value) != 0 && !json.Valid(value) {
+						invalidExtra = true
+						return nil
+					}
+					return value
+				}
+				reply := chatReply{Content: content.String(), ReasoningContent: reasoning.String(), ExtraContent: validateExtra(extra)}
 				slices.Sort(order)
 				for _, i := range order {
-					reply.ToolCalls = append(reply.ToolCalls, *calls[i])
+					call := *calls[i]
+					call.ExtraContent = validateExtra(call.ExtraContent)
+					reply.ToolCalls = append(reply.ToolCalls, call)
+				}
+				if invalidExtra {
+					slog.Warn("agent: discarded invalid extra_content in provider stream")
 				}
 				return reply, nil
 			}
@@ -513,7 +616,7 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 				}
 				if len(chunk.Choices) > 0 {
 					delta := chunk.Choices[0].Delta
-					assembled += len(delta.Content)
+					assembled += len(delta.Content) + len(delta.ExtraContent)
 					if keepReasoning {
 						assembled += len(delta.ReasoningContent)
 					}
@@ -523,6 +626,7 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 					if keepReasoning {
 						reasoning.WriteString(delta.ReasoningContent)
 					}
+					extra = mergeStreamExtra(extra, delta.ExtraContent)
 					if delta.Content != "" {
 						content.WriteString(delta.Content)
 						if onDelta != nil {
@@ -532,7 +636,7 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 						}
 					}
 					for _, frag := range delta.ToolCalls {
-						assembled += len(frag.Function.Arguments) + len(frag.Function.Name)
+						assembled += len(frag.Function.Arguments) + len(frag.Function.Name) + len(frag.ExtraContent)
 						if assembled > responseCap {
 							return chatReply{}, fmt.Errorf("agent: streamed response exceeds the %d MiB cap", responseCap>>20)
 						}
@@ -545,6 +649,7 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 						if frag.ID != "" {
 							call.ID = frag.ID
 						}
+						call.ExtraContent = mergeStreamExtra(call.ExtraContent, frag.ExtraContent)
 						call.Function.Name += frag.Function.Name
 						call.Function.Arguments += frag.Function.Arguments
 					}

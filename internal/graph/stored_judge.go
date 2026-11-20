@@ -29,7 +29,7 @@ type StoredFactVerdictOptions struct {
 // generation. A vanished or changed edge returns false, and ambiguous matches
 // fail. BeforeWrite runs inside the same transaction and may abort it. A
 // fenced transaction can rerun BeforeWrite and the verdict apply on retry.
-func (s *Store) ApplyStoredFactVerdict(ctx context.Context, ref StoredFactRef, status, reason string, opt StoredFactVerdictOptions) (bool, error) {
+func (s *Store) ApplyStoredFactVerdict(ctx context.Context, ref StoredFactRef, status, reason, model string, opt StoredFactVerdictOptions) (bool, error) {
 	var applied bool
 	err := s.runLeaseWrite(ctx, opt.BeforeWrite != nil, func(tx neo4j.ManagedTransaction) error {
 		applied = false
@@ -39,17 +39,17 @@ func (s *Store) ApplyStoredFactVerdict(ctx context.Context, ref StoredFactRef, s
 			}
 		}
 		var err error
-		applied, err = txApplyStoredFactVerdict(ctx, tx, ref, status, reason, opt)
+		applied, err = txApplyStoredFactVerdict(ctx, tx, ref, status, reason, model, opt)
 		return err
 	})
 	return applied && err == nil, err
 }
 
-func txApplyStoredFactVerdict(ctx context.Context, tx neo4j.ManagedTransaction, ref StoredFactRef, status, reason string, opt StoredFactVerdictOptions) (bool, error) {
+func txApplyStoredFactVerdict(ctx context.Context, tx neo4j.ManagedTransaction, ref StoredFactRef, status, reason, model string, opt StoredFactVerdictOptions) (bool, error) {
 	var write string
 	switch status {
 	case "confirmed", "unclear":
-		write = ` SET r.judge = $status REMOVE r.judge_input`
+		write = ` SET r.judge = $status, r.judge_model = $model REMOVE r.judge_input`
 	case "refuted":
 		write = ` DELETE r`
 	default:
@@ -63,7 +63,7 @@ WHERE (NOT $require_done OR d.status = 'done') AND ($domain = '' OR d.domain = $
 	}
 	params := map[string]any{
 		"head": ref.HeadKey, "rel": sanitizeRel(ref.Rel), "tail": ref.TailKey, "chunk": ref.ChunkID,
-		"gen": ref.JudgeGen, "hash": ref.InputHash, "status": status,
+		"gen": ref.JudgeGen, "hash": ref.InputHash, "status": status, "model": judgeModelOrNil(model),
 		"require_done": opt.RequireDone, "domain": opt.Domain,
 	}
 	rows, err := txRows(ctx, tx, match+`
@@ -91,7 +91,7 @@ RETURN a.key AS head, type(r) AS rel, b.key AS tail, r.chunk_id AS chunk,
 		if err := txWriteFactAudit(ctx, tx, FactAudit{
 			HeadKey: getString(r, "head"), Rel: getString(r, "rel"), TailKey: getString(r, "tail"),
 			ChunkID: getString(r, "chunk"), DocID: getString(r, "doc"), Score: getFloat(r, "score"),
-			ExtractorVersion: getString(r, "version"), JudgeVerdict: status, Reason: reason,
+			ExtractorVersion: getString(r, "version"), JudgeVerdict: status, JudgeModel: model, Reason: reason,
 		}); err != nil {
 			return false, err
 		}

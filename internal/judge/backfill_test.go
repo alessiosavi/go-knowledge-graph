@@ -135,6 +135,16 @@ func TestBackfillJudgesUnjudged(t *testing.T) {
 	if f.count(t, "FactCandidate") != 1 || f.count(t, "RejectedFact") != 1 {
 		t.Fatal("verdicts not applied")
 	}
+	for _, query := range []string{
+		"MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = $doc RETURN r.judge_model AS model",
+		"MATCH (c:FactCandidate {doc_id:$doc}) RETURN c.judge_model AS model",
+		"MATCH (a:RejectedFact {doc_id:$doc}) RETURN a.judge_model AS model",
+	} {
+		rows, err := f.st.RunReadQuery(t.Context(), query, map[string]any{"doc": f.doc}, 0)
+		if err != nil || len(rows.Rows) != 1 || rows.Rows[0]["model"] != j.Model() {
+			t.Errorf("candidate backfill provenance on %s = %+v, %v", query, rows, err)
+		}
+	}
 	for _, in := range f.inputs {
 		v, ok, err := f.st.JudgeVerdict(t.Context(), judge.RequestKey(ingest.CanonicalJudgeInput(in), j.Model()))
 		if err != nil || !ok || v.DocID != f.doc {
@@ -187,9 +197,16 @@ func TestBackfillResumeNoRepeatCalls(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || f.count(t, "FactCandidate") != 1 {
 		t.Fatalf("crash err=%v, candidate must remain", err)
 	}
+	key := judge.RequestKey(ingest.CanonicalJudgeInput(f.inputs[0]), j.Model())
+	backfillQuery(t, "MATCH (v:JudgeVerdict {key:$key}) SET v.model = 'cached-model'", map[string]any{"key": key})
 	got, err := judge.Backfill(t.Context(), f.st, f.cached(j), j, f.opt())
 	if err != nil || got.Confirmed != 1 || got.CacheHits != 1 || got.Attempts != 0 || calls != 1 {
 		t.Fatalf("resume=%+v err=%v total calls=%d", got, err, calls)
+	}
+	rows, err := f.st.RunReadQuery(t.Context(),
+		"MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = $doc RETURN r.judge_model AS model", map[string]any{"doc": f.doc}, 0)
+	if err != nil || len(rows.Rows) != 1 || rows.Rows[0]["model"] != "cached-model" {
+		t.Fatalf("resumed edge provenance = %+v, %v", rows, err)
 	}
 	t.Log("resume: applied=1 cache_hits=1 attempts=0")
 }
