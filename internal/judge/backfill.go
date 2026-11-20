@@ -12,7 +12,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 )
 
-const backfillLeaseName = "judge-backfill"
+const backfillLeaseName = graph.BackfillLeaseName
 const backfillLeaseTTL = 120 * time.Second
 const backfillRenewEvery = 30 * time.Second
 
@@ -30,13 +30,13 @@ type BackfillResult struct {
 }
 
 type backfillCacheMetrics struct {
-	result   *BackfillResult
+	hits     *int
 	previous ingest.JudgeCacheMetrics
 }
 
 func (m backfillCacheMetrics) JudgeCache(result string) {
 	if result == "hit" {
-		m.result.CacheHits++
+		(*m.hits)++
 	}
 	if m.previous != nil {
 		m.previous.JudgeCache(result)
@@ -61,31 +61,10 @@ func Backfill(ctx context.Context, st *graph.Store, j *Cached, gate *Client, opt
 	if !ok {
 		return result, fmt.Errorf("judge: backfill lease is held by another owner (use --force to take over)")
 	}
-	ctx, cancel := context.WithCancelCause(ctx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(backfillRenewEvery)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if renewErr := renewBackfillLease(ctx, st, owner); renewErr != nil {
-					cancel(renewErr)
-					return
-				}
-			}
-		}
-	}()
-	defer func() {
-		cancel(nil)
-		<-done
-		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer stop()
-		err = errors.Join(err, st.ReleaseLease(cleanup, backfillLeaseName, owner))
-	}()
+	ctx, release := maintainBackfillLease(ctx, st, owner, func(ctx context.Context) error {
+		return renewBackfillLease(ctx, st, owner)
+	})
+	defer func() { err = errors.Join(err, release()) }()
 	oldGate, oldMetrics := gate.attemptGate, j.metrics
 	gate.SetAttemptGate(func() error {
 		if cause := context.Cause(ctx); cause != nil {
@@ -97,7 +76,7 @@ func Backfill(ctx context.Context, st *graph.Store, j *Cached, gate *Client, opt
 		result.Attempts++
 		return nil
 	})
-	j.SetCacheMetrics(backfillCacheMetrics{&result, oldMetrics})
+	j.SetCacheMetrics(backfillCacheMetrics{&result.CacheHits, oldMetrics})
 	defer func() { gate.SetAttemptGate(oldGate); j.SetCacheMetrics(oldMetrics) }()
 	candidates, err := st.UnjudgedCandidates(ctx, opt.Domain, opt.Limit)
 	if err != nil {
@@ -187,6 +166,34 @@ func Backfill(ctx context.Context, st *graph.Store, j *Cached, gate *Client, opt
 		}
 	}
 	return result, nil
+}
+
+func maintainBackfillLease(ctx context.Context, st *graph.Store, owner string, renew func(context.Context) error) (context.Context, func() error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(backfillRenewEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if renewErr := renew(ctx); renewErr != nil {
+					cancel(renewErr)
+					return
+				}
+			}
+		}
+	}()
+	return ctx, func() error {
+		cancel(nil)
+		<-done
+		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer stop()
+		return st.ReleaseLease(cleanup, backfillLeaseName, owner)
+	}
 }
 
 func renewBackfillLease(ctx context.Context, st *graph.Store, owner string) error {

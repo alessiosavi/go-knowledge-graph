@@ -130,7 +130,7 @@ type pipelineStore interface {
 	WriteFactAudit(context.Context, graph.FactAudit) error
 	SetFactJudge(context.Context, string, string, string, string, string) error
 	RejectFact(context.Context, string, string, string, string, graph.FactAudit) error
-	ApplyStoredFactVerdict(context.Context, graph.StoredFactRef, string, string, bool) (bool, error)
+	ApplyStoredFactVerdict(context.Context, graph.StoredFactRef, string, string, graph.StoredFactVerdictOptions) (bool, error)
 	PromoteCandidate(context.Context, string, string) (bool, error)
 	SetCandidateJudge(context.Context, string, string, string) (bool, error)
 	RefuteCandidate(context.Context, string, string, graph.FactAudit) (bool, error)
@@ -218,10 +218,11 @@ type Pipeline struct {
 	domainOpsMu sync.Mutex // serializes resumable admin requests in serve
 	domainMu    sync.Mutex // profile read, detection and assignment are one critical section
 
-	judge     FactJudge
-	emb       Embedder
-	metrics   Metrics
-	writeMode WriteMode
+	judge       FactJudge
+	storedJudge storedPayloadJudge
+	emb         Embedder
+	metrics     Metrics
+	writeMode   WriteMode
 
 	beforeSupersede func(olds []string) // Test hook; nil in production.
 }
@@ -743,11 +744,22 @@ func (p *Pipeline) forgetSuperseded(ctx context.Context, docID string) {
 	}
 }
 
-// SetJudge attaches the online fact-verification judge; nil means off.
+// SetJudge attaches the online fact-verification judge. A nil judge means off.
+// With stored inputs enabled, the judge must accept stored payloads.
 // Additive to the constructor; attach it before starting workers.
-func (p *Pipeline) SetJudge(j FactJudge) {
+func (p *Pipeline) SetJudge(j FactJudge) error {
+	var stored storedPayloadJudge
+	if p.cfg.Judge.StoreInputs && j != nil {
+		var ok bool
+		stored, ok = j.(storedPayloadJudge)
+		if !ok {
+			return errors.New("ingest: judge.store_inputs requires an online judge with VerifyPayload(ctx, payload, docID)")
+		}
+	}
 	p.judge = j
+	p.storedJudge = stored
 	p.wireJudgeCacheMetrics()
+	return nil
 }
 
 // SetEmbedder attaches the optional embeddings provider; without one the
@@ -843,7 +855,7 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 		var verdict Verdict
 		var err error
 		if p.cfg.Judge.StoreInputs {
-			verdict, err = verifyStoredPayload(ctx, p.judge, JudgePayload{Bytes: f.JudgeInput, InputHash: cand.inputHash}, doc.ID)
+			verdict, err = p.storedJudge.VerifyPayload(ctx, JudgePayload{Bytes: f.JudgeInput, InputHash: cand.inputHash}, doc.ID)
 		} else {
 			// The judge compares the mention text with the evidence sentence.
 			verdict, err = p.judge.VerifyFact(ctx, factInputFor(doc, graph.Chunk{ID: cand.chunkID, Text: cand.chunkText}, f))
@@ -872,7 +884,7 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 				HeadKey: f.HeadKey, Rel: f.Rel, TailKey: f.TailKey, ChunkID: cand.chunkID,
 				JudgeGen: f.JudgeGen, InputHash: cand.inputHash,
 			}
-			applied, err := p.store.ApplyStoredFactVerdict(ctx, ref, verdict.Status, verdict.Reason, false)
+			applied, err := p.store.ApplyStoredFactVerdict(ctx, ref, verdict.Status, verdict.Reason, graph.StoredFactVerdictOptions{})
 			if err != nil {
 				slog.Warn("ingest: could not apply stored fact verdict", "doc", doc.ID, "err", err)
 			} else if !applied {

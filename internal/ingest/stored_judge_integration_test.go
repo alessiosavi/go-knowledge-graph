@@ -26,7 +26,7 @@ func TestPipelineStoredJudgeInputMatchesWire(t *testing.T) {
 		props map[string]any
 	}
 	requests := make(chan capture, 2)
-	var docID atomic.Value
+	var docID, providerVerdict atomic.Value
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -44,22 +44,26 @@ func TestPipelineStoredJudgeInputMatchesWire(t *testing.T) {
 		default:
 			t.Error("unexpected judge request")
 		}
-		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"{\"verdict\":\"confirmed\"}"}}]}`)
+		content := fmt.Sprintf(`{"verdict":%q,"reason":"provider reason"}`, providerVerdict.Load())
+		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":%q}}]}`, content)
 	}))
 	defer server.Close()
 	env.cfg.Judge.BaseURL = server.URL
 	var previousBody, previousKey string
 	for _, opt := range []struct {
-		mode   string
-		enable bool
-	}{{"all", false}, {"all", true}, {"off", true}} {
+		mode, verdict string
+		enable        bool
+	}{{"all", "confirmed", false}, {"all", "confirmed", true}, {"all", "refuted", true}, {"off", "confirmed", true}} {
+		providerVerdict.Store(opt.verdict)
 		env.cfg.Judge.Mode = opt.mode
 		env.cfg.Judge.StoreInputs = opt.enable
 		p := ingest.NewPipeline(env.cfg, env.st, env.mock, nil, textLoader)
 		client := judge.NewClient(env.cfg)
 		client.SetBackoff(nil)
 		if opt.mode == "all" {
-			p.SetJudge(judge.NewCached(client, env.st, client.Model()))
+			if err := p.SetJudge(judge.NewCached(client, env.st, client.Model())); err != nil {
+				t.Fatal(err)
+			}
 		}
 		doc, err := p.Submit(t.Context(), ingest.Input{Kind: "text", Source: source, Text: text, Title: "Wire <fixture>"})
 		if err != nil || doc.Noop {
@@ -71,6 +75,24 @@ func TestPipelineStoredJudgeInputMatchesWire(t *testing.T) {
 			t.Fatal(err)
 		}
 		after, err := env.st.RunReadQuery(t.Context(), query, map[string]any{"doc": doc.DocumentID}, 2)
+		if opt.verdict == "refuted" {
+			if err != nil || len(after.Rows) != 0 || len(requests) != 1 {
+				t.Fatalf("refuted edges=%v requests=%d err=%v", after.Rows, len(requests), err)
+			}
+			recorded := <-requests
+			if recorded.body != previousBody || recorded.props["judge_input"] == nil {
+				t.Fatal("refuted iteration did not judge the original stored bytes")
+			}
+			audits, err := env.st.RunReadQuery(t.Context(), `MATCH (a:RejectedFact {doc_id:$doc})
+RETURN a.judge_verdict AS verdict, a.reason AS reason`, map[string]any{"doc": doc.DocumentID}, 2)
+			if err != nil || len(audits.Rows) != 1 || audits.Rows[0]["verdict"] != "refuted" || audits.Rows[0]["reason"] != "provider reason" {
+				t.Fatalf("refuted audits = %+v, %v", audits, err)
+			}
+			if err := env.st.DeleteDocument(t.Context(), doc.DocumentID); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
 		if err != nil || len(after.Rows) != 1 {
 			t.Fatalf("typed edge after Process = %+v, %v", after, err)
 		}

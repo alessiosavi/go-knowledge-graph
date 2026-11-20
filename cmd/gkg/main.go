@@ -457,7 +457,9 @@ func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*in
 	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg), conv))
 	pipe.SetWriteMode(writeMode)
 	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
-		pipe.SetJudge(newFactJudge(cfg, st))
+		if err := pipe.SetJudge(newFactJudge(cfg, st)); err != nil {
+			return nil, nil, err
+		}
 	}
 	var emb embed.Provider
 	if cfg.Embedder.Enabled {
@@ -782,7 +784,7 @@ commands:
   preset check FILE [-stoplist FILE]  validate a label and hygiene preset
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
   domain    list, inspect, evaluate and administer domains through serve
-  judge     backfill candidates, audit facts, or evaluate judge v2
+  judge     backfill candidates or stored typed edges, audit facts, or evaluate judge v2
   quality   report read-only graph quality metrics and optional private hygiene samples
   fold rebuild [-exceptions FILE | -clear-exceptions]  rebuild advisory entity folds
   merge-folds -plan -out FILE [-domain SLUG] [-timeout DURATION]  report proposed entity merges

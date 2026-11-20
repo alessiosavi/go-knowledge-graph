@@ -32,10 +32,15 @@ type backfillFixture struct {
 
 func backfillQuery(t *testing.T, q string, params map[string]any) {
 	t.Helper()
-	ctx := context.Background()
+	if err := backfillQueryErr(context.Background(), q, params); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func backfillQueryErr(ctx context.Context, q string, params map[string]any) error {
 	d, err := neo4j.NewDriver(os.Getenv(graphtest.URIEnv), neo4j.NoAuth())
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	defer d.Close(ctx)
 	s := d.NewSession(ctx, neo4j.SessionConfig{})
@@ -44,9 +49,7 @@ func backfillQuery(t *testing.T, q string, params map[string]any) {
 	if err == nil {
 		_, err = r.Consume(ctx)
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	return err
 }
 
 func newBackfillFixture(t *testing.T, n int) backfillFixture {

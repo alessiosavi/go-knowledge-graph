@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,8 +32,9 @@ func (s failingRejudgeCache) PutJudgeVerdict(context.Context, graph.JudgeVerdict
 
 func TestRejudgeCacheReadErrorStopsBeforeDebit(t *testing.T) {
 	st := graphtest.Store(t)
+	var calls atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		t.Error("strict cache read failure reached provider")
+		calls.Add(1)
 		http.Error(w, "unexpected", http.StatusBadRequest)
 	}))
 	defer provider.Close()
@@ -45,13 +47,13 @@ func TestRejudgeCacheReadErrorStopsBeforeDebit(t *testing.T) {
 	before := graphtest.Snapshot(t)
 	cacheErr := errors.New("test cache offline")
 	result, err := judgeRejudge(t.Context(), st, failingRejudgeCache{cacheErr}, client, "", opt)
-	if !errors.Is(err, cacheErr) || result.Attempts != 0 {
-		t.Fatalf("result=%+v err=%v", result, err)
+	if !errors.Is(err, cacheErr) || result.Attempts != 0 || calls.Load() != 0 {
+		t.Fatalf("result=%+v provider calls=%d err=%v", result, calls.Load(), err)
 	}
 	if f, err := os.Stat(opt.Out); err != nil || f.Size() != 0 {
 		t.Fatalf("read error wrote verdicts: %v %v", f, err)
 	}
-	before.AssertUnchanged(t, "failed cache lookup")
+	before.AssertJudgeLeaseFenceAdvanced(t, "failed cache lookup", 1)
 }
 
 func writeRejudgeTestManifest(t *testing.T, path, model string) rejudgeManifestRow {
@@ -88,11 +90,11 @@ type rejudgeLeaseHook struct {
 	beforeAcquire func() error
 }
 
-func (s rejudgeLeaseHook) AcquireLease(ctx context.Context, name, owner string, ttl time.Duration, force bool) (bool, error) {
+func (s rejudgeLeaseHook) AcquireRejudgeLease(ctx context.Context, owner string, ttl time.Duration) (bool, error) {
 	if err := s.beforeAcquire(); err != nil {
 		return false, err
 	}
-	return s.Store.AcquireLease(ctx, name, owner, ttl, force)
+	return s.Store.AcquireRejudgeLease(ctx, owner, ttl)
 }
 
 type rejudgeTestTransport func(*http.Request) (*http.Response, error)

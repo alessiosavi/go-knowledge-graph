@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -143,11 +144,133 @@ func TestJudgeBackfillCLI(t *testing.T) {
 	t.Setenv("GKG_MEMGRAPH_URI", os.Getenv(graphtest.URIEnv))
 	t.Setenv("GKG_JUDGE_BASE_URL", srv.URL)
 	var out, stderr bytes.Buffer
-	if code := run([]string{"judge", "backfill", "--domain", tag, "--budget-calls", "1"}, &out, &stderr); code != 0 || calls != 1 || !strings.Contains(out.String(), "confirmed=1") || !strings.Contains(out.String(), "attempts=1") {
+	const want = "judged=1 confirmed=1 unclear=0 refuted=0 vanished=0 orphaned=0 failed=0 cache_hits=0 attempts=1 stopped_for_budget=false\n"
+	if code := run([]string{"judge", "backfill", "--domain", tag, "--budget-calls", "1"}, &out, &stderr); code != 0 || calls != 1 || out.String() != want {
 		t.Fatalf("exit=%d calls=%d stdout=%s stderr=%s", code, calls, &out, &stderr)
 	}
 	candidates, err := st.UnjudgedCandidates(t.Context(), tag, 0)
 	if err != nil || len(candidates) != 0 {
 		t.Fatalf("remaining=%+v %v", candidates, err)
+	}
+}
+
+func TestJudgeBackfillEdgesInvalidURL(t *testing.T) {
+	t.Setenv("GKG_CONFIG", "")
+	t.Setenv("GKG_MEMGRAPH_URI", "invalid://graph-should-not-open")
+	for _, base := range []string{"/", "///", "https://", "ftp://localhost", "://bad", "http://localhost:bad"} {
+		t.Run(base, func(t *testing.T) {
+			t.Setenv("GKG_JUDGE_BASE_URL", base)
+			var out, stderr bytes.Buffer
+			if code := run([]string{"judge", "backfill", "--edges", "--budget-calls", "1"}, &out, &stderr); code != 2 || out.Len() != 0 || !strings.Contains(stderr.String(), "valid HTTP(S)") {
+				t.Fatalf("exit=%d stdout=%q stderr=%q; want URL rejection before graph open", code, out.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestJudgeBackfillEdgesProviderNotFound(t *testing.T) {
+	st := graphtest.Store(t)
+	tag := fmt.Sprintf("backfill-404-%d", time.Now().UnixNano())
+	doc, err := st.UpsertDocument(t.Context(), graph.DocumentInput{Kind: "text", Source: tag, Hash: tag, Domain: tag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.DeleteDocument(context.Background(), doc.ID) })
+	if err := st.SetStatus(t.Context(), doc.ID, graph.StatusDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	const evidence = "Acme-Max uses Zorbo."
+	if err := st.PutChunks(t.Context(), doc.ID, []graph.Chunk{{Text: evidence, End: len(evidence)}}); err != nil {
+		t.Fatal(err)
+	}
+	payload := ingest.CanonicalJudgeInput(ingest.FactInput{Head: "Acme-Max", Rel: "uses", Tail: "Zorbo", Evidence: evidence, Confidence: 0.8})
+	ents := []graph.EntityUpsert{{Key: tag + "-h1", Name: "Acme-Max"}, {Key: tag + "-h2", Name: "Acme-Max"}, {Key: tag + "-tail", Name: "Zorbo"}}
+	var facts []graph.FactUpsert
+	for i := range 2 {
+		facts = append(facts, graph.FactUpsert{HeadKey: ents[i].Key, TailKey: ents[2].Key, Rel: "uses", Confidence: 0.8, JudgeInput: payload, JudgeGen: fmt.Sprint(i)})
+	}
+	if err := st.UpsertExtractionOpts(t.Context(), doc.ID, doc.ID+"-c0", "mock:1", ents, facts, graph.WriteOptions{StoreJudgeInput: true}); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer provider.Close()
+	t.Setenv("GKG_CONFIG", "")
+	t.Setenv("GKG_MEMGRAPH_URI", os.Getenv(graphtest.URIEnv))
+	t.Setenv("GKG_JUDGE_BASE_URL", provider.URL)
+	var out, stderr bytes.Buffer
+	code := run([]string{"judge", "backfill", "--edges", "--domain", tag, "--budget-calls", "3"}, &out, &stderr)
+	rows := migrationQuery(t, `MATCH ()-[r:uses]->() WHERE r.doc_id=$doc RETURN r.judge AS judge, r.judge_input AS input`, map[string]any{"doc": doc.ID})
+	if code != 0 || calls.Load() != 1 || !strings.Contains(out.String(), "selected=1 ") ||
+		!strings.Contains(out.String(), "attempts=1 ") || !strings.Contains(out.String(), "failed=0 ") || !strings.Contains(out.String(), "stopped_provider=true ") {
+		t.Errorf("exit=%d calls=%d stdout=%q stderr=%q", code, calls.Load(), out.String(), stderr.String())
+	}
+	if len(rows) != 2 {
+		t.Fatalf("want two remaining edges, got %d", len(rows))
+	}
+	for _, row := range rows {
+		if row.Values[0] != "" || row.Values[1] != string(payload) {
+			t.Errorf("provider stop modified edge: %v", row.Values)
+		}
+	}
+}
+
+func TestJudgeBackfillEdgesPreconditions(t *testing.T) {
+	st := graphtest.Store(t)
+	t.Setenv("GKG_CONFIG", "")
+	t.Setenv("GKG_MEMGRAPH_URI", os.Getenv(graphtest.URIEnv))
+	t.Setenv("GKG_JUDGE_API_KEY", "")
+	t.Setenv("GKG_JUDGE_MODEL", "deepseek-v4.1-flash")
+	var calls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer provider.Close()
+	t.Setenv("GKG_JUDGE_BASE_URL", provider.URL+"///")
+	version, err := st.SchemaVersion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const setVersion = "MATCH (m:GkgMeta {id:'extraction_schema'}) SET m.value=$version"
+	migrationQuery(t, setVersion, map[string]any{"version": 3})
+	t.Cleanup(func() { migrationQuery(t, setVersion, map[string]any{"version": version}) })
+	args := []string{"judge", "backfill", "--edges", "--budget-calls", "1", "--domain", "fixture-missing-domain"}
+	before := graphtest.Snapshot(t)
+	var out, stderr bytes.Buffer
+	if code := run(args, &out, &stderr); code != 2 || out.Len() != 0 || !strings.Contains(stderr.String(), "schema v4") {
+		t.Fatalf("schema v3 exit=%d stdout=%q stderr=%q", code, out.String(), stderr.String())
+	}
+	before.AssertUnchanged(t, "rejected domain")
+	migrationQuery(t, setVersion, map[string]any{"version": 4})
+	stderr.Reset()
+	if code := run(args, &out, &stderr); code != 0 || !strings.Contains(stderr.String(), "API key is empty") {
+		t.Fatalf("empty API key exit=%d stdout=%q stderr=%q", code, out.String(), stderr.String())
+	}
+	want := "selected=0 invalid=0 judged=0 cache_hits=0 attempts=0 confirmed=0 unclear=0 refuted=0 failed=0 discarded=0 stopped_for_budget=false stopped_provider=false lease_lost=false model=deepseek-v4.1-flash\n"
+	if out.String() != want {
+		t.Fatalf("summary = %q, want %q", out.String(), want)
+	}
+	for _, name := range []string{graph.ValidityApplyLease, graph.RejudgeLeaseName} {
+		t.Run(name, func(t *testing.T) {
+			const owner = "fixture-owner"
+			if ok, err := st.AcquireLease(t.Context(), name, owner, time.Minute, false); err != nil || !ok {
+				t.Fatalf("seed lease=%t, %v", ok, err)
+			}
+			t.Cleanup(func() { _ = st.ReleaseLease(context.Background(), name, owner) })
+			before := graphtest.Snapshot(t)
+			out.Reset()
+			stderr.Reset()
+			if code := run(append(args, "--force"), &out, &stderr); code != 2 || out.Len() != 0 || !strings.Contains(stderr.String(), name) {
+				t.Fatalf("exclusion exit=%d stdout=%q stderr=%q", code, out.String(), stderr.String())
+			}
+			before.AssertUnchanged(t, "refused edge backfill")
+		})
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("precondition checks made %d provider calls, want none", got)
 	}
 }

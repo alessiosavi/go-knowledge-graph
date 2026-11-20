@@ -356,21 +356,81 @@ without them search is text-only. The judge verifies facts after extraction
 against their evidence sentence and removes refuted ones with an audit
 trail.
 
-Set `GKG_JUDGE_STORE_INPUTS=true` to retain the original judge request on
-new typed edges that remain unjudged. This opt-in applies in all four online
-judge modes, including `off`. It defaults to false and is incompatible with
-`GKG_FACTS_REQUIRE_CONFIRMATION=true`. The existing backfill command processes
-fact candidates.
+Set `GKG_JUDGE_STORE_INPUTS=true` on the service to enable deferred judging
+of typed edges. It defaults to false and is incompatible with
+`GKG_FACTS_REQUIRE_CONFIRMATION=true`.
 
-The judge honours `Retry-After` on retryable responses and uses jittered
-backoff when the header is missing or invalid. It allows up to six retries
-and caps total retry waits at three minutes per fact. Each provider attempt
-can take up to the 120-second HTTP timeout, so one fact can take well over
-three minutes under sustained HTTP 429 responses. `gkg judge backfill` judges
-only fact candidates, which exist only with `GKG_FACTS_REQUIRE_CONFIRMATION=true`
-(and therefore `GKG_JUDGE_MODE=all`); facts the online judge skips in the
-`off`, `low-confidence` or `sample` modes have no backfill path. Judge budgets count every
-provider attempt, including retries.
+| `GKG_JUDGE_MODE` | Online selection | `STORE_INPUTS=false` | `STORE_INPUTS=true` |
+| --- | --- | --- | --- |
+| `off` | None | No typed-edge backfill | All new typed edges can be backfilled |
+| `low-confidence` | Below the verify floor | No typed-edge backfill | Skipped edges and failures can be backfilled |
+| `sample` | Deterministic sample | No typed-edge backfill | Skipped edges and failures can be backfilled |
+| `all` | All facts | No typed-edge backfill | Failed judgments can be backfilled |
+
+Only typed edges written with the setting enabled have a request to replay.
+An explicit rebuild can regenerate older edges by re-extracting their chunks
+and replacing existing facts and rejection audits. Edge backfill requires the
+document to be `done`.
+
+The judge honours `Retry-After` and uses jittered backoff when the header is
+missing or invalid. It allows up to six retries and caps total retry waits at
+three minutes per fact. Each attempt can take up to the 120-second HTTP
+timeout. Budgets count provider attempts including retries. Cache hits use no
+attempts. If a verdict reached the cache before an interruption, the same
+request and model can reuse it on the next run.
+
+HTTP 401, 403, 404, 405, 415, 429, and 5xx, along with network errors and
+timeouts, stop the run with `stopped_provider=true` when attempts for the
+request are exhausted. The edge stays pending. Row-specific errors such as
+HTTP 400, an undecodable response, or an unknown verdict are logged and the
+run continues.
+
+Run backfill in the service container to share the online judge configuration
+and verdict cache.
+
+```sh
+docker compose --env-file .env -f deploy/docker-compose.yml exec -T gkg gkg judge backfill --edges --budget-calls 120
+```
+
+For nightly runs, place these example units in `/etc/systemd/system/` and
+replace the working directory, environment file and budget with your deployment
+values.
+
+```ini
+# gkg-edge-backfill.service
+[Unit]
+Description=Judge pending gkg typed edges
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/gkg
+ExecStart=/usr/bin/docker compose --env-file .env -f deploy/docker-compose.yml exec -T gkg gkg judge backfill --edges --budget-calls 120
+```
+
+```ini
+# gkg-edge-backfill.timer
+[Unit]
+Description=Run gkg edge backfill nightly
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable it with `sudo systemctl enable --now gkg-edge-backfill.timer`. For a
+quiescent validity repair, stop the timer with
+`sudo systemctl stop gkg-edge-backfill.timer`. Let any active service run
+finish and check `systemctl status gkg-edge-backfill.service`. Check for manual
+backfill processes with `docker compose --env-file .env -f deploy/docker-compose.yml top gkg`
+from the deployment project. Verify no live `judge-backfill` lease remains before
+`repair-validity -classify`. Keep the timer stopped until the post-apply
+decision. Edge backfill excludes active rejudge and validity-apply leases.
+Pending opted-in edges remain in both catalogs, and validity-deferred edges
+with stored input can be backfilled after the repair window. Rejudge
+before-images include the stored requests.
 
 `GKG_FACTS_REQUIRE_CONFIRMATION=true` (`facts.require_confirmation`, default
 `false`) requires `GKG_JUDGE_MODE=all`; other judge modes fail config loading
@@ -382,10 +442,10 @@ audit. Entity facts and traversal therefore expose only confirmed edges in
 this mode; co-mentions still come from mentions. Before schema v4, extraction
 keeps writing typed edges directly, as with the default setting.
 
-Use `gkg judge backfill --limit 100 --budget-calls 120` to judge pending
-candidates, including those left on `done` documents by interrupted verification.
-`--budget-calls` is required and must be greater than zero; missing or invalid
-budgets exit 2 with usage.
+Use `gkg judge backfill --limit 100 --budget-calls 120` without `--edges` to
+judge pending candidates, including those left on `done` documents by
+interrupted verification. `--budget-calls` must be greater than zero. Missing
+or invalid budgets exit 2 with usage.
 Cache hits consume no provider attempts; retries count against the budget.
 `--domain <slug>` restricts candidates and `--force` takes over the backfill lease.
 For a manually labelled precision audit, run

@@ -50,7 +50,9 @@ func TestPrepareStoredJudgeInputs(t *testing.T) {
 
 	j := &invalidStoredJudge{}
 	p.cfg.Judge = config.JudgeConfig{StoreInputs: true, Mode: "all"}
-	p.SetJudge(j)
+	if err := p.SetJudge(j); err != nil {
+		t.Fatal(err)
+	}
 	p.verifyFacts(t.Context(), doc, []judgeCandidate{
 		{fact: facts[0], inputHash: "persisted hash"},
 		{fact: facts[2]},
@@ -78,4 +80,28 @@ func (j *invalidStoredJudge) VerifyPayload(_ context.Context, p JudgePayload, _ 
 	j.payloadCalls++
 	j.payload = p
 	return Verdict{}, ErrInvalidJudgePayload
+}
+
+type legacyPayloadJudge struct{ FactJudge }
+
+func (legacyPayloadJudge) VerifyPayload(context.Context, JudgePayload) (Verdict, error) {
+	panic("the two-argument API must not be called")
+}
+
+func TestSetJudgeRequiresStoredPayloadSupportAtSetup(t *testing.T) {
+	j := legacyPayloadJudge{}
+	for _, storeInputs := range []bool{false, true} {
+		p := &Pipeline{cfg: config.Config{Judge: config.JudgeConfig{StoreInputs: storeInputs}}}
+		err := p.SetJudge(j)
+		if storeInputs {
+			if err == nil || !strings.Contains(err.Error(), "VerifyPayload") || p.judge != nil {
+				t.Fatalf("opted-in attachment err=%v judge=%v", err, p.judge)
+			}
+			if err := p.SetJudge(nil); err != nil {
+				t.Fatalf("judge-off configuration rejected: %v", err)
+			}
+		} else if err != nil || p.judge != j {
+			t.Fatalf("legacy attachment err=%v judge=%v", err, p.judge)
+		}
+	}
 }

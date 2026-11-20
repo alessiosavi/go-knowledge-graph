@@ -61,7 +61,7 @@ func (c *Cached) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 	if payload == nil {
 		return ingest.Verdict{}, fmt.Errorf("judge: encode payload: confidence must be finite")
 	}
-	return c.verify(ctx, RequestKey(payload, c.model), PromptVersion, in.DocID, false, func() (ingest.Verdict, error) {
+	return c.verify(ctx, RequestKey(payload, c.model), PromptVersion, in.DocID, verdictCachePolicy{}, func() (ingest.Verdict, error) {
 		return c.inner.VerifyFact(ctx, in)
 	})
 }
@@ -69,10 +69,14 @@ func (c *Cached) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 // VerifyPayload validates the stored v1 message before consulting the same
 // cache used by VerifyFact. The document ID only identifies the cache owner.
 func (c *Cached) VerifyPayload(ctx context.Context, p ingest.JudgePayload, docID string) (ingest.Verdict, error) {
+	return c.verifyPayload(ctx, p, docID, verdictCachePolicy{})
+}
+
+func (c *Cached) verifyPayload(ctx context.Context, p ingest.JudgePayload, docID string, policy verdictCachePolicy) (ingest.Verdict, error) {
 	if err := validatePayload(p); err != nil {
 		return ingest.Verdict{}, err
 	}
-	return c.verify(ctx, RequestKey(p.Bytes, c.model), PromptVersion, docID, false, func() (ingest.Verdict, error) {
+	return c.verify(ctx, RequestKey(p.Bytes, c.model), PromptVersion, docID, policy, func() (ingest.Verdict, error) {
 		inner, ok := c.inner.(interface {
 			VerifyPayload(context.Context, ingest.JudgePayload) (ingest.Verdict, error)
 		})
@@ -92,7 +96,7 @@ func (c *Cached) VerifyRequest(ctx context.Context, req Request, definitions map
 		return ingest.Verdict{}, err
 	}
 	key := RequestKeyV2(req.RequestBytes, req.Profile.Fingerprint)
-	return c.verify(ctx, key, req.Profile.Fingerprint, req.DocID, true, func() (ingest.Verdict, error) {
+	return c.verify(ctx, key, req.Profile.Fingerprint, req.DocID, verdictCachePolicy{strict: true}, func() (ingest.Verdict, error) {
 		inner, ok := c.inner.(interface {
 			VerifyRequest(context.Context, Request, map[string]map[string]string) (ingest.Verdict, error)
 		})
@@ -103,17 +107,22 @@ func (c *Cached) VerifyRequest(ctx context.Context, req Request, definitions map
 	})
 }
 
-func (c *Cached) verify(ctx context.Context, key, promptVersion, docID string, strict bool, call func() (ingest.Verdict, error)) (ingest.Verdict, error) {
+type verdictCachePolicy struct {
+	strict        bool
+	detachedWrite bool
+}
+
+func (c *Cached) verify(ctx context.Context, key, promptVersion, docID string, policy verdictCachePolicy, call func() (ingest.Verdict, error)) (ingest.Verdict, error) {
 	v, ok, err := c.store.JudgeVerdict(ctx, key)
 	switch {
 	case err != nil && ctx.Err() != nil:
 		return ingest.Verdict{}, ctx.Err()
 	case err != nil:
-		if !strict {
+		if !policy.strict {
 			slog.Warn("judge: verdict cache read failed, asking the provider", "key", key, "err", err)
 		}
 		c.count("read_error")
-		if strict {
+		if policy.strict {
 			return ingest.Verdict{}, fmt.Errorf("judge: read verdict cache: %w", err)
 		}
 	case ok:
@@ -131,15 +140,24 @@ func (c *Cached) verify(ctx context.Context, key, promptVersion, docID string, s
 	default:
 		return ingest.Verdict{}, fmt.Errorf("judge: invalid verdict status %q", verdict.Status)
 	}
+	if policy.detachedWrite {
+		// A paid verdict remains reusable even if the run loses its lease
+		// or is canceled before it can apply the edge update.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+	}
 	if err := c.store.PutJudgeVerdict(ctx, graph.JudgeVerdict{
 		Key: key, Status: verdict.Status, Confidence: verdict.Confidence, Reason: verdict.Reason,
 		Model: c.model, PromptVersion: promptVersion, DocID: docID, At: time.Now().UTC(),
 	}); err != nil {
-		if !strict {
+		if policy.detachedWrite {
+			slog.Warn("judge: edge backfill verdict cache write failed", "key", key, "err", err)
+		} else if !policy.strict {
 			slog.Warn("judge: verdict cache write failed, verdict applied uncached", "key", key, "err", err)
 		}
 		c.count("write_error")
-		if strict {
+		if policy.strict {
 			return verdict, fmt.Errorf("judge: write verdict cache: %w", err)
 		}
 	}
