@@ -230,6 +230,7 @@ func validityBulkRun(t *testing.T, st *graph.Store, statuses map[string]string) 
 
 func TestRepairValidityProjection(t *testing.T) {
 	st := validityFixture(t)
+	t.Setenv("GKG_JUDGE_MODEL", "fixture-model-b")
 	baseline, err := st.CountValidityEdges(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -325,6 +326,9 @@ WHERE h.key IN $keys SET r.low_confidence = true`, map[string]any{"keys": []stri
 		"validity-" + t.Name() + "-unclear-rewrite-source",
 		"validity-" + t.Name() + "-bulk-unclear-source",
 	}})
+	migrationQuery(t, `MATCH (:Entity)-[r:uses]->(:Entity)
+WHERE r.doc_id STARTS WITH $prefix AND r.judge = 'confirmed' SET r.judge_model = $model`,
+		map[string]any{"prefix": "validity-" + t.Name() + "-", "model": priorValidityModel})
 
 	manifest, verdicts := validityBulkRun(t, st, bulkStatuses)
 	planArgs := []string{"-plan", "-manifest", manifest, "-verdicts", verdicts}

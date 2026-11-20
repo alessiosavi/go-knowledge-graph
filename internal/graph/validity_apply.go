@@ -139,6 +139,7 @@ type ValidityWrite struct {
 	Outcome                      validity.Outcome
 	ValidityRun, Rule, Reason    string
 	Judge, JudgeRun, JudgePrompt string
+	Model                        string
 	Destination                  *validity.DestinationKey
 	HeadSurface                  string
 }
@@ -230,11 +231,16 @@ RETURN id(r) AS edge, coalesce(h.domain, '') AS domain, d IS NOT NULL AS has_doc
 				return err
 			}
 		case validity.OutcomeStamp, validity.OutcomeDemote:
-			params["judge"], params["judge_run"], params["judge_prompt"] = w.Judge, w.JudgeRun, w.JudgePrompt
-			params["validity_run"] = w.ValidityRun
+			props := map[string]any{
+				"judge": w.Judge, "judge_run": w.JudgeRun, "judge_prompt": w.JudgePrompt,
+				"judge_prior": f.Judge, "validity_run": w.ValidityRun,
+			}
+			if w.Model != "" {
+				props["judge_model"] = w.Model
+			}
+			params["props"] = props
 			return validityWriteOne(read, "update source edge", validityExactEdge+`
-SET r.judge = $judge, r.judge_run = $judge_run, r.judge_prompt = $judge_prompt,
-    r.judge_prior = $prior, r.validity_run = $validity_run
+SET r += $props
 RETURN count(r) AS n`, params)
 		case validity.OutcomeRewriteConfirmed, validity.OutcomeRewriteUnclear:
 			if err := writeValidityRewrite(read, fact, w); err != nil {
@@ -263,11 +269,12 @@ func validityWriteOne(read rejudgeRead, action, query string, params map[string]
 }
 
 func writeValidityAudit(read rejudgeRead, fact RejudgeFact, w ValidityWrite) error {
-	rows, err := read(`MATCH (rf:RejectedFact {id:$id}) RETURN properties(rf) AS prior`, map[string]any{"id": fact.ID})
+	rows, err := read(`MATCH (rf:RejectedFact {id:$id}) RETURN properties(rf) AS prior, rf.judge_model AS model`, map[string]any{"id": fact.ID})
 	if err != nil {
 		return err
 	}
 	var prior any
+	model := judgeModelOrNil(w.Model)
 	switch len(rows) {
 	case 0:
 	case 1:
@@ -277,6 +284,9 @@ func writeValidityAudit(read rejudgeRead, fact RejudgeFact, w ValidityWrite) err
 			return fmt.Errorf("encode prior audit: %w", err)
 		}
 		prior = string(raw)
+		if model == nil {
+			model, _ = rows[0].Get("model")
+		}
 	default:
 		return fmt.Errorf("source has %d prior RejectedFact rows, expected at most 1", len(rows))
 	}
@@ -289,7 +299,7 @@ func writeValidityAudit(read rejudgeRead, fact RejudgeFact, w ValidityWrite) err
 		Score: fact.Confidence, JudgeVerdict: w.Judge, Reason: w.Reason, ExtractorVersion: fact.ExtractorVersion,
 	})
 	props["id"], props["validity_rule"], props["validity_run"] = fact.ID, w.Rule, w.ValidityRun
-	props["judge_run"], props["judge_prompt"] = w.JudgeRun, w.JudgePrompt
+	props["judge_run"], props["judge_prompt"], props["judge_model"] = w.JudgeRun, w.JudgePrompt, model
 	props["edge_before"], props["prior_audit"] = string(before), prior
 	return validityWriteOne(read, "write RejectedFact", `
 MATCH (:Document {id:$doc})
@@ -312,6 +322,7 @@ func writeValidityRewrite(read rejudgeRead, fact RejudgeFact, w ValidityWrite) e
 		"head_key": k.HeadKey, "tail_key": k.TailKey, "doc_id": fact.DocID, "chunk_id": fact.ChunkID,
 		"head_surface": w.HeadSurface, "reattached_from": fact.ID, "validity_rule": w.Rule, "validity_run": w.ValidityRun,
 		"judge": w.Judge, "judge_run": w.JudgeRun, "judge_prompt": w.JudgePrompt,
+		"judge_model": judgeModelOrNil(w.Model),
 	}
 	for _, key := range []string{"head_start", "head_end", "tail_start", "tail_end", "confidence", "low_confidence", "extractor_version"} {
 		if value, ok := fact.Before[key]; ok {

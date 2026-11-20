@@ -264,11 +264,13 @@ func validityWriteFor(input validity.InputsRow, row validity.FinalRow, draft val
 		Source: source.manifest.RejudgeIdentity, DocID: source.manifest.Request.DocID,
 		Outcome: row.FinalOutcome, ValidityRun: validityRun, Rule: row.Rule,
 		Judge: source.verdict.Verdict, JudgeRun: draft.summary.ManifestDigest[:16], JudgePrompt: source.verdict.Fingerprint,
+		Model: source.manifest.Request.Profile.Model,
 	}
 	candidate := draft.rewriteBySource[input.ID]
 	if candidate.ID != "" {
 		verdict := rewrite.verdicts[candidate.ID]
 		w.Judge, w.JudgeRun, w.JudgePrompt = verdict.Verdict, draft.rewriteDigest[:16], verdict.Fingerprint
+		w.Model = candidate.Request.Profile.Model
 		w.Destination, w.HeadSurface = input.Destination, strings.TrimSpace(input.Target.Name)
 	}
 	switch row.FinalOutcome {

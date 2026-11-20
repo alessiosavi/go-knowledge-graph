@@ -643,8 +643,10 @@ request from the edge. Refutation removes the edge and writes a rejection audit.
 Online judging and both backfill modes record `judge_model` on confirmed and
 unclear typed edges, unclear candidates, and rejection audits from refuted
 verdicts. Promoted candidates carry the model on the resulting edge. Cache hits
-use the cached verdict's model. Existing graph records keep their historical
-properties, and rows without known provenance have no `judge_model` property.
+use the cached verdict's model. Historical verdicts with unknown provenance
+lack `judge_model`. When the sealed rejudge run recorded a model,
+`repair-validity -apply` writes it on stamped, demoted, and rewritten edges and
+on rejection audits; otherwise an existing `judge_model` is left as it was.
 
 Run the typed-edge backfill inside the running service container so it uses the
 same judge model and cache as ingest.
