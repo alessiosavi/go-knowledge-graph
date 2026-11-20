@@ -573,7 +573,8 @@ paths:
     get:
       tags: [products]
       operationId: getProduct
-      summary: Get a product and its active feature observations by graph ID
+      summary: >-
+        Look up a product by graph ID with active feature observations and up to three associated pages (pages_missing when none)
       parameters:
         - name: id
           in: path
@@ -596,7 +597,8 @@ paths:
     get:
       tags: [products]
       operationId: lookupProduct
-      summary: Get a product and its active feature observations by exact store and source ID
+      summary: >-
+        Look up a product by exact store and source ID with active feature observations and up to three associated pages (pages_missing when none)
       parameters:
         - name: store
           in: query
@@ -1139,7 +1141,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     ProductDetail:
-      description: Product metadata and observations carrying the active release ID.
+      description: Product metadata, observations carrying the active release ID, and associated pages.
       content:
         application/json:
           schema:
@@ -1193,12 +1195,27 @@ components:
       allOf:
         - $ref: "#/components/schemas/Product"
         - type: object
-          required: [features]
+          required: [features, pages, pages_missing]
           properties:
             features:
               type: array
               items:
                 $ref: "#/components/schemas/ProductEvidence"
+            pages:
+              type: array
+              maxItems: 3
+              description: Live, done documents in the bound domain with a canonical source or final URL matching the product link, newest update first.
+              items:
+                $ref: "#/components/schemas/ProductPage"
+            pages_missing: { type: boolean, description: True when the pages array is empty. }
+    ProductPage:
+      type: object
+      required: [id, title, source, updated_at]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        source: { type: string, description: Stored document source. }
+        updated_at: { type: string, format: date-time }
     ProductFeature:
       type: object
       required: [id, name, kind, cardinality, canonical_unit]

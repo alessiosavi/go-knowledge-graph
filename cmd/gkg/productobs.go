@@ -73,6 +73,8 @@ func runProducts(args []string, stdout, stderr io.Writer) int {
 		return runProductRelease(args[1:], stdout, stderr)
 	case len(args) > 0 && args[0] == "import":
 		return runProductImport(args[1:], stdout, stderr)
+	case len(args) > 0 && args[0] == "pages-report":
+		return runProductPagesReport(args[1:], stdout, stderr)
 	case len(args) > 0 && (args[0] == "delete-store" || args[0] == "unbind"):
 		return runProductStoreAdmin(args, stdout, stderr)
 	case len(args) == 0 || args[0] != "emit":

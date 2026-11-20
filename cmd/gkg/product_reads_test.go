@@ -11,11 +11,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	mcpgo "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/mcp"
 	"github.com/alessiosavi/go-knowledge-graph/internal/productobs"
 )
@@ -36,7 +38,8 @@ func TestProductReadPaths(t *testing.T) {
 	t.Cleanup(func() {
 		query(`MATCH (n) WHERE n:FeatureRegistry OR n:FeatureRev OR n:ProductRelease OR n:ProductStore
 			OR n:Product OR (n:GkgMeta AND n.id IN ['product_release','feature_registry_import'])
-			OR (n:Domain AND n.id IN ['product-reads','other-product-reads']) DETACH DELETE n`, nil)
+			OR (n:Domain AND n.id IN ['product-reads','other-product-reads'])
+			OR (n:Document AND n.domain IN ['product-reads','other-product-reads']) DETACH DELETE n`, nil)
 	})
 	query(`CREATE (:Domain {id:'product-reads'}), (:Domain {id:'other-product-reads'})`, nil)
 
@@ -74,10 +77,12 @@ func TestProductReadPaths(t *testing.T) {
 	create(wide, keys.String())
 	create(narrow, length+","+otherLength)
 
-	fixture := snapshotRecord("example.test:1", "conflict", `{"length":"2 cm","size":"3 cm","codes":" c 1 / B2"}`) +
-		snapshotRecord("example.test:2", "unsplit", `{"length":"20 mm","codes":"A/(B"}`) +
-		snapshotRecord("example.test:3", "range", `{"length":"10-20 mm"}`) +
-		snapshotRecord("example.test:4", "no features", "{}")
+	const originalLink = "https://example.test/item"
+	const pageLink = "HTTPs://eXample.TEST/Item/?sku=A%2F1&z=2#frag"
+	fixture := strings.Replace(snapshotRecord("example.test:1", "conflict", `{"length":"2 cm","size":"3 cm","codes":" c 1 / B2"}`), originalLink, pageLink, 1) +
+		strings.Replace(snapshotRecord("example.test:2", "unsplit", `{"length":"20 mm","codes":"A/(B"}`), originalLink, "https://example.test/single", 1) +
+		strings.Replace(snapshotRecord("example.test:3", "range", `{"length":"10-20 mm"}`), originalLink, "/item", 1) +
+		strings.Replace(snapshotRecord("example.test:4", "no features", "{}"), originalLink, "", 1)
 	importSnapshot := func(t *testing.T, store, release, seq, data, want string) {
 		t.Helper()
 		file := writeProductFixture(t, dir, store+"-"+seq+".jsonl", data)
@@ -223,6 +228,11 @@ func TestProductReadPaths(t *testing.T) {
 		if list["active_release_id"] != nil || store["wiped"] != false || store["release_id"] != nil {
 			t.Fatalf("unexpected bound store: %v", list)
 		}
+		out := productCLI(t, 0, "example.test", "products", "pages-report", "-store", "example.test", "-json")
+		const want = `[{"store":"example.test","domain":"product-reads","zero":0,"one":0,"multiple":0,"missing_product_ids":[]}]`
+		if strings.TrimSpace(out) != want {
+			t.Fatalf("pages-report for an empty store = %s, want %s", out, want)
+		}
 		productCLI(t, 0, "deleted", "products", "delete-store", "example.test")
 		list = rest(t, "GET", "/v1/products/stores", "", 200)
 		store = list["stores"].([]any)[0].(productReadJSON)
@@ -260,6 +270,140 @@ func TestProductReadPaths(t *testing.T) {
 			store["product_count"] != float64(4) || store["edge_count"] != float64(6) || store["wiped"] != false {
 			t.Fatalf("unexpected watermark: %v", list)
 		}
+	})
+
+	t.Run("pages", func(t *testing.T) {
+		assertPages := func(out productReadJSON, want ...string) {
+			t.Helper()
+			pages, ok := out["pages"].([]any)
+			if !ok || len(pages) != len(want) || out["pages_missing"] != (len(want) == 0) {
+				t.Fatalf("pages = %v, pages_missing = %v, want %v", out["pages"], out["pages_missing"], want)
+			}
+			for i, id := range want {
+				page := pages[i].(productReadJSON)
+				if page["id"] != id || page["title"] == "" || page["source"] == "" {
+					t.Fatalf("page %d = %v, want %s with title and source", i, page, id)
+				}
+				if _, err := time.Parse(time.RFC3339Nano, page["updated_at"].(string)); err != nil {
+					t.Fatalf("page %d updated_at: %v", i, err)
+				}
+			}
+		}
+		get := func() productReadJSON { return rest(t, "GET", detailPath, "", 200) }
+		add := func(kind, source, final, domain, hash string, status graph.Status) graph.UpsertResult {
+			t.Helper()
+			doc, err := st.UpsertDocument(ctx, graph.DocumentInput{
+				Kind: kind, Domain: domain, Source: source, FinalURL: final, Title: hash, Hash: hash,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.SetStatus(ctx, doc.ID, status, ""); err != nil {
+				t.Fatal(err)
+			}
+			return doc
+		}
+		setUpdatedAt := func(id string, second int) {
+			t.Helper()
+			query(`MATCH (d:Document {id:$id}) SET d.updated_at=$at`, map[string]any{
+				"id": id, "at": fmt.Sprintf("2026-01-01T00:00:0%d.000000000Z", second),
+			})
+		}
+		const domain, other = "product-reads", "other-product-reads"
+		const matching = "hTTps://EXample.tesT/Item///?sku=A%2F1&z=2#old"
+		assertPages(get())
+		assertPages(tool(t, "get_product", productReadJSON{"store": "example.test", "product_id": "example.test:1"}, ""))
+		add("url", matching, "", other, "elsewhere", graph.StatusDone)
+		add("text", pageLink, "", domain, "pending", graph.StatusReceived)
+		add("url", "https://example.test/item?sku=A%2F1&z=2", "", domain, "different path case", graph.StatusDone)
+		add("url", "https://example.test/Item?z=2&sku=A%2F1", "", domain, "different query order", graph.StatusDone)
+		assertPages(get())
+		for i, link := range []string{"/item", ""} {
+			add("text", link, "", domain, fmt.Sprintf("invalid link %d", i), graph.StatusDone)
+			productID := productobs.ProductID("example.test", fmt.Sprintf("example.test:%d", i+3))
+			out := rest(t, "GET", "/v1/products/"+productID, "", 200)
+			if out["link"] != link {
+				t.Fatalf("product link = %q, want %q", out["link"], link)
+			}
+			assertPages(out)
+		}
+
+		first := add("file", matching, pageLink, domain, "first", graph.StatusDone)
+		assertPages(get(), first.ID)
+		exact := rest(t, "GET", exactPath, "", 200)
+		assertPages(exact, first.ID)
+		if page := exact["pages"].([]any)[0].(productReadJSON); page["source"] != matching || page["title"] != "first" {
+			t.Fatalf("page metadata = %v", page)
+		}
+		assertPages(tool(t, "get_product", productReadJSON{"id": id}, ""), first.ID)
+
+		newer := add("file", matching, "", domain, "newer", graph.StatusDone)
+		if newer.PreviousID != first.ID {
+			t.Fatalf("previous id = %s, want %s", newer.PreviousID, first.ID)
+		}
+		variant := add("file", pageLink, "", domain, "canonical variant", graph.StatusDone)
+		setUpdatedAt(first.ID, 1)
+		setUpdatedAt(variant.ID, 2)
+		setUpdatedAt(newer.ID, 3)
+		assertPages(get(), newer.ID)
+		productCLI(t, 0, "zero=3 one=1 multiple=0", "products", "pages-report", "-store", "example.test")
+
+		otherKind := add("url", pageLink, "", domain, "different kind", graph.StatusDone)
+		setUpdatedAt(otherKind.ID, 1)
+		assertPages(get(), newer.ID, otherKind.ID)
+		for _, doc := range []graph.UpsertResult{variant, otherKind} {
+			if err := st.DeleteDocument(ctx, doc.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := st.Supersede(ctx, first.ID, newer.ID); err != nil {
+			t.Fatal(err)
+		}
+		assertPages(get(), newer.ID)
+		if err := st.DeleteDocument(ctx, newer.ID); err != nil {
+			t.Fatal(err)
+		}
+		assertPages(get())
+
+		var competing []string
+		for i, second := range []int{2, 4, 1, 4} {
+			source := fmt.Sprintf("https://redirect.example.test/%d", i)
+			d := add("url", source, matching, domain, source, graph.StatusDone)
+			setUpdatedAt(d.ID, second)
+			competing = append(competing, d.ID)
+		}
+		assertPages(get(), min(competing[1], competing[3]), max(competing[1], competing[3]), competing[0])
+		add("url", "https://EXAMPLE.test/single/#page", "https://example.test/single", domain, "single", graph.StatusDone)
+		missing := []string{productobs.ProductID("example.test", "example.test:3"), productobs.ProductID("example.test", "example.test:4")}
+		slices.Sort(missing)
+		out := productCLI(t, 0, "example.test", "products", "pages-report", "-json")
+		want := fmt.Sprintf(`[{"store":"example.test","domain":"product-reads","zero":2,"one":1,"multiple":1,"missing_product_ids":[%q,%q]},`+
+			`{"store":"z.example.test","domain":"other-product-reads","zero":1,"one":0,"multiple":0,"missing_product_ids":[%q]}]`,
+			missing[0], missing[1], productobs.ProductID("z.example.test", "z.example.test:5"))
+		if strings.TrimSpace(out) != want {
+			t.Fatalf("pages-report = %s, want %s", out, want)
+		}
+		out = productCLI(t, 0, "zero=2 one=1 multiple=1", "products", "pages-report", "-store", "example.test")
+		if strings.Contains(out, "z.example.test") {
+			t.Fatalf("pages-report included another store: %s", out)
+		}
+		productCLI(t, 1, "missing.test", "products", "pages-report", "-store", "missing.test")
+
+		t.Run("bare_host", func(t *testing.T) {
+			setLink := func(link string) {
+				query(`MATCH (p:Product {id:$id}) SET p.link=$link`, map[string]any{"id": id, "link": link})
+			}
+			t.Cleanup(func() { setLink(pageLink) })
+			for _, tc := range []struct{ link, source string }{
+				{"https://User:Pass@bare.example.test", "HTTPS://User:Pass@BARE.EXAMPLE.TEST///#root"},
+				{"https://bücher.test", "https://BÜCHER.TEST/"},
+				{"https://kelvin.test", "https://KELVIN.TEST/"},
+			} {
+				setLink(tc.link)
+				doc := add("url", tc.source, "", domain, tc.source, graph.StatusDone)
+				assertPages(get(), doc.ID)
+			}
+		})
 	})
 
 	t.Run("semantics", func(t *testing.T) {
