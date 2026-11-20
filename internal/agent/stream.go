@@ -34,7 +34,7 @@ func (s *Server) StreamHandler() http.Handler {
 			writeError(w, http.StatusNotImplemented, "agent_disabled", "the ask agent is not enabled on this server")
 			return
 		}
-		req, ok := decodeAskQuestion(w, r)
+		req, ok := s.decodeAskQuestion(w, r)
 		if !ok {
 			return
 		}
@@ -55,14 +55,15 @@ func (s *Server) StreamHandler() http.Handler {
 		events := make(chan streamEvent, streamEventsBuf)
 		done := make(chan askResult, 1)
 		go func() {
-			resp, err := s.run(ctx, req.Question, func(ev streamEvent) error {
+			emit := func(ev streamEvent) error {
 				select {
 				case events <- ev:
 					return nil
 				case <-ctx.Done():
 					return ctx.Err()
 				}
-			})
+			}
+			resp, err := s.runWithEvents(ctx, req, askEvents{tool: emit, delta: emit})
 			done <- askResult{resp: resp, err: err}
 		}()
 

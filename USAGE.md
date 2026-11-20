@@ -227,6 +227,22 @@ reader. Raw HTML and all answer images are omitted; links follow the
 reader’s policy. The UI falls back to plain text if `answer_html` is absent.
 The browser never sees the provider key.
 
+Open **Generation settings** before asking a question. Temperature ranges
+from 0 to 2 and defaults to 0. Top-p ranges from 0 to 1 and uses the provider
+default when blank. Sampling top-k accepts a positive integer when the
+operator enables `GKG_AGENT_TOP_K_ENABLED=true` after confirming provider
+support. It controls token sampling. The graph search result limit is separate.
+
+For the `DeepSeek-V4.1-Flash-1017` deployment name, reasoning effort offers
+**Provider default**, **None**, **High** and **Max**. The default leaves the
+choice to the model. Each provider determines which sampling parameters take
+effect in a given reasoning mode. The form keeps your choices until reload.
+
+JSON and streaming clients can send the same optional settings, for example
+`{"question":"Who owns Zorbo?","generation":{"temperature":0.3,"top_p":0.95,"reasoning_effort":"high"}}`.
+They apply to every provider turn for that question. After a completed answer,
+**Download Markdown** saves its original Markdown locally as `gkg-answer.md`.
+
 ```sh
 # in .env: GKG_AGENT_ENABLED=true plus GKG_AGENT_BASE_URL/API_KEY/MODEL
 curl -s localhost:8080/v1/agent/ask -H 'Content-Type: application/json' \
@@ -248,7 +264,8 @@ curl -N -s localhost:8080/v1/agent/ask/stream -H 'Content-Type: application/json
 ```
 
 `GET /v1/agent/status` reports the capability as
-`{"enabled":true,"stream":true}`. With `GKG_AGENT_STREAM=false` the stream
+`{"enabled":true,"stream":true,"generation":{"top_k":false,"reasoning_efforts":["none","high","max"]}}`
+for that deployment. An empty `reasoning_efforts` list disables that control. With `GKG_AGENT_STREAM=false` the stream
 endpoint still answers — SSE framing, tool and done events only, no deltas —
 and the panel uses the JSON endpoint; a provider that does not actually
 stream is detected automatically (the agent falls back to non-streamed

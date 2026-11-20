@@ -29,6 +29,7 @@ const responseCap = 4 << 20
 type providerError struct {
 	status int
 	detail string
+	inBand bool // a provider error object inside an HTTP 200 response
 	// permanent marks a request that can never be sent (an unparsable base
 	// URL): it reads as unreachable but is not retried.
 	permanent bool
@@ -73,10 +74,11 @@ func functionTool(name, description string, parameters map[string]any) toolDef {
 // chatMessage is one chat turn; tool results carry ToolCallID, assistant
 // turns carry ToolCalls.
 type chatMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role             string     `json:"role"`
+	Content          string     `json:"content,omitempty"`
+	ToolCalls        []toolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
 }
 
 // toolCall is one requested function call.
@@ -90,26 +92,34 @@ type toolCall struct {
 }
 
 type chatRequest struct {
-	Model          string            `json:"model"`
-	Messages       []chatMessage     `json:"messages"`
-	Tools          []toolDef         `json:"tools,omitempty"`
-	ToolChoice     string            `json:"tool_choice,omitempty"`
-	ResponseFormat map[string]string `json:"response_format,omitempty"`
-	Temperature    float64           `json:"temperature"`
-	Stream         bool              `json:"stream,omitempty"`
+	Model            string            `json:"model"`
+	Messages         []chatMessage     `json:"messages"`
+	Tools            []toolDef         `json:"tools,omitempty"`
+	ToolChoice       string            `json:"tool_choice,omitempty"`
+	ResponseFormat   map[string]string `json:"response_format,omitempty"`
+	Temperature      float64           `json:"temperature"`
+	TopP             *float64          `json:"top_p,omitempty"`
+	TopK             *int              `json:"top_k,omitempty"`
+	ReasoningEffort  *string           `json:"reasoning_effort,omitempty"`
+	Stream           bool              `json:"stream,omitempty"`
+	customGeneration bool
+}
+
+// DeepSeek tool continuations with explicit reasoning can require the prior
+// assistant reasoning on the provider wire. It is never an answer delta.
+func (req chatRequest) keepToolReasoning() bool {
+	return len(req.Tools) != 0 && req.ReasoningEffort != nil && *req.ReasoningEffort != "none"
 }
 
 type chatReply struct {
-	Content   string
-	ToolCalls []toolCall
+	Content          string     `json:"content"`
+	ToolCalls        []toolCall `json:"tool_calls"`
+	ReasoningContent string     `json:"reasoning_content"`
 }
 
 type chatWireResponse struct {
 	Choices []struct {
-		Message struct {
-			Content   string     `json:"content"`
-			ToolCalls []toolCall `json:"tool_calls"`
-		} `json:"message"`
+		Message chatReply `json:"message"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -204,6 +214,7 @@ func (c *client) chat(ctx context.Context, req chatRequest) (chatReply, error) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return chatReply{}, ctxErr
 		}
+		err = req.classifyRejection(err)
 		lastErr = err
 		var pe *providerError
 		if !errors.As(err, &pe) || !pe.retryable() {
@@ -249,13 +260,12 @@ func (c *client) doChat(ctx context.Context, body []byte) (chatReply, error) {
 		return chatReply{}, fmt.Errorf("agent: decode response: %w", err)
 	}
 	if wire.Error != nil {
-		return chatReply{}, &providerError{status: http.StatusBadGateway, detail: trimPreview(c.redactAPIKey(wire.Error.Message))}
+		return chatReply{}, &providerError{status: http.StatusBadGateway, inBand: true, detail: trimPreview(c.redactAPIKey(wire.Error.Message))}
 	}
 	if len(wire.Choices) == 0 {
 		return chatReply{}, fmt.Errorf("agent: response without choices")
 	}
-	msg := wire.Choices[0].Message
-	return chatReply{Content: msg.Content, ToolCalls: msg.ToolCalls}, nil
+	return wire.Choices[0].Message, nil
 }
 
 // chatStream performs one streamed chat-completions call, forwarding every
@@ -290,13 +300,14 @@ func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(s
 				return chatReply{}, ctx.Err()
 			}
 		}
-		reply, err := c.doStream(ctx, body, forward)
+		reply, err := c.doStream(ctx, body, req.keepToolReasoning(), forward)
 		if err == nil {
 			return reply, nil
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return chatReply{}, ctxErr
 		}
+		err = req.classifyRejection(err)
 		lastErr = err
 		var pe *providerError
 		if !errors.As(err, &pe) || !pe.retryable() {
@@ -309,7 +320,7 @@ func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(s
 	return chatReply{}, lastErr
 }
 
-func (c *client) doStream(ctx context.Context, body []byte, onDelta func(string) error) (chatReply, error) {
+func (c *client) doStream(ctx context.Context, body []byte, keepReasoning bool, onDelta func(string) error) (chatReply, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		// The parse error quotes the endpoint, which may embed a credential.
@@ -333,15 +344,16 @@ func (c *client) doStream(ctx context.Context, body []byte, onDelta func(string)
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, responseCap+1))
 		return chatReply{}, &providerError{status: resp.StatusCode, detail: trimPreview(c.redactAPIKey(string(data)))}
 	}
-	return readSSE(resp.Body, onDelta, c.redactAPIKey)
+	return readSSE(resp.Body, keepReasoning, onDelta, c.redactAPIKey)
 }
 
 // streamWireChunk is one SSE frame of a chat-completions stream.
 type streamWireChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Function struct {
@@ -367,11 +379,12 @@ var streamRawCap = int64(responseCap * 2)
 // errStreamClosedBeforeEvent; a stream cut after events — including a
 // connection that ends mid-line — reports a classified premature-close
 // error instead of blaming the truncated frame.
-func readSSE(body io.Reader, onDelta func(string) error, redact func(string) string) (chatReply, error) {
+func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, redact func(string) string) (chatReply, error) {
 	limited := &io.LimitedReader{R: body, N: streamRawCap + 1}
 	reader := bufio.NewReader(limited)
 	var (
 		content   strings.Builder
+		reasoning strings.Builder
 		calls     = map[int]*toolCall{}
 		order     []int
 		frames    int
@@ -387,7 +400,7 @@ func readSSE(body io.Reader, onDelta func(string) error, redact func(string) str
 			data := strings.TrimPrefix(trimmed, "data:")
 			data = strings.TrimPrefix(data, " ")
 			if data == "[DONE]" {
-				reply := chatReply{Content: content.String()}
+				reply := chatReply{Content: content.String(), ReasoningContent: reasoning.String()}
 				slices.Sort(order)
 				for _, i := range order {
 					reply.ToolCalls = append(reply.ToolCalls, *calls[i])
@@ -404,15 +417,21 @@ func readSSE(body io.Reader, onDelta func(string) error, redact func(string) str
 			} else {
 				frames++
 				if chunk.Error != nil {
-					return chatReply{}, &providerError{status: http.StatusBadGateway, detail: trimPreview(redact(chunk.Error.Message))}
+					return chatReply{}, &providerError{status: http.StatusBadGateway, inBand: true, detail: trimPreview(redact(chunk.Error.Message))}
 				}
 				if len(chunk.Choices) > 0 {
 					delta := chunk.Choices[0].Delta
+					assembled += len(delta.Content)
+					if keepReasoning {
+						assembled += len(delta.ReasoningContent)
+					}
+					if assembled > responseCap {
+						return chatReply{}, fmt.Errorf("agent: streamed response exceeds the %d MiB cap", responseCap>>20)
+					}
+					if keepReasoning {
+						reasoning.WriteString(delta.ReasoningContent)
+					}
 					if delta.Content != "" {
-						assembled += len(delta.Content)
-						if assembled > responseCap {
-							return chatReply{}, fmt.Errorf("agent: streamed response exceeds the %d MiB cap", responseCap>>20)
-						}
 						content.WriteString(delta.Content)
 						if onDelta != nil {
 							if err := onDelta(delta.Content); err != nil {

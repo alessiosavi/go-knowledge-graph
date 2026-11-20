@@ -832,7 +832,7 @@ func TestPlanFinalCallStreams(t *testing.T) {
 		}
 		return nil
 	}
-	resp, err := s.askWithPlan(context.Background(), "q "+fx.token, askEvents{tool: emit, delta: emit})
+	resp, err := s.askWithPlan(context.Background(), AskRequest{Question: "q " + fx.token}, askEvents{tool: emit, delta: emit})
 	if err != nil {
 		t.Fatalf("askWithPlan: %v", err)
 	}
@@ -862,4 +862,14 @@ func streamFlags(stub *llmStub) string {
 		}
 	}
 	return strings.Join(flags, ",")
+}
+
+// ask drives the bounded tool loop over the JSON endpoint (no streaming:
+// emit is nil) and returns the full answer with its evidence.
+func (s *Server) ask(ctx context.Context, question string) (AskResponse, error) {
+	return s.run(ctx, question, nil)
+}
+
+func (s *Server) run(ctx context.Context, question string, emit func(streamEvent) error) (AskResponse, error) {
+	return s.runWithEvents(ctx, AskRequest{Question: question}, askEvents{tool: emit, delta: emit})
 }

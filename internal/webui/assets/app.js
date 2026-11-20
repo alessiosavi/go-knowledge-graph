@@ -413,6 +413,21 @@
       const st = await api("/v1/agent/status");
       $("ask-panel").hidden = !(st && st.enabled);
       askStreaming = !!(st && st.enabled && st.stream);
+      const caps = st && st.generation;
+      $("ask-settings").hidden = !caps;
+      if (caps) {
+        $("ask-top-k").disabled = !caps.top_k;
+        $("ask-top-k-note").hidden = !!caps.top_k;
+        const reasoning = $("ask-reasoning");
+        const previous = reasoning.value;
+        const efforts = caps.reasoning_efforts || [];
+        reasoning.replaceChildren(new Option("Provider default", ""));
+        for (const effort of efforts) {
+          reasoning.append(new Option(effort[0].toUpperCase() + effort.slice(1), effort));
+        }
+        reasoning.value = efforts.includes(previous) ? previous : "";
+        reasoning.disabled = efforts.length === 0;
+      }
     } catch (_) {
       $("ask-panel").hidden = true;
       askStreaming = false;
@@ -539,7 +554,23 @@
     }
   }
 
+  let answerURL = null;
+
+  function setAnswerDownload(markdown) {
+    const link = $("ask-download");
+    if (answerURL) URL.revokeObjectURL(answerURL);
+    answerURL = null;
+    link.removeAttribute("href");
+    link.hidden = !markdown;
+    if (markdown) {
+      const file = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+      answerURL = URL.createObjectURL(file);
+      link.href = answerURL;
+    }
+  }
+
   function renderAnswer(res) {
+    setAnswerDownload(res.answer);
     const answer = $("ask-answer");
     answer.replaceChildren();
     if (res.answer_html) {
@@ -606,7 +637,7 @@
   // error event (the ask itself failed server-side) throws with
   // err.classified so ask() shows it; transport-level failures throw plain
   // errors so ask() can fall back to the JSON endpoint.
-  async function askViaStream(question, statusNode) {
+  async function askViaStream(request, statusNode) {
     const headers = Object.assign(
       { "Content-Type": "application/json" },
       apiKey ? { Authorization: "Bearer " + apiKey } : {},
@@ -614,20 +645,26 @@
     const res = await fetch("/v1/agent/ask/stream", {
       method: "POST",
       headers,
-      body: JSON.stringify({ question: question, domain: $("ask-domain").value }),
+      body: JSON.stringify(request),
     });
     if (res.status === 401) {
       throw unauthorized(res);
     }
     if (!res.ok) {
       let detail = "HTTP " + res.status + " " + res.statusText;
+      let classified = res.status === 400 || res.status === 422;
       try {
         const body = await res.json();
         if (body && body.detail) detail = body.detail;
+        if (body && ["agent_error", "agent_timeout", "agent_disabled", "body_too_large"].includes(body.error)) {
+          classified = true;
+        }
       } catch (_) {
         // keep the status line
       }
-      throw new Error(detail);
+      // Validation and agent errors are terminal. An absent stream route
+      // still allows the existing JSON fallback.
+      throw Object.assign(new Error(detail), { classified });
     }
     if (!res.body || !res.body.getReader) {
       throw new Error("this browser cannot read streams");
@@ -656,7 +693,7 @@
         const frame = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 2);
         const ev = parseSSEFrame(frame);
-        if (!ev) continue;
+        if (!ev || done) continue;
         if (ev.name === "delta") {
           if (!answerNode) {
             answerNode = el("p", "answer");
@@ -680,11 +717,31 @@
     if (!done) throw new Error("the answer stream ended early");
   }
 
+  function askPayload(question) {
+    const request = { question, domain: $("ask-domain").value };
+    if ($("ask-settings").hidden) return request;
+    const generation = {};
+    for (const [key, id] of [
+      ["temperature", "ask-temperature"],
+      ["top_p", "ask-top-p"],
+      ["top_k", "ask-top-k"],
+    ]) {
+      const field = $(id);
+      if (!field.disabled && field.value !== "") generation[key] = Number(field.value);
+    }
+    const effort = $("ask-reasoning");
+    if (!effort.disabled && effort.value) generation.reasoning_effort = effort.value;
+    if (Object.keys(generation).length) request.generation = generation;
+    return request;
+  }
+
   async function ask() {
     const question = $("ask-input").value.trim();
     const statusNode = $("ask-status");
     const submit = $("ask-submit");
-    if (!question) return;
+    if (!question || submit.disabled) return;
+    const request = askPayload(question);
+    setAnswerDownload("");
     setBusy(submit, true, "Asking…");
     statusNode.className = "muted";
     statusNode.textContent = "thinking…";
@@ -693,7 +750,7 @@
     try {
       if (askStreaming) {
         try {
-          await askViaStream(question, statusNode);
+          await askViaStream(request, statusNode);
           return;
         } catch (err) {
           if (err && err.classified) {
@@ -706,7 +763,7 @@
       }
       const res = await api("/v1/agent/ask", {
         method: "POST",
-        json: { question: question, domain: $("ask-domain").value },
+        json: request,
       });
       statusNode.textContent = "";
       renderAnswer(res);
@@ -982,6 +1039,9 @@
       const f = $("ingest-file").files && $("ingest-file").files[0];
       if (f) $("ingest-source").value = f.name;
     });
+    $("ask-settings").addEventListener("invalid", () => {
+      $("ask-settings").open = true;
+    }, true);
     $("ask-form").addEventListener("submit", (ev) => {
       ev.preventDefault();
       ask();

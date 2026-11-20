@@ -104,7 +104,7 @@ func TestContextBudgetStopsToolsAndKeepsEvidence(t *testing.T) {
 			var resp AskResponse
 			var err error
 			if plan {
-				resp, err = s.askWithPlan(context.Background(), "q", askEvents{})
+				resp, err = s.askWithPlan(context.Background(), AskRequest{Question: "q"}, askEvents{})
 			} else {
 				resp, err = s.ask(context.Background(), "q")
 			}
@@ -228,7 +228,7 @@ func TestPlanContextBudgetFinalFailure(t *testing.T) {
 	cfg.Agent.ContextBudgetKB = 1
 	s := NewServer(cfg, &graph.Store{}, nil)
 	s.llm.backoff = nil
-	resp, err := s.askWithPlan(context.Background(), "q", askEvents{})
+	resp, err := s.askWithPlan(context.Background(), AskRequest{Question: "q"}, askEvents{})
 	if err != nil || resp.Answer != NoAnswerText || resp.Steps != 1 || resp.AnswerHTML == "" {
 		t.Fatalf("resp=%+v err=%v", resp, err)
 	}

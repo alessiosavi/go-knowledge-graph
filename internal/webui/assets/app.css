@@ -222,6 +222,34 @@ svg#graph .edge line {
 svg#graph .edge text {
   font-size: 10px;
 }
+#ask-settings {
+  margin: 0.55rem 0;
+}
+#ask-settings summary {
+  width: fit-content;
+  color: var(--accent);
+  cursor: pointer;
+}
+.generation-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+  gap: 0.65rem;
+  margin: 0.5rem 0 0.85rem;
+}
+.generation-fields input,
+.generation-fields select {
+  display: block;
+  width: 100%;
+  margin-top: 0.15rem;
+  color: var(--fg);
+}
+#ask-download {
+  color: var(--accent);
+}
+#ask-download:not([hidden]) {
+  display: inline-block;
+  margin-bottom: 0.65rem;
+}
 #ask-input {
   flex: 1 1 auto;
 }
