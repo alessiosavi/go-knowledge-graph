@@ -190,6 +190,7 @@ func TestProductDomainOpWriteConflict(t *testing.T) {
 	}
 	limit := &neo4j.TransactionExecutionLimit{Cause: "retry budget exhausted", Errors: []error{conflict}}
 	deadlock := &neo4j.Neo4jError{Code: "Neo.TransientError.Transaction.DeadlockDetected"}
+	timeout := &neo4j.Neo4jError{Code: "Neo.TransientError.General.TransactionTimeout"}
 	permanent := &neo4j.Neo4jError{Code: "Neo.ClientError.Statement.SyntaxError"}
 	for _, tc := range []struct {
 		name, action, bound, state string
@@ -199,6 +200,7 @@ func TestProductDomainOpWriteConflict(t *testing.T) {
 		{"move target bound", "move", dst, "incomplete", deadlock, graph.ErrDomainHasProducts},
 		{"merge target bound after retries", "merge", dst, "incomplete", limit, graph.ErrDomainHasProducts},
 		{"conflict without binding", "move", "", "failed", conflict, conflict},
+		{"timeout with binding", "move", dst, "failed", timeout, timeout},
 		{"permanent error with binding", "move", dst, "failed", permanent, permanent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -267,5 +269,31 @@ func TestProductDomainOpCompletedReplay(t *testing.T) {
 				t.Fatalf("replayed operation=%+v error=%v, want stored operation=%+v", op, err, stored.Op)
 			}
 		})
+	}
+}
+
+func TestProductDomainOpCompletedUndoReplay(t *testing.T) {
+	env := adminEnv(t)
+	ctx := t.Context()
+	const source = "acme-admin"
+	id := adminDoc(t, env, "one", source)
+	req := ingest.DomainOpRequest{OpID: "completed-before-binding", Action: "move", DocIDs: []string{id}, Target: "zorbo-admin"}
+	if op, err := env.p.RunDomainOp(ctx, req); err != nil || op.State != "completed" {
+		t.Fatalf("initial move=%+v error=%v", op, err)
+	}
+	detectProcess(t, env, id)
+	undo, err := env.p.UndoDomainOp(ctx, req.OpID)
+	if err != nil || undo.State != "completed" {
+		t.Fatalf("initial undo=%+v error=%v", undo, err)
+	}
+	assertAdminDomain(t, env, id, source)
+	stored, err := env.st.DomainOperation(ctx, undo.OpID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindAdminDomain(t, source)
+	op, err := env.p.UndoDomainOp(ctx, req.OpID)
+	if err != nil || !reflect.DeepEqual(op, stored.Op) {
+		t.Fatalf("replayed undo=%+v error=%v, want stored operation=%+v", op, err, stored.Op)
 	}
 }

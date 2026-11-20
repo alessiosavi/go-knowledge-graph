@@ -50,15 +50,16 @@ func TestDomainCLIAdmin(t *testing.T) {
 }
 
 func TestDomainCLIProductConflict(t *testing.T) {
+	const detail = `graph: domain_has_products: domain "acme" is bound to product store "shop"`
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)
-		fmt.Fprintln(w, `{"error":"domain_has_products","detail":"domain acme is bound to product store shop"}`)
+		fmt.Fprintf(w, `{"error":"domain_has_products","detail":%q}`, detail)
 	}))
 	defer s.Close()
 	for _, args := range [][]string{{"move", "doc", "acme"}, {"merge", "acme", "zorbo"}, {"undo", "op"}} {
 		var out, stderr bytes.Buffer
 		code := run(append(append([]string{"domain"}, args...), "--server", s.URL), &out, &stderr)
-		if code != 1 || !strings.Contains(stderr.String(), "domain is bound to a product store") || out.Len() != 0 {
+		if code != 1 || stderr.String() != "gkg domain: "+detail+"\n" || out.Len() != 0 {
 			t.Errorf("%v exit=%d stdout=%s stderr=%s", args, code, &out, &stderr)
 		}
 	}

@@ -12,7 +12,6 @@ import (
 
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 	driverconfig "github.com/neo4j/neo4j-go-driver/v6/neo4j/config"
-	"github.com/neo4j/neo4j-go-driver/v6/neo4j/db"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
@@ -179,8 +178,8 @@ func (s *Store) runWriteTx(ctx context.Context, fn func(tx neo4j.ManagedTransact
 	return err
 }
 
-// IsTransientWriteError recognizes server-side transient errors, including
-// Memgraph write-write conflicts surfaced after the driver's retries.
+// IsTransientWriteError reports whether a write failed due to a transaction
+// conflict or deadlock, including failures surfaced after driver retries.
 func IsTransientWriteError(err error) bool {
 	var limit *neo4j.TransactionExecutionLimit
 	if errors.As(err, &limit) && len(limit.Errors) > 0 {
@@ -188,7 +187,17 @@ func IsTransientWriteError(err error) bool {
 		err = limit.Errors[len(limit.Errors)-1]
 	}
 	var dbErr *neo4j.Neo4jError
-	return errors.As(err, &dbErr) && (dbErr.IsRetriableTransient() || dbErr.GqlClassification == db.TransientError)
+	if !errors.As(err, &dbErr) {
+		return false
+	}
+	switch dbErr.Code {
+	case "Neo.TransientError.Transaction.DeadlockDetected", "Neo.TransientError.Transaction.LockClientStopped":
+		return true
+	}
+	// Memgraph shares this code family across conflicts, timeouts and other
+	// transaction aborts. The message identifies the write conflict.
+	return strings.HasPrefix(dbErr.Code, "Memgraph.TransientError.MemgraphError.") &&
+		strings.HasPrefix(dbErr.Msg, "Cannot resolve conflicting transactions.")
 }
 
 // runWriteTxLocked serializes the whole transaction behind Store.mu before
