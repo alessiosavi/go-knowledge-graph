@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -25,6 +26,16 @@ type FactInput struct {
 	// document whose deletion removes it.
 	DocID string
 }
+
+// JudgePayload pairs a stored v1 request with the digest recorded when it
+// was written. Callers pass the recorded digest alongside the payload bytes.
+type JudgePayload struct {
+	Bytes     []byte
+	InputHash string
+}
+
+// ErrInvalidJudgePayload identifies a request that cannot be safely replayed.
+var ErrInvalidJudgePayload = errors.New("judge: invalid stored payload")
 
 // judgeInputPayload fixes the key order of the user message shared by ingest,
 // the verdict cache and backfill. Keep every field, including zero values.
@@ -75,6 +86,23 @@ type Verdict struct {
 // document still completes, the fact just stays unverified.
 type FactJudge interface {
 	VerifyFact(ctx context.Context, in FactInput) (Verdict, error)
+}
+
+type storedPayloadJudge interface {
+	VerifyPayload(ctx context.Context, p JudgePayload, docID string) (Verdict, error)
+}
+
+func verifyStoredPayload(ctx context.Context, j FactJudge, p JudgePayload, docID string) (Verdict, error) {
+	switch j := j.(type) {
+	case storedPayloadJudge:
+		return j.VerifyPayload(ctx, p, docID)
+	case interface {
+		VerifyPayload(context.Context, JudgePayload) (Verdict, error)
+	}:
+		return j.VerifyPayload(ctx, p)
+	default:
+		return Verdict{}, errors.New("judge: online judge does not support stored payloads")
+	}
 }
 
 // ShouldJudge reports whether a fact is selected for verification by the

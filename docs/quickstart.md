@@ -356,6 +356,12 @@ without them search is text-only. The judge verifies facts after extraction
 against their evidence sentence and removes refuted ones with an audit
 trail.
 
+Set `GKG_JUDGE_STORE_INPUTS=true` to retain the original judge request on
+new typed edges that remain unjudged. This opt-in applies in all four online
+judge modes, including `off`. It defaults to false and is incompatible with
+`GKG_FACTS_REQUIRE_CONFIRMATION=true`. The existing backfill command processes
+fact candidates.
+
 The judge honours `Retry-After` on retryable responses and uses jittered
 backoff when the header is missing or invalid. It allows up to six retries
 and caps total retry waits at three minutes per fact. Each provider attempt

@@ -66,6 +66,23 @@ func (c *Cached) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 	})
 }
 
+// VerifyPayload validates the stored v1 message before consulting the same
+// cache used by VerifyFact. The document ID only identifies the cache owner.
+func (c *Cached) VerifyPayload(ctx context.Context, p ingest.JudgePayload, docID string) (ingest.Verdict, error) {
+	if err := validatePayload(p); err != nil {
+		return ingest.Verdict{}, err
+	}
+	return c.verify(ctx, RequestKey(p.Bytes, c.model), PromptVersion, docID, false, func() (ingest.Verdict, error) {
+		inner, ok := c.inner.(interface {
+			VerifyPayload(context.Context, ingest.JudgePayload) (ingest.Verdict, error)
+		})
+		if !ok {
+			return ingest.Verdict{}, fmt.Errorf("judge: wrapped provider does not support VerifyPayload")
+		}
+		return inner.VerifyPayload(ctx, p)
+	})
+}
+
 // VerifyRequest checks the frozen profile against the current definitions
 // before using the strict cache. A lookup error prevents a provider call. A
 // write error returns the paid verdict with the error so the caller can record

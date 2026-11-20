@@ -592,6 +592,45 @@ func TestRequireConfirmationNeedsJudgeAll(t *testing.T) {
 	}
 }
 
+func TestStoreJudgeInputsConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, env, wantError string
+		want                       bool
+	}{
+		{name: "default"},
+		{name: "yaml", yaml: "judge:\n  store_inputs: true\n  mode: off\n", want: true},
+		{name: "low-confidence", yaml: "judge:\n  mode: low-confidence\n", env: "true", want: true},
+		{name: "sample", yaml: "judge:\n  mode: sample\n", env: "true", want: true},
+		{name: "all", yaml: "judge:\n  mode: all\n", env: "true", want: true},
+		{name: "env-wins", yaml: "judge:\n  store_inputs: true\n  mode: unknown\n", env: "false"},
+		{name: "env-enables", yaml: "judge:\n  store_inputs: false\n  mode: unknown\n", env: "true", wantError: "judge.mode"},
+		{name: "invalid-boolean", env: "maybe", wantError: "GKG_JUDGE_STORE_INPUTS"},
+		{name: "unknown-mode", yaml: "judge:\n  mode: unknown\n", env: "true", wantError: "judge.mode"},
+		{name: "confirmation", yaml: "judge:\n  mode: all\nfacts:\n  require_confirmation: true\n", env: "true", wantError: "facts.require_confirmation"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.env != "" {
+				t.Setenv("GKG_JUDGE_STORE_INPUTS", tc.env)
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cfg.Judge.StoreInputs != tc.want {
+					t.Errorf("judge.store_inputs = %v, want %v", cfg.Judge.StoreInputs, tc.want)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("Load error = %v, want %s", err, tc.wantError)
+			}
+		})
+	}
+}
+
 func TestHygieneStoplistFile(t *testing.T) {
 	t.Setenv("GKG_INGEST_STOPLIST_FILE", "/private/stop.txt")
 	cfg, err := config.Load("")

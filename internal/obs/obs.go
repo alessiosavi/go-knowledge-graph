@@ -33,6 +33,7 @@ type Metrics struct {
 	judgeVerdicts   *prometheus.CounterVec
 	judgeFailures   prometheus.Counter
 	judgeCache      *prometheus.CounterVec
+	judgeInput      *prometheus.CounterVec
 	extractorErrors prometheus.Counter
 	extractSeconds  prometheus.Histogram
 	judgeSeconds    prometheus.Histogram
@@ -83,6 +84,10 @@ func New() *Metrics {
 			Name: "judge_cache_total",
 			Help: "Verdict-cache lookups by result: hit, miss, read_error, write_error.",
 		}, []string{"result"}),
+		judgeInput: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "judge_input_total",
+			Help: "Stored judge input failures by result: encode_error, invalid.",
+		}, []string{"result"}),
 		extractorErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "extractor_errors_total",
 			Help: "Extractor calls that failed.",
@@ -107,7 +112,7 @@ func New() *Metrics {
 		}),
 	}
 	reg.MustRegister(m.documents, m.chunks, m.entities, m.facts, m.factsDropped,
-		m.hygieneDropped, m.hygieneRenamed, m.judgeVerdicts, m.judgeFailures, m.judgeCache, m.extractorErrors, m.extractSeconds, m.judgeSeconds,
+		m.hygieneDropped, m.hygieneRenamed, m.judgeVerdicts, m.judgeFailures, m.judgeCache, m.judgeInput, m.extractorErrors, m.extractSeconds, m.judgeSeconds,
 		m.requestDuration, m.writeLockWait)
 	return m
 }
@@ -173,6 +178,9 @@ func (m *Metrics) JudgeFailure() { m.judgeFailures.Inc() }
 
 // JudgeCache counts one verdict-cache result.
 func (m *Metrics) JudgeCache(result string) { m.judgeCache.WithLabelValues(result).Inc() }
+
+// JudgeInput counts encoding or replay validation failures on opted-in edges.
+func (m *Metrics) JudgeInput(result string) { m.judgeInput.WithLabelValues(result).Inc() }
 
 // ExtractorError counts one failed extractor call.
 func (m *Metrics) ExtractorError() { m.extractorErrors.Inc() }
