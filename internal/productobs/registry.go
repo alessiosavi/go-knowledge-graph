@@ -106,6 +106,18 @@ func (r *Registry) Counts() (stores, features, mapped int) {
 	return len(r.stores), len(r.features), mapped
 }
 
+// MappedKeys returns the registry's mapped keys in store and source-key order.
+func (r *Registry) MappedKeys() []ReleaseTriple {
+	var result []ReleaseTriple
+	for _, store := range slices.Sorted(maps.Keys(r.stores)) {
+		keys := r.stores[store]
+		for _, key := range slices.Sorted(maps.Keys(keys)) {
+			result = append(result, ReleaseTriple{Store: store, Feature: keys[key].feature, SourceKey: key})
+		}
+	}
+	return result
+}
+
 // Lookup returns the mapping for an exact store and source key, if present.
 func (r *Registry) Lookup(store, key string) (Mapping, bool) {
 	m, ok := r.stores[store][key]

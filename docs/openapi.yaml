@@ -17,7 +17,7 @@ info:
     Body sizes are capped by configuration (`Ingest.MaxUploadMB` for ingestion,
     1 MiB for other JSON endpoints, including ask); Cypher row count and timeout
     are capped by `Limits.CypherRows` / `Limits.CypherTimeoutMS`. The search,
-    entity, traverse, document and domain read routes share
+    entity, traverse, document, domain and product read routes share
     `Limits.ReadTimeoutMS` (default 15 s); a read that exceeds it is stopped on
     the server and answered `504 query_timeout`. The agent ask routes are bounded
     by `Agent.TimeoutS` instead: `POST /v1/agent/ask` answers `504 agent_timeout`;
@@ -41,6 +41,8 @@ tags:
     description: Ingest, read and remove document versions
   - name: graph
     description: Search entities and chunks, inspect evidence and traverse facts
+  - name: products
+    description: Read products, released observations and store watermarks
   - name: agent
     description: Bounded read-only question answering and streaming
   - name: health
@@ -567,6 +569,150 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
+  /v1/products/{id}:
+    get:
+      tags: [products]
+      operationId: getProduct
+      summary: Get a product and its active feature observations by graph ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[0-9a-f]{32}$" }
+      responses:
+        "200":
+          $ref: "#/components/responses/ProductDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+  /v1/products:
+    get:
+      tags: [products]
+      operationId: lookupProduct
+      summary: Get a product and its active feature observations by exact store and source ID
+      parameters:
+        - name: store
+          in: query
+          required: true
+          schema: { type: string }
+        - name: product_id
+          in: query
+          required: true
+          description: Full source product ID, including its store prefix.
+          schema: { type: string }
+      responses:
+        "200":
+          $ref: "#/components/responses/ProductDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+  /v1/products/stores:
+    get:
+      tags: [products]
+      operationId: listProductStores
+      summary: List product store watermarks and the active release ID
+      responses:
+        "200":
+          description: Store watermarks in store order. Wiped stores keep their sequence watermarks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductStores"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+  /v1/products/search:
+    post:
+      tags: [products]
+      operationId: findProducts
+      summary: Find products by feature value or numeric bounds
+      description: |
+        Searches only observations carrying the active release ID. A value matches the
+        feature kind's fold for a scalar or unsplit value, or the fold of a split item.
+        Conflicting observations match independently. Numeric bounds use the feature's
+        canonical unit and apply inclusively to exact observations from keys enabled
+        for numeric search. A global numeric search reports stores excluded by this
+        policy in `numeric_excluded_stores`. An unknown feature ID returns empty hits
+        for either search mode. Results are ordered by graph product ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductSearchRequest"
+      responses:
+        "200":
+          description: One hit per product, at most five matching edges per hit, and at most 1 MiB of JSON.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductSearchResponse"
+        "400":
+          description: Invalid input, a feature with released keys in scope but none enabled for numeric search, or a stale cursor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                not_numeric:
+                  value:
+                    error: not_numeric
+                    detail: "not_numeric: no released key supports numeric search for this feature in scope"
+                stale_cursor:
+                  value:
+                    error: stale_cursor
+                    detail: "stale_cursor: search filters, product snapshots, or the active release changed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+  /v1/features:
+    get:
+      tags: [products]
+      operationId: listProductFeatures
+      summary: List features in the active release's registry
+      responses:
+        "200":
+          description: Feature definitions in ID order, including release and numeric search configuration for each mapped store key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductFeatures"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
   /v1/search:
     post:
       tags: [graph]
@@ -992,8 +1138,14 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    ProductDetail:
+      description: Product metadata and observations carrying the active release ID.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProductDetail"
     NotFound:
-      description: no such document or entity
+      description: No such document, entity, or product (error store_error).
       content:
         application/json:
           schema:
@@ -1023,6 +1175,181 @@ components:
       properties:
         error: { type: string }
         detail: { type: string }
+    Product:
+      type: object
+      required: [id, store, product_id, domain, title, brand, category, subcategory, link]
+      properties:
+        id: { type: string, pattern: "^[0-9a-f]{32}$" }
+        store: { type: string }
+        product_id: { type: string, description: Full source product ID. }
+        domain: { type: string }
+        title: { type: string }
+        brand: { type: string }
+        category: { type: string }
+        subcategory: { type: string }
+        product_type: { type: string }
+        link: { type: string }
+    ProductDetail:
+      allOf:
+        - $ref: "#/components/schemas/Product"
+        - type: object
+          required: [features]
+          properties:
+            features:
+              type: array
+              items:
+                $ref: "#/components/schemas/ProductEvidence"
+    ProductFeature:
+      type: object
+      required: [id, name, kind, cardinality, canonical_unit]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [text, enum, code, measure] }
+        cardinality: { type: string, enum: [single, multi] }
+        canonical_unit: { type: string, nullable: true }
+    ProductFeatureRev:
+      allOf:
+        - $ref: "#/components/schemas/ProductFeature"
+        - type: object
+          required: [key, rev, definition, definition_digest]
+          properties:
+            key: { type: string }
+            rev: { type: string }
+            definition: { type: string }
+            definition_digest: { type: string }
+            replaces: { type: string }
+    ProductEvidence:
+      type: object
+      required: [feature, source_key, raw, split_status, conflict, numeric, release_id]
+      properties:
+        feature:
+          $ref: "#/components/schemas/ProductFeatureRev"
+        source_key: { type: string }
+        raw: { type: string }
+        items: { type: array, items: { type: string } }
+        split_status: { type: string }
+        typed:
+          $ref: "#/components/schemas/ProductMeasure"
+        conflict: { type: boolean }
+        numeric: { type: boolean, description: The store key is configured for numeric search. }
+        release_id: { type: string }
+    ProductMeasure:
+      type: object
+      required: [status, qualifier, lo, hi, inclusive, unit_in, lo_canonical, hi_canonical, canonical_unit]
+      properties:
+        status: { type: string }
+        qualifier: { type: string, nullable: true }
+        lo: { type: string, nullable: true }
+        hi: { type: string, nullable: true }
+        inclusive: { type: boolean, nullable: true }
+        unit_in: { type: string, nullable: true }
+        lo_canonical: { type: string, nullable: true }
+        hi_canonical: { type: string, nullable: true }
+        canonical_unit: { type: string, nullable: true }
+    ProductStores:
+      type: object
+      required: [active_release_id, stores]
+      properties:
+        active_release_id: { type: string, nullable: true }
+        stores:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductStoreWatermark"
+    ProductStoreWatermark:
+      type: object
+      required: [store, domain, snapshot_seq, seen_seq, wiped_seq, wiped, release_id, product_count, edge_count, imported_at]
+      properties:
+        store: { type: string }
+        domain: { type: string }
+        snapshot_seq: { type: integer, format: int64, description: Sequence of the last materialized snapshot. }
+        seen_seq: { type: integer, format: int64, description: Highest admitted sequence including unchanged imports. }
+        wiped_seq: { type: integer, format: int64, description: Highest admitted sequence when last wiped. }
+        wiped: { type: boolean, description: The store was wiped and has had no subsequent import. }
+        release_id: { type: string, nullable: true, description: Release of the materialized snapshot. }
+        product_count: { type: integer, format: int64 }
+        edge_count: { type: integer, format: int64 }
+        imported_at: { type: string, format: date-time, nullable: true }
+    ProductFeatures:
+      type: object
+      required: [active_release_id, features]
+      properties:
+        active_release_id: { type: string, nullable: true }
+        features:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductFeatureListing"
+    ProductFeatureListing:
+      allOf:
+        - $ref: "#/components/schemas/ProductFeature"
+        - type: object
+          required: [released, keys]
+          properties:
+            released: { type: boolean, description: At least one mapped key is released. }
+            keys:
+              type: array
+              items:
+                $ref: "#/components/schemas/ProductFeatureKey"
+    ProductFeatureKey:
+      type: object
+      required: [store, source_key, numeric_search, released]
+      properties:
+        store: { type: string }
+        source_key: { type: string }
+        numeric_search: { type: boolean }
+        released: { type: boolean }
+    ProductSearchRequest:
+      type: object
+      required: [feature]
+      properties:
+        domain: { type: string, description: Optional exact domain ID. }
+        feature: { type: string, minLength: 1, description: Feature ID from GET /v1/features. }
+        value: { type: string, description: Value for exact fold matching. }
+        min: { type: string, description: Inclusive non-negative decimal lower bound with up to six fractional digits. }
+        max: { type: string, description: Inclusive non-negative decimal upper bound with up to six fractional digits. }
+        limit: { type: integer, minimum: 1, maximum: 50, default: 20 }
+        cursor:
+          type: string
+          description: Opaque continuation cursor from the previous page. Changing the domain, feature, value or bounds, or page size returns stale_cursor.
+      oneOf:
+        - required: [value]
+          not:
+            anyOf:
+              - required: [min]
+              - required: [max]
+        - anyOf:
+            - required: [min]
+            - required: [max]
+          not:
+            required: [value]
+    ProductSearchResponse:
+      type: object
+      required: [hits]
+      properties:
+        hits:
+          type: array
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/ProductHit"
+        cursor:
+          type: string
+          description: Opaque cursor for the next page. Omitted when there are no more results.
+        numeric_excluded_stores:
+          type: array
+          items: { type: string }
+          description: Stores with released keys for the feature and no numeric-enabled released key, in store order. Present for global numeric searches with at least one excluded store.
+    ProductHit:
+      type: object
+      required: [product, evidence, evidence_truncated]
+      properties:
+        product:
+          $ref: "#/components/schemas/Product"
+        evidence:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/ProductEvidence"
+        evidence_truncated: { type: boolean, description: Matching evidence was omitted due to the per-hit edge limit or response size. }
     IngestRequest:
       type: object
       description: Exactly one non-empty url (trimmed) or text is required; source, labels and force are optional.

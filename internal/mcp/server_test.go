@@ -126,11 +126,16 @@ func TestToolsListExactNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	got := make(map[string]bool, len(res.Tools))
-	for _, tool := range res.Tools {
+	assertGraphToolNames(t, res.Tools)
+}
+
+func assertGraphToolNames(t *testing.T, tools []*mcpgo.Tool) {
+	t.Helper()
+	got := make(map[string]bool, len(tools))
+	for _, tool := range tools {
 		got[tool.Name] = true
 	}
-	want := []string{"ingest", "status", "search", "get_entity", "get_chunks", "traverse", "list_documents", "cypher"}
+	want := []string{"ingest", "status", "search", "get_entity", "get_chunks", "traverse", "list_documents", "cypher", "get_product", "find_products", "list_features"}
 	if len(got) != len(want) {
 		t.Fatalf("tools = %v, want exactly %v", got, want)
 	}
@@ -190,7 +195,8 @@ func TestToolResultSizeGuidance(t *testing.T) {
 	}
 	want := map[string]string{
 		"search": "Start with limit 10.", "traverse": "Start with limit 10.", "list_documents": "Start with limit 10.",
-		"get_chunks": "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
+		"get_chunks":    "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
+		"find_products": "Pages over 256 KiB are returned only in structuredContent, with empty text content.",
 	}
 	for _, tool := range res.Tools {
 		if desc, ok := want[tool.Name]; ok {
@@ -627,13 +633,11 @@ func TestHTTPDefaultClientThroughAPIServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools through the api surface: %v", err)
 	}
-	if len(res.Tools) != 8 {
-		t.Errorf("tools = %d, want 8", len(res.Tools))
-	}
+	assertGraphToolNames(t, res.Tools)
 }
 
 // TestHTTPHandlerServesTools pins the streamable-HTTP path used by the
-// serve command: a real MCP client over HTTP lists the same eight tools.
+// serve command: a real MCP client over HTTP lists the graph tools.
 func TestHTTPHandlerServesTools(t *testing.T) {
 	srv := NewServer(config.Config{}, nil, nil)
 	ts := httptest.NewServer(srv.HTTPHandler())
@@ -655,9 +659,7 @@ func TestHTTPHandlerServesTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools over http: %v", err)
 	}
-	if len(res.Tools) != 8 {
-		t.Errorf("tools over http = %d, want 8", len(res.Tools))
-	}
+	assertGraphToolNames(t, res.Tools)
 }
 
 func TestCandidateNotVisible(t *testing.T) {

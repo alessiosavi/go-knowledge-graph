@@ -265,7 +265,8 @@ The service is an MCP server over stdio (`gkg mcp`) and streamable HTTP
 (`http://localhost:8080/mcp`). Configuration examples for OpenCode and
 Claude Desktop are in [agent-setup.md](agent-setup.md); the tool set is
 `ingest`, `status`, `search`, `get_entity`, `get_chunks`, `traverse`, `list_documents`,
-`cypher`. When `GKG_AGENT_ENABLED=true`, MCP also exposes `ask` for
+`cypher`, `get_product`, `find_products`, and `list_features`. When
+`GKG_AGENT_ENABLED=true`, MCP also exposes `ask` for
 natural-language questions. Set `include_evidence: true` to add tool evidence
 within the 32 KiB MCP result budget. REST ask responses include the full tool
 results.
