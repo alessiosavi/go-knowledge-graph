@@ -25,7 +25,7 @@ The tool set is the same on both transports:
 | `traverse`       | walk fact edges up to two hops with direction/relation filters          |
 | `list_documents` | documents with metadata, filterable by status and domain                           |
 | `cypher`         | guarded read-only Cypher with row cap and timeout                       |
-| `get_product`    | product metadata and active-release observations by graph ID or exact store and source product ID |
+| `get_product`    | product metadata, active-release observations, and up to three associated pages by graph ID or exact store and source product ID (`pages_missing` when none) |
 | `find_products`  | products and matching evidence by feature value or numeric bounds       |
 | `list_features`  | active-release feature definitions and per-store key settings           |
 

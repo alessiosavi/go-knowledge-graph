@@ -67,10 +67,23 @@ type ProductEvidence struct {
 
 type ProductDetail struct {
 	Product
-	Features []ProductEvidence `json:"features"`
+	Features     []ProductEvidence `json:"features"`
+	Pages        []ProductPage     `json:"pages"`
+	PagesMissing bool              `json:"pages_missing"`
 }
 
-// GetProduct reads the product and its active observations in one statement.
+const getProductQuery = `
+MATCH (p:Product {id:$id})
+WHERE $store = '' OR (p.store = $store AND p.product_id = $product)
+OPTIONAL MATCH (s:ProductStore {store:p.store})
+OPTIONAL MATCH (m:GkgMeta {id:'product_release'})
+OPTIONAL MATCH (p)-[e:HAS_FEATURE]->(f:FeatureRev)
+WHERE e.release_id = m.value
+RETURN properties(p) AS product, s.domain AS page_domain, properties(f) AS feature, properties(e) AS edge
+ORDER BY f.id, e.source_key`
+
+// GetProduct reads the product, active observations, and pages in one snapshot.
+// The page statement uses URL candidates derived from the product link in Go.
 func (s *Store) GetProduct(ctx context.Context, lookup ProductLookup) (ProductDetail, error) {
 	id := lookup.ID
 	switch {
@@ -80,17 +93,27 @@ func (s *Store) GetProduct(ctx context.Context, lookup ProductLookup) (ProductDe
 	default:
 		return ProductDetail{}, fmt.Errorf("%w: provide id or both store and product_id", ErrProductReadInput)
 	}
-	rows, err := s.runRead(ctx, `
-MATCH (p:Product {id:$id})
-WHERE $store = '' OR (p.store = $store AND p.product_id = $product)
-OPTIONAL MATCH (m:GkgMeta {id:'product_release'})
-OPTIONAL MATCH (p)-[e:HAS_FEATURE]->(f:FeatureRev)
-WHERE e.release_id = m.value
-RETURN properties(p) AS product, properties(f) AS feature, properties(e) AS edge
-ORDER BY f.id, e.source_key`, map[string]any{"id": id, "store": lookup.Store, "product": lookup.ProductID})
+	var out ProductDetail
+	err := s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
+		rows, err := txRows(ctx, tx, getProductQuery, map[string]any{"id": id, "store": lookup.Store, "product": lookup.ProductID})
+		if err != nil {
+			return err
+		}
+		out, err = readProductDetail(rows)
+		if err != nil {
+			return err
+		}
+		out.Pages, err = txProductPages(ctx, tx, getString(rows[0], "page_domain"), out.Link)
+		out.PagesMissing = len(out.Pages) == 0
+		return err
+	})
 	if err != nil {
 		return ProductDetail{}, err
 	}
+	return out, nil
+}
+
+func readProductDetail(rows []*neo4j.Record) (ProductDetail, error) {
 	if len(rows) == 0 {
 		return ProductDetail{}, ErrNotFound
 	}

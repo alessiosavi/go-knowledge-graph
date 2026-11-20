@@ -1212,6 +1212,7 @@ counts in the same transaction.
 ```sh
 gkg products import -store example.test -release ID -snapshot-seq 1 records.jsonl -report import.json
 gkg products release activate NEXT -materialize example.test=2:records.jsonl
+gkg products pages-report -store example.test
 gkg products delete-store example.test
 gkg products unbind example.test
 ```
@@ -1275,6 +1276,41 @@ Both lookups return product metadata and a `features` array with raw
 observations and their feature revisions. Feature edges appear only when
 their release ID matches the active release. After activation, a product
 can have an empty feature array until its store is imported for that release.
+
+Both lookups and MCP `get_product` return `pages` with up to three live,
+`done` documents from the store's bound domain. Each page contains `id`,
+`title`, the stored `source`, and `updated_at`. Pages are ordered by newest
+`updated_at`, with ascending document ID breaking ties. Only the first
+matching version per source kind and canonical source counts as a page.
+An empty `pages` array has `pages_missing: true`. Pages can appear after
+a product import as soon as their documents reach `done`.
+
+The product link must match the document's `source` or `final_url` after
+canonicalization. Any source kind can match. For absolute URLs with a host,
+canonicalization lowercases the scheme and host, removes the fragment, and
+strips trailing `/` characters from the path. It preserves the rest of the
+URL, including user info, path case and query order. HTTP and HTTPS,
+`www` and apex hosts, Unicode IDNs and punycode, percent-encoding case in
+paths and queries, dot segments and explicit default ports are compared as-is.
+These variants identify different pages. Redirect targets can still match
+through `final_url`.
+
+The page candidate scan costs O(done documents in the bound domain) per
+product read. Setting a canonical URL property at ingest is the post-v1 path.
+
+Use the read-only pages report to check coverage for imported product
+snapshots before rollout. It counts products with zero, one, or multiple
+matching pages per bound store, with up to 20 missing graph product IDs in
+ascending order. The optional `-store` limits coverage to one store.
+
+```sh
+gkg products pages-report
+gkg products pages-report -store example.test -json
+```
+
+Place rollout pages in their target domain before `gkg products release
+create` binds it. If domain detection places a page elsewhere, move it into
+the target domain and let it reach `done` before creating the release.
 
 The store list reports `active_release_id` separately from each store's
 materialized `release_id`. A wiped store has `wiped: true`, zero products

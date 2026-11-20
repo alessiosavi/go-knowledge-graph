@@ -129,6 +129,14 @@ is benign: the newer version completes normally.
   `Ingest.MaxUploadMB` (default 20 MiB), and JSON bodies on the read
   endpoints at 1 MiB.
 
+## Product page association
+
+Page matching lowercases the scheme and host, removes the fragment and
+strips trailing path slashes. HTTP and HTTPS, `www` and apex hosts, Unicode
+IDNs and punycode, percent-encoding case in paths and queries, dot segments
+and explicit default ports are compared as-is and identify different pages.
+Redirect targets can still match through the document's `final_url`.
+
 ## Read-only Cypher surface
 
 - `POST /v1/cypher` (and the future MCP `cypher` tool) accepts one

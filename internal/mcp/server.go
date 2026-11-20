@@ -270,8 +270,9 @@ var errNoStore = errors.New("knowledge graph unavailable: no store wired")
 
 func registerTools(s *Server) {
 	addReadTool(s, &mcpgo.Tool{
-		Name:        "get_product",
-		Description: "Get a product and its active feature observations. Provide id, or both store and the full source product_id.",
+		Name: "get_product",
+		Description: "Get a product with its active feature observations and up to three associated pages (pages_missing when none). " +
+			"Provide id, or both store and the full source product_id.",
 	}, s.handleGetProduct)
 	addReadTool(s, &mcpgo.Tool{
 		Name: "find_products",
