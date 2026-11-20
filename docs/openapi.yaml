@@ -58,7 +58,9 @@ paths:
         and schema v4. Before any change, failed or in-flight members cause
         409 not_done listing their IDs. Done members reset extraction atomically
         and enqueue stored chunks; superseded versions get domain properties only.
-        Retry with the same op_id to resume committed progress.
+        Retry with the same op_id to resume committed progress or return the stored
+        result of a completed operation. A binding detected during the operation
+        leaves it incomplete and resumable after unbind.
       requestBody:
         required: true
         content:
@@ -87,7 +89,7 @@ paths:
         '401': {description: Missing or invalid bearer}
         '403': {description: Non-loopback peer}
         '404': {description: Unknown document, domain or operation}
-        '409': {description: 'not_done lists blocking document IDs with no changes, or schema_not_v4'}
+        '409': {description: 'domain_has_products if any source or destination has a product store binding, not_done for blocking documents, or schema_not_v4'}
         '413': {description: JSON body exceeds 1 MiB}
         '500': {description: Store failure; committed documents stay queued}
   /v1/admin/domains/merge:
@@ -100,8 +102,10 @@ paths:
         Requires schema v4. Before any change, failed or in-flight members cause
         409 not_done listing their IDs. Done members reset extraction atomically
         and enqueue stored chunks; superseded versions get domain properties only.
-        Retry move/merge with the same op_id to resume. A merge with concurrent
-        remaining members reports incomplete and their IDs; retry includes them.
+        Retry with the same op_id to resume or return the stored result of a completed
+        operation. A merge with concurrent remaining members reports incomplete and
+        their IDs; retry includes them. A binding detected during the operation also
+        leaves it incomplete and resumable after unbind.
         Undo requires a completed operation and live members done again; superseded
         members are skipped and listed in the result.
       requestBody:
@@ -132,7 +136,7 @@ paths:
         '401': {description: Missing or invalid bearer}
         '403': {description: Non-loopback peer}
         '404': {description: Unknown document, domain or operation}
-        '409': {description: 'not_done lists blocking document IDs with no changes, or schema_not_v4'}
+        '409': {description: 'domain_has_products if either domain has a product store binding, not_done for blocking documents, or schema_not_v4'}
         '413': {description: JSON body exceeds 1 MiB}
         '500': {description: Store failure; committed documents stay queued}
   /v1/admin/domains/rename:
@@ -210,7 +214,7 @@ paths:
         '401': {description: Missing or invalid bearer}
         '403': {description: Non-loopback peer}
         '404': {description: Unknown document, domain or operation}
-        '409': {description: 'not_done lists blocking document IDs with no changes, or schema_not_v4'}
+        '409': {description: 'domain_has_products if any source or destination has a product store binding, not_done for blocking documents, or schema_not_v4'}
         '413': {description: JSON body exceeds 1 MiB}
         '500': {description: Store failure; committed documents stay queued}
   /v1/admin/rebuild:
@@ -405,7 +409,7 @@ paths:
       summary: List domains for search and ask
       responses:
         "200":
-          description: Domains ordered by id, including empty domains; documents counts done documents only.
+          description: Domains ordered by id, including empty domains, with done document counts, product counts and binding status.
           content:
             application/json:
               schema:
@@ -1052,11 +1056,13 @@ components:
         noop: { type: boolean }
     DomainCount:
       type: object
-      required: [id, name, documents]
+      required: [id, name, documents, products, products_bound]
       properties:
         id: { type: string }
         name: { type: string }
         documents: { type: integer, description: Number of done documents }
+        products: { type: integer, description: Number of products in the domain }
+        products_bound: { type: boolean, description: Whether any product store is bound to the domain }
     Document:
       type: object
       required: [id, source_kind, source, status, created_at, updated_at]

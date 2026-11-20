@@ -63,8 +63,9 @@ func profileProperties(p domain.Profile) map[string]any {
 	return out
 }
 
-// AssignDomain commits one assignment. The private hook exercises rollback after
-// all statements have run, without adding a hook to the public store interface.
+// AssignDomain commits the first assignment. The v4 migration uses the same
+// implementation with writers stopped. Callers that can change an assigned
+// domain must use the guarded MoveDocument path.
 func (s *Store) AssignDomain(ctx context.Context, a Assignment) error {
 	return s.assignDomain(ctx, a, nil)
 }
@@ -191,8 +192,9 @@ func (s *Store) ClearDuplicateOf(ctx context.Context, chunkIDs []string) error {
 }
 
 var (
-	ErrSchemaNotV4     = errors.New("graph: schema_not_v4")
-	ErrInvalidDomainOp = errors.New("graph: invalid domain operation")
+	ErrSchemaNotV4       = errors.New("graph: schema_not_v4")
+	ErrInvalidDomainOp   = errors.New("graph: invalid domain operation")
+	ErrDomainHasProducts = errors.New("graph: domain_has_products")
 )
 
 // DomainOp records scheduling progress; completed means every live reset was
@@ -227,6 +229,40 @@ func txRequireDomains(ctx context.Context, tx neo4j.ManagedTransaction) error {
 		return ErrSchemaNotV4
 	}
 	return nil
+}
+
+const domainBindingQuery = `
+MATCH (s:ProductStore)
+WHERE s.domain IN $domains
+   OR EXISTS { MATCH (d:Document {domain:s.domain}) WHERE d.id IN $docs }
+RETURN s.domain AS domain, s.store AS store ORDER BY domain, store LIMIT 1`
+
+func domainBindingError(rows []*neo4j.Record, err error) error {
+	if err != nil {
+		return err
+	}
+	if len(rows) > 0 {
+		return fmt.Errorf("%w: domain %q is bound to product store %q", ErrDomainHasProducts,
+			getString(rows[0], "domain"), getString(rows[0], "store"))
+	}
+	return nil
+}
+
+// RequireUnboundDomains checks explicit slugs and the current domains of
+// pending documents in one snapshot before admitting an operation.
+func (s *Store) RequireUnboundDomains(ctx context.Context, domains, docIDs []string) error {
+	return domainBindingError(s.runRead(ctx, domainBindingQuery, map[string]any{"domains": domains, "docs": docIDs}))
+}
+
+// txGuardDomainMutation rechecks the binding at write time. Writes to the
+// shared Domain nodes serialize with release binding under snapshot isolation.
+func txGuardDomainMutation(ctx context.Context, tx neo4j.ManagedTransaction, domains ...string) error {
+	params := map[string]any{"domains": domains, "docs": []string{}}
+	if err := domainBindingError(txRows(ctx, tx, domainBindingQuery, params)); err != nil {
+		return err
+	}
+	return txRun(ctx, tx, `MATCH (d:Domain) WHERE d.id IN $domains
+SET d.product_guard=coalesce(d.product_guard,0)+1`, params)
 }
 
 // MoveDocument publishes a new partition and ledger in one transaction. Live
@@ -267,6 +303,9 @@ func (s *Store) MoveDocument(ctx context.Context, docID, slug, opID, action, by 
 		}
 		previous := getString(rows[0], "domain")
 		status := Status(getString(rows[0], "status"))
+		if err := txGuardDomainMutation(ctx, tx, previous, slug); err != nil {
+			return err
+		}
 		if status == StatusSuperseded {
 			if action == "undo" {
 				return ErrSuperseded
@@ -291,7 +330,7 @@ func (s *Store) MoveDocument(ctx context.Context, docID, slug, opID, action, by 
 		}
 		params := map[string]any{"doc": docID, "domain": slug, "tok": tok, "op": opID, "action": action, "by": by, "previous": previous, "at": time.Now().UTC().Format(timeLayout)}
 		for _, q := range []string{
-			`MERGE (n:Domain {id:$domain}) ON CREATE SET n.name=$domain,n.created_at=$at,n.created_by='admin' SET n.tok=$tok`,
+			`MERGE (n:Domain {id:$domain}) ON CREATE SET n.name=$domain,n.created_at=$at,n.created_by='admin',n.product_guard=1 SET n.tok=$tok`,
 			`MATCH (d:Document {id:$doc}) SET d.domain=$domain,d.domain_tok=$tok`,
 			`MATCH (:Document {id:$doc})-[:HAS_CHUNK]->(c:Chunk) SET c.domain=$domain,c.domain_tok=$tok`,
 			`CREATE (:DomainDecision {op_id:$op,doc_id:$doc,domain:$domain,previous_domain:$previous,action:$action,by:$by,at:$at,top:[],params:{},note:''})`,
@@ -429,23 +468,26 @@ func (s *Store) DomainDocumentIDs(ctx context.Context, slug string) ([]string, e
 	return out, nil
 }
 
-// DeleteEmptyDomain checks all document versions and reports whether it deleted
-// the source. A false result lets the pipeline report a concurrent attachment.
-func (s *Store) DeleteEmptyDomain(ctx context.Context, slug string) (bool, error) {
+// DeleteEmptyDomain checks all document versions and product bindings. Merge
+// completion also guards its destination so even an empty merge checks both ends.
+func (s *Store) DeleteEmptyDomain(ctx context.Context, slug string, destinations ...string) (bool, error) {
 	deleted := false
 	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
-		res, err := tx.Run(ctx, `MATCH (n:Domain {id:$domain}) WHERE NOT EXISTS { MATCH (d:Document {domain:n.id}) } DELETE n RETURN count(*) AS deleted`, map[string]any{"domain": slug})
-		if err != nil {
+		if err := txGuardDomainMutation(ctx, tx, append([]string{slug}, destinations...)...); err != nil {
 			return err
 		}
-		rows, err := res.Collect(ctx)
+		rows, err := txRows(ctx, tx, `
+MATCH (n:Domain {id:$domain})
+WHERE NOT EXISTS { MATCH (:Document {domain:n.id}) }
+  AND NOT EXISTS { MATCH (:ProductStore {domain:n.id}) }
+DELETE n RETURN count(*) AS deleted`, map[string]any{"domain": slug})
 		if err != nil {
 			return err
 		}
 		deleted = len(rows) > 0 && getInt(rows[0], "deleted") > 0
 		return nil
 	})
-	return deleted, err
+	return err == nil && deleted, err
 }
 
 // RenameDomain records the display-name change as a completed admin operation.

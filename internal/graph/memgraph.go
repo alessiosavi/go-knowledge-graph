@@ -178,6 +178,28 @@ func (s *Store) runWriteTx(ctx context.Context, fn func(tx neo4j.ManagedTransact
 	return err
 }
 
+// IsTransientWriteError reports whether a write failed due to a transaction
+// conflict or deadlock, including failures surfaced after driver retries.
+func IsTransientWriteError(err error) bool {
+	var limit *neo4j.TransactionExecutionLimit
+	if errors.As(err, &limit) && len(limit.Errors) > 0 {
+		// The driver exposes the last attempt separately from the error chain.
+		err = limit.Errors[len(limit.Errors)-1]
+	}
+	var dbErr *neo4j.Neo4jError
+	if !errors.As(err, &dbErr) {
+		return false
+	}
+	switch dbErr.Code {
+	case "Neo.TransientError.Transaction.DeadlockDetected", "Neo.TransientError.Transaction.LockClientStopped":
+		return true
+	}
+	// Memgraph shares this code family across conflicts, timeouts and other
+	// transaction aborts. The message identifies the write conflict.
+	return strings.HasPrefix(dbErr.Code, "Memgraph.TransientError.MemgraphError.") &&
+		strings.HasPrefix(dbErr.Msg, "Cannot resolve conflicting transactions.")
+}
+
 // runWriteTxLocked serializes the whole transaction behind Store.mu before
 // running it; see Store.mu for why.
 func (s *Store) runWriteTxLocked(ctx context.Context, fn func(tx neo4j.ManagedTransaction) error) error {

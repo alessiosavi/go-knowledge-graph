@@ -253,8 +253,16 @@ func TestMoveDocumentGuardsAndLedger(t *testing.T) {
 	if err := st.MoveDocument(ctx, a.DocID, "zorbo-admin", "move-acme", "move", "admin"); err != nil {
 		t.Fatal(err)
 	}
+	for _, slug := range []string{a.Domain, "zorbo-admin"} {
+		if got := rawCount(t, uri, fmt.Sprintf(`MATCH (n:Domain {id:'%s'}) RETURN coalesce(n.product_guard,0) AS n`, slug)); got != 1 {
+			t.Errorf("move and idempotent retry: %s product_guard=%d, want 1", slug, got)
+		}
+	}
 	if _, err := st.RenameDomain(ctx, "zorbo-admin", "Quillon Ltd"); err != nil {
 		t.Fatal(err)
+	}
+	if got := rawCount(t, uri, `MATCH (n:Domain {id:'zorbo-admin'}) RETURN coalesce(n.product_guard,0) AS n`); got != 1 {
+		t.Errorf("rename product_guard=%d, want 1", got)
 	}
 	domains, err := st.ListDomains(ctx)
 	if err != nil {
@@ -271,6 +279,22 @@ func TestMoveDocumentGuardsAndLedger(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("new domain missing")
+	}
+}
+
+func TestDeleteEmptyProductDomain(t *testing.T) {
+	st := graphtest.Store(t)
+	uri := os.Getenv(graphtest.URIEnv)
+	rawRun(t, uri, `CREATE (:Domain {id:'product-empty'}), (:ProductStore {store:'product-empty-test',domain:'product-empty'})`)
+	t.Cleanup(func() {
+		rawRun(t, uri, `MATCH (s:ProductStore {store:'product-empty-test'}) DELETE s`)
+		rawRun(t, uri, `MATCH (d:Domain {id:'product-empty'}) DELETE d`)
+	})
+	if deleted, err := st.DeleteEmptyDomain(t.Context(), "product-empty"); deleted || !errors.Is(err, graph.ErrDomainHasProducts) {
+		t.Errorf("deleted=%v error=%v, want domain_has_products", deleted, err)
+	}
+	if ids, err := st.DomainDocumentIDs(t.Context(), "product-empty"); err != nil || len(ids) != 0 {
+		t.Fatalf("empty domain missing: ids=%v err=%v", ids, err)
 	}
 }
 

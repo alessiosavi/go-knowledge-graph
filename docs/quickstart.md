@@ -607,7 +607,7 @@ their own licenses — see the table in the [README](../README.md#license).
 
 Use the search/ask domain pickers in `/ui/` (default: all), or pass a `domain`
 slug in the JSON body of `/v1/search`, `/v1/agent/ask` or `/v1/agent/ask/stream`.
-`GET /v1/domains` lists `{id, name, documents}` with done-document counts.
+`GET /v1/domains` lists `{id, name, documents, products, products_bound}` with done-document and product counts.
 `GET /v1/documents?domain=zorbo` filters documents before the page limit.
 Search hits, document list/detail responses, entity views, related entity
 references in facts, co-mentions, and traversal nodes carry `domain`.

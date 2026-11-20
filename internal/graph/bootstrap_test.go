@@ -438,6 +438,7 @@ func TestBootstrapProductSchema(t *testing.T) {
 		{"Product", []string{"store", "product_id"}},
 		{"Product", []string{"domain"}},
 		{"FeatureRev", []string{"id"}},
+		{"ProductStore", []string{"domain"}},
 	} {
 		if !rawIndexExists(t, uri, index.label, index.props...) {
 			t.Errorf("missing index %s(%v)", index.label, index.props)

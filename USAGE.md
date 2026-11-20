@@ -1102,7 +1102,7 @@ Names go only to `--out`. Stdout contains aggregates.
 
 ### Domain-scoped reads
 
-`GET /v1/domains` returns `[{id, name, documents}]` for the UI pickers;
+`GET /v1/domains` returns `[{id, name, documents, products, products_bound}]` for the UI pickers;
 `documents` counts done documents, and empty domains remain listed. Search and
 Ask offer independent domain pickers, defaulting to all domains. Search hits,
 document list/detail responses, entity views, related entity references in facts,
@@ -1290,7 +1290,17 @@ member: `done` documents have extraction reset and queued again, while judge
 verdict caches survive; `superseded` versions get only their domain properties
 updated and stay terminal. Failed or in-flight documents cause HTTP 409
 `not_done` listing their IDs, with nothing changed. Rename changes the display
-name and ledger without resetting extraction or requeueing documents.
+name and ledger without resetting extraction or requeueing documents. It also
+works on domains with product store bindings.
+
+A product store binding blocks moving documents into or out of the domain,
+merging, deleting the empty domain, and undoing a move involving it.
+The binding counts even when the store has zero products. The admin API returns
+HTTP 409 `domain_has_products` and the CLI exits 1. If an in-progress move,
+merge or undo detects a binding, it records `incomplete` and keeps any committed
+progress. After removing the empty store binding with
+`gkg products unbind STORE`, retry the original request with the same operation ID.
+Supply `--op-id` when starting a move or merge so you have the ID if it fails.
 
 An operation interrupted after a committed move can partially progress: retry
 the same request and `--op-id` to continue without resetting documents already

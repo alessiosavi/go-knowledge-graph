@@ -70,6 +70,8 @@ func (s *Server) handleDomainAdmin(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 409, "schema_not_v4", err.Error())
 		case errors.Is(err, graph.ErrNotDone):
 			writeError(w, 409, "not_done", err.Error())
+		case errors.Is(err, graph.ErrDomainHasProducts):
+			writeError(w, http.StatusConflict, "domain_has_products", err.Error())
 		case errors.Is(err, graph.ErrNotFound):
 			writeError(w, 404, "not_found", err.Error())
 		case errors.Is(err, graph.ErrInvalidDomainOp):
