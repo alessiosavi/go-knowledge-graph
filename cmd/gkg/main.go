@@ -74,6 +74,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runEvalSample(args[1:], stdout, stderr)
 	case "preset":
 		return runPreset(args[1:], stdout, stderr)
+	case "features":
+		return runFeatures(args[1:], stdout, stderr)
+	case "products":
+		return runProducts(args[1:], stdout, stderr)
 	case "domain":
 		return runDomain(args[1:], stdout, stderr)
 	case "judge":
@@ -782,6 +786,9 @@ commands:
   eval-sample -domain SLUG -out FILE [-docs N -seed S]  export done documents and stored chunks read-only
   eval-sample -from FILE.jsonl -domain SLUG -out FILE   build a replay sample from external text
   preset check FILE [-stoplist FILE]  validate a label and hygiene preset
+  features check R.json  validate a product feature registry and print its digest and counts
+  products emit -registry R.json [-release FILE] [-out PATH] FILE.jsonl
+                       emit canonical product observations
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
   domain    list, inspect, evaluate and administer domains through serve
   judge     backfill candidates or stored typed edges, audit facts, or evaluate judge v2
