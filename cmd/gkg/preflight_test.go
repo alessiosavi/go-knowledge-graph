@@ -65,6 +65,14 @@ func TestUsageListsCommands(t *testing.T) {
 	if !strings.Contains(out.String(), "migrate --schema-only") {
 		t.Error("schema-only option missing from usage")
 	}
+	const productHelp = `  products emit -registry R.json [-release FILE] [-out PATH] FILE.jsonl
+      emit canonical product observations
+  products release create|activate|list
+      manage product releases in Memgraph
+`
+	if !strings.Contains(out.String(), productHelp) {
+		t.Error("usage must place the emit and release descriptions under their respective commands")
+	}
 	// Preflight exits 3 for a bad seed or an unreadable stoplist overlay;
 	// the help line must name both, as deploy.sh and the docs do.
 	if !strings.Contains(out.String(), "3=seed or stoplist overlay invalid") {

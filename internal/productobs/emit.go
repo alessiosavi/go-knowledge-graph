@@ -20,6 +20,25 @@ type Release struct {
 	keys map[releaseKey]struct{}
 }
 
+// ReleaseTriple is a store-specific feature and source key admitted for release.
+type ReleaseTriple struct {
+	Feature   string `json:"feature"`
+	SourceKey string `json:"source_key"`
+	Store     string `json:"store"`
+}
+
+// Triples returns the release keys sorted by store, feature and source key.
+func (r *Release) Triples() []ReleaseTriple {
+	triples := make([]ReleaseTriple, 0, len(r.keys))
+	for k := range r.keys {
+		triples = append(triples, ReleaseTriple{Store: k.store, Feature: k.feature, SourceKey: k.sourceKey})
+	}
+	slices.SortFunc(triples, func(a, b ReleaseTriple) int {
+		return cmp.Or(cmp.Compare(a.Store, b.Store), cmp.Compare(a.Feature, b.Feature), cmp.Compare(a.SourceKey, b.SourceKey))
+	})
+	return triples
+}
+
 // ParseRelease validates a frozen candidates document against this registry.
 func (r *Registry) ParseRelease(data []byte) (*Release, error) {
 	obj, err := readObject(data, "registry_sha256 keys")
