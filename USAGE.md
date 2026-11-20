@@ -1119,6 +1119,8 @@ SHA-256 of the registry file. Re-importing those bytes prints `unchanged`.
 A reused feature ID must retain its definition, kind, cardinality, canonical
 unit, aliases and separators for shared mapped store keys across all
 historical revisions. Display names can change.
+New revisions serialize on a shared Memgraph node so concurrent imports
+cannot approve incompatible meanings for the same feature ID.
 
 Release create requires a `-pin` for each of `R.json`, `rf_kit.py`, `score.json`,
 `report.json`, `freeze.json`, `E2` and `record-obs.jsonl`. Missing pins cause
@@ -1141,9 +1143,61 @@ record the SHA-256 of the named file.
 `release list` prints JSON with each release's ID, state, registry revision,
 approver, approval time and stores. Activating a created or retired release
 retires the previous active release and immediately removes edges outside the
-new triples or registry revision. These commands exit 0 on success, 1 on
-runtime failure, 2 on incorrect usage and 5 on data rejection.
-`-materialize` currently returns exit 2.
+new triples or registry revision. It updates the affected stores' edge
+counts in the same transaction.
+
+### Product snapshots
+
+```sh
+gkg products import -store example.test -release ID -snapshot-seq 1 records.jsonl -report import.json
+gkg products release activate NEXT -materialize example.test=2:records.jsonl
+gkg products delete-store example.test
+gkg products unbind example.test
+```
+
+`products import` takes a complete A1 JSONL snapshot for one bound store and
+the active release. Memgraph's `--query-execution-timeout-sec` must be 0
+(unlimited) or at least 300 seconds. The pinned Memgraph 3.14.0 image defaults
+to 600 seconds. The CLI checks the input before writing and replaces all
+products, feature edges and the snapshot watermark in one transaction. A
+rejected row refuses the whole snapshot. Limits are
+10,000 product rows, 60,000 released edges, 64 KiB per row, 512 attributes per
+row and 64 MiB of replacement properties. Each released observation may have
+up to 64 items, with up to 1 KiB in its raw value and in each item. Unmapped
+and unreleased attributes count toward the row and attribute limits.
+The `title`, `brand`, `category`, `subcategory`, `product_type` and `link`
+fields allow up to 4 KiB each. The `product_id` allows up to 1 KiB.
+Property bytes include names and stored values, including folded values.
+
+Use a positive sequence strictly above the last admitted sequence and any
+wipe sequence. A byte-identical file for the same release prints `unchanged`
+and advances only `seen_seq` when that materialization is still intact.
+A drop of more than 10% in the product count requires `-allow-shrink`.
+The private JSON report records the requested and previous counts, digest,
+override, rejection details, unmapped keys, conflicts and parse status counts
+by feature. Rejection and unmapped-key details are each capped at 1,000.
+Exit codes are 0 for success, 1 for runtime failure, 2 for incorrect usage
+and 5 for data rejection, including stale or incomplete snapshots.
+Imports serialize on the active release pointer, including imports for different
+stores. If a concurrent import loses with a write conflict (exit 1), rerun it.
+
+`release activate ID -materialize STORE=SEQ:FILE` accepts repeatable
+`-materialize` arguments. Activation commits first. Each file then imports
+in order with its own transaction and prints its result. The first failure
+stops processing and determines the command's exit code. Activation and
+earlier successful imports stay committed. Use standalone `products import`
+for a JSON report or to approve a shrink.
+
+`products delete-store` is an owner-only operation. Run it with graph write
+credentials only when wiping a store is intended. It removes all products
+and edges and retains the binding, setting `wiped_seq` to `seen_seq` and the
+product and edge counts to zero. It clears `snapshot_digest`, `release_id`
+and `imported_at` while retaining `snapshot_seq` and `seen_seq`. The next
+import must use a sequence higher than `wiped_seq`.
+`products unbind` removes a store's binding and watermark once it has zero
+products. It advances the bound domain's guard counter and accepts any
+domain operation state, including `incomplete`.
+Only a new `products release create` can re-bind an unbound store.
 
 ## Domain administration
 
