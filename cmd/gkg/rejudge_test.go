@@ -38,6 +38,7 @@ func TestRejudgeFlags(t *testing.T) {
 
 func TestRejudgeCLIResume(t *testing.T) {
 	var requests atomic.Int32
+	var debitErr atomic.Pointer[error]
 	dir := t.TempDir()
 	attempts := filepath.Join(dir, "attempts.json")
 	manifest, verdicts := filepath.Join(dir, "manifest.jsonl"), filepath.Join(dir, "verdicts.jsonl")
@@ -46,7 +47,8 @@ func TestRejudgeCLIResume(t *testing.T) {
 		data, err := os.ReadFile(attempts)
 		var ledger struct{ Attempts int }
 		if err != nil || json.Unmarshal(data, &ledger) != nil || ledger.Attempts != int(n) {
-			t.Errorf("attempt %d before durable debit: %s %v", n, data, err)
+			failure := fmt.Errorf("attempt %d before durable debit: %s %v", n, data, err)
+			debitErr.Store(&failure)
 		}
 		if n == 2 {
 			http.Error(w, "retry", http.StatusTooManyRequests)
@@ -113,6 +115,9 @@ func TestRejudgeCLIResume(t *testing.T) {
 	} else if !strings.Contains(out, "sealed=false") {
 		t.Errorf("run that first completed the ledger did not report sealed=false: %s", out)
 	}
+	if err := debitErr.Load(); err != nil {
+		t.Fatal(*err)
+	}
 	records := bytes.Split(bytes.TrimSpace(readRejudgeFile(t, verdicts)), []byte("\n"))
 	var resumed struct{ Attempts int }
 	if len(records) != 2 || json.Unmarshal(records[1], &resumed) != nil || resumed.Attempts != 2 {
@@ -163,7 +168,8 @@ func TestRejudgeCLIResume(t *testing.T) {
 		t.Fatalf("resume cached %d new verdicts", len(got))
 	}
 	migrationQuery(t, `MATCH (v:JudgeVerdict {doc_id: $doc}) DELETE v`, map[string]any{"doc": doc})
-	before.AssertUnchanged(t, "judge except for verdict cache")
+	// Three invocations acquire a lease, and each of the three attempts renews it.
+	before.AssertJudgeLeaseFenceAdvanced(t, "judge except for verdict cache", 6)
 }
 
 func TestRejudgeCLIPresetCacheAcrossManifests(t *testing.T) {
@@ -635,7 +641,7 @@ func TestRejudgeCLIStopsAfterVerdictCacheMissedWrite(t *testing.T) {
 		t.Fatalf("resume replaced or repeated prior verdict: %s", got)
 	}
 	assertRejudgeSeal(t, v, false)
-	before.AssertUnchanged(t, "strict write with missing document")
+	before.AssertJudgeLeaseFenceAdvanced(t, "strict write with missing document", 4)
 }
 
 func TestRejudgeCLILeaseBlocksAnotherRun(t *testing.T) {

@@ -85,7 +85,10 @@ func validityLeaseBlocker(row *neo4j.Record) string {
 // that restores its previous state if the lineage report cannot be opened.
 func (s *Store) AcquireValidityApplyLease(ctx context.Context, owner string) (rollback func(context.Context) error, blocker string, err error) {
 	var previous map[string]any
-	acquired, err := s.acquireLease(ctx, ValidityApplyLease, owner, ValidityApplyTTL, false, &previous)
+	acquired, err := s.acquireLease(ctx, ValidityApplyLease, owner, ValidityApplyTTL, false, &previous, []string{BackfillLeaseName}, false)
+	if errors.Is(err, ErrLeaseExcluded) {
+		return nil, err.Error(), nil
+	}
 	if err != nil {
 		return nil, "", err
 	}
@@ -155,8 +158,8 @@ const validityExactEdge = validityLogicalEdge + `
 
 // ApplyValidityFact fences and checks one source and applies any approved edge changes in the same transaction.
 func (s *Store) ApplyValidityFact(ctx context.Context, owner string, first bool, w ValidityWrite, check func(RejudgeFact, CatalogReader) error) error {
-	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
-		ok, err := txRenewLease(ctx, tx, ValidityApplyLease, owner, ValidityApplyTTL)
+	return s.runLeaseWrite(ctx, true, func(tx neo4j.ManagedTransaction) error {
+		ok, err := txRenewFencedLease(ctx, tx, ValidityApplyLease, owner, ValidityApplyTTL)
 		if err != nil {
 			return err
 		}

@@ -457,7 +457,9 @@ func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*in
 	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg), conv))
 	pipe.SetWriteMode(writeMode)
 	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
-		pipe.SetJudge(newFactJudge(cfg, st))
+		if err := pipe.SetJudge(newFactJudge(cfg, st)); err != nil {
+			return nil, nil, err
+		}
 	}
 	var emb embed.Provider
 	if cfg.Embedder.Enabled {

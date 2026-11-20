@@ -18,20 +18,34 @@ const matchStoredFact = `
 MATCH (a:Entity {key:$head})-[r]->(b:Entity {key:$tail})
 WHERE type(r)=$rel AND r.chunk_id=$chunk AND r.judge_gen=$gen AND r.input_hash=$hash AND r.judge=''`
 
+// StoredFactVerdictOptions adds backfill's document predicates and transaction fence.
+type StoredFactVerdictOptions struct {
+	RequireDone bool
+	Domain      string
+	BeforeWrite func(context.Context, neo4j.ManagedTransaction) error
+}
+
 // ApplyStoredFactVerdict applies a verdict only to the matching unjudged
-// generation. When requireDone is true the edge's document must be done.
-// A vanished or changed edge returns false, and ambiguous matches fail.
-func (s *Store) ApplyStoredFactVerdict(ctx context.Context, ref StoredFactRef, status, reason string, requireDone bool) (bool, error) {
+// generation. A vanished or changed edge returns false, and ambiguous matches
+// fail. BeforeWrite runs inside the same transaction and may abort it. A
+// fenced transaction can rerun BeforeWrite and the verdict apply on retry.
+func (s *Store) ApplyStoredFactVerdict(ctx context.Context, ref StoredFactRef, status, reason string, opt StoredFactVerdictOptions) (bool, error) {
 	var applied bool
-	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+	err := s.runLeaseWrite(ctx, opt.BeforeWrite != nil, func(tx neo4j.ManagedTransaction) error {
+		applied = false
+		if opt.BeforeWrite != nil {
+			if err := opt.BeforeWrite(ctx, tx); err != nil {
+				return err
+			}
+		}
 		var err error
-		applied, err = txApplyStoredFactVerdict(ctx, tx, ref, status, reason, requireDone)
+		applied, err = txApplyStoredFactVerdict(ctx, tx, ref, status, reason, opt)
 		return err
 	})
 	return applied && err == nil, err
 }
 
-func txApplyStoredFactVerdict(ctx context.Context, tx neo4j.ManagedTransaction, ref StoredFactRef, status, reason string, requireDone bool) (bool, error) {
+func txApplyStoredFactVerdict(ctx context.Context, tx neo4j.ManagedTransaction, ref StoredFactRef, status, reason string, opt StoredFactVerdictOptions) (bool, error) {
 	var write string
 	switch status {
 	case "confirmed", "unclear":
@@ -42,13 +56,15 @@ func txApplyStoredFactVerdict(ctx context.Context, tx neo4j.ManagedTransaction, 
 		return false, fmt.Errorf("graph: invalid stored fact verdict %q", status)
 	}
 	match := matchStoredFact
-	if requireDone {
+	if opt.RequireDone || opt.Domain != "" {
 		match += `
-MATCH (d:Document {id: r.doc_id}) WHERE d.status='done'`
+MATCH (d:Document {id: r.doc_id})
+WHERE (NOT $require_done OR d.status = 'done') AND ($domain = '' OR d.domain = $domain)`
 	}
 	params := map[string]any{
 		"head": ref.HeadKey, "rel": sanitizeRel(ref.Rel), "tail": ref.TailKey, "chunk": ref.ChunkID,
 		"gen": ref.JudgeGen, "hash": ref.InputHash, "status": status,
+		"require_done": opt.RequireDone, "domain": opt.Domain,
 	}
 	rows, err := txRows(ctx, tx, match+`
 RETURN a.key AS head, type(r) AS rel, b.key AS tail, r.chunk_id AS chunk,

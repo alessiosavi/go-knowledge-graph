@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
@@ -41,10 +43,11 @@ func runJudgeBackfill(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("judge backfill", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var opt judge.BackfillOptions
-	fs.IntVar(&opt.Limit, "limit", 0, "maximum candidates (0 means all)")
+	fs.IntVar(&opt.Limit, "limit", 0, "maximum candidates or edges (0 means all)")
 	fs.IntVar(&opt.BudgetCalls, "budget-calls", 0, "required positive maximum provider attempts, including retries")
-	fs.StringVar(&opt.Domain, "domain", "", "restrict candidates to this domain")
+	fs.StringVar(&opt.Domain, "domain", "", "restrict candidates or edges to this domain")
 	fs.BoolVar(&opt.Force, "force", false, "take over a live backfill lease")
+	edges := fs.Bool("edges", false, "judge pending typed edges (limit and domain then apply to edges)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -52,7 +55,7 @@ func runJudgeBackfill(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 || opt.Limit < 0 || opt.BudgetCalls <= 0 {
-		fmt.Fprintln(stderr, "usage: gkg judge backfill --budget-calls N [--limit N] [--domain d] [--force]")
+		fmt.Fprintln(stderr, "usage: gkg judge backfill --budget-calls N [--edges] [--limit N] [--domain d] [--force]")
 		fmt.Fprintln(stderr, "gkg judge backfill: --budget-calls is required and must be > 0; limit must be non-negative; positional arguments are not supported")
 		return 2
 	}
@@ -60,6 +63,14 @@ func runJudgeBackfill(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg judge backfill: %v\n", err)
 		return 1
+	}
+	var edgeClient *judge.Client
+	if *edges {
+		edgeClient, err = judge.NewEdgeBackfillClient(cfg)
+		if err != nil {
+			fmt.Fprintf(stderr, "gkg judge backfill: %v\n", err)
+			return 2
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -69,9 +80,26 @@ func runJudgeBackfill(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer st.Close(context.WithoutCancel(ctx))
+	if *edges && opt.Domain != "" {
+		version, err := st.SchemaVersion(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "gkg judge backfill: %v\n", err)
+			return 1
+		}
+		if version < graph.SchemaVersionV4 {
+			fmt.Fprintln(stderr, "gkg judge backfill: --domain with --edges requires extraction schema v4")
+			return 2
+		}
+	}
 	if err := st.Bootstrap(ctx); err != nil {
 		fmt.Fprintf(stderr, "gkg judge backfill: %v\n", err)
 		return 1
+	}
+	if *edges {
+		if cfg.Judge.APIKey == "" {
+			fmt.Fprintln(stderr, "gkg judge backfill: warning: judge API key is empty")
+		}
+		return runJudgeBackfillEdges(ctx, st, edgeClient, opt, stdout, stderr)
 	}
 	cached, client := newFactJudgeClient(cfg, st)
 	r, runErr := judge.Backfill(ctx, st, cached, client, opt)
@@ -81,6 +109,27 @@ func runJudgeBackfill(args []string, stdout, stderr io.Writer) int {
 	}
 	if runErr != nil {
 		fmt.Fprintf(stderr, "gkg judge backfill: %v\n", runErr)
+		return 1
+	}
+	return 0
+}
+
+func runJudgeBackfillEdges(ctx context.Context, st *graph.Store, client *judge.Client, opt judge.BackfillOptions, stdout, stderr io.Writer) int {
+	cache := judge.NewCached(client, st, client.Model())
+	r, runErr := judge.BackfillEdges(ctx, st, cache, client, opt)
+	if errors.Is(runErr, judge.ErrBackfillLeaseRefused) {
+		fmt.Fprintf(stderr, "gkg judge backfill: %v\n", runErr)
+		return 2
+	}
+	model := r.Model
+	if strings.ContainsAny(model, " \t\r\n") {
+		model = strconv.Quote(model)
+	}
+	_, err := fmt.Fprintf(stdout, "selected=%d invalid=%d judged=%d cache_hits=%d attempts=%d confirmed=%d unclear=%d refuted=%d failed=%d discarded=%d stopped_for_budget=%t stopped_provider=%t lease_lost=%t model=%s\n",
+		r.Selected, r.Invalid, r.Judged, r.CacheHits, r.Attempts, r.Confirmed, r.Unclear, r.Refuted, r.Failed, r.Discarded,
+		r.StoppedForBudget, r.StoppedProvider, r.LeaseLost, model)
+	if err = errors.Join(err, runErr); err != nil {
+		fmt.Fprintf(stderr, "gkg judge backfill: %v\n", err)
 		return 1
 	}
 	return 0

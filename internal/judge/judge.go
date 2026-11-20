@@ -260,24 +260,24 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 	resp, err := c.client.Do(req)
 	if err != nil {
 		diagnostic := providerIOError("judge: provider request failed", err)
-		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), "", diagnostic
+		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), "", providerWideError{diagnostic}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
 	if err != nil {
 		diagnostic := providerIOError("judge: read response failed", err)
-		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), resp.Header.Get("Retry-After"), diagnostic
+		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), resp.Header.Get("Retry-After"), providerWideError{diagnostic}
 	}
 	if len(data) > 4<<20 {
-		return ingest.Verdict{}, false, "", fmt.Errorf("judge: response exceeds the %d MiB cap", 4)
+		return ingest.Verdict{}, false, "", classifyProviderStatus(resp.StatusCode, fmt.Errorf("judge: response exceeds the %d MiB cap", 4))
 	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return ingest.Verdict{}, true, resp.Header.Get("Retry-After"), fmt.Errorf("judge: HTTP %d", resp.StatusCode)
+		return ingest.Verdict{}, true, resp.Header.Get("Retry-After"), providerWideError{fmt.Errorf("judge: HTTP %d", resp.StatusCode)}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Redact before taking a preview so it cannot include a clipped credential.
 		preview := trimPreview(c.providerRedactor.Replace(string(data)))
-		return ingest.Verdict{}, false, "", fmt.Errorf("judge: HTTP %d: %s", resp.StatusCode, preview)
+		return ingest.Verdict{}, false, "", classifyProviderStatus(resp.StatusCode, fmt.Errorf("judge: HTTP %d: %s", resp.StatusCode, preview))
 	}
 	var wire judgeWireResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
@@ -305,6 +305,24 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 		confidence = min(max(*vp.Confidence, 0), 1)
 	}
 	return ingest.Verdict{Status: vp.Verdict, Confidence: confidence, Reason: vp.Reason}, false, "", nil
+}
+
+// providerWideError preserves existing diagnostics and retry rules while
+// identifying failures that an edge backfill should not repeat for other rows.
+type providerWideError struct{ error }
+
+func (e providerWideError) Unwrap() error { return e.error }
+
+func classifyProviderStatus(code int, err error) error {
+	switch code {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed,
+		http.StatusUnsupportedMediaType, http.StatusTooManyRequests:
+		return providerWideError{err}
+	}
+	if code >= 500 {
+		return providerWideError{err}
+	}
+	return err
 }
 
 var errInvalidProviderURL = errors.New("provider URL or redirect target is invalid")

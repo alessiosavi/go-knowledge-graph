@@ -432,6 +432,8 @@ func (s *Store) UpsertExtractionOpts(ctx context.Context, docID, chunkID, extrac
 			row["hash"] = hex.EncodeToString(sum[:])
 		}
 		if opt.StoreJudgeInput {
+			// A nil payload still gets a generation. The edge is intentionally
+			// unjudgeable: online and backfill skip it, and legacy setters exclude it.
 			row["gen"] = f.JudgeGen
 		}
 		factRows = append(factRows, row)

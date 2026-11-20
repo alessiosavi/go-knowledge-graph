@@ -576,18 +576,47 @@ model. Ingest continues to accept unknown keys and logs a warning for each.
 a rollback. It works with the four judge modes below and is incompatible with
 `facts.require_confirmation`.
 
-| `judge.mode` | Online verification | With `store_inputs: true` |
-| --- | --- | --- |
-| `off` | None | Keeps requests for all new typed edges |
-| `low-confidence` | Facts below `judge.verify_floor` | Keeps requests for skipped edges and failed judgments |
-| `sample` | Deterministic sample at `judge.sample_pct` | Keeps requests for skipped edges and failed judgments |
-| `all` | All facts | Keeps requests for failed judgments |
+| `judge.mode` | Online verification | `store_inputs: false` | `store_inputs: true` |
+| --- | --- | --- | --- |
+| `off` | None | No typed-edge backfill | Stores requests for all new typed edges |
+| `low-confidence` | Facts below `judge.verify_floor` | No typed-edge backfill | Keeps requests for skipped edges and failed judgments |
+| `sample` | Deterministic sample at `judge.sample_pct` | No typed-edge backfill | Keeps requests for skipped edges and failed judgments |
+| `all` | All facts | No typed-edge backfill | Keeps requests for failed judgments |
 
-The setting takes effect on newly written typed edges. To regenerate existing
-edges with the setting enabled, an explicit admin rebuild re-extracts their
-chunks and replaces the old facts and rejection audits. Pending typed edges
-have an empty verdict, a stored request, and a `done` document. Rejudge
-before-images include the stored user message when present.
+Only typed edges written with input storage enabled are backfillable. An
+explicit admin rebuild re-extracts chunks and replaces their facts and rejection
+audits. The backfill selects edges with an empty verdict and a stored request
+on a `done` document. Confirmation and unclear verdicts remove the stored
+request from the edge. Refutation removes the edge and writes a rejection audit.
+
+Run the typed-edge backfill inside the running service container so it uses the
+same judge model and cache as ingest.
+
+```sh
+docker compose --env-file .env -f deploy/docker-compose.yml exec -T gkg gkg judge backfill --edges --budget-calls 120
+```
+
+`--limit` caps the number of edges selected. `--domain` filters their documents
+and requires extraction schema v4. The judge URL must be a valid HTTP(S) URL.
+An empty API key is allowed for endpoints without authentication. Each provider
+attempt, including retries, counts toward the budget. Cache hits use no
+attempts. A rerun can apply a previously obtained verdict without another call
+when its cache write succeeded and the same request and model are still in the
+cache. Provider-wide failures stop the run with `stopped_provider=true` and
+leave the edge pending. These include HTTP 401, 403, 404, 405, 415, 429, and
+5xx, and network errors and timeouts. Row-specific failures such as HTTP 400,
+an undecodable response, or an unknown verdict leave the edge pending for a
+later run and allow this run to continue.
+
+Edge backfill and rejudge exclude each other. `--force` can take over a
+`judge-backfill` lease. A live `repair-validity` or `judge-rejudge` lease still
+blocks edge backfill. Treat edge backfill as a graph writer during a quiescent
+validity repair. Stop the timer, let the active backfill finish, and verify no
+backfill process or live lease remains before `repair-validity -classify`.
+Keep it disabled through the post-apply decision. Pending opted-in edges remain
+in the rejudge and validity catalogs (`judge IN ['confirmed','']`). Rejudge
+before-images include `judge_input` in the saved edge properties. After the
+window, validity-deferred edges with stored requests are eligible for backfill.
 
 Judge pending fact candidates with the configured judge provider:
 
@@ -602,7 +631,8 @@ verdict stays a candidate. `--limit 0` (the default) means no candidate limit.
 `--budget-calls` is required and must be greater than zero; missing, zero or
 negative budgets exit 2 with usage. The budget counts provider attempts,
 including retries; cache hits use no calls.
-Verdicts are cached before application, so rerunning recovers cached work.
+Rerunning recovers verdicts whose cache write succeeded before application,
+for the same request and model.
 Per-candidate errors are logged and counted as `failed`; later candidates are
 still judged, and a rerun may retry failed candidates. An unchanged candidate
 whose endpoint disappeared is deleted and counted as `orphaned`, separately

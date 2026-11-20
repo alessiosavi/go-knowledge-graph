@@ -92,19 +92,6 @@ type storedPayloadJudge interface {
 	VerifyPayload(ctx context.Context, p JudgePayload, docID string) (Verdict, error)
 }
 
-func verifyStoredPayload(ctx context.Context, j FactJudge, p JudgePayload, docID string) (Verdict, error) {
-	switch j := j.(type) {
-	case storedPayloadJudge:
-		return j.VerifyPayload(ctx, p, docID)
-	case interface {
-		VerifyPayload(context.Context, JudgePayload) (Verdict, error)
-	}:
-		return j.VerifyPayload(ctx, p)
-	default:
-		return Verdict{}, errors.New("judge: online judge does not support stored payloads")
-	}
-}
-
 // ShouldJudge reports whether a fact is selected for verification by the
 // configured mode (off | low-confidence | sample | all). Sample selection
 // is deterministic per fact identity. Unknown modes select nothing.

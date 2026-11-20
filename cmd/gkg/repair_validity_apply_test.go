@@ -183,6 +183,14 @@ func assertMixedValidityApply(t *testing.T, st *graph.Store, planDir, report str
 	if len(rows) != len(final) {
 		t.Fatalf("ledger has %d source rows, want %d", len(rows), len(final))
 	}
+	// The cached rejudge that built the plan already created the fence.
+	// Apply commits one increment on acquisition and one per approved row.
+	for _, node := range wantNodes {
+		if slices.Equal(node.Labels, []string{"GkgMeta"}) && node.Props["id"] == "judge_lease_fence" {
+			node.Props["seq"] = node.Props["seq"].(int64) + 1 + int64(len(final))
+			break
+		}
+	}
 	wantBefore := graph.ValidityEdgeCounts{Default: baseline.Default + 22, ConfirmedOnly: baseline.ConfirmedOnly + 20}
 	wantAfter := graph.ValidityEdgeCounts{Default: baseline.Default + 8, ConfirmedOnly: baseline.ConfirmedOnly + 6}
 	wantActual := validityLedgerTotals{TypedEdges: wantAfter, Counts: plan.Counts}
@@ -387,6 +395,11 @@ func rewriteFixtureDraft(t *testing.T, dir string, updateInputs func([]byte) []b
 
 func assertValidityPrecondition(t *testing.T, dir, digest, report, want string, quiescent bool, details ...string) {
 	t.Helper()
+	assertValidityApplyRejected(t, dir, digest, report, want, quiescent, 0, details...)
+}
+
+func assertValidityApplyRejected(t *testing.T, dir, digest, report, want string, quiescent bool, fenceAdvances int64, details ...string) {
+	t.Helper()
 	before := graphtest.Snapshot(t)
 	content, beforeErr := os.ReadFile(report)
 	args := []string{"-apply", "-plan", dir, "-approved-digest", digest, "-report", report}
@@ -402,7 +415,11 @@ func assertValidityPrecondition(t *testing.T, dir, digest, report, want string, 
 			t.Errorf("stderr missing %q: %s", detail, &stderr)
 		}
 	}
-	before.AssertUnchanged(t, "failed apply precondition")
+	if fenceAdvances == 0 {
+		before.AssertUnchanged(t, "failed apply precondition")
+	} else {
+		before.AssertJudgeLeaseFenceAdvanced(t, "failed apply precondition", fenceAdvances)
+	}
 	after, afterErr := os.ReadFile(report)
 	if (beforeErr == nil && (afterErr != nil || !bytes.Equal(content, after))) ||
 		(errors.Is(beforeErr, os.ErrNotExist) && !errors.Is(afterErr, os.ErrNotExist)) {
@@ -458,7 +475,7 @@ func TestRepairValidityApplyDeferred(t *testing.T) {
 		t.Fatalf("deferred fixture edges = %d, want 1", len(edges))
 	}
 	validityCommandOK(t, "-apply", "-plan", dir, "-approved-digest", plan.FinalDigest, "-quiescent", "-report", report)
-	before.AssertUnchanged(t, "apply with only deferred rows")
+	before.AssertJudgeLeaseFenceAdvanced(t, "apply with only deferred rows", 2)
 	if after := storedValidityRelationships(t, source); !reflect.DeepEqual(after, edges) {
 		t.Errorf("deferred edge = %+v, want %+v", after, edges)
 	}
@@ -583,7 +600,7 @@ func TestRepairValidityApplyPreconditions(t *testing.T) {
 	})
 	t.Run("report parent missing", func(t *testing.T) {
 		missing := filepath.Join(t.TempDir(), "missing", "apply.jsonl")
-		assertValidityPrecondition(t, dir, digest, missing, "open validity apply report", true, missing)
+		assertValidityApplyRejected(t, dir, digest, missing, "open validity apply report", true, 1, missing)
 	})
 	t.Run("decision drift", func(t *testing.T) {
 		drift := t.TempDir()
@@ -694,7 +711,7 @@ func TestRepairValidityApplyReportRace(t *testing.T) {
 	if got := readRejudgeFile(t, report); string(got) != competing {
 		t.Errorf("competing report changed: %q", got)
 	}
-	before.AssertUnchanged(t, "report creation race")
+	before.AssertJudgeLeaseFenceAdvanced(t, "report creation race", 1)
 }
 
 func TestRepairValidityApplyStops(t *testing.T) {
@@ -820,7 +837,7 @@ func TestRepairValidityApplyStopsOnNewMarker(t *testing.T) {
 		t.Errorf("intervening marker missing: %v", edges)
 	}
 	migrationQuery(t, validityFixtureMatch+` REMOVE r.validity_run`, params)
-	before.AssertUnchanged(t, "apply stopped at the first row")
+	before.AssertJudgeLeaseFenceAdvanced(t, "apply stopped at the first row", 1)
 }
 
 func replaceRewriteEvidence(t *testing.T, plan string) {

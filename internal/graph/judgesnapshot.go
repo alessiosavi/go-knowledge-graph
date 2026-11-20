@@ -123,3 +123,53 @@ ORDER BY idx`, map[string]any{"selected": selected})
 	}
 	return out, nil
 }
+
+// StoredJudgeEdge carries the exact v1 user message and the identity used for
+// keyset pagination and guarded application.
+type StoredJudgeEdge struct {
+	StoredFactRef
+	DocID, JudgeInput string
+}
+
+// PendingStoredJudgeEdges reads up to limit pending typed edges after the
+// supplied cursor, ordered by immutable properties. A nil cursor starts a run.
+func (s *Store) PendingStoredJudgeEdges(ctx context.Context, domain string, after *StoredFactRef, limit int) ([]StoredJudgeEdge, error) {
+	const query = `
+MATCH (h:Entity)-[r]->(t:Entity)
+WHERE r.judge = '' AND r.judge_input <> ''
+MATCH (d:Document {id: r.doc_id})
+WHERE d.status = 'done' AND ($domain = '' OR d.domain = $domain)
+WITH coalesce(r.input_hash, '') AS hash, coalesce(h.key, '') AS head,
+     type(r) AS rel, coalesce(t.key, '') AS tail, coalesce(r.chunk_id, '') AS chunk,
+     coalesce(r.judge_gen, '') AS gen, r.doc_id AS doc, r.judge_input AS input
+WHERE NOT $has_cursor OR hash > $hash OR (hash = $hash AND (
+  head > $head OR (head = $head AND (
+  rel > $rel OR (rel = $rel AND (
+  tail > $tail OR (tail = $tail AND (
+  chunk > $chunk OR (chunk = $chunk AND gen > $gen)))))))))
+RETURN hash, head, rel, tail, chunk, gen, doc, input
+ORDER BY hash, head, rel, tail, chunk, gen LIMIT $limit`
+	var cursor StoredFactRef
+	if after != nil {
+		cursor = *after
+	}
+	rows, err := s.runRead(ctx, query, map[string]any{
+		"domain": domain, "limit": limit, "has_cursor": after != nil,
+		"hash": cursor.InputHash, "head": cursor.HeadKey, "rel": cursor.Rel,
+		"tail": cursor.TailKey, "chunk": cursor.ChunkID, "gen": cursor.JudgeGen,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("graph: pending stored judge edges: %w", err)
+	}
+	edges := make([]StoredJudgeEdge, 0, len(rows))
+	for _, row := range rows {
+		edges = append(edges, StoredJudgeEdge{
+			StoredFactRef: StoredFactRef{
+				InputHash: getString(row, "hash"), HeadKey: getString(row, "head"), Rel: getString(row, "rel"),
+				TailKey: getString(row, "tail"), ChunkID: getString(row, "chunk"), JudgeGen: getString(row, "gen"),
+			},
+			DocID: getString(row, "doc"), JudgeInput: getString(row, "input"),
+		})
+	}
+	return edges, nil
+}

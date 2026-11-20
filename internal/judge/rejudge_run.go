@@ -18,7 +18,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 )
 
-const rejudgeLeaseName = "judge-rejudge"
+const rejudgeLeaseName = graph.RejudgeLeaseName
 
 var errRejudgeBudget = errors.New("judge: rejudge attempt budget reached")
 
@@ -51,7 +51,7 @@ type rejudgeVerdict struct {
 type strictRejudgeStore struct{ *graph.Store }
 
 type rejudgeLeases interface {
-	AcquireLease(context.Context, string, string, time.Duration, bool) (bool, error)
+	AcquireRejudgeLease(context.Context, string, time.Duration) (bool, error)
 	RenewLease(context.Context, string, string, time.Duration) (bool, error)
 	ReleaseLease(context.Context, string, string) error
 }
@@ -170,7 +170,7 @@ func judgeRejudge(ctx context.Context, leases rejudgeLeases, store VerdictStore,
 		return result, fmt.Errorf("judge: stored cap is %d; use -raise-cap to raise it to %d", ledger.Cap, opt.BudgetAttempts)
 	}
 	owner := rand.Text()
-	ok, err := leases.AcquireLease(ctx, rejudgeLeaseName, owner, backfillLeaseTTL, false)
+	ok, err := leases.AcquireRejudgeLease(ctx, owner, backfillLeaseTTL)
 	if err != nil {
 		return result, err
 	}
