@@ -268,8 +268,10 @@ curl -N -s localhost:8080/v1/agent/ask/stream -H 'Content-Type: application/json
 for that deployment. An empty `reasoning_efforts` list disables that control. With `GKG_AGENT_STREAM=false` the stream
 endpoint still answers — SSE framing, tool and done events only, no deltas —
 and the panel uses the JSON endpoint; a provider that does not actually
-stream is detected automatically (the agent falls back to non-streamed
-answers for the process lifetime).
+stream is detected automatically (with default generation settings the
+agent falls back to non-streamed answers for the process lifetime; an ask
+with explicit generation settings negotiates its own fallback and does not
+change what later asks remember).
 
 Each ask is independent (no chat memory) and bounded:
 `GKG_AGENT_MAX_STEPS` model turns that request tools (default 6, hard cap
