@@ -153,7 +153,7 @@ const validityExactEdge = validityLogicalEdge + `
   AND coalesce(r.extractor_version, '') = $version AND r.judge = $prior
   AND properties(r) = $before`
 
-// ApplyValidityFact fences, checks, and applies one source in one write transaction.
+// ApplyValidityFact fences and checks one source and applies any approved edge changes in the same transaction.
 func (s *Store) ApplyValidityFact(ctx context.Context, owner string, first bool, w ValidityWrite, check func(RejudgeFact, CatalogReader) error) error {
 	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
 		ok, err := txRenewLease(ctx, tx, ValidityApplyLease, owner, ValidityApplyTTL)
@@ -220,6 +220,8 @@ RETURN id(r) AS edge, coalesce(h.domain, '') AS domain, d IS NOT NULL AS has_doc
 		params["hs"], params["he"], params["ts"], params["te"] = f.HeadStart, f.HeadEnd, f.TailStart, f.TailEnd
 		params["confidence"], params["low"], params["version"], params["prior"] = f.Confidence, f.LowConfidence, f.ExtractorVersion, f.Judge
 		switch w.Outcome {
+		case validity.OutcomeDeferred:
+			return nil
 		case validity.OutcomeReject, validity.OutcomeValidityDrop:
 			if err := writeValidityAudit(read, fact, w); err != nil {
 				return err

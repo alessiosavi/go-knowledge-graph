@@ -410,6 +410,69 @@ func assertValidityPrecondition(t *testing.T, dir, digest, report, want string, 
 	}
 }
 
+func TestRepairValidityApplyDeferred(t *testing.T) {
+	st := validityFixture(t)
+	_, source := applyFixtureSource(t, "no-target", "zorbs", false)
+	migrationQuery(t, validityFixtureMatch+` SET r.fixture_values = [1, 2, 3], r.judge_run = 'previous-run'`, validityKeyParams(source))
+	dir := applyFixturePlan(t, st, nil)
+	validityCommandOK(t, "-finalize", "-plan", dir, "-no-rewrites", "-defer-unconfirmed")
+	planPath := filepath.Join(dir, "final-plan.json")
+	planBytes := readRejudgeFile(t, planPath)
+	plan, err := validity.DecodePlanSummary(planBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := filepath.Join(t.TempDir(), "apply.jsonl")
+
+	t.Run("changed deferral mode", func(t *testing.T) {
+		changed := bytes.Replace(planBytes, []byte(`"deferral":"unconfirmed-destination"`), []byte(`"deferral":""`), 1)
+		if bytes.Equal(changed, planBytes) {
+			t.Fatal("final plan did not contain the deferral mode")
+		}
+		if err := os.WriteFile(planPath, changed, 0600); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.WriteFile(planPath, planBytes, 0600); err != nil {
+				t.Error(err)
+			}
+		})
+		assertValidityPrecondition(t, dir, plan.FinalDigest, report, "final.jsonl differs", true)
+	})
+
+	// A deferred source still has to match its frozen request at preflight.
+	presetPath := filepath.Join(os.Getenv("GKG_LABELS_PRESETS_DIR"), "catalog.yaml")
+	preset := readRejudgeFile(t, presetPath)
+	changed := bytes.Replace(preset, []byte("employs the tail"), []byte("links the head to the tail"), 1)
+	if err := os.WriteFile(presetPath, changed, 0600); err != nil {
+		t.Fatal(err)
+	}
+	assertValidityPrecondition(t, dir, plan.FinalDigest, report, "bulk manifest request bytes differ", true, source.ID)
+	if err := os.WriteFile(presetPath, preset, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	before := graphtest.Snapshot(t)
+	edges := storedValidityRelationships(t, source)
+	if len(edges) != 1 {
+		t.Fatalf("deferred fixture edges = %d, want 1", len(edges))
+	}
+	validityCommandOK(t, "-apply", "-plan", dir, "-approved-digest", plan.FinalDigest, "-quiescent", "-report", report)
+	before.AssertUnchanged(t, "apply with only deferred rows")
+	if after := storedValidityRelationships(t, source); !reflect.DeepEqual(after, edges) {
+		t.Errorf("deferred edge = %+v, want %+v", after, edges)
+	}
+	rows, summary := readValidityLedger(t, report)
+	if len(rows) != 1 || rows[0].ID != source.ID || rows[0].PlannedOutcome != validity.OutcomeValidityDrop ||
+		rows[0].ActualOutcome == nil || *rows[0].ActualOutcome != validity.OutcomeDeferred || rows[0].NewID != "" || rows[0].Reason != "no-target" {
+		t.Fatalf("deferred lineage rows = %+v", rows)
+	}
+	if summary.Status != "applied" || !reflect.DeepEqual(summary.Projected, summary.Actual) || summary.Before != summary.Actual.TypedEdges ||
+		summary.Actual.Counts[validity.OutcomeDeferred][source.Relation][rows[0].Rule] != 1 {
+		t.Errorf("deferred lineage summary = %+v", summary)
+	}
+}
+
 func TestRepairValidityApplyPreconditions(t *testing.T) {
 	st := validityFixture(t)
 	d, source := applyFixtureSource(t, "preconditions", "zorbs", true)

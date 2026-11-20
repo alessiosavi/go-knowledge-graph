@@ -110,9 +110,12 @@ func TestRepairValidityFlags(t *testing.T) {
 		{"-finalize", "-plan", "dir", "-no-rewrites", "-out", "other"},
 		{"-apply", "-plan", "dir"},
 		{"-apply", "-plan", "dir", "-approved-digest", strings.Repeat("0", 64), "-quiescent"},
+		{"-classify", "-out", "dir", "-defer-unconfirmed"},
+		{"-plan", "-manifest", "m", "-verdicts", "v", "-out", "dir", "-defer-unconfirmed"},
+		{"-apply", "-plan", "dir", "-approved-digest", strings.Repeat("0", 64), "-quiescent", "-report", "report", "-defer-unconfirmed=false"},
 	} {
-		if code, _ := callValidity(args...); code != 2 {
-			t.Errorf("%v exit=%d, want 2", args, code)
+		if code, out := callValidity(args...); code != 2 || !strings.Contains(out, "usage: gkg repair-validity") {
+			t.Errorf("%v exit=%d, want usage error: %s", args, code, out)
 		}
 	}
 }
@@ -454,6 +457,7 @@ WHERE h.key IN $keys SET r.low_confidence = true`, map[string]any{"keys": []stri
 		DocID        string `json:"doc_id"`
 		ChunkID      string `json:"chunk_id"`
 		HasConfirmed bool   `json:"has_confirmed_destination"`
+		Deferred     *bool  `json:"deferred"`
 		States       []struct {
 			ID, Judge, Outcome string
 			Live               bool
@@ -468,6 +472,9 @@ WHERE h.key IN $keys SET r.low_confidence = true`, map[string]any{"keys": []stri
 		source := bulkSources[row.SourceID]
 		if row.DocID == "" || row.ChunkID == "" || row.DocID != source.Request.DocID || row.ChunkID != source.ChunkID {
 			t.Errorf("affected source %s ids = (%q, %q), want (%q, %q)", row.SourceID, row.DocID, row.ChunkID, source.Request.DocID, source.ChunkID)
+		}
+		if row.Deferred != nil {
+			t.Errorf("deferral field present without flag for %s", row.SourceID)
 		}
 		report[row.SourceID] = row
 	}
@@ -497,8 +504,9 @@ WHERE h.key IN $keys SET r.low_confidence = true`, map[string]any{"keys": []stri
 		}
 	}
 	type affectedCounts struct {
-		Sources                     int `json:"sources"`
-		WithoutConfirmedDestination int `json:"without_confirmed_destination"`
+		Sources                     int  `json:"sources"`
+		WithoutConfirmedDestination int  `json:"without_confirmed_destination"`
+		Deferred                    *int `json:"deferred"`
 	}
 	var summary map[string]affectedCounts
 	if err := json.Unmarshal(readRejudgeFile(t, filepath.Join(draft1, "affected-summary.json")), &summary); err != nil {
@@ -517,6 +525,63 @@ WHERE h.key IN $keys SET r.low_confidence = true`, map[string]any{"keys": []stri
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Run("defer unconfirmed with rewrites", func(t *testing.T) {
+		deferredDraft := t.TempDir()
+		validityCommandOK(t, append(slices.Clone(planArgs), "-out", deferredDraft)...)
+		validityCommandOK(t, "-finalize", "-plan", deferredDraft, "-rewrite-verdicts", rewriteVerdicts, "-defer-unconfirmed")
+		checkValidityDigests(t, deferredDraft)
+		files := validityFileSnapshot(t, deferredDraft)
+		originalFiles := validityFileSnapshot(t, draft1)
+		for _, name := range []string{"final.jsonl", "final-plan.json", "affected.jsonl", "affected-summary.json"} {
+			delete(files, name)
+			delete(originalFiles, name)
+		}
+		assertValidityFilesEqual(t, originalFiles, files)
+
+		wantDeferred := map[string]bool{absent: true, ambiguous: true, occupied[1].source: true, occupied[3].source: true, tied[1]: true, loser: true}
+		rows := validityRows[validity.FinalRow](t, filepath.Join(deferredDraft, "final.jsonl"))
+		if len(rows) != len(final) {
+			t.Errorf("final rows = %d, want %d", len(rows), len(final))
+		}
+		for _, row := range rows {
+			want := final[row.ID]
+			if wantDeferred[row.ID] {
+				want.FinalOutcome = validity.OutcomeDeferred
+			}
+			if row != want {
+				t.Errorf("final row = %+v, want %+v", row, want)
+			}
+		}
+		affected := validityRows[reportRow](t, filepath.Join(deferredDraft, "affected.jsonl"))
+		if len(affected) != len(report) {
+			t.Errorf("affected rows = %d, want %d", len(affected), len(report))
+		}
+		for _, row := range affected {
+			want, ok := report[row.SourceID]
+			if !ok || row.Deferred == nil || *row.Deferred != wantDeferred[row.SourceID] || row.HasConfirmed != want.HasConfirmed {
+				t.Errorf("unexpected deferral report row %+v", row)
+			}
+		}
+		var deferredCounts map[string]affectedCounts
+		if err := json.Unmarshal(readRejudgeFile(t, filepath.Join(deferredDraft, "affected-summary.json")), &deferredCounts); err != nil {
+			t.Fatal(err)
+		}
+		for group, want := range wantSummary {
+			got := deferredCounts[group]
+			if got.Deferred == nil || *got.Deferred != want.WithoutConfirmedDestination || got.Sources != want.Sources ||
+				got.WithoutConfirmedDestination != want.WithoutConfirmedDestination {
+				t.Errorf("affected group %s = %+v, want %+v and %d deferred", group, got, want, want.WithoutConfirmedDestination)
+			}
+		}
+		plan, err := validity.DecodePlanSummary(readRejudgeFile(t, filepath.Join(deferredDraft, "final-plan.json")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Deferral != "unconfirmed-destination" || plan.FinalDigest == finalPlan.FinalDigest ||
+			plan.Counts[validity.OutcomeDeferred][relation][inputs[absent].Rule] != len(wantDeferred) {
+			t.Errorf("unexpected deferred plan %+v", plan)
+		}
+	})
 	applyReport := filepath.Join(t.TempDir(), "apply.jsonl")
 	assertMixedValidityApply(t, st, draft1, applyReport, finalPlan, occupied[3].occupant, tableSource, baseline, inputs, bulkSources)
 }
@@ -571,6 +636,22 @@ func TestRepairValidityInventoryMismatchAndZeroCandidates(t *testing.T) {
 	}
 	t.Setenv("GKG_CONFIG", filepath.Join(out, "missing-config.yaml"))
 	validityCommandOK(t, "-finalize", "-plan", out, "-no-rewrites")
+	planBytes := readRejudgeFile(t, filepath.Join(out, "final-plan.json"))
+	plan, err := validity.DecodePlanSummary(planBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The final row is a golden from before deferral. The draft digest varies
+	// with the edge ID that Memgraph assigns to the fixture.
+	const legacyFinal = `{"id":"5f3e0bd39b3ee847dc19c827e67030ab","planned_outcome":"stamp","final_outcome":"stamp","reason":"","rule":"head-not-lowerish","source_verdict":"confirmed"}` + "\n"
+	draft, err := validity.DecodePlanSummary(readRejudgeFile(t, filepath.Join(out, "plan.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDigest := validityTestDigest(t, []byte(draft.DraftDigest), []byte("no-rewrites"), []byte(legacyFinal))
+	if plan.FinalDigest != legacyDigest || bytes.Contains(planBytes, []byte(`"deferral"`)) {
+		t.Errorf("final plan without deferral flag = %s, want digest %s and no deferral field", planBytes, legacyDigest)
+	}
 	if rows := validityRows[validity.FinalRow](t, filepath.Join(out, "final.jsonl")); len(rows) != 1 || rows[0].FinalOutcome != validity.OutcomeStamp {
 		t.Errorf("zero-candidate final rows: %+v", rows)
 	}
