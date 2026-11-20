@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 )
 
 // responseCap bounds one provider response (4 MiB, matching the other
@@ -98,6 +99,7 @@ type chatRequest struct {
 	ToolChoice       string            `json:"tool_choice,omitempty"`
 	ResponseFormat   map[string]string `json:"response_format,omitempty"`
 	Temperature      float64           `json:"temperature"`
+	MaxTokens        *int              `json:"max_tokens,omitempty"`
 	TopP             *float64          `json:"top_p,omitempty"`
 	TopK             *int              `json:"top_k,omitempty"`
 	ReasoningEffort  *string           `json:"reasoning_effort,omitempty"`
@@ -115,6 +117,18 @@ type chatReply struct {
 	Content          string     `json:"content"`
 	ToolCalls        []toolCall `json:"tool_calls"`
 	ReasoningContent string     `json:"reasoning_content"`
+}
+
+func (r *chatReply) redact(replace func(string) string) {
+	r.Content = replace(r.Content)
+	r.ReasoningContent = replace(r.ReasoningContent)
+	for i := range r.ToolCalls {
+		call := &r.ToolCalls[i]
+		call.ID = replace(call.ID)
+		call.Type = replace(call.Type)
+		call.Function.Name = replace(call.Function.Name)
+		call.Function.Arguments = replace(call.Function.Arguments)
+	}
 }
 
 type chatWireResponse struct {
@@ -138,6 +152,7 @@ var errStreamClosedBeforeEvent = errors.New("agent: stream closed before the fir
 type client struct {
 	baseURL string
 	apiKey  string
+	tokens  llmauth.TokenProvider
 	model   string
 	http    *http.Client
 	backoff []time.Duration
@@ -182,13 +197,62 @@ func newClient(cfg config.AgentConfig) *client {
 	if model == "" {
 		model = "deepseek-v4.1-flash"
 	}
-	return &client{
+	c := &client{
 		baseURL: base,
 		apiKey:  cfg.APIKey,
 		model:   model,
 		http:    &http.Client{Timeout: 120 * time.Second},
 		backoff: []time.Duration{time.Second, 4 * time.Second},
 	}
+	if cfg.Auth == config.AuthGCP {
+		c.tokens = llmauth.GCE()
+		c.http.CheckRedirect = llmauth.RejectRedirect
+	}
+	return c
+}
+
+// preparedAuthorization carries the SSE preflight credential into the
+// first attempt. Only the ask goroutine consumes it, and retries fetch anew.
+type preparedAuthorization struct{ value string }
+type authorizationContextKey struct{}
+
+func (c *client) prepareStream(ctx context.Context) (context.Context, error) {
+	if c.tokens == nil {
+		return ctx, nil
+	}
+	value, err := llmauth.Bearer(ctx, c.tokens)
+	if err != nil {
+		return ctx, err
+	}
+	return context.WithValue(ctx, authorizationContextKey{}, &preparedAuthorization{value}), nil
+}
+
+func (c *client) authorize(req *http.Request) (func(string) string, error) {
+	if c.tokens == nil {
+		if c.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
+		return c.redactAPIKey, nil
+	}
+
+	var value string
+	ctx := req.Context()
+	if prepared, ok := ctx.Value(authorizationContextKey{}).(*preparedAuthorization); ok && prepared.value != "" {
+		value, prepared.value = prepared.value, ""
+	} else {
+		var err error
+		value, err = llmauth.Bearer(ctx, c.tokens)
+		if err != nil {
+			return nil, err
+		}
+	}
+	req.Header.Set("Authorization", value)
+	return llmauth.Redactor(value), nil
+}
+
+func retryableAttempt(err error) bool {
+	var pe *providerError
+	return llmauth.Class(err) == llmauth.TransientClass || (errors.As(err, &pe) && pe.retryable())
 }
 
 // chat performs one chat-completions call, retrying retryable failures with
@@ -216,8 +280,7 @@ func (c *client) chat(ctx context.Context, req chatRequest) (chatReply, error) {
 		}
 		err = req.classifyRejection(err)
 		lastErr = err
-		var pe *providerError
-		if !errors.As(err, &pe) || !pe.retryable() {
+		if !retryableAttempt(err) {
 			return chatReply{}, err
 		}
 	}
@@ -232,40 +295,53 @@ func (c *client) doChat(ctx context.Context, body []byte) (chatReply, error) {
 		return chatReply{}, &providerError{status: 0, permanent: true}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	redact, err := c.authorize(req)
+	if err != nil {
+		return chatReply{}, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return chatReply{}, err
 		}
-		slog.Warn("agent: provider request failed", "err", c.redactAPIKey(err.Error()))
+		slog.Warn("agent: provider request failed", "err", redact(err.Error()))
 		return chatReply{}, &providerError{status: 0}
 	}
 	defer resp.Body.Close()
+	if c.tokens != nil {
+		if err := llmauth.VertexStatus(resp, redact); err != nil {
+			return chatReply{}, err
+		}
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, responseCap+1))
 	if err != nil {
-		slog.Warn("agent: provider response read failed", "err", c.redactAPIKey(err.Error()))
+		slog.Warn("agent: provider response read failed", "err", redact(err.Error()))
 		return chatReply{}, &providerError{status: 0}
 	}
 	if len(data) > responseCap {
 		return chatReply{}, fmt.Errorf("agent: response exceeds the %d MiB cap", responseCap>>20)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return chatReply{}, &providerError{status: resp.StatusCode, detail: trimPreview(c.redactAPIKey(string(data)))}
+		return chatReply{}, &providerError{status: resp.StatusCode, detail: llmauth.TrimPreview(redact(string(data)), llmauth.PreviewPrefixBytes)}
 	}
 	var wire chatWireResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
+		if c.tokens != nil {
+			return chatReply{}, fmt.Errorf("agent: decode response: %s", redact(err.Error()))
+		}
 		return chatReply{}, fmt.Errorf("agent: decode response: %w", err)
 	}
 	if wire.Error != nil {
-		return chatReply{}, &providerError{status: http.StatusBadGateway, inBand: true, detail: trimPreview(c.redactAPIKey(wire.Error.Message))}
+		return chatReply{}, &providerError{status: http.StatusBadGateway, inBand: true, detail: llmauth.TrimPreview(redact(wire.Error.Message), llmauth.PreviewPrefixBytes)}
 	}
 	if len(wire.Choices) == 0 {
 		return chatReply{}, fmt.Errorf("agent: response without choices")
 	}
-	return wire.Choices[0].Message, nil
+	reply := wire.Choices[0].Message
+	if c.tokens != nil {
+		reply.redact(redact)
+	}
+	return reply, nil
 }
 
 // chatStream performs one streamed chat-completions call, forwarding every
@@ -309,8 +385,7 @@ func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(s
 		}
 		err = req.classifyRejection(err)
 		lastErr = err
-		var pe *providerError
-		if !errors.As(err, &pe) || !pe.retryable() {
+		if !retryableAttempt(err) {
 			return chatReply{}, err
 		}
 		if delivered {
@@ -328,23 +403,40 @@ func (c *client) doStream(ctx context.Context, body []byte, keepReasoning bool, 
 		return chatReply{}, &providerError{status: 0, permanent: true}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	redact, err := c.authorize(req)
+	if err != nil {
+		return chatReply{}, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return chatReply{}, err
 		}
-		slog.Warn("agent: provider stream request failed", "err", c.redactAPIKey(err.Error()))
+		slog.Warn("agent: provider stream request failed", "err", redact(err.Error()))
 		return chatReply{}, &providerError{status: 0}
 	}
 	defer resp.Body.Close()
+	if c.tokens != nil {
+		if err := llmauth.VertexStatus(resp, redact); err != nil {
+			return chatReply{}, err
+		}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, responseCap+1))
-		return chatReply{}, &providerError{status: resp.StatusCode, detail: trimPreview(c.redactAPIKey(string(data)))}
+		return chatReply{}, &providerError{status: resp.StatusCode, detail: llmauth.TrimPreview(redact(string(data)), llmauth.PreviewPrefixBytes)}
 	}
-	return readSSE(resp.Body, keepReasoning, onDelta, c.redactAPIKey)
+	if c.tokens == nil {
+		return readSSE(resp.Body, keepReasoning, onDelta, redact)
+	}
+	var forward func(string) error
+	if onDelta != nil {
+		forward = func(delta string) error { return onDelta(redact(delta)) }
+	}
+	reply, err := readSSE(resp.Body, keepReasoning, forward, redact)
+	if err == nil {
+		reply.redact(redact)
+	}
+	return reply, err
 }
 
 // streamWireChunk is one SSE frame of a chat-completions stream.
@@ -417,7 +509,7 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 			} else {
 				frames++
 				if chunk.Error != nil {
-					return chatReply{}, &providerError{status: http.StatusBadGateway, inBand: true, detail: trimPreview(redact(chunk.Error.Message))}
+					return chatReply{}, &providerError{status: http.StatusBadGateway, inBand: true, detail: llmauth.TrimPreview(redact(chunk.Error.Message), llmauth.PreviewPrefixBytes)}
 				}
 				if len(chunk.Choices) > 0 {
 					delta := chunk.Choices[0].Delta
@@ -483,13 +575,4 @@ func (c *client) redactAPIKey(s string) string {
 	}
 	quoted, _ := json.Marshal(c.apiKey)
 	return strings.NewReplacer(string(quoted[1:len(quoted)-1]), "[redacted]", c.apiKey, "[redacted]").Replace(s)
-}
-
-// trimPreview caps a provider payload preview; previews are the provider's
-// own words about the failed request.
-func trimPreview(s string) string {
-	if len(s) > 200 {
-		return s[:200] + "…"
-	}
-	return s
 }

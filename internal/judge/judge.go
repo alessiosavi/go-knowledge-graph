@@ -24,6 +24,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 )
 
 // PromptVersion must be bumped whenever judgePrompt changes.
@@ -55,6 +56,9 @@ type Client struct {
 	jitter           func(time.Duration) time.Duration
 	attemptGate      func() error
 	providerRedactor *strings.Replacer
+	tokens           llmauth.TokenProvider
+	settings         judgeSettings
+	cacheNamespace   string
 }
 
 // NewClient builds the judge client from the Judge configuration.
@@ -67,7 +71,7 @@ func NewClient(cfg config.Config) *Client {
 	if model == "" {
 		model = "deepseek-v4.1-flash"
 	}
-	return &Client{
+	c := &Client{
 		baseURL:          base,
 		apiKey:           cfg.Judge.APIKey,
 		model:            model,
@@ -76,7 +80,14 @@ func NewClient(cfg config.Config) *Client {
 		after:            time.After,
 		jitter:           func(limit time.Duration) time.Duration { return rand.N(limit + time.Nanosecond) },
 		providerRedactor: newProviderRedactor(base, cfg.Judge.APIKey),
+		settings:         settingsFromConfig(cfg.Judge),
 	}
+	if cfg.Judge.Auth == config.AuthGCP {
+		c.tokens = llmauth.GCE()
+		c.client.CheckRedirect = llmauth.RejectRedirect
+	}
+	c.cacheNamespace = v1Namespace(base, c.settings, cfg.Judge.Auth)
+	return c
 }
 
 // SetBackoff replaces the retry policy with fixed delays (used by tests).
@@ -95,11 +106,35 @@ func (c *Client) SetAttemptGate(g func() error) { c.attemptGate = g }
 // Model returns the judge model name (evaluation reports record it).
 func (c *Client) Model() string { return c.model }
 
+const judgeResponseFormat = "json_object"
+
+type judgeSettings struct {
+	Temperature     float64 `json:"temperature"`
+	MaxTokens       *int    `json:"max_tokens,omitempty"`
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+}
+
+func settingsFromConfig(cfg config.JudgeConfig) judgeSettings {
+	var settings judgeSettings
+	if cfg.Temperature != nil {
+		settings.Temperature = *cfg.Temperature
+	}
+	if cfg.MaxTokens != nil {
+		n := *cfg.MaxTokens
+		settings.MaxTokens = &n
+	}
+	if cfg.ReasoningEffort != nil {
+		effort := *cfg.ReasoningEffort
+		settings.ReasoningEffort = &effort
+	}
+	return settings
+}
+
 type judgeWireRequest struct {
 	Model          string            `json:"model"`
 	Messages       []judgeMessage    `json:"messages"`
 	ResponseFormat map[string]string `json:"response_format,omitempty"`
-	Temperature    float64           `json:"temperature"`
+	judgeSettings
 }
 
 type judgeMessage struct {
@@ -131,7 +166,7 @@ func (c *Client) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 	if payload == nil {
 		return ingest.Verdict{}, fmt.Errorf("judge: encode payload: confidence must be finite")
 	}
-	return c.verify(ctx, judgePrompt, payload)
+	return c.verify(ctx, judgePrompt, payload, c.settings)
 }
 
 // VerifyPayload sends the original v1 user message after checking its
@@ -140,7 +175,7 @@ func (c *Client) VerifyPayload(ctx context.Context, p ingest.JudgePayload) (inge
 	if err := validatePayload(p); err != nil {
 		return ingest.Verdict{}, err
 	}
-	return c.verify(ctx, judgePrompt, p.Bytes)
+	return c.verify(ctx, judgePrompt, p.Bytes, c.settings)
 }
 
 func validatePayload(p ingest.JudgePayload) error {
@@ -159,22 +194,26 @@ func validatePayload(p ingest.JudgePayload) error {
 // VerifyRequest checks the frozen profile against the current definitions
 // (indexed by preset and relation) and sends the original user message.
 func (c *Client) VerifyRequest(ctx context.Context, req Request, definitions map[string]map[string]string) (ingest.Verdict, error) {
+	if c.tokens != nil {
+		return ingest.Verdict{}, ErrV3GCPAuth
+	}
 	prompt, err := req.validate(c.model, definitions)
 	if err != nil {
 		return ingest.Verdict{}, err
 	}
-	return c.verify(ctx, prompt, req.RequestBytes)
+	// v3 profiles freeze the original generation settings and fingerprint.
+	return c.verify(ctx, prompt, req.RequestBytes, judgeSettings{})
 }
 
-func (c *Client) verify(ctx context.Context, prompt string, payload []byte) (ingest.Verdict, error) {
+func (c *Client) verify(ctx context.Context, prompt string, payload []byte, settings judgeSettings) (ingest.Verdict, error) {
 	body, err := json.Marshal(judgeWireRequest{
 		Model: c.model,
 		Messages: []judgeMessage{
 			{Role: "system", Content: prompt},
 			{Role: "user", Content: string(payload)},
 		},
-		ResponseFormat: map[string]string{"type": "json_object"},
-		Temperature:    0,
+		ResponseFormat: map[string]string{"type": judgeResponseFormat},
+		judgeSettings:  settings,
 	})
 	if err != nil {
 		return ingest.Verdict{}, fmt.Errorf("judge: encode request: %w", err)
@@ -190,7 +229,7 @@ func (c *Client) verify(ctx context.Context, prompt string, payload []byte) (ing
 		if err := ctx.Err(); err != nil {
 			return ingest.Verdict{}, err
 		}
-		if c.attemptGate != nil {
+		if c.tokens == nil && c.attemptGate != nil {
 			if err := c.attemptGate(); err != nil {
 				return ingest.Verdict{}, err
 			}
@@ -254,7 +293,25 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 		return ingest.Verdict{}, false, "", errors.New("judge: provider request could not be built; check the judge base URL")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
+	redact := c.providerRedactor.Replace
+	redactCredential := func(s string) string { return s }
+	if c.tokens != nil {
+		authorization, err := llmauth.Bearer(ctx, c.tokens)
+		if ctx.Err() != nil {
+			return ingest.Verdict{}, false, "", ctx.Err()
+		}
+		if err != nil {
+			return ingest.Verdict{}, llmauth.Class(err) == llmauth.TransientClass, "", providerWideError{err}
+		}
+		if c.attemptGate != nil {
+			if err := c.attemptGate(); err != nil {
+				return ingest.Verdict{}, false, "", err
+			}
+		}
+		req.Header.Set("Authorization", authorization)
+		redactCredential = llmauth.Redactor(authorization)
+		redact = func(s string) string { return c.providerRedactor.Replace(redactCredential(s)) }
+	} else if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	resp, err := c.client.Do(req)
@@ -263,6 +320,14 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), "", providerWideError{diagnostic}
 	}
 	defer resp.Body.Close()
+	if c.tokens != nil {
+		if err := llmauth.VertexStatus(resp, redact); err != nil {
+			return ingest.Verdict{}, false, "", providerWideError{err}
+		}
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			return ingest.Verdict{}, false, "", providerWideError{fmt.Errorf("judge: Vertex redirect rejected (HTTP %d)", resp.StatusCode)}
+		}
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
 	if err != nil {
 		diagnostic := providerIOError("judge: read response failed", err)
@@ -276,15 +341,15 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Redact before taking a preview so it cannot include a clipped credential.
-		preview := trimPreview(c.providerRedactor.Replace(string(data)))
+		preview := llmauth.TrimPreview(redact(string(data)), llmauth.PreviewPrefixBytes)
 		return ingest.Verdict{}, false, "", classifyProviderStatus(resp.StatusCode, fmt.Errorf("judge: HTTP %d: %s", resp.StatusCode, preview))
 	}
 	var wire judgeWireResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
-		return ingest.Verdict{}, false, "", fmt.Errorf("judge: decode chat response: %s", c.providerRedactor.Replace(err.Error()))
+		return ingest.Verdict{}, false, "", fmt.Errorf("judge: decode chat response: %s", redact(err.Error()))
 	}
 	if wire.Error != nil {
-		return ingest.Verdict{}, false, "", fmt.Errorf("judge: provider error: %s", c.providerRedactor.Replace(wire.Error.Message))
+		return ingest.Verdict{}, false, "", fmt.Errorf("judge: provider error: %s", redact(wire.Error.Message))
 	}
 	if len(wire.Choices) == 0 {
 		return ingest.Verdict{}, false, "", fmt.Errorf("judge: response without choices")
@@ -292,19 +357,19 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 	var vp verdictPayload
 	content := wire.Choices[0].Message.Content
 	if err := json.Unmarshal([]byte(content), &vp); err != nil {
-		preview := trimPreview(c.providerRedactor.Replace(content))
-		return ingest.Verdict{}, false, "", fmt.Errorf("judge: decode verdict: %s (content preview: %q)", c.providerRedactor.Replace(err.Error()), preview)
+		preview := llmauth.TrimPreview(redact(content), llmauth.PreviewPrefixBytes)
+		return ingest.Verdict{}, false, "", fmt.Errorf("judge: decode verdict: %s (content preview: %q)", redact(err.Error()), preview)
 	}
 	switch vp.Verdict {
 	case "confirmed", "refuted", "unclear":
 	default:
-		return ingest.Verdict{}, false, "", fmt.Errorf("judge: invalid verdict status %q", c.providerRedactor.Replace(vp.Verdict))
+		return ingest.Verdict{}, false, "", fmt.Errorf("judge: invalid verdict status %q", redact(vp.Verdict))
 	}
 	confidence := 0.5
 	if vp.Confidence != nil {
 		confidence = min(max(*vp.Confidence, 0), 1)
 	}
-	return ingest.Verdict{Status: vp.Verdict, Confidence: confidence, Reason: vp.Reason}, false, "", nil
+	return ingest.Verdict{Status: vp.Verdict, Confidence: confidence, Reason: redactCredential(vp.Reason)}, false, "", nil
 }
 
 // providerWideError preserves existing diagnostics and retry rules while
@@ -312,6 +377,12 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 type providerWideError struct{ error }
 
 func (e providerWideError) Unwrap() error { return e.error }
+
+// IsProviderStop reports whether a run stopped on a provider-wide failure.
+func IsProviderStop(err error) bool {
+	var stop providerWideError
+	return errors.As(err, &stop) && !errors.Is(err, context.Canceled)
+}
 
 func classifyProviderStatus(code int, err error) error {
 	switch code {
@@ -443,11 +514,4 @@ func newProviderRedactor(baseURL, apiKey string) *strings.Replacer {
 		replacements = append(replacements, variant, "[redacted]")
 	}
 	return strings.NewReplacer(replacements...)
-}
-
-func trimPreview(s string) string {
-	if len(s) > 200 {
-		return s[:200] + "…"
-	}
-	return s
 }

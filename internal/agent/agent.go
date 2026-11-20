@@ -20,6 +20,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/chunkread"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 	"github.com/alessiosavi/go-knowledge-graph/internal/markdown"
 	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
@@ -255,7 +256,7 @@ func (s *Server) runWithEvents(ctx context.Context, ask AskRequest, events askEv
 	steps := 0
 	transcriptBytes := 0
 	for steps < s.maxSteps && !s.contextBudgetReached(transcriptBytes) {
-		req := ask.Generation.chatRequest(s.llm.model, msgs)
+		req := s.chatRequest(ask.Generation, msgs)
 		req.Tools, req.ToolChoice = toolDefs(), "auto"
 		reply, err := s.runTurn(ctx, req, events.delta)
 		if err != nil {
@@ -311,7 +312,7 @@ func (s *Server) runWithEvents(ctx context.Context, ask AskRequest, events askEv
 		msgs[i].ReasoningContent = ""
 	}
 	msgs = append(msgs, chatMessage{Role: "user", Content: planFinalPrompt})
-	return s.budgetFinalAnswer(ctx, ask.Generation.chatRequest(s.llm.model, msgs), ev, steps, events.delta)
+	return s.budgetFinalAnswer(ctx, s.chatRequest(ask.Generation, msgs), ev, steps, events.delta)
 }
 
 // runTurn performs one model turn. When emit is non-nil and the turn may
@@ -419,7 +420,7 @@ func (s *Server) askWithPlan(ctx context.Context, ask AskRequest, events askEven
 		{Role: "system", Content: scopedPrompt(ctx, planSystemPrompt)},
 		{Role: "user", Content: ask.Question},
 	}
-	req := ask.Generation.chatRequest(s.llm.model, msgs)
+	req := s.chatRequest(ask.Generation, msgs)
 	req.ResponseFormat = map[string]string{"type": "json_object"}
 	reply, err := s.runTurn(ctx, req, nil)
 	if err != nil {
@@ -473,9 +474,9 @@ func (s *Server) askWithPlan(ctx context.Context, ask AskRequest, events askEven
 	}
 	msgs = append(msgs, chatMessage{Role: "user", Content: "Tool results:\n" + results.String() + planFinalPrompt})
 	if s.contextBudgetReached(transcriptBytes) {
-		return s.budgetFinalAnswer(ctx, ask.Generation.chatRequest(s.llm.model, msgs), ev, 1, events.delta)
+		return s.budgetFinalAnswer(ctx, s.chatRequest(ask.Generation, msgs), ev, 1, events.delta)
 	}
-	reply, err = s.runTurn(ctx, ask.Generation.chatRequest(s.llm.model, msgs), events.delta)
+	reply, err = s.runTurn(ctx, s.chatRequest(ask.Generation, msgs), events.delta)
 	if err != nil {
 		return AskResponse{}, err
 	}
@@ -528,7 +529,7 @@ func (s *Server) budgetFinalAnswer(ctx context.Context, req chatRequest, ev []Ev
 	if ctx.Err() != nil {
 		return AskResponse{}, ctx.Err()
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || llmauth.Class(err) != "" {
 		return AskResponse{}, err
 	}
 	var rejected *generationRejection

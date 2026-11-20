@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
 )
@@ -86,7 +87,7 @@ func runRepairValidity(args []string, stdout, stderr io.Writer) int {
 	}
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "gkg repair-validity: %v\n", err)
-		if errors.Is(err, judge.ErrValidityInput) || errors.Is(err, os.ErrExist) {
+		if errors.Is(err, judge.ErrValidityInput) || errors.Is(err, judge.ErrV3GCPAuth) || errors.Is(err, os.ErrExist) {
 			return 2
 		}
 		return 1
@@ -106,6 +107,9 @@ func runRepairValidity(args []string, stdout, stderr io.Writer) int {
 	cfg, err := loadConfig()
 	if err != nil {
 		return fail(err)
+	}
+	if *plan == planMode && cfg.Judge.Auth == config.AuthGCP {
+		return fail(judge.ErrV3GCPAuth)
 	}
 	st, err := graph.Open(ctx, cfg)
 	if err != nil {
