@@ -131,7 +131,7 @@ func TestHygieneWithConfirmation(t *testing.T) {
 	if n := rawCount(t, uri, fmt.Sprintf(`MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id='%s' RETURN count(r) AS n`, doc)); n != 0 {
 		t.Fatalf("candidate visible as %d edges", n)
 	}
-	ok, err := env.st.PromoteCandidate(ctx, testString(rows[0], "id"), testString(rows[0], "hash"))
+	ok, err := env.st.PromoteCandidate(ctx, testString(rows[0], "id"), testString(rows[0], "hash"), "")
 	if err != nil || !ok {
 		t.Fatalf("promote=%v,%v", ok, err)
 	}
@@ -223,7 +223,7 @@ func TestHygieneDomainsConfirmation(t *testing.T) {
 	if input := testString(rows[0], "input"); !strings.Contains(input, "l'Acme") {
 		t.Errorf("judge input %s lost the raw mention text", input)
 	}
-	ok, err := env.st.PromoteCandidate(ctx, testString(rows[0], "id"), testString(rows[0], "hash"))
+	ok, err := env.st.PromoteCandidate(ctx, testString(rows[0], "id"), testString(rows[0], "hash"), "")
 	if err != nil || !ok {
 		t.Fatalf("promote=%v,%v", ok, err)
 	}

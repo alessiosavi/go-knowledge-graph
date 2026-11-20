@@ -1,6 +1,6 @@
 #!/bin/sh
 # Sourced as 15-validate-env.envsh before envsubst: validate directive values
-# and export the derived ask timeout into the template renderer’s environment.
+# and export derived values into the template renderer's environment.
 set -eu
 LC_ALL=C
 export LC_ALL
@@ -51,3 +51,31 @@ EDGE_ASK_TIMEOUT_S=$(printf '%s\n' "$EDGE_ASK_TIMEOUT_S" | awk '{printf "%d", $0
 [ "$EDGE_ASK_TIMEOUT_S" -ge "$((agent_timeout + 15))" ] || fail 'EDGE_ASK_TIMEOUT_S (must be at least GKG_AGENT_TIMEOUT_S + 15 seconds)'
 export EDGE_ASK_TIMEOUT_S
 number EDGE_HTTPS_PORT "${EDGE_HTTPS_PORT:-443}"
+
+# These blocks expand to zero bytes unless write maintenance is enabled.
+EDGE_MAINTENANCE_MAP=
+EDGE_MAINTENANCE_SERVER=
+case "${EDGE_MAINTENANCE_MODE:-0}" in
+ 0) ;;
+ 1)
+  EDGE_MAINTENANCE_MAP='map "$request_method:$uri" $edge_maintenance_write {
+    default 0;
+    "~^[^:]+:/healthz$" 0;
+    "~^(POST|PUT|PATCH|DELETE):" 1;
+}
+'
+  # Use an internal status reserved for the write guard so other local
+  # errors keep their existing response, including any unrelated 503s.
+  EDGE_MAINTENANCE_SERVER='    error_page 418 = @edge_maintenance;
+    if ($edge_maintenance_write) { return 418; }
+    location @edge_maintenance {
+        auth_basic off;
+        limit_req_dry_run on;
+        default_type application/json;
+        return 503 '\''{"error":"maintenance"}'\'';
+    }
+'
+  ;;
+ *) fail EDGE_MAINTENANCE_MODE ;;
+esac
+export EDGE_MAINTENANCE_MAP EDGE_MAINTENANCE_SERVER

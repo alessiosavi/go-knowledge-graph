@@ -16,6 +16,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 )
@@ -46,6 +47,49 @@ func (f judgeTokens) Token(ctx context.Context) (string, time.Time, error) { ret
 
 func fakeJudgeToken(token string) judgeTokens {
 	return func(context.Context) (string, time.Time, error) { return token, time.Now().Add(time.Hour), nil }
+}
+
+func TestCandidateBackfillStopsOnPermanentAuthFailure(t *testing.T) {
+	st := graphtest.Store(t)
+	const tag = "candidate-auth-permanent"
+	doc, err := st.UpsertDocument(t.Context(), graph.DocumentInput{Kind: "text", Source: tag, Hash: tag, Domain: tag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.DeleteDocument(context.Background(), doc.ID) })
+	const evidence = "Acme uses Zorbo."
+	if err := st.PutChunks(t.Context(), doc.ID, []graph.Chunk{{Text: evidence, End: len(evidence)}}); err != nil {
+		t.Fatal(err)
+	}
+	ents := []graph.EntityUpsert{{Key: tag + "-1", Name: "Acme"}, {Key: tag + "-2", Name: "Acme"}, {Key: tag + "-3", Name: "Zorbo"}}
+	payload := ingest.CanonicalJudgeInput(ingest.FactInput{Head: "Acme", Rel: "uses", Tail: "Zorbo", Evidence: evidence, Confidence: 0.8})
+	facts := []graph.FactUpsert{
+		{HeadKey: ents[0].Key, Rel: "uses", TailKey: ents[2].Key, JudgeInput: payload},
+		{HeadKey: ents[1].Key, Rel: "uses", TailKey: ents[2].Key, JudgeInput: payload},
+	}
+	if err := st.UpsertExtractionOpts(t.Context(), doc.ID, doc.ID+"-c0", "mock:1", ents, facts, graph.WriteOptions{FactsAsCandidates: true, Domain: tag}); err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient(config.Config{Judge: config.JudgeConfig{BaseURL: "http://127.0.0.1:17749"}})
+	client.client.Transport = rejudgeTestTransport(func(*http.Request) (*http.Response, error) {
+		t.Fatal("provider was contacted after permanent auth failure")
+		return nil, nil
+	})
+	failure := &llmauth.AuthPermanent{Detail: "fake metadata rejection"}
+	fetches := 0
+	client.tokens = judgeTokens(func(context.Context) (string, time.Time, error) {
+		fetches++
+		return "", time.Time{}, failure
+	})
+	cache := NewCached(client, st, client.Model())
+	got, err := Backfill(t.Context(), st, cache, client, BackfillOptions{Domain: tag})
+	if !IsProviderStop(err) || !errors.Is(err, failure) || fetches != 1 || got.Attempts != 0 || got.Failed != 0 || got.Judged != 0 {
+		t.Fatalf("result=%+v err=%v token fetches=%d", got, err, fetches)
+	}
+	remaining, err := st.UnjudgedCandidates(t.Context(), tag, 0)
+	if err != nil || len(remaining) != 2 {
+		t.Fatalf("remaining=%+v err=%v", remaining, err)
+	}
 }
 
 func TestGCPJudgeRetriesWithFreshTokenAndSettings(t *testing.T) {

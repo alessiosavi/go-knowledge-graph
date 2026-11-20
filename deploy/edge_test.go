@@ -1,6 +1,8 @@
 package deploy_test
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -303,6 +305,86 @@ func TestEdgeValidateEnv(t *testing.T) {
 		if !test.ok && !strings.Contains(string(out), "GKG_API_KEY") && !strings.Contains(string(out), "SERVER_NAME") {
 			t.Error("validation must name rejected variable")
 		}
+	}
+}
+
+func TestEdgeMaintenanceMode(t *testing.T) {
+	if !strings.Contains(edgeFile(t, "deploy/docker-compose.yml"), `EDGE_MAINTENANCE_MODE: "${EDGE_MAINTENANCE_MODE:-0}"`) {
+		t.Error("Compose must pass the maintenance flag to the edge")
+	}
+	template := edgeFile(t, "deploy/edge/default.conf.template")
+	for _, flag := range []string{"", "0", "1", "true", "1; return 200"} {
+		t.Run(fmt.Sprintf("flag=%q", flag), func(t *testing.T) {
+			// NUL-delimit the exported values so multiline directives stay intact.
+			cmd := exec.Command("sh", "-c", `. "$1"; printf '%s\000' "$GKG_API_KEY" "$SERVER_NAME" "$EDGE_HSTS_MAX_AGE" "$EDGE_HTTPS_PORT" "$EDGE_INGEST_TIMEOUT_S" "$EDGE_ASK_TIMEOUT_S" "${EDGE_MAINTENANCE_MAP-}" "${EDGE_MAINTENANCE_SERVER-}"`,
+				"render", filepath.Join(repoRoot(t), "deploy/edge/15-validate-env.sh"))
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GKG_API_KEY=synthetic-test-key", "SERVER_NAME=localhost", "EDGE_HSTS_MAX_AGE=0", "EDGE_HTTPS_PORT=443"}
+			if flag != "" {
+				cmd.Env = append(cmd.Env, "EDGE_MAINTENANCE_MODE="+flag)
+			}
+			out, err := cmd.Output()
+			if flag != "" && flag != "0" && flag != "1" {
+				var stderr string
+				if exit, ok := err.(*exec.ExitError); ok {
+					stderr = string(exit.Stderr)
+				}
+				if err == nil || !strings.Contains(stderr, "invalid EDGE_MAINTENANCE_MODE") {
+					t.Errorf("invalid maintenance setting = %v, %s", err, stderr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			wanted := []string{"GKG_API_KEY", "SERVER_NAME", "EDGE_HSTS_MAX_AGE", "EDGE_HTTPS_PORT", "EDGE_INGEST_TIMEOUT_S", "EDGE_ASK_TIMEOUT_S", "EDGE_MAINTENANCE_MAP", "EDGE_MAINTENANCE_SERVER"}
+			values := strings.Split(string(out), "\x00")
+			if len(values) != len(wanted)+1 {
+				t.Fatalf("unexpected render environment: %q", out)
+			}
+			rendered := template
+			for i, key := range wanted {
+				rendered = strings.ReplaceAll(rendered, "${"+key+"}", values[i])
+			}
+			if flag != "1" {
+				const baseline = "dd54d62726b73bded177f6e1c88c7758f9a3df2552b93d84c2da87ee70426db7"
+				if got := fmt.Sprintf("%x", sha256.Sum256([]byte(rendered))); got != baseline {
+					t.Errorf("default edge config SHA-256 = %s, want %s", got, baseline)
+				}
+				return
+			}
+			rules := regexp.MustCompile(`(?s)map "\$request_method:\$uri" \$edge_maintenance_write \{(.*?)\n\}`).FindStringSubmatch(rendered)
+			if len(rules) != 2 || !strings.Contains(rules[1], "default 0;") {
+				t.Fatal("maintenance must default to passing the request")
+			}
+			patterns := regexp.MustCompile(`(?m)^\s*"~([^"\n]+)" ([01]);`).FindAllStringSubmatch(rules[1], -1)
+			for _, method := range []string{"POST", "PUT", "PATCH", "DELETE", "GET", "HEAD", "OPTIONS"} {
+				for _, path := range []string{"/healthz", "/ui/", "/v1/ingest", "/unlisted"} {
+					blocked := false
+					for _, rule := range patterns {
+						if regexp.MustCompile(rule[1]).MatchString(method + ":" + path) {
+							blocked = rule[2] == "1"
+							break
+						}
+					}
+					want := path != "/healthz" && method != "GET" && method != "HEAD" && method != "OPTIONS"
+					if blocked != want {
+						t.Errorf("maintenance %s %s blocked=%t, want %t", method, path, blocked, want)
+					}
+				}
+			}
+			for _, server := range strings.Split(rendered, "server {\n")[1:] {
+				const guard = "if ($edge_maintenance_write) { return 418; }"
+				if !strings.Contains(server, guard) || !strings.Contains(server, "error_page 418 = @edge_maintenance;") ||
+					!strings.Contains(server, `location @edge_maintenance {
+        auth_basic off;
+        limit_req_dry_run on;
+        default_type application/json;
+        return 503 '{"error":"maintenance"}';
+    }`) {
+					t.Error("each listener must return JSON 503 for maintenance writes with basic auth and rate-limit enforcement disabled in the maintenance location")
+				}
+			}
+		})
 	}
 }
 

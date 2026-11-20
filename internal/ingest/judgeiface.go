@@ -80,6 +80,7 @@ type Verdict struct {
 	Status     string // confirmed | refuted | unclear
 	Confidence float64
 	Reason     string
+	Model      string // model used to resolve the verdict, if known
 }
 
 // FactJudge verifies facts in online mode. Errors are failure-isolated: the

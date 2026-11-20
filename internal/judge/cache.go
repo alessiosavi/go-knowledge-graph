@@ -172,7 +172,7 @@ func (c *Cached) verify(ctx context.Context, key, promptVersion, docID string, p
 		}
 	case ok:
 		c.count("hit")
-		return ingest.Verdict{Status: v.Status, Confidence: v.Confidence, Reason: v.Reason}, nil
+		return ingest.Verdict{Status: v.Status, Confidence: v.Confidence, Reason: v.Reason, Model: v.Model}, nil
 	default:
 		c.count("miss")
 	}
@@ -185,6 +185,9 @@ func (c *Cached) verify(ctx context.Context, key, promptVersion, docID string, p
 	default:
 		return ingest.Verdict{}, fmt.Errorf("judge: invalid verdict status %q", verdict.Status)
 	}
+	if verdict.Model == "" {
+		verdict.Model = c.model
+	}
 	if policy.detachedWrite {
 		// A paid verdict remains reusable even if the run loses its lease
 		// or is canceled before it can apply the edge update.
@@ -194,7 +197,7 @@ func (c *Cached) verify(ctx context.Context, key, promptVersion, docID string, p
 	}
 	if err := c.store.PutJudgeVerdict(ctx, graph.JudgeVerdict{
 		Key: key, Status: verdict.Status, Confidence: verdict.Confidence, Reason: verdict.Reason,
-		Model: c.model, PromptVersion: promptVersion, DocID: docID, At: time.Now().UTC(),
+		Model: verdict.Model, PromptVersion: promptVersion, DocID: docID, At: time.Now().UTC(),
 	}); err != nil {
 		if policy.detachedWrite {
 			slog.Warn("judge: edge backfill verdict cache write failed", "key", key, "err", err)

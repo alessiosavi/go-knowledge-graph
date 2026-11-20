@@ -557,6 +557,16 @@ func TestPipelineFactCandidatesCachedReExtraction(t *testing.T) {
 				t.Errorf("metrics missing %q:\n%s", want, scrape)
 			}
 		}
+		for _, query := range []string{
+			"MATCH (:Entity)-[r]->(:Entity) WHERE r.doc_id = $doc RETURN r.judge_model AS model",
+			"MATCH (c:FactCandidate {doc_id:$doc}) RETURN c.judge_model AS model",
+			"MATCH (a:RejectedFact {doc_id:$doc}) RETURN a.judge_model AS model",
+		} {
+			rows, err := env.st.RunReadQuery(ctx, query, map[string]any{"doc": res.DocumentID}, 0)
+			if err != nil || len(rows.Rows) != 1 || rows.Rows[0]["model"] != "synthetic-model" {
+				t.Errorf("candidate provenance on %s for %s = %+v, %v", query, cacheResult, rows, err)
+			}
+		}
 	}
 	if len(inner.calls) != 3 {
 		t.Fatalf("initial judge provider calls = %d, want 3", len(inner.calls))

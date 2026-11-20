@@ -105,13 +105,17 @@ func runJudgeBackfill(args []string, stdout, stderr io.Writer) int {
 	}
 	cached, client := newFactJudgeClient(cfg, st)
 	r, runErr := judge.Backfill(ctx, st, cached, client, opt)
+	return writeCandidateBackfillResult(r, runErr, stdout, stderr)
+}
+
+func writeCandidateBackfillResult(r judge.BackfillResult, runErr error, stdout, stderr io.Writer) int {
 	if _, err := fmt.Fprintf(stdout, "judged=%d confirmed=%d unclear=%d refuted=%d vanished=%d orphaned=%d failed=%d cache_hits=%d attempts=%d stopped_for_budget=%t\n", r.Judged, r.Confirmed, r.Unclear, r.Refuted, r.Vanished, r.Orphaned, r.Failed, r.CacheHits, r.Attempts, r.StoppedForBudget); err != nil {
 		fmt.Fprintf(stderr, "gkg judge backfill: %v\n", err)
 		return 1
 	}
 	if runErr != nil {
 		fmt.Fprintf(stderr, "gkg judge backfill: %v\n", runErr)
-		return 1
+		return judgeRunErrorExitCode(runErr)
 	}
 	return 0
 }

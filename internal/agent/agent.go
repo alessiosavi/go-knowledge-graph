@@ -268,7 +268,7 @@ func (s *Server) runWithEvents(ctx context.Context, ask AskRequest, events askEv
 		if len(reply.ToolCalls) == 0 {
 			return answerResponse(reply.Content, ev, steps), nil
 		}
-		assistant := chatMessage{Role: "assistant", Content: reply.Content, ToolCalls: reply.ToolCalls}
+		assistant := chatMessage{Role: "assistant", Content: reply.Content, ToolCalls: reply.ToolCalls, ExtraContent: reply.ExtraContent}
 		if req.keepToolReasoning() {
 			assistant.ReasoningContent = reply.ReasoningContent
 		}

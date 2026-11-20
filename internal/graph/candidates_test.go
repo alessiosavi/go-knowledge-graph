@@ -110,7 +110,7 @@ func TestPromoteCandidateMissingEndpoint(t *testing.T) {
 	q := fmt.Sprintf("MATCH (c:FactCandidate {id: '%s'}) RETURN properties(c)", f.id)
 	before := rawRecords(t, uri, q)
 	rawRun(t, uri, fmt.Sprintf("MATCH (e:Entity {key: '%s'}) DETACH DELETE e", f.fact.HeadKey))
-	if ok, err := f.st.PromoteCandidate(context.Background(), f.id, f.hash); err != nil || ok {
+	if ok, err := f.st.PromoteCandidate(context.Background(), f.id, f.hash, ""); err != nil || ok {
 		t.Errorf("promote without head = %v, %v, want false, nil", ok, err)
 	}
 	if after := rawRecords(t, uri, q); !reflect.DeepEqual(before, after) {
@@ -193,13 +193,13 @@ func TestPromoteCandidate(t *testing.T) {
 	if n := f.count(t, "FactCandidate"); n != 0 {
 		t.Fatalf("direct rewrite left %d candidates", n)
 	}
-	if err := f.st.SetFactJudge(ctx, f.fact.HeadKey, f.fact.Rel, f.fact.TailKey, f.chunk, "confirmed"); err != nil {
+	if err := f.st.SetFactJudge(ctx, f.fact.HeadKey, f.fact.Rel, f.fact.TailKey, f.chunk, "confirmed", ""); err != nil {
 		t.Fatal(err)
 	}
 	q := fmt.Sprintf("MATCH (:Entity)-[r]->(:Entity) WHERE r.chunk_id = '%s' RETURN type(r), properties(r)", f.chunk)
 	want := rawRecords(t, os.Getenv(graphtest.URIEnv), q)
 	f.write(t, true)
-	ok, err := f.st.PromoteCandidate(ctx, f.id, f.hash)
+	ok, err := f.st.PromoteCandidate(ctx, f.id, f.hash, "")
 	if err != nil || !ok {
 		t.Fatalf("promote = %v, %v", ok, err)
 	}
@@ -209,7 +209,7 @@ func TestPromoteCandidate(t *testing.T) {
 	if n := f.count(t, "FactCandidate"); n != 0 {
 		t.Errorf("remaining candidates = %d", n)
 	}
-	if ok, err := f.st.PromoteCandidate(ctx, f.id, f.hash); err != nil || ok {
+	if ok, err := f.st.PromoteCandidate(ctx, f.id, f.hash, ""); err != nil || ok {
 		t.Fatalf("repeat promote = %v, %v", ok, err)
 	}
 }
@@ -221,8 +221,8 @@ func TestApplyStaleVerdict(t *testing.T) {
 	apply := func() {
 		t.Helper()
 		for name, fn := range map[string]func() (bool, error){
-			"promote": func() (bool, error) { return f.st.PromoteCandidate(ctx, f.id, f.hash) },
-			"unclear": func() (bool, error) { return f.st.SetCandidateJudge(ctx, f.id, f.hash, "unclear") },
+			"promote": func() (bool, error) { return f.st.PromoteCandidate(ctx, f.id, f.hash, "") },
+			"unclear": func() (bool, error) { return f.st.SetCandidateJudge(ctx, f.id, f.hash, "unclear", "") },
 			"refute":  func() (bool, error) { return f.st.RefuteCandidate(ctx, f.id, f.hash, audit) },
 		} {
 			if ok, err := fn(); err != nil || ok {
@@ -250,7 +250,7 @@ func TestApplyStaleVerdict(t *testing.T) {
 
 func TestUnclearCandidate(t *testing.T) {
 	f := newCandidateFixture(t, graphtest.Store(t))
-	ok, err := f.st.SetCandidateJudge(context.Background(), f.id, f.hash, "unclear")
+	ok, err := f.st.SetCandidateJudge(context.Background(), f.id, f.hash, "unclear", "")
 	if err != nil || !ok {
 		t.Fatalf("unclear = %v, %v", ok, err)
 	}

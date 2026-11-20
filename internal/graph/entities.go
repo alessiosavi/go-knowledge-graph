@@ -576,7 +576,7 @@ SET c.head_key = f.head, c.rel = f.rel, c.tail_key = f.tail,
 						"domain": opt.Domain, "domain_tok": domainTokenOrNil(opt.Domain), "now": time.Now().UTC().Format(timeLayout)}); err != nil {
 					return fmt.Errorf("graph: create fact candidates: %w", err)
 				}
-			} else if _, err := txWriteFactEdge(ctx, tx, factRows, extractorVersion, docID, chunkID, "", opt.StoreJudgeInput); err != nil {
+			} else if _, err := txWriteFactEdge(ctx, tx, factRows, extractorVersion, docID, chunkID, "", "", opt.StoreJudgeInput); err != nil {
 				return err
 			}
 		}
@@ -600,13 +600,13 @@ SET men.start = m.start, men.end = m.end, men.type = m.type`,
 }
 
 // txWriteFactEdge writes typed edges identically for direct extraction and promotion.
-func txWriteFactEdge(ctx context.Context, tx neo4j.ManagedTransaction, facts []map[string]any, version, docID, chunkID, judge string, storeJudgeInput bool) (int, error) {
+func txWriteFactEdge(ctx context.Context, tx neo4j.ManagedTransaction, facts []map[string]any, version, docID, chunkID, judge, model string, storeJudgeInput bool) (int, error) {
 	query := `
 UNWIND $facts AS f
 MATCH (a:Entity {key: f.head}), (b:Entity {key: f.tail})
 WITH a, b, f, {t: f.rel} AS x
 CREATE (a)-[r:x.t]->(b)
-SET r.confidence = f.confidence, r.low_confidence = f.low, r.judge = $judge,
+SET r.confidence = f.confidence, r.low_confidence = f.low, r.judge = $judge, r.judge_model = $model,
     r.extractor_version = $ver, r.doc_id = $doc, r.chunk_id = $cid,
     r.head_key = f.head, r.tail_key = f.tail,
     r.head_start = f.hs, r.head_end = f.he, r.tail_start = f.ts, r.tail_end = f.te`
@@ -618,7 +618,7 @@ FOREACH (_ IN CASE WHEN f.input IS NOT NULL THEN [1] ELSE [] END |
 	}
 	res, err := tx.Run(ctx, query+`
 RETURN count(r) AS n`,
-		map[string]any{"facts": facts, "ver": version, "doc": docID, "cid": chunkID, "judge": judge})
+		map[string]any{"facts": facts, "ver": version, "doc": docID, "cid": chunkID, "judge": judge, "model": judgeModelOrNil(model)})
 	if err != nil {
 		return 0, fmt.Errorf("graph: create facts: %w", err)
 	}
@@ -667,7 +667,7 @@ func txDeleteCandidate(ctx context.Context, tx neo4j.ManagedTransaction, id, inp
 
 // PromoteCandidate atomically writes the confirmed edge and removes its candidate.
 // A vanished candidate, changed request or missing endpoint returns false without writing.
-func (s *Store) PromoteCandidate(ctx context.Context, id, inputHash string) (bool, error) {
+func (s *Store) PromoteCandidate(ctx context.Context, id, inputHash, model string) (bool, error) {
 	applied := false
 	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
 		applied = false
@@ -678,7 +678,7 @@ func (s *Store) PromoteCandidate(ctx context.Context, id, inputHash string) (boo
 		row := map[string]any{"head": c["head_key"], "rel": c["rel"], "tail": c["tail_key"],
 			"confidence": c["confidence"], "low": c["low_confidence"],
 			"hs": c["head_start"], "he": c["head_end"], "ts": c["tail_start"], "te": c["tail_end"]}
-		created, err := txWriteFactEdge(ctx, tx, []map[string]any{row}, c["extractor_version"].(string), c["doc_id"].(string), c["chunk_id"].(string), "confirmed", false)
+		created, err := txWriteFactEdge(ctx, tx, []map[string]any{row}, c["extractor_version"].(string), c["doc_id"].(string), c["chunk_id"].(string), "confirmed", model, false)
 		if err != nil || created == 0 {
 			return err
 		}
@@ -692,12 +692,13 @@ func (s *Store) PromoteCandidate(ctx context.Context, id, inputHash string) (boo
 }
 
 // SetCandidateJudge records an unclear verdict without exposing a typed edge.
-func (s *Store) SetCandidateJudge(ctx context.Context, id, inputHash, status string) (bool, error) {
+func (s *Store) SetCandidateJudge(ctx context.Context, id, inputHash, status, model string) (bool, error) {
 	applied := false
 	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
 		applied = false
-		res, err := tx.Run(ctx, `MATCH (c:FactCandidate {id: $id}) WHERE c.input_hash = $hash SET c.judge = $status RETURN c.id`,
-			map[string]any{"id": id, "hash": inputHash, "status": status})
+		res, err := tx.Run(ctx, `MATCH (c:FactCandidate {id: $id}) WHERE c.input_hash = $hash
+SET c.judge = $status, c.judge_model = $model RETURN c.id`,
+			map[string]any{"id": id, "hash": inputHash, "status": status, "model": judgeModelOrNil(model)})
 		if err != nil {
 			return fmt.Errorf("graph: set candidate judge: %w", err)
 		}
@@ -742,6 +743,7 @@ type FactAudit struct {
 	ChunkID          string
 	Score            float64
 	JudgeVerdict     string
+	JudgeModel       string
 	Reason           string
 	ExtractorVersion string
 }
@@ -762,6 +764,8 @@ func (s *Store) WriteFactAudit(ctx context.Context, a FactAudit) error {
 
 // txWriteFactAudit merges one audit row inside an existing transaction.
 func txWriteFactAudit(ctx context.Context, tx neo4j.ManagedTransaction, a FactAudit) error {
+	props := factAuditProperties(a)
+	props["judge_model"] = judgeModelOrNil(a.JudgeModel)
 	// An audit for a document that no longer exists (deleted while its
 	// judge call was in flight) is not written: nothing could delete it.
 	err := txRun(ctx, tx, `
@@ -769,11 +773,19 @@ OPTIONAL MATCH (d:Document {id: $doc})
 WITH d WHERE $doc = '' OR d IS NOT NULL
 MERGE (rf:RejectedFact {id: $id})
 SET rf += $props`,
-		map[string]any{"id": FactAuditID(a.HeadKey, a.Rel, a.TailKey, a.ChunkID), "doc": a.DocID, "props": factAuditProperties(a)})
+		map[string]any{"id": FactAuditID(a.HeadKey, a.Rel, a.TailKey, a.ChunkID), "doc": a.DocID, "props": props})
 	if err != nil {
 		return fmt.Errorf("graph: write fact audit: %w", err)
 	}
 	return nil
+}
+
+// A null assignment leaves the property absent when a verdict has no model.
+func judgeModelOrNil(model string) any {
+	if model == "" {
+		return nil
+	}
+	return model
 }
 
 func factAuditProperties(a FactAudit) map[string]any {
@@ -787,14 +799,14 @@ func factAuditProperties(a FactAudit) map[string]any {
 
 // SetFactJudge records a judge verdict (confirmed|unclear) on the fact edge
 // identified by (head, rel, tail, chunk).
-func (s *Store) SetFactJudge(ctx context.Context, headKey, rel, tailKey, chunkID, status string) error {
+func (s *Store) SetFactJudge(ctx context.Context, headKey, rel, tailKey, chunkID, status, model string) error {
 	err := s.runWrite(ctx, `
 MATCH (a:Entity {key: $head})-[r]->(b:Entity {key: $tail})
 WHERE r.chunk_id = $chunk AND type(r) = $rel AND r.judge_gen IS NULL
-SET r.judge = $status`,
+SET r.judge = $status, r.judge_model = $model`,
 		map[string]any{
 			"head": headKey, "tail": tailKey, "chunk": chunkID,
-			"rel": sanitizeRel(rel), "status": status,
+			"rel": sanitizeRel(rel), "status": status, "model": judgeModelOrNil(model),
 		})
 	if err != nil {
 		return fmt.Errorf("graph: set fact judge: %w", err)

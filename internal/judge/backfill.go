@@ -109,6 +109,9 @@ func Backfill(ctx context.Context, st *graph.Store, j *Cached, gate *Client, opt
 		if leaseErr := renewBackfillLease(ctx, st, owner); leaseErr != nil {
 			return result, leaseErr
 		}
+		if IsProviderStop(err) {
+			return result, err
+		}
 		if err != nil {
 			result.Failed++
 			slog.Warn("judge: backfill candidate failed", "id", c.ID, "err", err)
@@ -118,13 +121,13 @@ func Backfill(ctx context.Context, st *graph.Store, j *Cached, gate *Client, opt
 		var applied bool
 		switch verdict.Status {
 		case "confirmed":
-			applied, err = st.PromoteCandidate(ctx, c.ID, c.InputHash)
+			applied, err = st.PromoteCandidate(ctx, c.ID, c.InputHash, verdict.Model)
 		case "unclear":
-			applied, err = st.SetCandidateJudge(ctx, c.ID, c.InputHash, verdict.Status)
+			applied, err = st.SetCandidateJudge(ctx, c.ID, c.InputHash, verdict.Status, verdict.Model)
 		case "refuted":
 			applied, err = st.RefuteCandidate(ctx, c.ID, c.InputHash, graph.FactAudit{
 				HeadKey: c.HeadKey, Rel: c.Relation, TailKey: c.TailKey, DocID: c.DocID, ChunkID: c.ChunkID,
-				Score: c.Confidence, JudgeVerdict: verdict.Status, Reason: verdict.Reason, ExtractorVersion: c.ExtractorVersion,
+				Score: c.Confidence, JudgeVerdict: verdict.Status, JudgeModel: verdict.Model, Reason: verdict.Reason, ExtractorVersion: c.ExtractorVersion,
 			})
 		default:
 			err = fmt.Errorf("judge: invalid cached verdict status %q", verdict.Status)

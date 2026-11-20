@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
 	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 )
 
@@ -39,8 +40,10 @@ func TestJudgeAuthExitCodes(t *testing.T) {
 		{&llmauth.AuthTransient{Detail: "metadata timeout"}, 3},
 		{fmt.Errorf("graph failed"), 1},
 	} {
-		if got := judgeRunErrorExitCode(fmt.Errorf("attempt stopped: %w", tc.err)); got != tc.want {
-			t.Errorf("exit=%d, want %d for %v", got, tc.want, tc.err)
+		var stdout, stderr bytes.Buffer
+		err := fmt.Errorf("attempt stopped: %w", tc.err)
+		if got := writeCandidateBackfillResult(judge.BackfillResult{}, err, &stdout, &stderr); got != tc.want || !strings.Contains(stderr.String(), err.Error()) {
+			t.Errorf("candidate backfill exit=%d, want %d for %v, stderr=%q", got, tc.want, tc.err, &stderr)
 		}
 	}
 }

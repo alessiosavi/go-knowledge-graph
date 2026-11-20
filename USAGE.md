@@ -295,6 +295,13 @@ when unset (90 by default). An explicit value below the agent timeout plus
 15 seconds prevents edge startup. For a 300-second agent timeout, leaving
 the edge timeout unset produces 330 seconds for both JSON and streamed asks.
 
+Set `EDGE_MAINTENANCE_MODE=1` and recreate the edge service to pause writes
+during maintenance. Both edge listeners return HTTP `503` with
+`{"error":"maintenance"}` for `POST`, `PUT`, `PATCH`, and `DELETE` other than
+`/healthz`. This also pauses POST-based search and asks from the UI while
+pages and GET requests remain available. Set the flag to `0` (the default)
+and recreate the edge to restore write access.
+
 While the agent is disabled the endpoint
 answers `501` and the panel stays hidden. Answers are LLM-generated — the
 `evidence` array is the source of truth
@@ -633,6 +640,12 @@ audits. The backfill selects edges with an empty verdict and a stored request
 on a `done` document. Confirmation and unclear verdicts remove the stored
 request from the edge. Refutation removes the edge and writes a rejection audit.
 
+Online judging and both backfill modes record `judge_model` on confirmed and
+unclear typed edges, unclear candidates, and rejection audits from refuted
+verdicts. Promoted candidates carry the model on the resulting edge. Cache hits
+use the cached verdict's model. Existing graph records keep their historical
+properties, and rows without known provenance have no `judge_model` property.
+
 Run the typed-edge backfill inside the running service container so it uses the
 same judge model and cache as ingest.
 
@@ -682,8 +695,10 @@ negative budgets exit 2 with usage. The budget counts provider attempts,
 including retries; cache hits use no calls.
 Rerunning recovers verdicts whose cache write succeeded before application,
 for the same request and model.
-Per-candidate errors are logged and counted as `failed`; later candidates are
-still judged, and a rerun may retry failed candidates. An unchanged candidate
+Provider-wide failures leave the affected candidate pending. Candidate backfill
+exits `2` on `auth_permanent`, `3` on other provider stops including
+`auth_transient`, and `1` on other run errors. Per-candidate errors are logged
+and counted as `failed`, and judging continues. An unchanged candidate
 whose endpoint disappeared is deleted and counted as `orphaned`, separately
 from `vanished` candidates whose identity or input changed during judging.
 A lease lasts 120 seconds and renews every 30 seconds. `--force` takes over a

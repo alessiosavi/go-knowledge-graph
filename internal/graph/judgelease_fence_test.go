@@ -123,7 +123,7 @@ func TestStoredVerdictLeaseFenceRetriesFirstCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	attempts := 0
-	applied, err := b.ApplyStoredFactVerdict(ctx, StoredFactRef{}, "confirmed", "", StoredFactVerdictOptions{
+	applied, err := b.ApplyStoredFactVerdict(ctx, StoredFactRef{}, "confirmed", "", "", StoredFactVerdictOptions{
 		BeforeWrite: func(ctx context.Context, tx neo4j.ManagedTransaction) error {
 			attempts++
 			if err := FenceLeaseExcluding(ctx, tx, BackfillLeaseName, "backfill", time.Minute, ValidityApplyLease, RejudgeLeaseName); err != nil {

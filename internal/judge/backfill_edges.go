@@ -160,7 +160,7 @@ func backfillStoredEdge(ctx context.Context, st *graph.Store, j *Cached, edge gr
 		return nil
 	}
 
-	applied, err := st.ApplyStoredFactVerdict(ctx, edge.StoredFactRef, verdict.Status, verdict.Reason, apply)
+	applied, err := st.ApplyStoredFactVerdict(ctx, edge.StoredFactRef, verdict.Status, verdict.Reason, verdict.Model, apply)
 	if err != nil {
 		return errors.Join(err, context.Cause(ctx))
 	}
