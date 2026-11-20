@@ -29,12 +29,13 @@ func runRepairValidity(args []string, stdout, stderr io.Writer) int {
 	verdicts := fs.String("verdicts", "", "sealed bulk run's verdicts")
 	rewriteVerdicts := fs.String("rewrite-verdicts", "", "sealed rewrite run's verdicts")
 	noRewrites := fs.Bool("no-rewrites", false, "finalize a draft with no rewrite candidates")
+	deferUnconfirmed := fs.Bool("defer-unconfirmed", false, "defer affected sources without a confirmed destination at finalize")
 	// A bare -plan selects planning. Finalize and apply take a path.
 	plan := fs.String("plan", "", "plan a bulk run, or supply the directory for finalize or apply")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: gkg repair-validity -classify [-preset NAME] -out DIR")
 		fmt.Fprintln(stderr, "       gkg repair-validity -plan [-preset NAME] -manifest M -verdicts V -out DIR")
-		fmt.Fprintln(stderr, "       gkg repair-validity -finalize -plan DIR (-rewrite-verdicts V2 | -no-rewrites)")
+		fmt.Fprintln(stderr, "       gkg repair-validity -finalize -plan DIR (-rewrite-verdicts V2 | -no-rewrites) [-defer-unconfirmed]")
 		fmt.Fprintln(stderr, "       gkg repair-validity -apply -plan DIR -approved-digest HEX -quiescent -report FILE")
 		fs.PrintDefaults()
 	}
@@ -76,6 +77,9 @@ func runRepairValidity(args []string, stdout, stderr io.Writer) int {
 	if !*apply && (seen["approved-digest"] || seen["quiescent"] || seen["report"]) {
 		valid = false
 	}
+	if !*finalize && seen["defer-unconfirmed"] {
+		valid = false
+	}
 	if fs.NArg() != 0 || !valid {
 		fs.Usage()
 		return 2
@@ -90,7 +94,7 @@ func runRepairValidity(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if *finalize {
-		digest, err := judge.FinalizeValidity(ctx, *plan, *rewriteVerdicts)
+		digest, err := judge.FinalizeValidity(ctx, *plan, *rewriteVerdicts, *deferUnconfirmed)
 		if err != nil {
 			return fail(err)
 		}

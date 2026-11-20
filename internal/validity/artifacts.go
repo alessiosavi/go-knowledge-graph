@@ -19,6 +19,7 @@ const (
 	OutcomeRewriteCandidate Outcome = "rewrite-candidate"
 	OutcomeRewriteConfirmed Outcome = "rewrite-confirmed"
 	OutcomeRewriteUnclear   Outcome = "rewrite-unclear"
+	OutcomeDeferred         Outcome = "deferred"
 )
 
 // InputsRow is one inputs.jsonl object. The parity inputs and decision fields
@@ -117,8 +118,8 @@ type CandidateRankInput struct {
 
 // FinalRow is one final.jsonl object. PlannedOutcome uses the InputsRow outcome
 // set. FinalOutcome is reject, demote, validity-drop, stamp, rewrite-confirmed
-// or rewrite-unclear. NewID is present for rewrites. RewriteVerdict is present
-// when the row's candidate was judged, including a refuted candidate.
+// rewrite-unclear or deferred. NewID is present for rewrites. RewriteVerdict
+// is present when the row's candidate was judged, including a refuted candidate.
 type FinalRow struct {
 	ID             string  `json:"id"`
 	PlannedOutcome Outcome `json:"planned_outcome"`
@@ -132,7 +133,8 @@ type FinalRow struct {
 
 // PlanSummary is the plan.json object. Counts are keyed by outcome, then stored
 // relation, then rule. BucketCounts are keyed by inventory bucket. The optional
-// final fields record the rewrite verdict seal (or no-rewrites) and final digest.
+// final fields record the rewrite verdict seal (or no-rewrites), final digest
+// and opt-in deferral mode.
 type PlanSummary struct {
 	RulesID            string                                `json:"rules_id"`
 	LexiconDigest      string                                `json:"lexicon_digest"`
@@ -143,6 +145,7 @@ type PlanSummary struct {
 	DraftDigest        string                                `json:"draft_digest"`
 	RewriteVerdictSeal string                                `json:"rewrite_verdict_seal,omitempty"`
 	FinalDigest        string                                `json:"final_digest,omitempty"`
+	Deferral           string                                `json:"deferral,omitempty"`
 }
 
 // DecodeInputsRow decodes one inputs.jsonl row and rejects unknown fields.

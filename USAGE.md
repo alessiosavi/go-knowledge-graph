@@ -691,10 +691,17 @@ completed sibling `attempts.json`.
 For a draft with zero candidates, skip the rewrite run and use
 `gkg repair-validity -finalize -plan draft -no-rewrites`. Read the projected
 counts in `plan.json` and the final counts and digest in `final-plan.json`.
-`affected.jsonl` lists the sources dropped for missing or ambiguous targets
-and collisions. Each row includes the source `doc_id` and `chunk_id` and each
-destination's projected state.
+`affected.jsonl` lists sources with missing or ambiguous targets and sources
+involved in collisions. Each row includes the source `doc_id` and `chunk_id`
+and each destination's projected state.
 `affected-summary.json` counts sources without a confirmed destination.
+Add `-defer-unconfirmed` to either finalize command to mark affected sources
+without a projected confirmed destination as `deferred`. The final plan records
+the deferral mode, and the affected reports show which sources were deferred
+and how many in each group.
+With `-defer-unconfirmed`, the `destination_states` and
+`has_confirmed_destination` fields in `affected.jsonl` show the projection
+before deferral, including how a deferred occupant would appear with the flag omitted.
 Artifacts have mode `0600`. Use separate inventory, run and draft directories.
 An existing output file or an input mismatch exits `2` before publishing any
 outputs. Success exits `0` and operational errors exit `1`.
@@ -733,6 +740,8 @@ and rebuilds the evidence and requests in each row's transaction. Preflight also
 requires rebuilt request bytes for every planned source and judged rewrite
 candidate to match the sealed bulk and rewrites manifests. Ambiguous and
 unverifiable rows are counted and left untouched.
+Apply leaves deferred edges and their properties untouched and records
+`deferred` in the lineage report.
 
 Choose a fresh `-report` path. Apply checks that the path is absent during
 preflight and creates the `0600` JSONL file after acquiring the lease, before
@@ -747,7 +756,7 @@ dump and import changes those IDs and requires re-planning from `-classify`.
 
 | Exit code | Meaning |
 | --- | --- |
-| `0` | All rows applied and projected totals equal actual totals. |
+| `0` | Apply completed and projected totals equal actual totals. |
 | `1` | Operational error, for example failure while writing the report. Check the graph and report before resuming writers. |
 | `2` | Usage or precondition failure. The graph and report path are unchanged. |
 | `4` | Apply stopped and wrote a stop report. Earlier rows remain committed. A new marker after preflight stops the first row with `validity_run appeared after preflight`. Keep writers stopped and restore the pre-apply snapshot before starting a new apply. |

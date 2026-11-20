@@ -16,7 +16,10 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/validity"
 )
 
-const noValidityRewrites = "no-rewrites"
+const (
+	noValidityRewrites  = "no-rewrites"
+	unconfirmedDeferral = "unconfirmed-destination"
+)
 
 type validityDraft struct {
 	summary         validity.PlanSummary
@@ -35,8 +38,9 @@ type validityBulkSource struct {
 
 // FinalizeValidity validates all sealed inputs offline and publishes final
 // outcomes and the affected-sources report. An empty verdict path explicitly
-// selects the no-rewrites path.
-func FinalizeValidity(ctx context.Context, dir, verdictPath string) (string, error) {
+// selects the no-rewrites path. Deferral preserves affected source edges
+// without a projected confirmed destination.
+func FinalizeValidity(ctx context.Context, dir, verdictPath string, deferUnconfirmed bool) (string, error) {
 	draft, err := readValidityDraft(dir)
 	if err != nil {
 		return "", validityInputError(err)
@@ -56,29 +60,24 @@ func FinalizeValidity(ctx context.Context, dir, verdictPath string) (string, err
 		}
 	}
 
-	rows, summary, finalBytes, err := projectFinalValidity(draft, rewrite)
+	projection, err := projectFinalValidity(draft, rewrite, deferUnconfirmed)
 	if err != nil {
 		return "", err
 	}
-	summaryBytes, err := validityJSONLines([]validity.PlanSummary{summary})
+	summaryBytes, err := validityJSONLines([]validity.PlanSummary{projection.summary})
 	if err != nil {
 		return "", err
 	}
-	finalBySource := make(map[string]validity.FinalRow, len(rows))
-	for _, row := range rows {
-		finalBySource[row.ID] = row
-	}
-	affected, affectedSummary := affectedValiditySources(draft.inputs, draft.bulk, finalBySource)
-	affectedBytes, err := validityJSONLines(affected)
+	affectedBytes, err := validityJSONLines(projection.affected)
 	if err != nil {
 		return "", err
 	}
-	reportBytes, err := validityJSONLines([]map[string]affectedValidityCount{affectedSummary})
+	reportBytes, err := validityJSONLines([]map[string]affectedValidityCount{projection.affectedSummary})
 	if err != nil {
 		return "", err
 	}
 	files := []validityFile{
-		{"final.jsonl", finalBytes},
+		{"final.jsonl", projection.encoded},
 		{"affected.jsonl", affectedBytes},
 		{"affected-summary.json", reportBytes},
 	}
@@ -86,26 +85,52 @@ func FinalizeValidity(ctx context.Context, dir, verdictPath string) (string, err
 		files = append(files, validityFile{"rewrite-verdicts.jsonl", rewrite.bytes}, validityFile{"rewrite-attempts.json", rewrite.ledger})
 	}
 	files = append(files, validityFile{"final-plan.json", summaryBytes})
-	return summary.FinalDigest, writeValidityFiles(ctx, dir, files)
+	return projection.summary.FinalDigest, writeValidityFiles(ctx, dir, files)
 }
 
-func projectFinalValidity(draft validityDraft, rewrite sealedValidityRun) ([]validity.FinalRow, validity.PlanSummary, []byte, error) {
+type finalValidityProjection struct {
+	rows            []validity.FinalRow
+	summary         validity.PlanSummary
+	encoded         []byte
+	affected        []affectedValidityRow
+	affectedSummary map[string]affectedValidityCount
+}
+
+func projectFinalValidity(draft validityDraft, rewrite sealedValidityRun, deferUnconfirmed bool) (finalValidityProjection, error) {
+	finalBySource := make(map[string]validity.FinalRow, len(draft.inputs))
+	for _, input := range draft.inputs {
+		finalBySource[input.ID] = finalizeValidityRow(input, draft.bulk[input.ID].verdict, draft.rewriteBySource[input.ID], rewrite.verdicts)
+	}
+	// Assess all destinations against the same projection before deferring any sources.
+	affected, affectedSummary := affectedValiditySources(draft.inputs, draft.bulk, finalBySource, deferUnconfirmed)
+	summary := draft.summary
+	if deferUnconfirmed {
+		summary.Deferral = unconfirmedDeferral
+		for _, affectedRow := range affected {
+			if *affectedRow.Deferred {
+				row := finalBySource[affectedRow.SourceID]
+				row.FinalOutcome = validity.OutcomeDeferred
+				finalBySource[row.ID] = row
+			}
+		}
+	}
 	rows := make([]validity.FinalRow, 0, len(draft.inputs))
 	counts := make(validityCounts)
 	for _, input := range draft.inputs {
-		row := finalizeValidityRow(input, draft.bulk[input.ID].verdict, draft.rewriteBySource[input.ID], rewrite.verdicts)
+		row := finalBySource[input.ID]
 		rows = append(rows, row)
 		counts.add(row.FinalOutcome, input.Relation, row.Rule)
 	}
 	raw, err := validityJSONLines(rows)
 	if err != nil {
-		return nil, validity.PlanSummary{}, nil, err
+		return finalValidityProjection{}, err
 	}
-	summary := draft.summary
 	summary.Counts = counts
 	summary.RewriteVerdictSeal = rewrite.seal
 	summary.FinalDigest = validityDigest([]byte(summary.DraftDigest), []byte(rewrite.seal), raw)
-	return rows, summary, raw, nil
+	return finalValidityProjection{
+		rows: rows, summary: summary, encoded: raw, affected: affected, affectedSummary: affectedSummary,
+	}, nil
 }
 
 func readValidityDraft(dir string) (validityDraft, error) {
@@ -139,7 +164,7 @@ func readValidityDraft(dir string) (validityDraft, error) {
 	if err != nil {
 		return draft, err
 	}
-	if validityDraftDigest(summary, inputs, rewrites) != summary.DraftDigest || summary.FinalDigest != "" || summary.RewriteVerdictSeal != "" {
+	if validityDraftDigest(summary, inputs, rewrites) != summary.DraftDigest || summary.FinalDigest != "" || summary.RewriteVerdictSeal != "" || summary.Deferral != "" {
 		return draft, errors.New("draft digest mismatch or unexpected final seal in plan.json")
 	}
 	inputByID := make(map[string]validity.InputsRow)
@@ -351,6 +376,7 @@ type affectedValidityRow struct {
 	Destination             *validity.DestinationKey   `json:"destination,omitempty"`
 	States                  []affectedDestinationState `json:"destination_states"`
 	HasConfirmedDestination bool                       `json:"has_confirmed_destination"`
+	Deferred                *bool                      `json:"deferred,omitempty"`
 }
 
 type affectedDestinationState struct {
@@ -363,11 +389,12 @@ type affectedDestinationState struct {
 }
 
 type affectedValidityCount struct {
-	Sources                     int `json:"sources"`
-	WithoutConfirmedDestination int `json:"without_confirmed_destination"`
+	Sources                     int  `json:"sources"`
+	WithoutConfirmedDestination int  `json:"without_confirmed_destination"`
+	Deferred                    *int `json:"deferred,omitempty"`
 }
 
-func affectedValiditySources(inputs []validity.InputsRow, bulk map[string]validityBulkSource, final map[string]validity.FinalRow) ([]affectedValidityRow, map[string]affectedValidityCount) {
+func affectedValiditySources(inputs []validity.InputsRow, bulk map[string]validityBulkSource, final map[string]validity.FinalRow, deferUnconfirmed bool) ([]affectedValidityRow, map[string]affectedValidityCount) {
 	var affected []affectedValidityRow
 	counts := make(map[string]affectedValidityCount)
 	for _, input := range inputs {
@@ -414,6 +441,16 @@ func affectedValiditySources(inputs []validity.InputsRow, bulk map[string]validi
 		count.Sources++
 		if !row.HasConfirmedDestination {
 			count.WithoutConfirmedDestination++
+		}
+		if deferUnconfirmed {
+			deferred := !row.HasConfirmedDestination
+			row.Deferred = &deferred
+			if count.Deferred == nil {
+				count.Deferred = new(int)
+			}
+			if deferred {
+				(*count.Deferred)++
+			}
 		}
 		counts[group] = count
 		affected = append(affected, row)

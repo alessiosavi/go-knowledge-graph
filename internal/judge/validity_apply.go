@@ -44,7 +44,19 @@ func readFinalValidity(dir, approved string, draft validityDraft) (sealedValidit
 			return rewrite, nil, validity.PlanSummary{}, err
 		}
 	}
-	rows, expected, encoded, err := projectFinalValidity(draft, rewrite)
+	raw, err := read("final-plan.json")
+	if err != nil {
+		return rewrite, nil, validity.PlanSummary{}, err
+	}
+	summary, err := validity.DecodePlanSummary(raw)
+	if err != nil {
+		return rewrite, nil, validity.PlanSummary{}, err
+	}
+	if summary.Deferral != "" && summary.Deferral != unconfirmedDeferral {
+		return rewrite, nil, validity.PlanSummary{}, fmt.Errorf("unknown final-plan.json deferral %q", summary.Deferral)
+	}
+	projection, err := projectFinalValidity(draft, rewrite, summary.Deferral == unconfirmedDeferral)
+	expected := projection.summary
 	if err != nil {
 		return rewrite, nil, expected, err
 	}
@@ -52,16 +64,8 @@ func readFinalValidity(dir, approved string, draft validityDraft) (sealedValidit
 	if err != nil {
 		return rewrite, nil, expected, err
 	}
-	if !bytes.Equal(encoded, final) {
+	if !bytes.Equal(projection.encoded, final) {
 		return rewrite, nil, expected, errors.New("final.jsonl differs from the finalized outcomes")
-	}
-	raw, err := read("final-plan.json")
-	if err != nil {
-		return rewrite, nil, expected, err
-	}
-	summary, err := validity.DecodePlanSummary(raw)
-	if err != nil {
-		return rewrite, nil, expected, err
 	}
 	if !reflect.DeepEqual(expected, summary) {
 		return rewrite, nil, expected, errors.New("final-plan.json differs from the recomputed plan")
@@ -69,7 +73,7 @@ func readFinalValidity(dir, approved string, draft validityDraft) (sealedValidit
 	if !strings.EqualFold(expected.FinalDigest, approved) {
 		return rewrite, nil, expected, errors.New("approved digest does not match the recomputed final digest")
 	}
-	return rewrite, rows, expected, nil
+	return rewrite, projection.rows, expected, nil
 }
 
 func checkValidityCatalog(catalog validityCatalog, draft validityDraft, rules *validity.Rules) error {
@@ -231,6 +235,9 @@ type validityApplySummary struct {
 
 func projectedValidityEdges(before graph.ValidityEdgeCounts, rows []validity.FinalRow, draft validityDraft) graph.ValidityEdgeCounts {
 	for _, row := range rows {
+		if row.FinalOutcome == validity.OutcomeDeferred {
+			continue
+		}
 		source := draft.bulk[row.ID].manifest
 		if source.Judge == "confirmed" {
 			before.ConfirmedOnly--
@@ -375,8 +382,12 @@ func ApplyValidity(ctx context.Context, st *graph.Store, presetsDir, dir, approv
 	encoder := json.NewEncoder(report)
 	for i, row := range rows {
 		input := draft.inputs[i]
+		plannedOutcome := row.FinalOutcome
+		if row.FinalOutcome == validity.OutcomeDeferred {
+			plannedOutcome = row.PlannedOutcome
+		}
 		line := validityLineage{
-			ID: row.ID, PriorJudge: input.PriorJudge, PlannedOutcome: row.FinalOutcome, Rule: row.Rule,
+			ID: row.ID, PriorJudge: input.PriorJudge, PlannedOutcome: plannedOutcome, Rule: row.Rule,
 			Reason: row.Reason, SourceVerdict: row.SourceVerdict, Evidence: input.Evidence,
 		}
 		if summary.StopReason == "" {
