@@ -24,6 +24,7 @@ import (
 )
 
 const validityFixtureMatch = `MATCH (h:Entity {key:$head})-[r:uses]->(t:Entity {key:$tail}) WHERE r.chunk_id = $chunk`
+const priorValidityModel = "fixture-model-a"
 
 func validityKeyParams(f graph.RejudgeIdentity) map[string]any {
 	return map[string]any{"head": f.HeadKey, "tail": f.TailKey, "chunk": f.ChunkID}
@@ -158,8 +159,8 @@ func assertMixedValidityApply(t *testing.T, st *graph.Store, planDir, report str
 	baseline graph.ValidityEdgeCounts, inputs map[string]validity.InputsRow, sources map[string]validityManifestRow) {
 	t.Helper()
 	rejected := sources[reject]
-	migrationQuery(t, `CREATE (:RejectedFact {id:$id, doc_id:$doc, reason:'old invented reason', prior_score:1.0, prior_count:1})`,
-		map[string]any{"id": reject, "doc": rejected.Request.DocID})
+	migrationQuery(t, `CREATE (:RejectedFact {id:$id, doc_id:$doc, reason:'old invented reason', prior_score:1.0, prior_count:1, judge_model:$model})`,
+		map[string]any{"id": reject, "doc": rejected.Request.DocID, "model": priorValidityModel})
 	priorAudit := storedValidityAuditNode(t, reject)
 	if priorAudit == nil {
 		t.Fatal("missing prior audit fixture")
@@ -176,6 +177,7 @@ func assertMixedValidityApply(t *testing.T, st *graph.Store, planDir, report str
 	wantNodes, wantEdges := validityGraphData(t)
 
 	args := []string{"-apply", "-plan", planDir, "-approved-digest", plan.FinalDigest, "-quiescent", "-report", report}
+	t.Setenv("GKG_JUDGE_MODEL", "fixture-current-model")
 	validityCommandOK(t, args...)
 	assertValidityLeaseReleased(t)
 	gotNodes, gotEdges := validityGraphData(t)
@@ -209,6 +211,7 @@ func assertMixedValidityApply(t *testing.T, st *graph.Store, planDir, report str
 		}
 		return map[string]any{
 			"judge_run": run, "judge_prompt": source.Request.Profile.Fingerprint, "validity_run": plan.FinalDigest[:16],
+			"judge_model": source.Request.Profile.Model,
 		}
 	}
 	for i, approved := range final {
@@ -424,6 +427,67 @@ func assertValidityApplyRejected(t *testing.T, dir, digest, report, want string,
 	if (beforeErr == nil && (afterErr != nil || !bytes.Equal(content, after))) ||
 		(errors.Is(beforeErr, os.ErrNotExist) && !errors.Is(afterErr, os.ErrNotExist)) {
 		t.Errorf("report changed on exit 2: before %q (%v), after %q (%v)", content, beforeErr, after, afterErr)
+	}
+}
+
+func TestRepairValidityApplyWithoutJudgeModel(t *testing.T) {
+	st := graphtest.Store(t)
+	for _, tc := range []struct {
+		name, judge string
+		outcome     validity.Outcome
+		wantModel   any
+	}{
+		{"stamp", "confirmed", validity.OutcomeStamp, priorValidityModel},
+		{"demote", "unclear", validity.OutcomeDemote, priorValidityModel},
+		{"rewrite", "confirmed", validity.OutcomeRewriteConfirmed, nil},
+		{"replace-audit", "refuted", validity.OutcomeReject, priorValidityModel},
+		{"create-audit", "refuted", validity.OutcomeReject, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			d, source := applyFixtureSource(t, "empty-model", "zorbs", true)
+			if err := st.SetFactJudge(ctx, source.HeadKey, source.Relation, source.TailKey, source.ChunkID, "confirmed", priorValidityModel); err != nil {
+				t.Fatal(err)
+			}
+			var facts []graph.RejudgeFact
+			if err := st.WalkRejudgeFacts(ctx, d.id, nil, 0, func(batch []graph.RejudgeFact) error {
+				facts = append(facts, batch...)
+				return nil
+			}); err != nil || len(facts) != 1 {
+				t.Fatalf("read %d source facts: %v", len(facts), err)
+			}
+			w := graph.ValidityWrite{
+				Source: facts[0].RejudgeIdentity, DocID: d.id, Outcome: tc.outcome, Judge: tc.judge, ValidityRun: t.Name(),
+			}
+			query, params := validityFixtureMatch+` RETURN r.judge_model`, validityKeyParams(source)
+			switch tc.outcome {
+			case validity.OutcomeRewriteConfirmed:
+				w.Destination = &validity.DestinationKey{HeadKey: d.target, Rel: source.Relation, TailKey: source.TailKey, ChunkID: source.ChunkID}
+				params["head"] = d.target
+			case validity.OutcomeReject:
+				params = map[string]any{"id": source.ID, "doc": d.id, "model": tc.wantModel}
+				if tc.wantModel != nil {
+					migrationQuery(t, `CREATE (:RejectedFact {id:$id, doc_id:$doc, judge_model:$model})`, params)
+				}
+				query = `MATCH (rf:RejectedFact {id:$id}) RETURN rf.judge_model`
+			}
+			rollback, blocker, err := st.AcquireValidityApplyLease(ctx, t.Name())
+			if err != nil || blocker != "" || rollback == nil {
+				t.Fatalf("acquire validity lease: %q, %v", blocker, err)
+			}
+			defer func() {
+				if err := rollback(ctx); err != nil {
+					t.Error(err)
+				}
+			}()
+			if err := st.ApplyValidityFact(ctx, t.Name(), true, w, func(graph.RejudgeFact, graph.CatalogReader) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			rows := migrationQuery(t, query, params)
+			if len(rows) != 1 || rows[0].Values[0] != tc.wantModel {
+				t.Errorf("judge_model rows = %v, want one row with %v", rows, tc.wantModel)
+			}
+		})
 	}
 }
 
