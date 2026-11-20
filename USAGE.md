@@ -9,8 +9,8 @@ product limits are recorded in [docs/known-limitations.md](docs/known-limitation
 
 Ingest text, files (Markdown/txt/PDF/DOCX/… — rich formats convert through
 docling by default) or URLs. Every submission becomes a
-document with full provenance; unchanged content is a no-op, changed
-content supersedes the previous version.
+document with full provenance. Within the same source identity, unchanged
+content is a no-op and changed content supersedes the previous version.
 
 **CLI** (runs the pipeline synchronously):
 
@@ -41,6 +41,49 @@ Before returning `202`, gkg saves the converted text and submission metadata
 to a private spool. Queued files, text and URLs survive a gkg restart without
 re-uploading or converting again. Once chunks are persisted, recovery uses
 them and removes the spool entry. Failed documents still need a re-push.
+
+gkg cleans decoded text from Docling, native PDF extraction, Markdown,
+plain text, and HTML before hashing or chunking it. It replaces invalid UTF-8,
+strips control characters except tabs and line breaks, and removes bidi
+embedding, override, and isolate controls (U+202A–U+202E and U+2066–U+2069).
+A run of these bidi controls becomes one ASCII space only when both adjacent
+characters are non-whitespace, the right character is not a combining mark,
+and exactly one side is a right-to-left letter. If the left character is a
+combining mark, gkg uses the preceding base character for the letter check.
+gkg preserves left-to-right and right-to-left marks (U+200E and U+200F).
+gkg repairs a repeated standalone right-to-left glyph when it is the only
+distinct lone RTL letter outside fenced code, occurs on at least three lines
+there, and the document has no multi-letter RTL token after bidi
+normalization. It removes every occurrence of the glyph from a line whose body
+starts with it when the line has a Markdown list marker or contained a bidi
+control before normalization. It also repairs reversed Markdown list items
+where the token before the last glyph starts with an uppercase letter or digit.
+gkg collapses long dot leaders after text on the same line. Glyph repair and
+leader collapse skip fenced Markdown code blocks. Indented code blocks are
+eligible for cleaning.
+
+The Memgraph `:Document` node records `text_clean_version` (currently `1`) and
+the counts `text_invalid_utf8`, `text_controls`, `text_bidi_controls`, `text_glyph_lines`,
+`text_leader_runs`, `text_fffd_removed`, and `text_fffd_remaining`. An
+invalid byte run counts as one replacement. The `gkg_text_clean_total{step}`
+metric adds these counts on each admitted submission, including force
+resubmissions. Duplicate no-op submissions and reloads skip the increment.
+
+Existing documents keep their old chunks until you resubmit the original
+input under the same source identity. If the cleaned hash changes, gkg
+creates a new version and supersedes the old one when processing succeeds.
+Text submitted without a source gets its source identity from the content
+hash. To supersede an existing text version, pass the same explicit source
+on resubmission. Use a forced REST or MCP resubmission if the cleaned hash
+is unchanged and you want to reprocess the document. The admin rebuild uses
+stored chunks, so it cannot apply text cleaning to old content.
+
+A queued submission from before this change can still use its original
+spooled text if it matches the stored hash. Without a spool entry, a queued
+URL is fetched and cleaned again. If the new hash differs from the stored
+hash, processing fails with `source content changed`, and you must resubmit.
+Queued file and inline text submissions without a spool entry also need
+to be resubmitted.
 
 Compose stores the spool in the `gkg-data` named volume; keep that volume
 alongside Memgraph's data. For standalone `gkg serve`, the default is
