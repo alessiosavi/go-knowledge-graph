@@ -6,6 +6,7 @@ package judge
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -131,6 +132,28 @@ func (c *Client) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 		return ingest.Verdict{}, fmt.Errorf("judge: encode payload: confidence must be finite")
 	}
 	return c.verify(ctx, judgePrompt, payload)
+}
+
+// VerifyPayload sends the original v1 user message after checking its
+// encoding and stored digest.
+func (c *Client) VerifyPayload(ctx context.Context, p ingest.JudgePayload) (ingest.Verdict, error) {
+	if err := validatePayload(p); err != nil {
+		return ingest.Verdict{}, err
+	}
+	return c.verify(ctx, judgePrompt, p.Bytes)
+}
+
+func validatePayload(p ingest.JudgePayload) error {
+	in, err := ingest.DecodeJudgeInput(p.Bytes)
+	// The encoder always emits every v1 field, so equality also rejects
+	// missing fields, nulls, and alternate representations of valid values.
+	if err != nil || !bytes.Equal(ingest.CanonicalJudgeInput(in), p.Bytes) {
+		return fmt.Errorf("%w: expected canonical v1 input", ingest.ErrInvalidJudgePayload)
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(p.Bytes)) != p.InputHash {
+		return fmt.Errorf("%w: input hash mismatch", ingest.ErrInvalidJudgePayload)
+	}
+	return nil
 }
 
 // VerifyRequest checks the frozen profile against the current definitions

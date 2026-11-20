@@ -6,6 +6,7 @@ package ingest
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -129,6 +130,7 @@ type pipelineStore interface {
 	WriteFactAudit(context.Context, graph.FactAudit) error
 	SetFactJudge(context.Context, string, string, string, string, string) error
 	RejectFact(context.Context, string, string, string, string, graph.FactAudit) error
+	ApplyStoredFactVerdict(context.Context, graph.StoredFactRef, string, string, bool) (bool, error)
 	PromoteCandidate(context.Context, string, string) (bool, error)
 	SetCandidateJudge(context.Context, string, string, string) (bool, error)
 	RefuteCandidate(context.Context, string, string, graph.FactAudit) (bool, error)
@@ -610,6 +612,17 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 				for i := range facts {
 					facts[i].JudgeInput = CanonicalJudgeInput(factInputFor(doc, c, facts[i]))
 				}
+			} else if p.cfg.Judge.StoreInputs {
+				p.prepareStoredJudgeInputs(doc, c, facts)
+			}
+			// Keep the same winners and replay digest as the extraction write.
+			for _, i := range graph.FactWinnerIndices(facts) {
+				f := facts[i]
+				candidate := judgeCandidate{fact: f, chunkText: c.Text, chunkID: c.ID}
+				if f.JudgeGen != "" && len(f.JudgeInput) != 0 {
+					candidate.inputHash = fmt.Sprintf("%x", sha256.Sum256(f.JudgeInput))
+				}
+				judgeCandidates = append(judgeCandidates, candidate)
 			}
 			if err := p.store.UpsertExtractionOpts(ctx, docID, c.ID, version, ents, facts, p.writeOptions(doc)); err != nil {
 				return fail("merge", err)
@@ -630,12 +643,6 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 				if err := p.store.WriteFactAudit(ctx, a); err != nil {
 					return fail("audit", err)
 				}
-			}
-			// Judge exactly what was written: UpsertExtraction dedupes per
-			// (head, rel, tail) keeping max confidence, so re-apply that
-			// before collecting judge candidates.
-			for _, i := range graph.FactWinnerIndices(facts) {
-				judgeCandidates = append(judgeCandidates, judgeCandidate{fact: facts[i], chunkText: c.Text, chunkID: c.ID})
 			}
 		}
 		if p.writeMode.Domains {
@@ -776,6 +783,7 @@ type judgeCandidate struct {
 	fact      graph.FactUpsert
 	chunkText string
 	chunkID   string
+	inputHash string
 }
 
 // judgeName is the entity name shown to the judge: the mention text as it
@@ -797,6 +805,27 @@ func factInputFor(doc *graph.Document, chunk graph.Chunk, fact graph.FactUpsert)
 	}
 }
 
+func (p *Pipeline) prepareStoredJudgeInputs(doc *graph.Document, chunk graph.Chunk, facts []graph.FactUpsert) {
+	for i := range facts {
+		f := &facts[i]
+		var gen [16]byte
+		rand.Read(gen[:])
+		f.JudgeGen = hex.EncodeToString(gen[:])
+		f.JudgeInput = CanonicalJudgeInput(factInputFor(doc, chunk, *f))
+		if f.JudgeInput == nil {
+			slog.Warn("ingest: could not encode stored judge input",
+				"doc", doc.ID, "chunk", chunk.ID, "head", f.HeadKey, "rel", f.Rel)
+			p.countJudgeInput("encode_error")
+		}
+	}
+}
+
+func (p *Pipeline) countJudgeInput(result string) {
+	if m, ok := p.metrics.(interface{ JudgeInput(string) }); ok {
+		m.JudgeInput(result)
+	}
+}
+
 // verifyFacts runs the judge over selected facts. Failures never fail the
 // document: unverified facts remain unjudged.
 func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candidates []judgeCandidate, version string) {
@@ -807,14 +836,27 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 		if !ShouldJudge(mode, f.Confidence, p.cfg.Judge.VerifyFloor, p.cfg.Judge.SamplePct, factKey) {
 			continue
 		}
+		if p.cfg.Judge.StoreInputs && len(f.JudgeInput) == 0 {
+			continue // The input could not be encoded and was counted at write time.
+		}
 		start := time.Now()
-		// The judge compares names with the evidence sentence: send the
-		// mention text, never the key (a scoped key is "#<doc>:<name>").
-		verdict, err := p.judge.VerifyFact(ctx, factInputFor(doc, graph.Chunk{ID: cand.chunkID, Text: cand.chunkText}, f))
+		var verdict Verdict
+		var err error
+		if p.cfg.Judge.StoreInputs {
+			verdict, err = verifyStoredPayload(ctx, p.judge, JudgePayload{Bytes: f.JudgeInput, InputHash: cand.inputHash}, doc.ID)
+		} else {
+			// The judge compares the mention text with the evidence sentence.
+			verdict, err = p.judge.VerifyFact(ctx, factInputFor(doc, graph.Chunk{ID: cand.chunkID, Text: cand.chunkText}, f))
+		}
 		if p.metrics != nil {
 			p.metrics.JudgeSeconds(time.Since(start).Seconds())
 		}
 		if err != nil {
+			if p.cfg.Judge.StoreInputs && errors.Is(err, ErrInvalidJudgePayload) {
+				slog.Warn("ingest: invalid stored judge input", "doc", doc.ID, "head", f.HeadKey, "rel", f.Rel, "err", err)
+				p.countJudgeInput("invalid")
+				continue
+			}
 			slog.Warn("ingest: judge unavailable, fact left unverified",
 				"doc", doc.ID, "head", f.HeadKey, "rel", f.Rel, "err", err)
 			if p.metrics != nil {
@@ -824,6 +866,19 @@ func (p *Pipeline) verifyFacts(ctx context.Context, doc *graph.Document, candida
 		}
 		if p.metrics != nil {
 			p.metrics.JudgeVerdict(verdict.Status)
+		}
+		if p.cfg.Judge.StoreInputs {
+			ref := graph.StoredFactRef{
+				HeadKey: f.HeadKey, Rel: f.Rel, TailKey: f.TailKey, ChunkID: cand.chunkID,
+				JudgeGen: f.JudgeGen, InputHash: cand.inputHash,
+			}
+			applied, err := p.store.ApplyStoredFactVerdict(ctx, ref, verdict.Status, verdict.Reason, false)
+			if err != nil {
+				slog.Warn("ingest: could not apply stored fact verdict", "doc", doc.ID, "err", err)
+			} else if !applied {
+				slog.Info("ingest: discarded stored fact verdict", "doc", doc.ID, "chunk", cand.chunkID, "status", verdict.Status)
+			}
+			continue
 		}
 		if p.writeMode.RequireConfirmation {
 			id := graph.CandidateID(f.HeadKey, graph.SanitizeRel(f.Rel), f.TailKey, cand.chunkID)

@@ -571,6 +571,24 @@ model. Ingest continues to accept unknown keys and logs a warning for each.
 
 ### Judge backfill and audit
 
+`judge.store_inputs` defaults to `false`. Enable it on deployments with
+`GKG_JUDGE_STORE_INPUTS=true` so an older binary can ignore the setting after
+a rollback. It works with the four judge modes below and is incompatible with
+`facts.require_confirmation`.
+
+| `judge.mode` | Online verification | With `store_inputs: true` |
+| --- | --- | --- |
+| `off` | None | Keeps requests for all new typed edges |
+| `low-confidence` | Facts below `judge.verify_floor` | Keeps requests for skipped edges and failed judgments |
+| `sample` | Deterministic sample at `judge.sample_pct` | Keeps requests for skipped edges and failed judgments |
+| `all` | All facts | Keeps requests for failed judgments |
+
+The setting takes effect on newly written typed edges. To regenerate existing
+edges with the setting enabled, an explicit admin rebuild re-extracts their
+chunks and replaces the old facts and rejection audits. Pending typed edges
+have an empty verdict, a stored request, and a `done` document. Rejudge
+before-images include the stored user message when present.
+
 Judge pending fact candidates with the configured judge provider:
 
 ```sh

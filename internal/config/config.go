@@ -105,6 +105,7 @@ type ConverterConfig struct {
 // JudgeConfig configures the optional online verification judge.
 type JudgeConfig struct {
 	Mode        string  `yaml:"mode"` // off | low-confidence | sample | all
+	StoreInputs bool    `yaml:"store_inputs"`
 	VerifyFloor float64 `yaml:"verify_floor"`
 	SamplePct   float64 `yaml:"sample_pct"`
 	BaseURL     string  `yaml:"base_url"`
@@ -307,6 +308,16 @@ func Load(path string) (Config, error) {
 	mp := cfg.Converter.MaxImageMP
 	if mp <= 0 || math.IsNaN(mp) || math.IsInf(mp, 0) || mp >= float64(math.MaxInt64)/1e6 {
 		return Config{}, errors.New("config: GKG_CONVERTER_MAX_IMAGE_MP must be positive, finite and fit an int64 pixel count")
+	}
+	if cfg.Judge.StoreInputs {
+		switch cfg.Judge.Mode {
+		case "off", "low-confidence", "sample", "all":
+		default:
+			return Config{}, errors.New("judge.store_inputs needs judge.mode=off, low-confidence, sample or all")
+		}
+		if cfg.Facts.RequireConfirmation {
+			return Config{}, errors.New("judge.store_inputs is incompatible with facts.require_confirmation")
+		}
 	}
 	if cfg.Facts.RequireConfirmation && cfg.Judge.Mode != "all" {
 		return Config{}, errors.New("facts.require_confirmation needs judge.mode=all")
