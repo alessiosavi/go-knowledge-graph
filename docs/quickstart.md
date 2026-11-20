@@ -356,6 +356,16 @@ without them search is text-only. The judge verifies facts after extraction
 against their evidence sentence and removes refuted ones with an audit
 trail.
 
+The judge honours `Retry-After` on retryable responses and uses jittered
+backoff when the header is missing or invalid. It allows up to six retries
+and caps total retry waits at three minutes per fact. Each provider attempt
+can take up to the 120-second HTTP timeout, so one fact can take well over
+three minutes under sustained HTTP 429 responses. `gkg judge backfill` judges
+only fact candidates, which exist only with `GKG_FACTS_REQUIRE_CONFIRMATION=true`
+(and therefore `GKG_JUDGE_MODE=all`); facts the online judge skips in the
+`off`, `low-confidence` or `sample` modes have no backfill path. Judge budgets count every
+provider attempt, including retries.
+
 `GKG_FACTS_REQUIRE_CONFIRMATION=true` (`facts.require_confirmation`, default
 `false`) requires `GKG_JUDGE_MODE=all`; other judge modes fail config loading
 with `facts.require_confirmation needs judge.mode=all`. Once schema v4 writes

@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -25,6 +27,11 @@ import (
 
 // PromptVersion must be bumped whenever judgePrompt changes.
 const PromptVersion = "1"
+
+const (
+	maxRetries   = 6
+	maxRetryWait = 180 * time.Second
+)
 
 const judgePrompt = `You verify one extracted knowledge-graph fact against its source evidence.
 Answer with a single JSON object:
@@ -42,6 +49,9 @@ type Client struct {
 	model            string
 	client           *http.Client
 	backoff          []time.Duration
+	now              func() time.Time
+	after            func(time.Duration) <-chan time.Time
+	jitter           func(time.Duration) time.Duration
 	attemptGate      func() error
 	providerRedactor *strings.Replacer
 }
@@ -61,13 +71,21 @@ func NewClient(cfg config.Config) *Client {
 		apiKey:           cfg.Judge.APIKey,
 		model:            model,
 		client:           &http.Client{Timeout: 120 * time.Second},
-		backoff:          []time.Duration{time.Second, 4 * time.Second},
+		now:              time.Now,
+		after:            time.After,
+		jitter:           func(limit time.Duration) time.Duration { return rand.N(limit + time.Nanosecond) },
 		providerRedactor: newProviderRedactor(base, cfg.Judge.APIKey),
 	}
 }
 
-// SetBackoff overrides the retry delays (used by tests).
-func (c *Client) SetBackoff(backoff []time.Duration) { c.backoff = backoff }
+// SetBackoff replaces the retry policy with fixed delays (used by tests).
+// An empty or nil list disables retries. Configure it before verification.
+func (c *Client) SetBackoff(backoff []time.Duration) {
+	if backoff == nil {
+		backoff = []time.Duration{}
+	}
+	c.backoff = backoff
+}
 
 // SetAttemptGate installs a check before every provider attempt, including retries.
 // Configure it before verification; a non-nil error aborts without that attempt.
@@ -139,15 +157,13 @@ func (c *Client) verify(ctx context.Context, prompt string, payload []byte) (ing
 		return ingest.Verdict{}, fmt.Errorf("judge: encode request: %w", err)
 	}
 
+	retries := maxRetries
+	if c.backoff != nil {
+		retries = len(c.backoff)
+	}
 	var lastErr error
-	for attempt := 0; attempt <= len(c.backoff); attempt++ {
-		if attempt > 0 {
-			select {
-			case <-time.After(c.backoff[attempt-1]):
-			case <-ctx.Done():
-				return ingest.Verdict{}, ctx.Err()
-			}
-		}
+	var waited time.Duration
+	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return ingest.Verdict{}, err
 		}
@@ -156,25 +172,63 @@ func (c *Client) verify(ctx context.Context, prompt string, payload []byte) (ing
 				return ingest.Verdict{}, err
 			}
 		}
-		verdict, retryable, err := c.doVerify(ctx, body)
+		verdict, retryable, retryAfter, err := c.doVerify(ctx, body)
 		if err == nil {
 			return verdict, nil
 		}
-		lastErr = err
 		if !retryable {
 			return ingest.Verdict{}, err
+		}
+		lastErr = err
+		if attempt == retries {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			return ingest.Verdict{}, err
+		}
+		delay := c.retryDelay(attempt, retryAfter)
+		if c.backoff == nil {
+			if delay > maxRetryWait-waited {
+				break
+			}
+			waited += delay
+		}
+		select {
+		case <-c.after(delay):
+		case <-ctx.Done():
+			return ingest.Verdict{}, ctx.Err()
 		}
 	}
 	return ingest.Verdict{}, fmt.Errorf("judge: retries exhausted: %w", lastErr)
 }
 
-func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, bool, error) {
+func (c *Client) retryDelay(retryIndex int, retryAfter string) time.Duration {
+	if c.backoff != nil {
+		return c.backoff[retryIndex]
+	}
+	if value := strings.TrimSpace(retryAfter); value != "" {
+		if strings.Trim(value, "0123456789") == "" {
+			seconds, err := strconv.ParseUint(value, 10, 64)
+			// Clamp before converting seconds to a time.Duration to avoid overflow.
+			if err != nil || seconds > 60 {
+				return time.Minute
+			}
+			return max(time.Second, time.Duration(seconds)*time.Second)
+		}
+		if date, err := http.ParseTime(value); err == nil {
+			return min(max(date.Sub(c.now()), time.Second), time.Minute)
+		}
+	}
+	return c.jitter(min(30*time.Second, time.Second<<retryIndex))
+}
+
+func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, bool, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		if isProviderURLParseError(err) {
-			return ingest.Verdict{}, false, fmt.Errorf("judge: provider request could not be built: %w", errInvalidProviderURL)
+			return ingest.Verdict{}, false, "", fmt.Errorf("judge: provider request could not be built: %w", errInvalidProviderURL)
 		}
-		return ingest.Verdict{}, false, errors.New("judge: provider request could not be built; check the judge base URL")
+		return ingest.Verdict{}, false, "", errors.New("judge: provider request could not be built; check the judge base URL")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
@@ -183,51 +237,51 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 	resp, err := c.client.Do(req)
 	if err != nil {
 		diagnostic := providerIOError("judge: provider request failed", err)
-		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), diagnostic
+		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), "", diagnostic
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
 	if err != nil {
 		diagnostic := providerIOError("judge: read response failed", err)
-		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), diagnostic
+		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), resp.Header.Get("Retry-After"), diagnostic
 	}
 	if len(data) > 4<<20 {
-		return ingest.Verdict{}, false, fmt.Errorf("judge: response exceeds the %d MiB cap", 4)
+		return ingest.Verdict{}, false, "", fmt.Errorf("judge: response exceeds the %d MiB cap", 4)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return ingest.Verdict{}, true, fmt.Errorf("judge: HTTP %d", resp.StatusCode)
+		return ingest.Verdict{}, true, resp.Header.Get("Retry-After"), fmt.Errorf("judge: HTTP %d", resp.StatusCode)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Redact before taking a preview so it cannot include a clipped credential.
 		preview := trimPreview(c.providerRedactor.Replace(string(data)))
-		return ingest.Verdict{}, false, fmt.Errorf("judge: HTTP %d: %s", resp.StatusCode, preview)
+		return ingest.Verdict{}, false, "", fmt.Errorf("judge: HTTP %d: %s", resp.StatusCode, preview)
 	}
 	var wire judgeWireResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
-		return ingest.Verdict{}, false, fmt.Errorf("judge: decode chat response: %s", c.providerRedactor.Replace(err.Error()))
+		return ingest.Verdict{}, false, "", fmt.Errorf("judge: decode chat response: %s", c.providerRedactor.Replace(err.Error()))
 	}
 	if wire.Error != nil {
-		return ingest.Verdict{}, false, fmt.Errorf("judge: provider error: %s", c.providerRedactor.Replace(wire.Error.Message))
+		return ingest.Verdict{}, false, "", fmt.Errorf("judge: provider error: %s", c.providerRedactor.Replace(wire.Error.Message))
 	}
 	if len(wire.Choices) == 0 {
-		return ingest.Verdict{}, false, fmt.Errorf("judge: response without choices")
+		return ingest.Verdict{}, false, "", fmt.Errorf("judge: response without choices")
 	}
 	var vp verdictPayload
 	content := wire.Choices[0].Message.Content
 	if err := json.Unmarshal([]byte(content), &vp); err != nil {
 		preview := trimPreview(c.providerRedactor.Replace(content))
-		return ingest.Verdict{}, false, fmt.Errorf("judge: decode verdict: %s (content preview: %q)", c.providerRedactor.Replace(err.Error()), preview)
+		return ingest.Verdict{}, false, "", fmt.Errorf("judge: decode verdict: %s (content preview: %q)", c.providerRedactor.Replace(err.Error()), preview)
 	}
 	switch vp.Verdict {
 	case "confirmed", "refuted", "unclear":
 	default:
-		return ingest.Verdict{}, false, fmt.Errorf("judge: invalid verdict status %q", c.providerRedactor.Replace(vp.Verdict))
+		return ingest.Verdict{}, false, "", fmt.Errorf("judge: invalid verdict status %q", c.providerRedactor.Replace(vp.Verdict))
 	}
 	confidence := 0.5
 	if vp.Confidence != nil {
 		confidence = min(max(*vp.Confidence, 0), 1)
 	}
-	return ingest.Verdict{Status: vp.Verdict, Confidence: confidence, Reason: vp.Reason}, false, nil
+	return ingest.Verdict{Status: vp.Verdict, Confidence: confidence, Reason: vp.Reason}, false, "", nil
 }
 
 var errInvalidProviderURL = errors.New("provider URL or redirect target is invalid")
