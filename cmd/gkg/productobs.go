@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 
@@ -25,7 +24,7 @@ const (
 	productsEmitUsage    = "usage: gkg products emit -registry R.json [-release CANDIDATES.json] [-out PATH] FILE.jsonl"
 	releaseUsage         = "usage: gkg products release {create|activate|list}"
 	releaseCreateUsage   = "usage: gkg products release create -registry REV -candidates FILE -store-domain S=D [-store-domain S=D …] -approved-by NAME -pin name=FILE [-pin name=FILE …] [-id ID]"
-	releaseActivateUsage = "usage: gkg products release activate ID"
+	releaseActivateUsage = "usage: gkg products release activate ID [-materialize STORE=SEQ:FILE …]"
 	releaseListUsage     = "usage: gkg products release list"
 )
 
@@ -68,14 +67,16 @@ func runFeatures(args []string, stdout, stderr io.Writer) int {
 func runProducts(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help"):
-		fmt.Fprintln(stdout, productsEmitUsage)
-		fmt.Fprintln(stdout, releaseUsage)
+		printProductsUsage(stdout)
 		return 0
 	case len(args) > 0 && args[0] == "release":
 		return runProductRelease(args[1:], stdout, stderr)
+	case len(args) > 0 && args[0] == "import":
+		return runProductImport(args[1:], stdout, stderr)
+	case len(args) > 0 && (args[0] == "delete-store" || args[0] == "unbind"):
+		return runProductStoreAdmin(args, stdout, stderr)
 	case len(args) == 0 || args[0] != "emit":
-		fmt.Fprintln(stderr, productsEmitUsage)
-		fmt.Fprintln(stderr, releaseUsage)
+		printProductsUsage(stderr)
 		return 2
 	}
 	fs := flag.NewFlagSet("products emit", flag.ContinueOnError)
@@ -143,28 +144,7 @@ func runProductRelease(args []string, stdout, stderr io.Writer) int {
 	case "create":
 		return runProductReleaseCreate(args[1:], stdout, stderr)
 	case "activate":
-		fs := productFlags("products release activate", releaseActivateUsage, stderr)
-		if slices.ContainsFunc(args[1:], func(arg string) bool {
-			name, _, _ := strings.Cut(arg, "=")
-			return name == "-materialize" || name == "--materialize"
-		}) {
-			fmt.Fprintln(stderr, "gkg products release activate: -materialize is not yet supported")
-			return 2
-		}
-		if err := fs.Parse(args[1:]); err != nil {
-			return productFlagExit(err)
-		}
-		if fs.NArg() != 1 || fs.Arg(0) == "" {
-			fs.Usage()
-			return 2
-		}
-		return withProductStore(fs.Name(), stderr, func(ctx context.Context, st *graph.Store) error {
-			if err := st.ActivateProductRelease(ctx, fs.Arg(0)); err != nil {
-				return err
-			}
-			_, err := fmt.Fprintf(stdout, "activated id=%s\n", fs.Arg(0))
-			return err
-		})
+		return runProductReleaseActivate(args[1:], stdout, stderr)
 	case "list":
 		fs := productFlags("products release list", releaseListUsage, stderr)
 		if err := fs.Parse(args[1:]); err != nil {
@@ -281,16 +261,20 @@ func productFlagExit(err error) int {
 func withProductStore(command string, stderr io.Writer, run func(context.Context, *graph.Store) error) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	return productCommandError(command, stderr, runWithProductStore(ctx, run))
+}
+
+func runWithProductStore(ctx context.Context, run func(context.Context, *graph.Store) error) error {
 	cfg, err := loadConfig()
 	if err != nil {
-		return productCommandError(command, stderr, err)
+		return err
 	}
 	st, err := graph.Open(ctx, cfg)
 	if err != nil {
-		return productCommandError(command, stderr, err)
+		return err
 	}
 	defer st.Close(context.WithoutCancel(ctx))
-	return productCommandError(command, stderr, run(ctx, st))
+	return run(ctx, st)
 }
 
 func productCommandError(command string, stderr io.Writer, err error) int {
@@ -353,36 +337,51 @@ func emitProducts(stdout io.Writer, registryPath, releasePath, recordsPath, outP
 }
 
 func writeProductObsFile(path string, inputs []string, emit func(io.Writer) error) error {
+	temp, err := stageProductOutput("-out", path, inputs)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp.Name())
+	return publishProductOutput(temp, path, emit)
+}
+
+func stageProductOutput(option, path string, inputs []string) (*os.File, error) {
 	existing, err := os.Lstat(path)
 	if err == nil {
 		if !existing.Mode().IsRegular() {
-			return errors.New("-out must name a regular file")
+			return nil, fmt.Errorf("%s must name a regular file", option)
 		}
 		for _, input := range inputs {
 			info, err := os.Stat(input)
 			if err != nil {
-				return fmt.Errorf("check input path for -out: %w", err)
+				return nil, fmt.Errorf("check input path for %s: %w", option, err)
 			}
 			if os.SameFile(existing, info) {
-				return errors.New("-out must differ from every input file")
+				return nil, fmt.Errorf("%s must differ from every input file", option)
 			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("check -out: %w", err)
+		return nil, fmt.Errorf("check %s: %w", option, err)
 	}
 
 	temp, err := os.CreateTemp(filepath.Dir(path), ".gkg-product-obs-*")
 	if err != nil {
-		return fmt.Errorf("stage output: %w", err)
+		return nil, fmt.Errorf("stage %s: %w", option, err)
 	}
-	defer os.Remove(temp.Name())
-	writeErr := emit(temp)
-	closeErr := temp.Close()
-	if writeErr != nil {
-		return writeErr
+	return temp, nil
+}
+
+func publishProductOutput(temp *os.File, path string, emit func(io.Writer) error) error {
+	if err := emit(temp); err != nil {
+		_ = temp.Close()
+		return err
 	}
-	if closeErr != nil {
-		return fmt.Errorf("close output: %w", closeErr)
+	return finishProductOutput(temp, path)
+}
+
+func finishProductOutput(temp *os.File, path string) error {
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close output: %w", err)
 	}
 	if err := os.Rename(temp.Name(), path); err != nil {
 		return fmt.Errorf("publish output: %w", err)

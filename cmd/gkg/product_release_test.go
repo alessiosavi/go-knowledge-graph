@@ -111,8 +111,8 @@ func productTestDB(t *testing.T) (*graph.Store, neo4j.Driver, func(string, map[s
 }
 
 func TestProductReleaseUsage(t *testing.T) {
-	productCLI(t, 2, "not yet supported", "products", "release", "activate", "example-release", "-materialize", "records.jsonl")
-	productCLI(t, 2, "not yet supported", "products", "release", "activate", "-materialize=records.jsonl", "example-release")
+	productCLI(t, 2, "expected STORE=SEQ:FILE", "products", "release", "activate", "example-release", "-materialize", "records.jsonl")
+	productCLI(t, 2, "expected STORE=SEQ:FILE", "products", "release", "activate", "-materialize=records.jsonl", "example-release")
 	productCLI(t, 2, "usage:", "features", "import")
 	productCLI(t, 2, "usage:", "products", "release", "create")
 	productCLI(t, 0, "release list", "products", "release", "list", "-h")
