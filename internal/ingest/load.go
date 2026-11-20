@@ -15,6 +15,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/convert"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/textclean"
 )
 
 // zipMagic is the local-file magic shared by docx/xlsx/pptx/odt
@@ -27,7 +28,7 @@ var zipMagic = []byte("PK\x03\x04")
 //     over URL must still decode as PDF);
 //  2. an HTML content type or an `<html`/doctype sniff goes through
 //     readability;
-//  3. text/*, markdown and unknown-but-UTF-8 bodies pass through unchanged
+//  3. text/*, markdown and unknown-but-UTF-8 bodies are read as text
 //     (markdown headings stay for the chunker);
 //  4. anything else is an undecodable binary.
 func Decode(body []byte, contentType string, src *url.URL) (Loaded, error) {
@@ -42,7 +43,7 @@ func Decode(body []byte, contentType string, src *url.URL) (Loaded, error) {
 		if err != nil {
 			return Loaded{}, err
 		}
-		return withLoaderTitle(text, title, titleSourcePDF), nil
+		return loadedText(text, title, titleSourcePDF), nil
 	}
 
 	ct := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
@@ -52,21 +53,26 @@ func Decode(body []byte, contentType string, src *url.URL) (Loaded, error) {
 		if text == "" {
 			return Loaded{}, errors.New("ingest: decode html: no text content")
 		}
-		return withLoaderTitle(text, title, titleSourceHTML), nil
+		return loadedText(text, title, titleSourceHTML), nil
 	}
 
 	if strings.HasPrefix(ct, "text/") || ct == "application/markdown" || utf8.Valid(body) {
-		text := string(body)
-		return Loaded{Text: text, Hash: sha256Hex(text)}, nil
+		return loadedText(string(body), "", ""), nil
 	}
 	return Loaded{}, fmt.Errorf("ingest: decode: undecodable binary content (content-type %q)", contentType)
 }
 
-func withLoaderTitle(text, title, origin string) Loaded {
+// loadedText cleans every decoded input before hashing it or handing it to
+// the chunker. Initial submissions and source reloads share this path.
+func loadedText(text, title, origin string) Loaded {
 	if title == "" {
 		origin = ""
 	}
-	return Loaded{Text: text, Title: title, TitleSource: origin, Hash: sha256Hex(text)}
+	text, stats := textclean.Clean(text)
+	return Loaded{
+		Text: text, Title: title, TitleSource: origin, Hash: sha256Hex(text),
+		TextCleanVersion: textclean.Version, TextClean: stats,
+	}
 }
 
 // looksLikeHTML sniffs a leading doctype or <html tag (with a tag
@@ -96,10 +102,9 @@ func looksLikeHTML(body []byte) bool {
 // URL inputs fetch through the SSRF-guarded fetcher; field precedence
 // mirrors resolveIdentity (URL first, then bytes, then inline text).
 //
-// A nil conv keeps today's behavior byte for byte. With a converter
-// attached, rich binary formats (PDF, zip-based Office documents, images,
-// and any binary Decode would reject) convert to markdown first and the
-// markdown enters the pipeline unchanged — no silent fallback on failure.
+// With a converter attached, rich binary formats (PDF, zip-based Office
+// documents, images, and any binary Decode would reject) convert to markdown
+// first. Conversion errors are returned to the caller.
 func DefaultLoader(f *Fetcher, conv convert.Converter) TextLoader {
 	return func(ctx context.Context, in Input) (Loaded, error) {
 		kind := in.Kind
@@ -157,7 +162,7 @@ func DefaultLoader(f *Fetcher, conv convert.Converter) TextLoader {
 			if in.Text == "" {
 				return Loaded{}, fmt.Errorf("ingest: cannot reload text input %q after restart; resubmit the content", in.Source)
 			}
-			return withLoaderTitle(in.Text, in.Title, titleSourceCaller), nil
+			return loadedText(in.Text, in.Title, titleSourceCaller), nil
 		default:
 			return Loaded{}, fmt.Errorf("ingest: unknown input kind %q", kind)
 		}
@@ -213,20 +218,20 @@ func prepareSubmission(in Input, loaded *Loaded) (graph.DocumentInput, error) {
 	loaded.Title, loaded.TitleSource = title, titleSource
 	return graph.DocumentInput{
 		Kind: kind, Source: source, FinalURL: finalURL, Title: title, TitleSource: titleSource, Hash: hash, Labels: in.Labels,
+		TextCleanVersion: loaded.TextCleanVersion, TextClean: loaded.TextClean,
 	}, nil
 }
 
 // decodeBody decodes a fetched or submitted body: with a converter
-// attached, rich binary formats convert to markdown first (the markdown's
-// sha256 is the content hash); everything else keeps the existing Decode
-// dispatch byte for byte.
+// attached, rich binary formats convert to markdown before text cleaning.
+// Other bodies go through Decode.
 func decodeBody(ctx context.Context, conv convert.Converter, body []byte, contentType string, src *url.URL, kind, source string) (Loaded, error) {
 	if conv != nil && converterRoute(body, contentType) {
 		md, err := conv.Convert(ctx, body, converterFilename(kind, source, contentType, body), converterContentType(kind, contentType, body))
 		if err != nil {
 			return Loaded{}, fmt.Errorf("ingest: convert: %w", err)
 		}
-		return Loaded{Text: md, Hash: sha256Hex(md)}, nil
+		return loadedText(md, "", ""), nil
 	}
 	return Decode(body, contentType, src)
 }

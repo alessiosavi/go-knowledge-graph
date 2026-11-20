@@ -3,6 +3,8 @@ package graph
 import (
 	"errors"
 	"time"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/textclean"
 )
 
 // ErrNotFound reports a missing node or document.
@@ -87,6 +89,9 @@ type DocumentInput struct {
 	Hash        string
 	Labels      string
 	Force       bool // reset an existing live version without changing its version order
+
+	TextCleanVersion int // Zero when the input has no cleaning metadata.
+	TextClean        textclean.Stats
 }
 
 // UpsertResult tells the pipeline what the upsert did. Noop means the same

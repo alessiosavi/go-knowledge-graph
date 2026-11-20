@@ -46,6 +46,7 @@ func (s *Store) UpsertDocument(ctx context.Context, in DocumentInput) (UpsertRes
 		return UpsertResult{}, err
 	}
 	id := DocumentID(in.Kind, in.Source, in.Hash)
+	textClean := textCleanProperties(in)
 
 	for _, d := range live {
 		if d.Hash == in.Hash && d.Status != StatusFailed {
@@ -55,10 +56,11 @@ func (s *Store) UpsertDocument(ctx context.Context, in DocumentInput) (UpsertRes
 				err := s.runWrite(ctx, `
 MATCH (d:Document {id: $id})
 SET d.status = $status, d.error = '', d.labels = $labels, d.title = $title,
-    d.title_source = $title_source, d.final_url = $final, d.updated_at = $now`, map[string]any{
+    d.title_source = $title_source, d.final_url = $final, d.updated_at = $now
+SET d += $text_clean`, map[string]any{
 					"id": d.ID, "status": string(StatusReceived), "labels": in.Labels,
 					"title": in.Title, "title_source": in.TitleSource, "final": in.FinalURL,
-					"now": time.Now().UTC().Format(timeLayout),
+					"now": time.Now().UTC().Format(timeLayout), "text_clean": textClean,
 				})
 				return UpsertResult{ID: d.ID}, err
 			}
@@ -86,18 +88,35 @@ SET d.source_kind = $kind, d.source = $source, d.final_url = $final, d.title = $
     d.hash = $hash, d.labels = $labels, d.status = $status, d.error = '', d.updated_at = $now, d.version_at = $now,
     d.supersedes = coalesce(d.supersedes, ''),
     d.domain = CASE WHEN $domain <> '' THEN $domain ELSE d.domain END,
-    d.domain_tok = CASE WHEN $domain <> '' THEN $domain_tok ELSE d.domain_tok END`,
+    d.domain_tok = CASE WHEN $domain <> '' THEN $domain_tok ELSE d.domain_tok END
+SET d += $text_clean`,
 		map[string]any{
 			"id": id, "kind": in.Kind, "source": in.Source, "final": in.FinalURL,
 			"title": in.Title, "title_source": in.TitleSource, "hash": in.Hash, "labels": in.Labels,
 			"status": string(StatusReceived),
 			"domain": in.Domain, "domain_tok": domainTokenOrNil(in.Domain),
-			"now": time.Now().UTC().Format(timeLayout),
+			"now": time.Now().UTC().Format(timeLayout), "text_clean": textClean,
 		})
 	if err != nil {
 		return UpsertResult{}, fmt.Errorf("graph: upsert document: %w", err)
 	}
 	return UpsertResult{ID: id, PreviousID: prevID}, nil
+}
+
+func textCleanProperties(in DocumentInput) map[string]any {
+	if in.TextCleanVersion == 0 {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"text_clean_version":  in.TextCleanVersion,
+		"text_invalid_utf8":   in.TextClean.InvalidUTF8,
+		"text_controls":       in.TextClean.Controls,
+		"text_bidi_controls":  in.TextClean.BidiControls,
+		"text_glyph_lines":    in.TextClean.GlyphLines,
+		"text_leader_runs":    in.TextClean.LeaderRuns,
+		"text_fffd_removed":   in.TextClean.FFFDRemoved,
+		"text_fffd_remaining": in.TextClean.FFFDRemaining,
+	}
 }
 
 // liveDoc is one non-superseded document of an identity.

@@ -199,6 +199,13 @@ the starting values and uses `sample.jsonl`); see USAGE.md for re-tuning.
 Re-ingesting unchanged content is a no-op (`"noop":true`); changed content
 creates a new version and supersedes the old one.
 
+gkg cleans extracted text before hashing and chunking, including long dot
+leaders and word order around certain PDF bullet glyphs. Resubmit the
+original input under the same source identity to refresh older chunks.
+A queued URL from before text cleaning may fail with
+`source content changed` if its spool entry is missing. See the
+[ingest guide](../USAGE.md#1-ingest-knowledge) for resubmission details.
+
 ### Rebuild existing documents (loopback only)
 
 Schema v4 assigns domains and retains name profiles before clearing derived

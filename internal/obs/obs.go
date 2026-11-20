@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
+	"github.com/alessiosavi/go-knowledge-graph/internal/textclean"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -30,6 +31,7 @@ type Metrics struct {
 	factsDropped    prometheus.Counter
 	hygieneDropped  *prometheus.CounterVec
 	hygieneRenamed  prometheus.Counter
+	textClean       *prometheus.CounterVec
 	judgeVerdicts   *prometheus.CounterVec
 	judgeFailures   prometheus.Counter
 	judgeCache      *prometheus.CounterVec
@@ -72,6 +74,9 @@ func New() *Metrics {
 		hygieneRenamed: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "gkg_hygiene_renamed_total", Help: "Entity mentions renamed by hygiene.",
 		}),
+		textClean: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gkg_text_clean_total", Help: "Text cleaning counts by step across admitted documents.",
+		}, []string{"step"}),
 		judgeVerdicts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "judge_verdicts_total",
 			Help: "Judge verdicts by status.",
@@ -112,7 +117,7 @@ func New() *Metrics {
 		}),
 	}
 	reg.MustRegister(m.documents, m.chunks, m.entities, m.facts, m.factsDropped,
-		m.hygieneDropped, m.hygieneRenamed, m.judgeVerdicts, m.judgeFailures, m.judgeCache, m.judgeInput, m.extractorErrors, m.extractSeconds, m.judgeSeconds,
+		m.hygieneDropped, m.hygieneRenamed, m.textClean, m.judgeVerdicts, m.judgeFailures, m.judgeCache, m.judgeInput, m.extractorErrors, m.extractSeconds, m.judgeSeconds,
 		m.requestDuration, m.writeLockWait)
 	return m
 }
@@ -168,6 +173,17 @@ func (m *Metrics) HygieneRenamed(n int) {
 	if n > 0 {
 		m.hygieneRenamed.Add(float64(n))
 	}
+}
+
+// TextClean adds the cleaning counts from one admitted document.
+func (m *Metrics) TextClean(stats textclean.Stats) {
+	m.textClean.WithLabelValues("invalid_utf8").Add(float64(stats.InvalidUTF8))
+	m.textClean.WithLabelValues("controls").Add(float64(stats.Controls))
+	m.textClean.WithLabelValues("bidi_controls").Add(float64(stats.BidiControls))
+	m.textClean.WithLabelValues("glyph_lines").Add(float64(stats.GlyphLines))
+	m.textClean.WithLabelValues("leader_runs").Add(float64(stats.LeaderRuns))
+	m.textClean.WithLabelValues("fffd_removed").Add(float64(stats.FFFDRemoved))
+	m.textClean.WithLabelValues("fffd_remaining").Add(float64(stats.FFFDRemaining))
 }
 
 // JudgeVerdict counts one verdict by status.
