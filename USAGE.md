@@ -1029,6 +1029,30 @@ scope returns not found.
 scope to all questions, including gold resolution and null checks. Without
 `--domain`, each question's optional `domain` is used.
 
+## Product feature observations
+
+```sh
+gkg features check R.json
+gkg products emit -registry R.json records.jsonl > record-obs.jsonl
+gkg products emit -registry R.json -release CANDIDATES.json -out released.jsonl records.jsonl
+```
+
+`features check` validates the JSON registry against `gkg-features/v1`.
+On success, it prints the SHA-256 of the registry file bytes and the counts
+of stores, features and mapped keys. It exits 0 for a valid registry, 1 for
+a read or validation error, and 2 for incorrect usage.
+
+`products emit` converts A1 product-envelope JSONL to canonical
+`gkg-record-obs/v1` JSONL using the records file and the registry. Product
+lines omit the Part A audit fields `partition` and `page_present`.
+
+`-release` accepts a candidates file with `registry_sha256` and `keys`
+containing `store`, `feature` and `source_key` triples. Conflicts are
+calculated across all mapped aliases before the projection. Every product
+still gets a product record, including products with zero emitted
+observations. Use `-out PATH` for an atomically published file with mode
+`0600`. Both commands run offline.
+
 ## Domain administration
 
 Schema v4 domain mutations run inside `gkg serve` through loopback-only admin
