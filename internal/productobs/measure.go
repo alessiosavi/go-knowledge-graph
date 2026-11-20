@@ -26,6 +26,7 @@ type TypedValue struct {
 
 type measure struct {
 	canonical string
+	aliases   map[string]string
 	factors   map[string]decimal
 	exact     *regexp.Regexp
 	dashRange *regexp.Regexp
@@ -58,7 +59,7 @@ func newMeasure(canonical string, aliases map[string]string) (*measure, error) {
 	if len(aliases) == 0 {
 		return nil, errors.New("expected unit aliases")
 	}
-	m := &measure{canonical: canonical, factors: make(map[string]decimal, len(aliases))}
+	m := &measure{canonical: canonical, aliases: aliases, factors: make(map[string]decimal, len(aliases))}
 	scale := temperatureScale(canonical)
 	units := make([]string, 0, len(aliases))
 	for rawUnit, factor := range aliases {

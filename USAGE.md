@@ -1053,6 +1053,53 @@ still gets a product record, including products with zero emitted
 observations. Use `-out PATH` for an atomically published file with mode
 `0600`. Both commands run offline.
 
+### Product registries and releases
+
+Run the graph-backed commands against the configured Memgraph after
+`gkg migrate -schema-only` or a successful `gkg serve` startup.
+
+```sh
+gkg features import R.json
+gkg products release create -registry REV -candidates release-candidates.json \
+  -store-domain example.test=example -approved-by owner \
+  -pin R.json=R.json -pin score.json=score.json -pin report.json=report.json \
+  -pin freeze.json=freeze.json -pin rf_kit.py=rf_kit.py \
+  -pin E2=e2-raw.jsonl -pin record-obs.jsonl=record-obs.jsonl
+gkg products release list
+gkg products release activate ID
+```
+
+Import prints the registry revision, the first 16 hex characters of the
+SHA-256 of the registry file. Re-importing those bytes prints `unchanged`.
+A reused feature ID must retain its definition, kind, cardinality, canonical
+unit, aliases and separators for shared mapped store keys across all
+historical revisions. Display names can change.
+
+Release create requires a `-pin` for each of `R.json`, `rf_kit.py`, `score.json`,
+`report.json`, `freeze.json`, `E2` and `record-obs.jsonl`. Missing pins cause
+exit 2 and the usage message names them. The candidates must name the imported
+registry digest and contain only mapped triples. A successful create prints
+the release ID and manifest digest.
+
+Use a repeatable `-store-domain` to bind exactly the stores in the released
+triples to existing domains. An extra binding causes exit 5 without writing
+a release or any bindings. Each binding is immutable and every domain operation
+touching the domain must be completed. Omit `-id` to derive a stable ID from
+the inputs. Repeating the same create returns the original manifest.
+
+`score.json` and `report.json` pins must reference the registry and candidates
+digests. The report must have `release_allowed: true` and
+`owner_decision_required: false`. The `freeze.json` pin must reference the
+registry digest and matching `rf_kit.py` and `E2` pins. Additional pin names
+record the SHA-256 of the named file.
+
+`release list` prints JSON with each release's ID, state, registry revision,
+approver, approval time and stores. Activating a created or retired release
+retires the previous active release and immediately removes edges outside the
+new triples or registry revision. These commands exit 0 on success, 1 on
+runtime failure, 2 on incorrect usage and 5 on data rejection.
+`-materialize` currently returns exit 2.
+
 ## Domain administration
 
 Schema v4 domain mutations run inside `gkg serve` through loopback-only admin

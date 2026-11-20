@@ -787,8 +787,11 @@ commands:
   eval-sample -from FILE.jsonl -domain SLUG -out FILE   build a replay sample from external text
   preset check FILE [-stoplist FILE]  validate a label and hygiene preset
   features check R.json  validate a product feature registry and print its digest and counts
+  features import R.json  import a validated registry revision into Memgraph
   products emit -registry R.json [-release FILE] [-out PATH] FILE.jsonl
-                       emit canonical product observations
+      emit canonical product observations
+  products release create|activate|list
+      manage product releases in Memgraph
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
   domain    list, inspect, evaluate and administer domains through serve
   judge     backfill candidates or stored typed edges, audit facts, or evaluate judge v2

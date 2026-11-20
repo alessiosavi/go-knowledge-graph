@@ -6,6 +6,7 @@ import (
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -28,9 +29,50 @@ type Registry struct {
 }
 
 type feature struct {
+	name        string
+	definition  string
 	kind        string
 	cardinality string
 	measure     *measure
+}
+
+// FeatureDefinition is the metadata stored on each graph feature revision.
+type FeatureDefinition struct {
+	ID, Name, Definition, Kind, Cardinality, CanonicalUnit string
+}
+
+// FeatureDefinitions returns the metadata in feature ID order.
+func (r *Registry) FeatureDefinitions() []FeatureDefinition {
+	definitions := make([]FeatureDefinition, 0, len(r.features))
+	for _, id := range slices.Sorted(maps.Keys(r.features)) {
+		f := r.features[id]
+		definition := FeatureDefinition{
+			ID: id, Name: f.name, Definition: f.definition, Kind: f.kind, Cardinality: f.cardinality,
+		}
+		if f.measure != nil {
+			definition.CanonicalUnit = f.measure.canonical
+		}
+		definitions = append(definitions, definition)
+	}
+	return definitions
+}
+
+// MappingSemanticChange reports alias or separator changes for a feature
+// shared by two registry revisions. A key is compared when both revisions
+// map that exact store and source key to the same feature.
+func (r *Registry) MappingSemanticChange(previous *Registry, id string) string {
+	current, old := r.features[id], previous.features[id]
+	if current.measure != nil && old.measure != nil && !maps.Equal(current.measure.aliases, old.measure.aliases) {
+		return "unit aliases"
+	}
+	for store, keys := range r.stores {
+		for key, m := range keys {
+			if prior, ok := previous.stores[store][key]; ok && m.feature == id && prior.feature == id && m.separator != prior.separator {
+				return "separator"
+			}
+		}
+	}
+	return ""
 }
 
 type mapping struct {
@@ -139,6 +181,8 @@ func parseFeature(raw jsontext.Value) (string, feature, error) {
 		}
 	}
 	id, _ := readString(obj["id"])
+	f.name, _ = readString(obj["name"])
+	f.definition, _ = readString(obj["definition"])
 	f.kind, _ = readString(obj["kind"])
 	switch f.kind {
 	case "enum", "code", "text", "measure":
