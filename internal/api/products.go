@@ -73,8 +73,6 @@ func writeProductReadError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusBadRequest, "not_numeric", err.Error())
 	case errors.Is(err, graph.ErrProductCursor):
 		writeError(w, http.StatusBadRequest, "stale_cursor", err.Error())
-	case errors.Is(err, graph.ErrNotFound):
-		writeError(w, http.StatusNotFound, "not_found", "no such product")
 	default:
 		writeReadError(w, r.Context(), err, "read products")
 	}

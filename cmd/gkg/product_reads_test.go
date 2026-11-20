@@ -104,6 +104,14 @@ func TestProductReadPaths(t *testing.T) {
 		}
 		return readProductJSON(t, r.Body.Bytes())
 	}
+	assertProductNotFound := func(t *testing.T, path string) {
+		t.Helper()
+		out := rest(t, http.MethodGet, path, "", http.StatusNotFound)
+		detail, _ := out["detail"].(string)
+		if out["error"] != "store_error" || detail == "" {
+			t.Fatalf("GET %s: got %v, want store_error and a nonempty detail", path, out)
+		}
+	}
 	search := func(t *testing.T, body string) productReadJSON {
 		t.Helper()
 		return rest(t, http.MethodPost, "/v1/products/search", body, 200)
@@ -240,8 +248,8 @@ func TestProductReadPaths(t *testing.T) {
 		assertDetail(t, tool(t, "get_product", productReadJSON{"id": id}, ""), wide, 3)
 		assertDetail(t, tool(t, "get_product", productReadJSON{"store": "example.test", "product_id": "example.test:1"}, ""), wide, 3)
 		rest(t, "GET", "/v1/products?store=example.test", "", 400)
-		rest(t, "GET", "/v1/products?store=example.test&product_id=1", "", 404)
-		rest(t, "GET", "/v1/products/missing", "", 404)
+		assertProductNotFound(t, "/v1/products?store=example.test&product_id=1")
+		assertProductNotFound(t, "/v1/products/missing")
 		checkKeys(t, rest(t, "GET", "/v1/features", "", 200), wide, true)
 		checkKeys(t, tool(t, "list_features", productReadJSON{}, ""), wide, true)
 		list := rest(t, "GET", "/v1/products/stores", "", 200)
@@ -414,7 +422,7 @@ func TestProductReadPaths(t *testing.T) {
 			store["product_count"] != float64(0) || store["edge_count"] != float64(0) || store["wiped"] != true {
 			t.Fatalf("unexpected wiped watermark: %v", store)
 		}
-		rest(t, "GET", detailPath, "", 404)
+		assertProductNotFound(t, detailPath)
 	})
 
 	t.Run("response_budget", func(t *testing.T) {

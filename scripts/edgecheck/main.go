@@ -195,7 +195,7 @@ func (p *probe) routing() {
 	expect(object(r.body)["hits"] != nil, "product search response")
 	for _, path := range []string{"/v1/products/00000000000000000000000000000000", "/v1/products?store=edge-fixture.test&product_id=edge-fixture.test%3A1"} {
 		r = p.check("missing product", "GET", path, nil, 404)
-		expect(object(r.body)["error"] == "not_found", "product read reached upstream")
+		expect(object(r.body)["error"] == "store_error", "product read reached upstream")
 	}
 	p.check("encoded slash in query remains allowed", "GET", "/v1/documents?x=a%2Fb", nil, 200)
 	for _, suffix := range []string{"", "/status", "/content"} {

@@ -585,7 +585,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
-          $ref: "#/components/responses/ProductNotFound"
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -615,7 +615,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
-          $ref: "#/components/responses/ProductNotFound"
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -1144,14 +1144,8 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ProductDetail"
-    ProductNotFound:
-      description: No such product (error not_found).
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"
     NotFound:
-      description: no such document or entity
+      description: No such document, entity, or product (error store_error).
       content:
         application/json:
           schema:
