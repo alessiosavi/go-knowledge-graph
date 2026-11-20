@@ -47,22 +47,34 @@ func ReadRecords(source io.Reader) ([]Record, error) {
 }
 
 func parseRecord(raw []byte) (Record, error) {
+	return parseRecordWithCaps(raw, false)
+}
+
+func parseRecordWithCaps(raw []byte, capped bool) (Record, error) {
 	var record Record
 	obj, err := readObject(raw, "store product_id title brand category subcategory product_type link attributes page_specs")
 	if err != nil {
 		return record, err
 	}
 	for _, field := range []struct {
-		name string
-		dest *string
+		name     string
+		dest     *string
+		maxBytes int
 	}{
-		{"store", &record.Store}, {"product_id", &record.ProductID}, {"title", &record.Title},
-		{"brand", &record.Brand}, {"category", &record.Category}, {"subcategory", &record.Subcategory},
-		{"link", &record.Link},
+		{"store", &record.Store, maxImportIdentityBytes},
+		{"product_id", &record.ProductID, maxImportIdentityBytes},
+		{"title", &record.Title, maxImportProductScalarBytes},
+		{"brand", &record.Brand, maxImportProductScalarBytes},
+		{"category", &record.Category, maxImportProductScalarBytes},
+		{"subcategory", &record.Subcategory, maxImportProductScalarBytes},
+		{"link", &record.Link, maxImportProductScalarBytes},
 	} {
 		value, ok := readString(obj[field.name])
 		if !ok {
 			return record, fieldError(field.name)
+		}
+		if capped && len(value) > field.maxBytes {
+			return record, fmt.Errorf("%s value exceeds %d KiB", field.name, field.maxBytes>>10)
 		}
 		*field.dest = value
 	}
@@ -75,12 +87,18 @@ func parseRecord(raw []byte) (Record, error) {
 		if !ok {
 			return record, errors.New("product_type: expected string or null")
 		}
+		if capped && len(productType) > maxImportProductScalarBytes {
+			return record, errors.New("product_type value exceeds 4 KiB")
+		}
 		record.ProductType = &productType
 	}
 
 	attributes, err := readObject(obj["attributes"], "")
 	if err != nil {
 		return record, fmt.Errorf("attributes: %w", err)
+	}
+	if capped && len(attributes) > 512 {
+		return record, errors.New("row exceeds 512 attributes")
 	}
 	record.Attributes = make(map[string]string, len(attributes))
 	for key, raw := range attributes {

@@ -27,6 +27,16 @@ type ReleaseTriple struct {
 	Store     string `json:"store"`
 }
 
+// Includes reports whether this release selects the triple. A nil release
+// selects all mapped observations.
+func (r *Release) Includes(store, feature, sourceKey string) bool {
+	if r == nil {
+		return true
+	}
+	_, selected := r.keys[releaseKey{store, feature, sourceKey}]
+	return selected
+}
+
 // Triples returns the release keys sorted by store, feature and source key.
 func (r *Release) Triples() []ReleaseTriple {
 	triples := make([]ReleaseTriple, 0, len(r.keys))
@@ -52,7 +62,7 @@ func (r *Registry) ParseRelease(data []byte) (*Release, error) {
 	if err != nil {
 		return nil, fmt.Errorf("release keys: %w", err)
 	}
-	release := &Release{keys: make(map[releaseKey]struct{}, len(keys))}
+	triples := make([]ReleaseTriple, 0, len(keys))
 	for i, raw := range keys {
 		obj, err := readObject(raw, "store feature source_key")
 		if err != nil {
@@ -61,11 +71,20 @@ func (r *Registry) ParseRelease(data []byte) (*Release, error) {
 		store, _ := readString(obj["store"])
 		feature, _ := readString(obj["feature"])
 		source, _ := readString(obj["source_key"])
-		config, mapped := r.stores[store][source]
-		if !mapped || config.feature != feature {
+		triples = append(triples, ReleaseTriple{Store: store, Feature: feature, SourceKey: source})
+	}
+	return r.ProjectRelease(triples)
+}
+
+// ProjectRelease validates and compiles the triples in a stored release manifest.
+func (r *Registry) ProjectRelease(triples []ReleaseTriple) (*Release, error) {
+	release := &Release{keys: make(map[releaseKey]struct{}, len(triples))}
+	for i, triple := range triples {
+		config, mapped := r.stores[triple.Store][triple.SourceKey]
+		if !mapped || config.feature != triple.Feature {
 			return nil, fmt.Errorf("release key %d: triple is not mapped by the registry", i+1)
 		}
-		key := releaseKey{store: store, feature: feature, sourceKey: source}
+		key := releaseKey{store: triple.Store, feature: triple.Feature, sourceKey: triple.SourceKey}
 		if _, exists := release.keys[key]; exists {
 			return nil, fmt.Errorf("release key %d: duplicate triple", i+1)
 		}
@@ -161,8 +180,7 @@ func (r *Registry) Observations(record Record, release *Release) []Observation {
 	}
 	if release != nil {
 		rows = slices.DeleteFunc(rows, func(row Observation) bool {
-			_, selected := release.keys[releaseKey{record.Store, row.Feature, row.SourceKey}]
-			return !selected
+			return !release.Includes(record.Store, row.Feature, row.SourceKey)
 		})
 	}
 	return rows

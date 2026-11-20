@@ -156,37 +156,14 @@ func txProductRegistry(ctx context.Context, tx neo4j.ManagedTransaction, rev str
 }
 
 func txBindProductStore(ctx context.Context, tx neo4j.ManagedTransaction, store, domain string) error {
+	if err := txBumpProductDomainGuard(ctx, tx, store, domain); err != nil {
+		return err
+	}
+	if err := txCheckDomainOpsForProductBinding(ctx, tx, domain); err != nil {
+		return err
+	}
 	params := map[string]any{"store": store, "domain": domain}
-	// Domain mutations write the same counter to serialize with this binding.
-	rows, err := txRows(ctx, tx, `MATCH (d:Domain {id:$domain})
-		SET d.product_guard = coalesce(d.product_guard, 0) + 1
-		RETURN d.id`, params)
-	if err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		return fmt.Errorf("%w: domain %q for store %q does not exist", ErrProductData, domain, store)
-	}
-	// Move and undo record source domains on their documents or move
-	// ledger. Undo can also have per-document destinations in targets.
-	rows, err = txRows(ctx, tx, `
-MATCH (o:DomainOp)
-WHERE o.state <> 'completed' AND (
-    o.from = $domain OR o.target = $domain
-    OR any(k IN keys(coalesce(o.targets, {})) WHERE o.targets[k] = $domain)
-    OR EXISTS { MATCH (d:Document {domain:$domain}) WHERE d.id IN o.docs }
-    OR EXISTS { MATCH (r:DomainDecision {op_id:o.op_id})
-                WHERE r.domain = $domain OR r.previous_domain = $domain }
-)
-RETURN o.op_id AS id, o.state AS state ORDER BY id LIMIT 1`, params)
-	if err != nil {
-		return err
-	}
-	if len(rows) != 0 {
-		return fmt.Errorf("%w: domain %q has %s operation %q", ErrProductData, domain,
-			getString(rows[0], "state"), getString(rows[0], "id"))
-	}
-	rows, err = txRows(ctx, tx, `MERGE (s:ProductStore {store:$store})
+	rows, err := txRows(ctx, tx, `MERGE (s:ProductStore {store:$store})
 		ON CREATE SET s.domain=$domain,s.seen_seq=0,s.snapshot_seq=0,s.product_count=0,s.edge_count=0
 		RETURN s.domain AS domain`, params)
 	if err != nil {
@@ -198,30 +175,76 @@ RETURN o.op_id AS id, o.state AS state ORDER BY id LIMIT 1`, params)
 	return nil
 }
 
+func txBumpProductDomainGuard(ctx context.Context, tx neo4j.ManagedTransaction, store, domain string) error {
+	// Domain mutations write the same counter, so domain operations and
+	// changes to store bindings serialize by write-write conflict.
+	rows, err := txRows(ctx, tx, `MATCH (d:Domain {id:$domain})
+		SET d.product_guard = coalesce(d.product_guard, 0) + 1
+		RETURN d.id`, map[string]any{"domain": domain})
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return fmt.Errorf("%w: domain %q for store %q does not exist", ErrProductData, domain, store)
+	}
+	return nil
+}
+
+func txCheckDomainOpsForProductBinding(ctx context.Context, tx neo4j.ManagedTransaction, domain string) error {
+	// Move and undo record source domains on their documents or move
+	// ledger. Undo can also have per-document destinations in targets.
+	rows, err := txRows(ctx, tx, `
+MATCH (o:DomainOp)
+WHERE coalesce(o.state, '') <> 'completed' AND (
+    o.from = $domain OR o.target = $domain
+    OR any(k IN keys(coalesce(o.targets, {})) WHERE o.targets[k] = $domain)
+    OR EXISTS { MATCH (d:Document {domain:$domain}) WHERE d.id IN o.docs }
+    OR EXISTS { MATCH (r:DomainDecision {op_id:o.op_id})
+                WHERE r.domain = $domain OR r.previous_domain = $domain }
+)
+RETURN o.op_id AS id, o.state AS state ORDER BY id LIMIT 1`, map[string]any{"domain": domain})
+	if err != nil {
+		return err
+	}
+	if len(rows) != 0 {
+		return fmt.Errorf("%w: domain %q has %s operation %q", ErrProductData, domain,
+			getString(rows[0], "state"), getString(rows[0], "id"))
+	}
+	return nil
+}
+
+func txProductManifest(ctx context.Context, tx neo4j.ManagedTransaction, id string) (productManifest, string, error) {
+	var manifest productManifest
+	rows, err := txRows(ctx, tx, `MATCH (r:ProductRelease {id:$id})
+		RETURN r.state AS state,r.registry_rev AS rev,r.manifest_json AS manifest,r.manifest_digest AS digest`, map[string]any{"id": id})
+	if err != nil {
+		return manifest, "", err
+	}
+	if len(rows) == 0 {
+		return manifest, "", fmt.Errorf("%w: release %q does not exist", ErrProductData, id)
+	}
+	row := rows[0]
+	data := []byte(getString(row, "manifest"))
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return manifest, "", fmt.Errorf("read manifest for release %q: %w", id, err)
+	}
+	if productDigest(data) != getString(row, "digest") || manifest.RegistryRev != getString(row, "rev") {
+		return manifest, "", fmt.Errorf("stored release %q has inconsistent manifest metadata", id)
+	}
+	return manifest, getString(row, "state"), nil
+}
+
 // ActivateProductRelease swaps the active pointer and removes all edges
 // outside the new registry revision and release projection.
 func (s *Store) ActivateProductRelease(ctx context.Context, id string) error {
 	return s.runProductWrite(ctx, func(tx neo4j.ManagedTransaction) error {
 		params := map[string]any{"id": id}
-		rows, err := txRows(ctx, tx, `MATCH (r:ProductRelease {id:$id})
-			RETURN r.state AS state,r.registry_rev AS rev,r.manifest_json AS manifest,r.manifest_digest AS digest`, params)
+		manifest, state, err := txProductManifest(ctx, tx, id)
 		if err != nil {
 			return err
 		}
-		if len(rows) == 0 {
-			return fmt.Errorf("%w: release %q does not exist", ErrProductData, id)
-		}
-		row := rows[0]
-		if state := getString(row, "state"); state != "created" && state != "retired" {
+		if state != "created" && state != "retired" {
 			return fmt.Errorf("%w: release %q is %q, expected created or retired", ErrProductData, id, state)
-		}
-		data := []byte(getString(row, "manifest"))
-		var manifest productManifest
-		if err := json.Unmarshal(data, &manifest); err != nil {
-			return fmt.Errorf("read manifest for release %q: %w", id, err)
-		}
-		if productDigest(data) != getString(row, "digest") || manifest.RegistryRev != getString(row, "rev") {
-			return fmt.Errorf("stored release %q has inconsistent manifest metadata", id)
 		}
 		if err := txRun(ctx, tx, `MERGE (m:GkgMeta {id:'product_release'}) SET m.value=$id`, params); err != nil {
 			return err
@@ -240,11 +263,29 @@ func (s *Store) ActivateProductRelease(ctx context.Context, id string) error {
 			features := released[triple.Store]
 			features[triple.Feature] = append(features[triple.Feature], triple.SourceKey)
 		}
-		return txRun(ctx, tx, `
+		pruned, err := txRows(ctx, tx, `
 MATCH (p)-[e:HAS_FEATURE]->(f)
 WHERE NOT coalesce(p:Product AND f:FeatureRev AND f.rev = $rev
     AND e.source_key IN coalesce(coalesce($released[coalesce(p.store, '')], {})[coalesce(f.id, '')], []), false)
-DELETE e`, map[string]any{"rev": manifest.RegistryRev, "released": released})
+WITH p.store AS store, e
+DELETE e
+RETURN DISTINCT store`, map[string]any{"rev": manifest.RegistryRev, "released": released})
+		if err != nil || len(pruned) == 0 {
+			return err
+		}
+		stores := make([]string, 0, len(pruned))
+		for _, row := range pruned {
+			if store := getString(row, "store"); store != "" {
+				stores = append(stores, store)
+			}
+		}
+		// Pruning leaves Product nodes and product_count intact.
+		return txRun(ctx, tx, `
+UNWIND $stores AS store
+MATCH (s:ProductStore {store:store})
+OPTIONAL MATCH (p:Product {store:store})-[e:HAS_FEATURE]->()
+WITH s, count(e) AS edges
+SET s.edge_count=edges`, map[string]any{"stores": stores})
 	})
 }
 

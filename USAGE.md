@@ -9,8 +9,8 @@ product limits are recorded in [docs/known-limitations.md](docs/known-limitation
 
 Ingest text, files (Markdown/txt/PDF/DOCX/… — rich formats convert through
 docling by default) or URLs. Every submission becomes a
-document with full provenance; unchanged content is a no-op, changed
-content supersedes the previous version.
+document with full provenance. Within the same source identity, unchanged
+content is a no-op and changed content supersedes the previous version.
 
 **CLI** (runs the pipeline synchronously):
 
@@ -41,6 +41,49 @@ Before returning `202`, gkg saves the converted text and submission metadata
 to a private spool. Queued files, text and URLs survive a gkg restart without
 re-uploading or converting again. Once chunks are persisted, recovery uses
 them and removes the spool entry. Failed documents still need a re-push.
+
+gkg cleans decoded text from Docling, native PDF extraction, Markdown,
+plain text, and HTML before hashing or chunking it. It replaces invalid UTF-8,
+strips control characters except tabs and line breaks, and removes bidi
+embedding, override, and isolate controls (U+202A–U+202E and U+2066–U+2069).
+A run of these bidi controls becomes one ASCII space only when both adjacent
+characters are non-whitespace, the right character is not a combining mark,
+and exactly one side is a right-to-left letter. If the left character is a
+combining mark, gkg uses the preceding base character for the letter check.
+gkg preserves left-to-right and right-to-left marks (U+200E and U+200F).
+gkg repairs a repeated standalone right-to-left glyph when it is the only
+distinct lone RTL letter outside fenced code, occurs on at least three lines
+there, and the document has no multi-letter RTL token after bidi
+normalization. It removes every occurrence of the glyph from a line whose body
+starts with it when the line has a Markdown list marker or contained a bidi
+control before normalization. It also repairs reversed Markdown list items
+where the token before the last glyph starts with an uppercase letter or digit.
+gkg collapses long dot leaders after text on the same line. Glyph repair and
+leader collapse skip fenced Markdown code blocks. Indented code blocks are
+eligible for cleaning.
+
+The Memgraph `:Document` node records `text_clean_version` (currently `1`) and
+the counts `text_invalid_utf8`, `text_controls`, `text_bidi_controls`, `text_glyph_lines`,
+`text_leader_runs`, `text_fffd_removed`, and `text_fffd_remaining`. An
+invalid byte run counts as one replacement. The `gkg_text_clean_total{step}`
+metric adds these counts on each admitted submission, including force
+resubmissions. Duplicate no-op submissions and reloads skip the increment.
+
+Existing documents keep their old chunks until you resubmit the original
+input under the same source identity. If the cleaned hash changes, gkg
+creates a new version and supersedes the old one when processing succeeds.
+Text submitted without a source gets its source identity from the content
+hash. To supersede an existing text version, pass the same explicit source
+on resubmission. Use a forced REST or MCP resubmission if the cleaned hash
+is unchanged and you want to reprocess the document. The admin rebuild uses
+stored chunks, so it cannot apply text cleaning to old content.
+
+A queued submission from before this change can still use its original
+spooled text if it matches the stored hash. Without a spool entry, a queued
+URL is fetched and cleaned again. If the new hash differs from the stored
+hash, processing fails with `source content changed`, and you must resubmit.
+Queued file and inline text submissions without a spool entry also need
+to be resubmitted.
 
 Compose stores the spool in the `gkg-data` named volume; keep that volume
 alongside Memgraph's data. For standalone `gkg serve`, the default is
@@ -1136,6 +1179,8 @@ SHA-256 of the registry file. Re-importing those bytes prints `unchanged`.
 A reused feature ID must retain its definition, kind, cardinality, canonical
 unit, aliases and separators for shared mapped store keys across all
 historical revisions. Display names can change.
+New revisions serialize on a shared Memgraph node so concurrent imports
+cannot approve incompatible meanings for the same feature ID.
 
 Release create requires a `-pin` for each of `R.json`, `rf_kit.py`, `score.json`,
 `report.json`, `freeze.json`, `E2` and `record-obs.jsonl`. Missing pins cause
@@ -1158,9 +1203,61 @@ record the SHA-256 of the named file.
 `release list` prints JSON with each release's ID, state, registry revision,
 approver, approval time and stores. Activating a created or retired release
 retires the previous active release and immediately removes edges outside the
-new triples or registry revision. These commands exit 0 on success, 1 on
-runtime failure, 2 on incorrect usage and 5 on data rejection.
-`-materialize` currently returns exit 2.
+new triples or registry revision. It updates the affected stores' edge
+counts in the same transaction.
+
+### Product snapshots
+
+```sh
+gkg products import -store example.test -release ID -snapshot-seq 1 records.jsonl -report import.json
+gkg products release activate NEXT -materialize example.test=2:records.jsonl
+gkg products delete-store example.test
+gkg products unbind example.test
+```
+
+`products import` takes a complete A1 JSONL snapshot for one bound store and
+the active release. Memgraph's `--query-execution-timeout-sec` must be 0
+(unlimited) or at least 300 seconds. The pinned Memgraph 3.14.0 image defaults
+to 600 seconds. The CLI checks the input before writing and replaces all
+products, feature edges and the snapshot watermark in one transaction. A
+rejected row refuses the whole snapshot. Limits are
+10,000 product rows, 60,000 released edges, 64 KiB per row, 512 attributes per
+row and 64 MiB of replacement properties. Each released observation may have
+up to 64 items, with up to 1 KiB in its raw value and in each item. Unmapped
+and unreleased attributes count toward the row and attribute limits.
+The `title`, `brand`, `category`, `subcategory`, `product_type` and `link`
+fields allow up to 4 KiB each. The `product_id` allows up to 1 KiB.
+Property bytes include names and stored values, including folded values.
+
+Use a positive sequence strictly above the last admitted sequence and any
+wipe sequence. A byte-identical file for the same release prints `unchanged`
+and advances only `seen_seq` when that materialization is still intact.
+A drop of more than 10% in the product count requires `-allow-shrink`.
+The private JSON report records the requested and previous counts, digest,
+override, rejection details, unmapped keys, conflicts and parse status counts
+by feature. Rejection and unmapped-key details are each capped at 1,000.
+Exit codes are 0 for success, 1 for runtime failure, 2 for incorrect usage
+and 5 for data rejection, including stale or incomplete snapshots.
+Imports serialize on the active release pointer, including imports for different
+stores. If a concurrent import loses with a write conflict (exit 1), rerun it.
+
+`release activate ID -materialize STORE=SEQ:FILE` accepts repeatable
+`-materialize` arguments. Activation commits first. Each file then imports
+in order with its own transaction and prints its result. The first failure
+stops processing and determines the command's exit code. Activation and
+earlier successful imports stay committed. Use standalone `products import`
+for a JSON report or to approve a shrink.
+
+`products delete-store` is an owner-only operation. Run it with graph write
+credentials only when wiping a store is intended. It removes all products
+and edges and retains the binding, setting `wiped_seq` to `seen_seq` and the
+product and edge counts to zero. It clears `snapshot_digest`, `release_id`
+and `imported_at` while retaining `snapshot_seq` and `seen_seq`. The next
+import must use a sequence higher than `wiped_seq`.
+`products unbind` removes a store's binding and watermark once it has zero
+products. It advances the bound domain's guard counter and accepts any
+domain operation state, including `incomplete`.
+Only a new `products release create` can re-bind an unbound store.
 
 ## Domain administration
 

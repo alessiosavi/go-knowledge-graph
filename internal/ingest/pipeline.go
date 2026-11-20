@@ -29,6 +29,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/hygiene"
 	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
+	"github.com/alessiosavi/go-knowledge-graph/internal/textclean"
 )
 
 // Loaded is the decoded document handed over by the text loader.
@@ -37,10 +38,14 @@ type Loaded struct {
 	Title       string
 	TitleSource string `json:",omitempty"`
 	Hash        string
+
+	// Admission persists the cleaning metadata on the Document. The spool
+	// needs only the exact text and hash that were admitted.
+	TextCleanVersion int             `json:"-"`
+	TextClean        textclean.Stats `json:"-"`
 }
 
-// TextLoader decodes an input into cleaned text. T8 uses a stub; T11 wires
-// the real ingest.Decode (files, URL bodies, PDF).
+// TextLoader decodes an input into cleaned text.
 type TextLoader func(ctx context.Context, in Input) (Loaded, error)
 
 // Input is one submission (text, file bytes or URL).
@@ -158,6 +163,7 @@ type Metrics interface {
 	FactsDropped(n int)
 	HygieneDropped(rule string, n int)
 	HygieneRenamed(n int)
+	TextClean(stats textclean.Stats)
 	ExtractorError()
 	ExtractSeconds(seconds float64)
 	JudgeVerdict(status string)
@@ -399,6 +405,9 @@ func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submis
 	p.mu.Unlock()
 	if p.metrics != nil {
 		p.metrics.DocumentStatus(string(graph.StatusReceived))
+		if in.TextCleanVersion > 0 {
+			p.metrics.TextClean(in.TextClean)
+		}
 	}
 	return Result{DocumentID: res.ID}, nil
 }
@@ -453,9 +462,9 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		if err != nil {
 			return fail("load", err)
 		}
-		// The reloaded content must match the document's content hash: a
-		// source that changed after submission is a new version, not this
-		// document (otherwise the node would carry a stale identity).
+		// Source reloads are cleaned by the loader, just like new submissions.
+		// A spooled payload already contains the text that was hashed at
+		// admission. In both cases verify the exact text before chunking.
 		if hash := sha256Hex(loaded.Text); hash != doc.Hash {
 			return fail("load", fmt.Errorf("source content changed since submission (hash %s, want %s); resubmit to ingest the new version", hash, doc.Hash))
 		}
@@ -1136,7 +1145,7 @@ func (p *Pipeline) loadInput(ctx context.Context, in Input) (Loaded, error) {
 }
 
 // loadFor tries the cache, then the durable converted payload, then the
-// original source. Only legacy URL documents can be loaded without a spool.
+// original source. Only URL documents can be loaded without a spool.
 func (p *Pipeline) loadFor(ctx context.Context, doc *graph.Document) (Loaded, error) {
 	p.mu.Lock()
 	sub, ok := p.pending[doc.ID]

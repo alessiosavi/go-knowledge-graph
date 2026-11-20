@@ -792,6 +792,9 @@ commands:
       emit canonical product observations
   products release create|activate|list
       manage product releases in Memgraph
+  products import -store S -release ID -snapshot-seq N FILE.jsonl -report OUT.json [-allow-shrink]
+  products delete-store S
+  products unbind S
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
   domain    list, inspect, evaluate and administer domains through serve
   judge     backfill candidates or stored typed edges, audit facts, or evaluate judge v2

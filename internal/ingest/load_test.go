@@ -3,6 +3,7 @@ package ingest
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -242,10 +243,13 @@ func TestRecoveryReloadURLDocument(t *testing.T) {
 	}
 	cfg.Ingest.SpoolDir = t.TempDir()
 	ctx := context.Background()
-	body := fmt.Sprintf("Stable remote content for the reload test %d.", time.Now().UnixNano())
+	rawPrefix := fmt.Sprintf("Stable remote content for the reload test %d", time.Now().UnixNano())
+	wantText := rawPrefix + " … 26"
+	var fetches atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte(body))
+		// The source's raw bytes change on reload, but its cleaned text does not.
+		fmt.Fprint(w, rawPrefix+" "+strings.Repeat("�", 89+int(fetches.Add(1)))+" 26")
 	}))
 	t.Cleanup(srv.Close)
 
@@ -270,8 +274,56 @@ func TestRecoveryReloadURLDocument(t *testing.T) {
 	if doc.Status != graph.StatusDone {
 		t.Fatalf("status = %q (%s), want done", doc.Status, doc.Error)
 	}
+	if doc.Hash != sha256Hex(wantText) || fetches.Load() != 2 {
+		t.Errorf("hash = %s, fetches = %d, want cleaned hash %s and two fetches", doc.Hash, fetches.Load(), sha256Hex(wantText))
+	}
 	if mock.Calls() != 1 {
 		t.Errorf("provider calls = %d, want 1", mock.Calls())
+	}
+}
+
+func TestRecoveryReloadPreCleanURLWithoutSpool(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := t.Context()
+	raw := "Catalogue entry " + strings.Repeat("�", 95) + " 26"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, raw)
+	}))
+	t.Cleanup(srv.Close)
+	// Simulate a queued URL from before text cleaning, with a raw-text hash
+	// and no durable payload.
+	legacy, err := st.UpsertDocument(ctx, graph.DocumentInput{
+		Kind: "url", Source: srv.URL, Hash: sha256Hex(raw),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.DeleteDocument(context.Background(), legacy.ID); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Ingest.SpoolDir = t.TempDir()
+	mock := &extract.Mock{}
+	p := NewPipeline(cfg, st, mock, dedup.New(), DefaultLoader(&Fetcher{Guard: allowAllGuard{}}, nil))
+	if err := p.Process(ctx, legacy.ID); err == nil || !strings.Contains(err.Error(), "source content changed") {
+		t.Errorf("Process = %v, want source content changed", err)
+	}
+	doc, err := st.Document(ctx, legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := st.Chunks(ctx, legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Status != graph.StatusFailed || !strings.Contains(doc.Error, "resubmit") || len(chunks) != 0 || mock.Calls() != 0 {
+		t.Errorf("legacy status/error = %q/%q, chunks = %d, extraction calls = %d", doc.Status, doc.Error, len(chunks), mock.Calls())
 	}
 }
 
@@ -314,6 +366,22 @@ func TestDecodeText(t *testing.T) {
 	}
 	if l.Hash != sha256Hex(l.Text) || l.Hash == "" {
 		t.Errorf("hash = %q, want sha256 of the cleaned text", l.Hash)
+	}
+}
+
+func TestDecodeTextCleansBeforeHashing(t *testing.T) {
+	body := "- \u202b ظ\u202cFirst item\n- ظ Second item\n- ظ Third item\nEntry " +
+		strings.Repeat("�", 89) + " 26"
+	want := "- First item\n- Second item\n- Third item\nEntry … 26"
+	l, err := Decode([]byte(body), "text/plain; charset=utf-8", nil)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if l.Text != want {
+		t.Errorf("text = %q, want %q", l.Text, want)
+	}
+	if wantHash := fmt.Sprintf("%x", sha256.Sum256([]byte(want))); l.Hash != wantHash {
+		t.Errorf("hash = %q, want %q", l.Hash, wantHash)
 	}
 }
 
