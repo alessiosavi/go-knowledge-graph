@@ -610,9 +610,13 @@ later run and allow this run to continue.
 
 Edge backfill and rejudge exclude each other. `--force` can take over a
 `judge-backfill` lease. A live `repair-validity` or `judge-rejudge` lease still
-blocks edge backfill. Treat edge backfill as a graph writer during a quiescent
-validity repair. Stop the timer, let the active backfill finish, and verify no
-backfill process or live lease remains before `repair-validity -classify`.
+blocks edge backfill. These exclusive lease acquisitions and renewals, also in
+`gkg judge rejudge` and `repair-validity -apply` runs that never use edge
+backfill, increment a counter on one `(:GkgMeta {id:'judge_lease_fence'})` node
+to serialize them. Its `seq` is not a version and may be ignored. Treat edge
+backfill as a graph writer during a quiescent validity repair. Stop the timer,
+let the active backfill finish, and verify no backfill process or live lease
+remains before `repair-validity -classify`.
 Keep it disabled through the post-apply decision. Pending opted-in edges remain
 in the rejudge and validity catalogs (`judge IN ['confirmed','']`). Rejudge
 before-images include `judge_input` in the saved edge properties. After the
