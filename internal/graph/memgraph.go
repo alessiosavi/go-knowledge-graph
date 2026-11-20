@@ -12,6 +12,7 @@ import (
 
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 	driverconfig "github.com/neo4j/neo4j-go-driver/v6/neo4j/config"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j/db"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
@@ -176,6 +177,18 @@ func (s *Store) runWriteTx(ctx context.Context, fn func(tx neo4j.ManagedTransact
 		return nil, fn(tx)
 	}, opts...)
 	return err
+}
+
+// IsTransientWriteError recognizes server-side transient errors, including
+// Memgraph write-write conflicts surfaced after the driver's retries.
+func IsTransientWriteError(err error) bool {
+	var limit *neo4j.TransactionExecutionLimit
+	if errors.As(err, &limit) && len(limit.Errors) > 0 {
+		// The driver exposes the last attempt separately from the error chain.
+		err = limit.Errors[len(limit.Errors)-1]
+	}
+	var dbErr *neo4j.Neo4jError
+	return errors.As(err, &dbErr) && (dbErr.IsRetriableTransient() || dbErr.GqlClassification == db.TransientError)
 }
 
 // runWriteTxLocked serializes the whole transaction behind Store.mu before

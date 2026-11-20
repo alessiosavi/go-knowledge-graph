@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -29,8 +30,9 @@ type domainOpStore interface {
 	SetDomainOpResult(context.Context, graph.DomainOp) error
 	DomainDocumentIDs(context.Context, string) ([]string, error)
 	DomainDecisions(context.Context, string) ([]graph.DecisionRecord, error)
+	RequireUnboundDomains(context.Context, []string, []string) error
 	MoveDocument(context.Context, string, string, string, string, string) error
-	DeleteEmptyDomain(context.Context, string) (bool, error)
+	DeleteEmptyDomain(context.Context, string, ...string) (bool, error)
 }
 
 func (p *Pipeline) domainStore(ctx context.Context) (domainOpStore, error) {
@@ -130,18 +132,28 @@ func (p *Pipeline) executeDomainOp(ctx context.Context, st domainOpStore, plan g
 	if err != nil {
 		return op, err
 	}
+	domains := map[string]struct{}{plan.From: {}, plan.Target: {}}
+	for _, target := range plan.Targets {
+		domains[target] = struct{}{}
+	}
 	moved := map[string]bool{}
 	for _, r := range records {
 		moved[r.DocID] = true
+		domains[r.PreviousDomain] = struct{}{}
+		domains[r.Domain] = struct{}{}
 	}
 	for _, id := range op.Skipped {
 		moved[id] = true
+	}
+	delete(domains, "")
+	ids := slices.DeleteFunc(slices.Clone(op.Docs), func(id string) bool { return moved[id] })
+	if err := st.RequireUnboundDomains(ctx, slices.Collect(maps.Keys(domains)), ids); err != nil {
+		return op, err
 	}
 
 	// Admit the whole pending snapshot before any graph mutation. Hold document
 	// locks through execution; domainMu is acquired only after these locks and
 	// released between moves so detection never reverses the lock order.
-	ids := slices.Clone(op.Docs)
 	slices.Sort(ids)
 	locks := []*sync.Mutex{}
 	defer func() {
@@ -152,9 +164,6 @@ func (p *Pipeline) executeDomainOp(ctx context.Context, st domainOpStore, plan g
 	statuses := map[string]graph.Status{}
 	blocked := []string{}
 	for _, id := range ids {
-		if moved[id] {
-			continue
-		}
 		lock := p.docLock(id)
 		if !lock.TryLock() {
 			blocked = append(blocked, id)
@@ -197,6 +206,9 @@ func (p *Pipeline) executeDomainOp(ctx context.Context, st domainOpStore, plan g
 		}
 		if err != nil {
 			op.State = "failed"
+			if errors.Is(err, graph.ErrDomainHasProducts) {
+				op.State = "incomplete"
+			}
 			err = errors.Join(err, st.SetDomainOpResult(context.WithoutCancel(ctx), op))
 		}
 	}()
@@ -208,15 +220,16 @@ func (p *Pipeline) executeDomainOp(ctx context.Context, st domainOpStore, plan g
 			op.Skipped = append(op.Skipped, id)
 			continue
 		}
+		target := plan.Targets[id]
 		p.domainMu.Lock()
-		moveErr := st.MoveDocument(ctx, id, plan.Targets[id], op.OpID, op.Action, "admin")
+		moveErr := st.MoveDocument(ctx, id, target, op.OpID, op.Action, "admin")
 		p.domainMu.Unlock()
 		if op.Action == "undo" && errors.Is(moveErr, graph.ErrSuperseded) {
 			op.Skipped = append(op.Skipped, id)
 			continue
 		}
 		if moveErr != nil {
-			return op, moveErr
+			return op, domainOpWriteError(ctx, st, moveErr, []string{target}, []string{id})
 		}
 		if statuses[id] == graph.StatusDone {
 			queued = append(queued, id)
@@ -224,8 +237,12 @@ func (p *Pipeline) executeDomainOp(ctx context.Context, st domainOpStore, plan g
 	}
 	if plan.From != "" {
 		p.domainMu.Lock()
-		deleted, deleteErr := st.DeleteEmptyDomain(ctx, plan.From)
-		if deleteErr == nil && !deleted {
+		deleted, deleteErr := st.DeleteEmptyDomain(ctx, plan.From, plan.Target)
+		if deleteErr != nil {
+			p.domainMu.Unlock()
+			return op, domainOpWriteError(ctx, st, deleteErr, []string{plan.From, plan.Target}, nil)
+		}
+		if !deleted {
 			op.Remaining, deleteErr = st.DomainDocumentIDs(ctx, plan.From)
 			// A previous attempt may have deleted the source before recording
 			// completion. Its absence also satisfies merge completion.
@@ -246,6 +263,17 @@ func (p *Pipeline) executeDomainOp(ctx context.Context, st domainOpStore, plan g
 	op.State = "completed"
 	err = st.SetDomainOpResult(ctx, op)
 	return op, err
+}
+
+// A conflicting transaction may have published a binding after the failed
+// write's snapshot. Check the affected domains in a fresh read.
+func domainOpWriteError(ctx context.Context, st domainOpStore, err error, domains, docs []string) error {
+	if graph.IsTransientWriteError(err) {
+		if bindingErr := st.RequireUnboundDomains(ctx, domains, docs); errors.Is(bindingErr, graph.ErrDomainHasProducts) {
+			return bindingErr
+		}
+	}
+	return err
 }
 
 // UndoDomainOp moves every document back under a new, resumable operation ID.

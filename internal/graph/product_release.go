@@ -157,8 +157,7 @@ func txProductRegistry(ctx context.Context, tx neo4j.ManagedTransaction, rev str
 
 func txBindProductStore(ctx context.Context, tx neo4j.ManagedTransaction, store, domain string) error {
 	params := map[string]any{"store": store, "domain": domain}
-	// T4: every domain-op mutation tx must write the src/dst :Domain nodes
-	// so that the domain-op and store binding transactions conflict on writes.
+	// Domain mutations write the same counter to serialize with this binding.
 	rows, err := txRows(ctx, tx, `MATCH (d:Domain {id:$domain})
 		SET d.product_guard = coalesce(d.product_guard, 0) + 1
 		RETURN d.id`, params)

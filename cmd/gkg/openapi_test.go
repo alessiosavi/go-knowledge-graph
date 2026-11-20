@@ -90,7 +90,7 @@ func TestOpenAPIReadVisibility(t *testing.T) {
 		"TraverseResponse": {"hidden", "unverified_ignored"},
 		"Fact":             {"unverified", "judge"}, "Edge": {"unverified", "judge"},
 		"HiddenCounts": {"unclear", "unjudged", "rejected"},
-		"Document":     {"domain"}, "SearchRequest": {"domain"}, "Hit": {"domain"}, "AgentQuestion": {"domain"}, "DomainCount": {"id", "name", "documents"},
+		"Document":     {"domain"}, "SearchRequest": {"domain"}, "Hit": {"domain"}, "AgentQuestion": {"domain"}, "DomainCount": {"id", "name", "documents", "products", "products_bound"},
 	} {
 		for _, field := range fields {
 			if _, ok := spec.Components.Schemas[schema].Properties[field]; !ok {

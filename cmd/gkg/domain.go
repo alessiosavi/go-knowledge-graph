@@ -136,6 +136,14 @@ func runDomain(args []string, stdout, stderr io.Writer) int {
 			return fail(err)
 		}
 		if resp.StatusCode != http.StatusAccepted {
+			if resp.StatusCode == http.StatusConflict {
+				var conflict struct {
+					Error string `json:"error"`
+				}
+				if json.Unmarshal(data, &conflict) == nil && conflict.Error == "domain_has_products" {
+					return fail(errors.New("domain is bound to a product store (domain_has_products)"))
+				}
+			}
 			return fail(fmt.Errorf("serve returned %s: %s", resp.Status, strings.TrimSpace(string(data))))
 		}
 		if _, err := fmt.Fprintln(stdout, strings.TrimSpace(string(data))); err != nil {

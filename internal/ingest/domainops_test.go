@@ -97,6 +97,10 @@ func TestMergeThenUndo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	uri := os.Getenv(graphtest.URIEnv)
+	if got := rawCount(t, uri, `MATCH (d:Domain {id:'zorbo-admin'}) RETURN d.product_guard AS n`); got != 2 {
+		t.Errorf("merge move and deletion: target product_guard=%d, want 2", got)
+	}
 	rows, err := env.st.ListDomains(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -110,6 +114,12 @@ func TestMergeThenUndo(t *testing.T) {
 	assertAdminDomain(t, env, a, "zorbo-admin")
 	if _, err := env.p.UndoDomainOp(t.Context(), op.OpID); err != nil {
 		t.Fatal(err)
+	}
+	if got := rawCount(t, uri, `MATCH (d:Domain {id:'zorbo-admin'}) RETURN d.product_guard AS n`); got != 3 {
+		t.Errorf("undo: source product_guard=%d, want 3", got)
+	}
+	if got := rawCount(t, uri, `MATCH (d:Domain {id:'acme-admin'}) RETURN d.product_guard AS n`); got != 1 {
+		t.Errorf("undo: recreated target product_guard=%d, want 1", got)
 	}
 	detectProcess(t, env, a)
 	assertAdminDomain(t, env, a, "acme-admin")
@@ -285,9 +295,11 @@ func adminEntityKeys(t *testing.T, id string) []string {
 	return out
 }
 
-// Intercept only the move boundary; all graph writes and reads remain real.
+// Intercept domain mutation boundaries around the real store.
 type adminInterceptStore struct {
 	*graph.Store
+	beforeMove       func() error
+	beforeDelete     func() error
 	afterMove        func()
 	afterDeleteCheck func()
 	calls, failAt    int
@@ -295,6 +307,13 @@ type adminInterceptStore struct {
 
 func (s *adminInterceptStore) MoveDocument(ctx context.Context, id, slug, op, action, by string) error {
 	s.calls++
+	if s.beforeMove != nil {
+		f := s.beforeMove
+		s.beforeMove = nil
+		if err := f(); err != nil {
+			return err
+		}
+	}
 	if s.calls == s.failAt {
 		return errors.New("injected move failure")
 	}
@@ -505,8 +524,15 @@ func TestUndoOfUndoWithSkippedMembers(t *testing.T) {
 	assertAdminDomain(t, env, live, "zorbo-admin")
 }
 
-func (s *adminInterceptStore) DeleteEmptyDomain(ctx context.Context, slug string) (bool, error) {
-	deleted, err := s.Store.DeleteEmptyDomain(ctx, slug)
+func (s *adminInterceptStore) DeleteEmptyDomain(ctx context.Context, slug string, destinations ...string) (bool, error) {
+	if s.beforeDelete != nil {
+		f := s.beforeDelete
+		s.beforeDelete = nil
+		if err := f(); err != nil {
+			return false, err
+		}
+	}
+	deleted, err := s.Store.DeleteEmptyDomain(ctx, slug, destinations...)
 	if err == nil && !deleted && s.afterDeleteCheck != nil {
 		f := s.afterDeleteCheck
 		s.afterDeleteCheck = nil

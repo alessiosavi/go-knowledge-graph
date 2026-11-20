@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
@@ -154,6 +156,103 @@ func adminGraphWrite(t *testing.T, query string) {
 	}
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDomainAdminProductConflict(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := t.Context()
+	const src, dst = "api-domguard-source", "api-domguard-target"
+	adminGraphWrite(t, fmt.Sprintf(`CREATE (:Domain {id:'%s'}), (:Domain {id:'%s'}), (:ProductStore {store:'api-domguard',domain:'%s'})`, src, dst, src))
+	t.Cleanup(func() {
+		adminGraphWrite(t, `MATCH (s:ProductStore {store:'api-domguard'}) DELETE s`)
+		adminGraphWrite(t, fmt.Sprintf(`MATCH (d:Domain) WHERE d.id IN ['%s','%s'] DELETE d`, src, dst))
+		adminGraphWrite(t, `MATCH (o:DomainOp) WHERE o.op_id STARTS WITH 'api-domguard-' DELETE o`)
+		adminGraphWrite(t, `MATCH (r:DomainDecision) WHERE r.op_id STARTS WITH 'api-domguard-' DELETE r`)
+	})
+	doc, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "text", Source: t.Name(), Hash: "domguard", Domain: src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.DeleteDocument(context.Background(), doc.ID) })
+	if err := st.SetStatus(ctx, doc.ID, graph.StatusDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"api-domguard-resume", "api-domguard-original"} {
+		if _, err := st.CreateDomainOp(ctx, graph.DomainOpPlan{
+			Op:      graph.DomainOp{OpID: id, Action: "move", Docs: []string{doc.ID}, At: time.Now()},
+			Target:  dst,
+			Targets: map[string]string{doc.ID: dst},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SetDomainOpState(ctx, "api-domguard-original", "completed"); err != nil {
+		t.Fatal(err)
+	}
+	adminGraphWrite(t, fmt.Sprintf(`CREATE (:DomainDecision {op_id:'api-domguard-original',doc_id:'%s',previous_domain:'%s',domain:'%s'})`, doc.ID, src, dst))
+
+	p := ingest.NewPipeline(config.Config{}, st, nil, nil, nil)
+	h := api.NewServer(config.Config{}, st, p).Handler()
+	for _, tc := range []struct{ name, route, body string }{
+		{"move", "move", fmt.Sprintf(`{"document_ids":["%s"],"domain":"%s","op_id":"api-domguard-new"}`, doc.ID, dst)},
+		{"resume", "move", fmt.Sprintf(`{"document_ids":["%s"],"domain":"%s","op_id":"api-domguard-resume"}`, doc.ID, dst)},
+		{"merge", "merge", fmt.Sprintf(`{"from":"%s","into":"%s","op_id":"api-domguard-merge"}`, src, dst)},
+		{"undo", "undo", `{"op_id":"api-domguard-original"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/v1/admin/domains/"+tc.route, bytes.NewBufferString(tc.body))
+			r.RemoteAddr = "127.0.0.1:5000"
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			var body map[string]string
+			wantDetail := fmt.Sprintf("%s: domain %q is bound to product store %q", graph.ErrDomainHasProducts, src, "api-domguard")
+			if w.Code != http.StatusConflict || json.Unmarshal(w.Body.Bytes(), &body) != nil ||
+				body["error"] != "domain_has_products" || body["detail"] != wantDetail {
+				t.Fatalf("code=%d body=%s", w.Code, w.Body)
+			}
+		})
+	}
+}
+
+func TestDomainAdminRenameProductDomain(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := t.Context()
+	const slug = "api-bound-rename"
+	adminGraphWrite(t, `CREATE (:Domain {id:'api-bound-rename',name:'Original',product_guard:17}),
+(:ProductStore {store:'api-bound-rename',domain:'api-bound-rename',product_count:1}),
+(:Product {id:'api-bound-rename-1',store:'api-bound-rename',domain:'api-bound-rename'})`)
+	t.Cleanup(func() {
+		adminGraphWrite(t, `MATCH (r:DomainDecision {domain:'api-bound-rename'})
+OPTIONAL MATCH (o:DomainOp {op_id:r.op_id}) DELETE r,o`)
+		adminGraphWrite(t, `MATCH (n) WHERE ((n:ProductStore OR n:Product) AND n.store='api-bound-rename')
+OR (n:Domain AND n.id='api-bound-rename') DELETE n`)
+	})
+	readProducts := func() []map[string]any {
+		result, err := st.RunReadQuery(ctx, `MATCH (s:ProductStore {store:$slug}), (p:Product {store:$slug})
+RETURN properties(s) AS binding, properties(p) AS product`, map[string]any{"slug": slug}, 0)
+		if err != nil || len(result.Rows) != 1 {
+			t.Fatalf("binding and product=%+v error=%v", result, err)
+		}
+		return result.Rows
+	}
+	before := readProducts()
+	h := api.NewServer(config.Config{}, st, nil).Handler()
+	r := httptest.NewRequest("POST", "/v1/admin/domains/rename", bytes.NewBufferString(`{"domain":"api-bound-rename","name":"Changed"}`))
+	r.RemoteAddr = "127.0.0.1:5000"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	var body map[string]string
+	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &body) != nil ||
+		body["state"] != "completed" || body["op_id"] == "" {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body)
+	}
+	result, err := st.RunReadQuery(ctx, `MATCH (d:Domain {id:$slug}) RETURN d.name AS name, d.product_guard AS guard`, map[string]any{"slug": slug}, 0)
+	if err != nil || len(result.Rows) != 1 || result.Rows[0]["name"] != "Changed" || result.Rows[0]["guard"] != int64(17) {
+		t.Fatalf("renamed domain=%+v error=%v", result, err)
+	}
+	if after := readProducts(); !reflect.DeepEqual(before, after) {
+		t.Fatalf("rename changed binding or product: before=%v after=%v", before, after)
 	}
 }
 
