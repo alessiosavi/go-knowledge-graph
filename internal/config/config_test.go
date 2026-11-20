@@ -319,6 +319,7 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_AGENT_MAX_STEPS", "3", 3, func(c config.Config) any { return c.Agent.MaxSteps }},
 		{"GKG_AGENT_TIMEOUT_S", "30", 30, func(c config.Config) any { return c.Agent.TimeoutS }},
 		{"GKG_AGENT_CONTEXT_BUDGET_KB", "64", 64, func(c config.Config) any { return c.Agent.ContextBudgetKB }},
+		{"GKG_AGENT_TOP_K_ENABLED", "true", true, func(c config.Config) any { return c.Agent.TopKEnabled }},
 		{"GKG_AGENT_STREAM", "false", false, func(c config.Config) any { return c.Agent.Stream }},
 	}
 	for _, tc := range cases {
@@ -541,6 +542,9 @@ func TestAgentDefaults(t *testing.T) {
 	}
 	if cfg.Agent.Enabled {
 		t.Errorf("Agent.Enabled = true, want the disabled default")
+	}
+	if cfg.Agent.TopKEnabled {
+		t.Error("sampling top-k must be opt-in")
 	}
 	if !cfg.Agent.Stream {
 		t.Errorf("Agent.Stream = false, want the streaming client enabled by default")

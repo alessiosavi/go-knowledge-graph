@@ -130,6 +130,7 @@ type DomainConfig struct {
 // POST /v1/agent/ask. Disabled by default; the endpoint answers 501 while
 // disabled and the web UI hides its ask panel.
 type AgentConfig struct {
+	TopKEnabled     bool   `yaml:"top_k_enabled"`
 	Enabled         bool   `yaml:"enabled"`
 	Stream          bool   `yaml:"stream"` // stream the provider response (GKG_AGENT_STREAM; default true)
 	BaseURL         string `yaml:"base_url"`

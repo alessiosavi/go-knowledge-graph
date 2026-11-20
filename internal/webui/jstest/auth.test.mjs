@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolveObjectURL } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { setImmediate } from "node:timers/promises";
 import test from "node:test";
@@ -37,19 +38,22 @@ class Element {
     assert.equal(selector, "tbody");
     return this.tbody ??= new Element();
   }
+  removeAttribute(name) {
+    delete this[name];
+  }
   setAttribute(name, value) {
     this[name] = value;
   }
 }
 
-async function page(key = savedKey) {
+async function page(key = savedKey, agentStatus = { enabled: true, stream: true }) {
   const elements = new Map();
   for (const match of html.matchAll(/<[^>]+\bid="([^"]+)"[^>]*>/g)) {
     elements.set(match[1], new Element(/\bhidden\b/.test(match[0])));
   }
   const storage = new Map(key ? [[keyStore, key]] : []);
   const requests = [];
-  const replies = new Map();
+  const replies = new Map([["/v1/agent/status", agentStatus]]);
   let unauthorizedPath = "";
   let challenge = "";
   vm.runInNewContext(script, {
@@ -65,15 +69,20 @@ async function page(key = savedKey) {
       setItem: (name, value) => storage.set(name, value),
       removeItem: (name) => storage.delete(name),
     },
+    Blob, URL, TextDecoder, Option: class extends Element {
+      constructor(text, value) { super(); this.textContent = text; this.value = value; }
+    },
     FormData: class {},
     fetch: async (path, options) => {
       requests.push({ path, ...options });
+      const reply = replies.get(path);
+      if (typeof reply === "function") return reply();
       const status = path === unauthorizedPath ? 401 : 200;
       return {
         status,
         ok: status === 200,
         headers: { get: (name) => name.toLowerCase() === "www-authenticate" ? challenge : null },
-        json: async () => replies.get(path) ?? (path === "/v1/agent/status" ? { enabled: true, stream: true } : {}),
+        json: async () => reply ?? {},
       };
     },
   });
@@ -211,4 +220,95 @@ test("domain pickers scope search, JSON ask and streaming ask", async () => {
   assert.ok(asks.some((r) => r.path.endsWith("/stream")));
   assert.ok(asks.some((r) => r.path === "/v1/agent/ask"));
   for (const req of asks) assert.equal(JSON.parse(req.body).domain, "b");
+});
+
+const markdown = "# Résumé\n\n| Key | Value |\n| --- | --- |\n| α | β |\n\n```go\nfmt.Println(\"🌱\")\n```\n";
+const capabilities = { top_k: true, reasoning_efforts: ["none", "high", "max"] };
+const frame = (name, data) => "event: " + name + "\ndata: " + JSON.stringify(data) + "\n\n";
+
+for (const stream of [false, true]) {
+  test(`${stream ? "stream" : "JSON"} downloads exact final Markdown and clears it on the next ask`, async () => {
+    const p = await page(savedKey, { enabled: true, stream, generation: capabilities });
+    const get = (id) => p.elements.get(id);
+    const download = get("ask-download");
+    const path = stream ? "/v1/agent/ask/stream" : "/v1/agent/ask";
+    assert.ok(download.hidden);
+    assert.match(html, /id="ask-download" download="gkg-answer\.md"/);
+    assert.deepEqual(get("ask-reasoning").children.map((option) => option.value), ["", "none", "high", "max"]);
+    get("ask-input").value = "First?";
+    get("ask-temperature").value = "0";
+    get("ask-top-p").value = "0";
+    get("ask-top-k").value = "8";
+    get("ask-reasoning").value = "none";
+    const complete = { answer: markdown };
+    if (stream) {
+      let finish;
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(frame("delta", { text: "partial" })));
+          finish = () => {
+            controller.enqueue(new TextEncoder().encode(frame("done", complete)));
+            controller.close();
+          };
+        },
+      });
+      p.replies.set(path, () => ({ ok: true, body }));
+      await p.fire("ask-form", "submit");
+      assert.ok(download.hidden);
+      assert.equal(get("ask-answer").children[0].textContent, "partial");
+      finish();
+      await setImmediate();
+    } else {
+      p.replies.set(path, complete);
+      await p.fire("ask-form", "submit");
+    }
+    assert.equal(download.hidden, false);
+    const url = download.href;
+    const before = p.requests.length;
+    const file = resolveObjectURL(url);
+    assert.equal(file.type, "text/markdown;charset=utf-8");
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), Buffer.from(markdown));
+    assert.equal(p.requests.length, before);
+    get("ask-input").value = "Second?";
+    p.replies.set(path, () => ({ ok: false, status: 400, json: async () => ({ detail: "invalid setting" }) }));
+    await p.fire("ask-form", "submit");
+    assert.ok(download.hidden);
+    assert.equal(download.href, undefined);
+    assert.equal(resolveObjectURL(url), undefined);
+    assert.match(get("ask-status").textContent, /invalid setting/);
+    const asks = p.requests.filter((r) => r.path.startsWith("/v1/agent/ask"));
+    assert.equal(asks.length, 2);
+    for (const ask of asks) {
+      assert.deepEqual(JSON.parse(ask.body).generation, { temperature: 0, top_p: 0, top_k: 8, reasoning_effort: "none" });
+    }
+  });
+}
+
+test("uses page defaults and omits unavailable controls", async () => {
+  const p = await page(savedKey, { enabled: true, stream: false, generation: { top_k: false, reasoning_efforts: [] } });
+  const get = (id) => p.elements.get(id);
+  assert.equal(get("ask-settings").hidden, false);
+  assert.equal(get("ask-top-k").disabled, true);
+  assert.equal(get("ask-top-k-note").hidden, false);
+  assert.equal(get("ask-reasoning").disabled, true);
+  get("ask-input").value = "Q";
+  get("ask-top-k").value = "5";
+  await p.fire("ask-form", "submit");
+  assert.deepEqual(JSON.parse(p.requests.at(-1).body), { question: "Q", domain: "" });
+});
+
+test("stream transport fallback uses the settings captured at submission", async () => {
+  const p = await page(savedKey, { enabled: true, stream: true, generation: capabilities });
+  const get = (id) => p.elements.get(id);
+  get("ask-input").value = "Q";
+  get("ask-temperature").value = "0.8";
+  p.replies.set("/v1/agent/ask/stream", () => {
+    get("ask-temperature").value = "1.2";
+    throw new TypeError("stream disconnected");
+  });
+  await p.fire("ask-form", "submit");
+  const asks = p.requests.filter((r) => r.path.startsWith("/v1/agent/ask"));
+  assert.equal(asks.length, 2);
+  assert.equal(asks[0].body, asks[1].body);
+  assert.deepEqual(JSON.parse(asks[1].body).generation, { temperature: 0.8 });
 });

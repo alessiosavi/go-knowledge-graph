@@ -128,8 +128,8 @@ function el(tag, className, text) {
   querySelectorAll() { return this.links; },
  };
 }
-const nodes = {"ask-answer":el("div"), "ask-evidence":el("ul"), "ask-status":el("span"), "ask-domain":{value:"a"}};
-const context = {el, $:id => nodes[id], apiKey:"", TextDecoder};
+const nodes = {"ask-download":{removeAttribute(){ delete this.href; }}, "ask-answer":el("div"), "ask-evidence":el("ul"), "ask-status":el("span"), "ask-domain":{value:"a"}};
+const context = {el, $:id => nodes[id], apiKey:"", TextDecoder, Blob, URL};
 vm.createContext(context);
 vm.runInContext(process.argv[1] + "\nthis.render = renderAnswer; this.stream = askViaStream;", context);
 const html = '<h1>Answer</h1><table><tr><td>value</td></tr></table><a href="https://example.com">link</a><a href="#sec">local</a>';
@@ -160,7 +160,7 @@ context.fetch = async (path, options) => {
  assert.equal(nodes["ask-answer"].children[0].html, html);
  return {done:true};
 }}; }}}; };
-context.stream("question", nodes["ask-status"]).catch(err => { console.error(err); process.exitCode = 1; });
+context.stream({question:"question", domain:"a"}, nodes["ask-status"]).catch(err => { console.error(err); process.exitCode = 1; });
 `, app[start:end])
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("answer UI: %v\n%s", err, out)

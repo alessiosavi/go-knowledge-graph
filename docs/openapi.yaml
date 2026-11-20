@@ -738,7 +738,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/AgentAnswer"
         "400":
-          description: Malformed JSON (invalid_json) or missing/blank question (invalid_request).
+          description: Malformed JSON or unrecognized generation field (invalid_json) or invalid question, domain or generation setting (invalid_request).
           content:
             application/json:
               schema:
@@ -828,7 +828,7 @@ paths:
                 data: {"answer":"Ada","answer_html":"<p>Ada</p>\n","evidence":[],"steps":1}
 
         "400":
-          description: Malformed JSON (invalid_json) or missing/blank question (invalid_request), before SSE starts.
+          description: Malformed JSON or unrecognized generation field (invalid_json) or invalid question, domain or generation setting (invalid_request), before SSE starts.
           content:
             application/json:
               schema:
@@ -851,7 +851,7 @@ paths:
         process has not memoized provider streaming as unsupported.
       responses:
         "200":
-          description: Agent and provider-streaming availability
+          description: Agent, streaming and generation capabilities for the configured model
           content:
             application/json:
               schema:
@@ -1371,6 +1371,20 @@ components:
           minLength: 1
           description: Trimmed before use; whitespace-only questions are rejected.
           example: What does the graph say about Ada?
+        generation:
+          $ref: "#/components/schemas/AgentGeneration"
+    AgentGeneration:
+      type: object
+      description: Optional settings applied to every model turn for this ask.
+      additionalProperties: false
+      properties:
+        temperature: { type: number, minimum: 0, maximum: 2, default: 0 }
+        top_p: { type: number, minimum: 0, maximum: 1, description: Omit for the provider default. }
+        top_k: { type: integer, minimum: 1, description: Sampling top-k. Available when agent status reports generation.top_k as true. }
+        reasoning_effort:
+          type: string
+          enum: [none, high, max]
+          description: Choose from generation.reasoning_efforts in agent status. Omit for the provider default.
     AgentAnswer:
       type: object
       required: [answer, evidence, steps]
@@ -1398,7 +1412,16 @@ components:
           description: Raw JSON tool result or tool error, of any JSON type; may be null or omitted.
     AgentStatus:
       type: object
-      required: [enabled, stream]
+      required: [enabled, stream, generation]
       properties:
         enabled: { type: boolean }
         stream: { type: boolean }
+        generation:
+          type: object
+          required: [top_k, reasoning_efforts]
+          properties:
+            top_k: { type: boolean, description: Operator has enabled sampling top-k. }
+            reasoning_efforts:
+              type: array
+              items: { type: string, enum: [none, high, max] }
+              description: Allowed explicit values for the configured model. An empty list means only the provider default is available.

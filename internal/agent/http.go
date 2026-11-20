@@ -29,7 +29,7 @@ func writeError(w http.ResponseWriter, code int, kind, detail string) {
 
 // decodeAskQuestion decodes and validates the ask request body, writing the
 // JSON error response itself when the request is unusable.
-func decodeAskQuestion(w http.ResponseWriter, r *http.Request) (AskRequest, bool) {
+func (s *Server) decodeAskQuestion(w http.ResponseWriter, r *http.Request) (AskRequest, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, responseBodyCap)
 	var req AskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -49,6 +49,10 @@ func decodeAskQuestion(w http.ResponseWriter, r *http.Request) (AskRequest, bool
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid domain slug")
 		return AskRequest{}, false
 	}
+	if err := req.Generation.validate(s.generationCapabilities()); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return AskRequest{}, false
+	}
 	req.Question = question
 	return req, true
 }
@@ -63,14 +67,14 @@ func (s *Server) AskHandler() http.Handler {
 			writeError(w, http.StatusNotImplemented, "agent_disabled", "the ask agent is not enabled on this server")
 			return
 		}
-		req, ok := decodeAskQuestion(w, r)
+		req, ok := s.decodeAskQuestion(w, r)
 		if !ok {
 			return
 		}
 
 		ctx, cancel := context.WithTimeout(withDomain(r.Context(), req.Domain), s.timeout)
 		defer cancel()
-		resp, err := s.ask(ctx, req.Question)
+		resp, err := s.runWithEvents(ctx, req, askEvents{})
 		if err != nil {
 			slog.Warn("agent: ask failed", "err", err)
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -87,16 +91,17 @@ func (s *Server) AskHandler() http.Handler {
 }
 
 // StatusHandler serves GET /v1/agent/status: the UI's capability probe
-// (200 {"enabled":bool,"stream":bool}), behind the same bearer policy.
+// (enabled, stream, and generation capabilities), behind the same bearer policy.
 // "stream" reports whether the ask stream endpoint will run the provider
 // calls streamed: the agent must be enabled, streaming on, and streaming
 // not memoized unsupported for this process.
 func (s *Server) StatusHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		unsupported, _ := s.llm.streamState()
-		writeJSON(w, http.StatusOK, map[string]bool{
-			"enabled": s.cfg.Agent.Enabled,
-			"stream":  s.cfg.Agent.Enabled && s.cfg.Agent.Stream && !unsupported,
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled":    s.cfg.Agent.Enabled,
+			"generation": s.generationCapabilities(),
+			"stream":     s.cfg.Agent.Enabled && s.cfg.Agent.Stream && !unsupported,
 		})
 	})
 }

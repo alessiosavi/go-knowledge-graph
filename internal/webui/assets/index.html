@@ -114,6 +114,26 @@
             <option value="">All domains</option>
           </select>
           <form id="ask-form" autocomplete="off">
+            <details id="ask-settings" hidden>
+              <summary>Generation settings</summary>
+              <div class="generation-fields">
+                <label>Temperature
+                  <input id="ask-temperature" type="number" min="0" max="2" step="any" placeholder="Default (0)" />
+                </label>
+                <label>Top-p
+                  <input id="ask-top-p" type="number" min="0" max="1" step="any" placeholder="Provider default" />
+                </label>
+                <label>Sampling top-k
+                  <input id="ask-top-k" type="number" min="1" step="1" placeholder="Provider default" aria-describedby="ask-top-k-note" disabled />
+                  <small id="ask-top-k-note">Unavailable on this deployment.</small>
+                </label>
+                <label>Reasoning effort
+                  <select id="ask-reasoning" disabled>
+                    <option value="">Provider default</option>
+                  </select>
+                </label>
+              </div>
+            </details>
             <div class="row">
               <input
                 id="ask-input"
@@ -127,6 +147,7 @@
           </form>
           <p id="ask-status" class="muted" aria-live="polite"></p>
           <div id="ask-answer"></div>
+          <a id="ask-download" download="gkg-answer.md" hidden>Download Markdown</a>
           <ul id="ask-evidence" class="list"></ul>
         </section>
 

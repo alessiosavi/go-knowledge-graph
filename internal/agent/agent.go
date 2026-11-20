@@ -153,7 +153,11 @@ type EvidenceItem struct {
 }
 
 // AskRequest is an in-process question, optionally scoped to a domain.
-type AskRequest struct{ Question, Domain string }
+type AskRequest struct {
+	Question   string              `json:"question"`
+	Domain     string              `json:"domain,omitempty"`
+	Generation *GenerationSettings `json:"generation,omitempty"`
+}
 
 // Ask runs the configured provider with the same deadline as the HTTP surface.
 func (s *Server) Ask(ctx context.Context, req AskRequest) (AskResponse, error) {
@@ -170,7 +174,10 @@ func (s *Server) AskWithProgress(ctx context.Context, req AskRequest, progress f
 	}
 	var provider *providerError
 	var endpoint *url.Error
+	var rejected *generationRejection
 	switch {
+	case errors.As(err, &rejected):
+		return resp, &providerError{status: rejected.status}
 	case errors.As(err, &provider):
 		slog.Warn("agent: MCP ask failed", "status", provider.status, "err", provider)
 		return resp, &providerError{status: provider.status}
@@ -184,6 +191,9 @@ func (s *Server) AskWithProgress(ctx context.Context, req AskRequest, progress f
 func (s *Server) askRequest(ctx context.Context, req AskRequest, progress func(context.Context, int, string)) (AskResponse, error) {
 	if req.Domain != "" && !graph.ValidDomain(req.Domain) {
 		return AskResponse{}, errors.New("invalid domain slug")
+	}
+	if err := req.Generation.validate(s.generationCapabilities()); err != nil {
+		return AskResponse{}, err
 	}
 	ctx = withDomain(ctx, req.Domain)
 	if strings.TrimSpace(req.Question) == "" {
@@ -202,7 +212,7 @@ func (s *Server) askRequest(ctx context.Context, req AskRequest, progress func(c
 			return ctx.Err()
 		}
 	}
-	return s.runWithEvents(ctx, req.Question, events)
+	return s.runWithEvents(ctx, req, events)
 }
 
 // rawOrNull returns raw when it is valid JSON so evidence marshaling cannot
@@ -232,42 +242,36 @@ type askEvents struct {
 	tool, delta func(streamEvent) error
 }
 
-// ask drives the bounded tool loop over the JSON endpoint (no streaming:
-// emit is nil) and returns the full answer with its evidence.
-func (s *Server) ask(ctx context.Context, question string) (AskResponse, error) {
-	return s.run(ctx, question, nil)
-}
-
-func (s *Server) run(ctx context.Context, question string, emit func(streamEvent) error) (AskResponse, error) {
-	return s.runWithEvents(ctx, question, askEvents{tool: emit, delta: emit})
-}
-
 // runWithEvents drives tool-requesting model turns until the model answers
 // or a budget is reached. The delta callback opts into provider streaming
 // when supported. Tool events can also be delivered with plain provider
 // turns. A provider that rejects tools falls back to the constrained JSON plan.
-func (s *Server) runWithEvents(ctx context.Context, question string, events askEvents) (AskResponse, error) {
+func (s *Server) runWithEvents(ctx context.Context, ask AskRequest, events askEvents) (AskResponse, error) {
 	msgs := []chatMessage{
 		{Role: "system", Content: scopedPrompt(ctx, systemPrompt)},
-		{Role: "user", Content: question},
+		{Role: "user", Content: ask.Question},
 	}
 	ev := make([]EvidenceItem, 0, s.maxSteps)
 	steps := 0
 	transcriptBytes := 0
 	for steps < s.maxSteps && !s.contextBudgetReached(transcriptBytes) {
-		reply, err := s.runTurn(ctx, chatRequest{
-			Model: s.llm.model, Messages: msgs, Tools: toolDefs(), ToolChoice: "auto",
-		}, events.delta)
+		req := ask.Generation.chatRequest(s.llm.model, msgs)
+		req.Tools, req.ToolChoice = toolDefs(), "auto"
+		reply, err := s.runTurn(ctx, req, events.delta)
 		if err != nil {
 			if toolsUnsupported(err) {
-				return s.askWithPlan(ctx, question, events)
+				return s.askWithPlan(ctx, ask, events)
 			}
 			return AskResponse{}, err
 		}
 		if len(reply.ToolCalls) == 0 {
 			return answerResponse(reply.Content, ev, steps), nil
 		}
-		msgs = append(msgs, chatMessage{Role: "assistant", Content: reply.Content, ToolCalls: reply.ToolCalls})
+		assistant := chatMessage{Role: "assistant", Content: reply.Content, ToolCalls: reply.ToolCalls}
+		if req.keepToolReasoning() {
+			assistant.ReasoningContent = reply.ReasoningContent
+		}
+		msgs = append(msgs, assistant)
 		steps++
 		executed := 0
 		for i, tc := range reply.ToolCalls {
@@ -302,8 +306,12 @@ func (s *Server) runWithEvents(ctx context.Context, question string, events askE
 	}
 	// Complete the transcript before the final turn: every requested tool
 	// call has a result, including calls skipped after a budget was reached.
+	// This final request has no tools and needs only the evidence.
+	for i := range msgs {
+		msgs[i].ReasoningContent = ""
+	}
 	msgs = append(msgs, chatMessage{Role: "user", Content: planFinalPrompt})
-	return s.budgetFinalAnswer(ctx, msgs, ev, steps, events.delta)
+	return s.budgetFinalAnswer(ctx, ask.Generation.chatRequest(s.llm.model, msgs), ev, steps, events.delta)
 }
 
 // runTurn performs one model turn. When emit is non-nil and the turn may
@@ -323,7 +331,7 @@ func (s *Server) runTurn(ctx context.Context, req chatRequest, emit func(streamE
 				slog.Warn("agent: streamed turn returned no content and no tool calls; retrying non-streamed",
 					"hint", "GKG_AGENT_STREAM=false")
 				plain, perr := s.llm.chat(ctx, req)
-				if perr == nil && len(plain.ToolCalls) > 0 {
+				if perr == nil && len(plain.ToolCalls) > 0 && !req.customGeneration {
 					s.llm.memoContentOnly()
 				}
 				return plain, perr
@@ -332,7 +340,7 @@ func (s *Server) runTurn(ctx context.Context, req chatRequest, emit func(streamE
 		}
 		if streamFallbackEligible(err) {
 			plain, perr := s.llm.chat(ctx, req)
-			if perr == nil {
+			if perr == nil && !req.customGeneration {
 				s.llm.memoStreamUnsupported()
 			}
 			return plain, perr
@@ -406,14 +414,14 @@ func streamFallbackEligible(err error) bool {
 // one final call over the results. The plan call stays non-streamed (it must
 // return the constrained JSON); the final answer call rides the normal turn
 // path, so it streams when streaming is available.
-func (s *Server) askWithPlan(ctx context.Context, question string, events askEvents) (AskResponse, error) {
+func (s *Server) askWithPlan(ctx context.Context, ask AskRequest, events askEvents) (AskResponse, error) {
 	msgs := []chatMessage{
 		{Role: "system", Content: scopedPrompt(ctx, planSystemPrompt)},
-		{Role: "user", Content: question},
+		{Role: "user", Content: ask.Question},
 	}
-	reply, err := s.llm.chat(ctx, chatRequest{
-		Model: s.llm.model, Messages: msgs, ResponseFormat: map[string]string{"type": "json_object"},
-	})
+	req := ask.Generation.chatRequest(s.llm.model, msgs)
+	req.ResponseFormat = map[string]string{"type": "json_object"}
+	reply, err := s.runTurn(ctx, req, nil)
 	if err != nil {
 		return AskResponse{}, err
 	}
@@ -465,9 +473,9 @@ func (s *Server) askWithPlan(ctx context.Context, question string, events askEve
 	}
 	msgs = append(msgs, chatMessage{Role: "user", Content: "Tool results:\n" + results.String() + planFinalPrompt})
 	if s.contextBudgetReached(transcriptBytes) {
-		return s.budgetFinalAnswer(ctx, msgs, ev, 1, events.delta)
+		return s.budgetFinalAnswer(ctx, ask.Generation.chatRequest(s.llm.model, msgs), ev, 1, events.delta)
 	}
-	reply, err = s.runTurn(ctx, chatRequest{Model: s.llm.model, Messages: msgs}, events.delta)
+	reply, err = s.runTurn(ctx, ask.Generation.chatRequest(s.llm.model, msgs), events.delta)
 	if err != nil {
 		return AskResponse{}, err
 	}
@@ -515,12 +523,16 @@ func (s *Server) contextBudgetReached(transcriptBytes int) bool {
 
 // budgetFinalAnswer makes one tools-less turn within the original ask
 // deadline. Ordinary provider failures fall back to the bounded notice.
-func (s *Server) budgetFinalAnswer(ctx context.Context, msgs []chatMessage, ev []EvidenceItem, steps int, emit func(streamEvent) error) (AskResponse, error) {
-	reply, err := s.runTurn(ctx, chatRequest{Model: s.llm.model, Messages: msgs}, emit)
+func (s *Server) budgetFinalAnswer(ctx context.Context, req chatRequest, ev []EvidenceItem, steps int, emit func(streamEvent) error) (AskResponse, error) {
+	reply, err := s.runTurn(ctx, req, emit)
 	if ctx.Err() != nil {
 		return AskResponse{}, ctx.Err()
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return AskResponse{}, err
+	}
+	var rejected *generationRejection
+	if errors.As(err, &rejected) {
 		return AskResponse{}, err
 	}
 	if err != nil {
