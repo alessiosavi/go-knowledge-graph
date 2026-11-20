@@ -232,7 +232,8 @@ MATCH (d:Document) RETURN d.source, d.status, d.title ORDER BY d.created_at DESC
 
 `gkg` is an MCP server (stdio and streamable HTTP) exposing
 `ingest`, `status`, `search`, `get_entity`, `get_chunks`, `traverse`, `list_documents`,
-`cypher`, and `ask` when `GKG_AGENT_ENABLED=true`. See
+`cypher`, `get_product`, `find_products`, and `list_features`. It also exposes
+`ask` when `GKG_AGENT_ENABLED=true`. See
 [docs/agent-setup.md](docs/agent-setup.md) for OpenCode and Claude Desktop
 configuration examples.
 
@@ -261,7 +262,7 @@ Example prompts:
 
 With `GKG_AGENT_ENABLED=true` the web UI grows an **Ask the graph** panel
 and `POST /v1/agent/ask` answers natural-language questions server-side: an
-OpenAI-compatible model plans and runs the same read-only tools as MCP —
+OpenAI-compatible model plans and runs the graph read tools —
 search, entity cards, traversal, documents, guarded Cypher — and the
 response carries the raw tool results as `evidence`, so every answer is
 checkable. Answers use GitHub-flavoured Markdown: `answer` is the source
@@ -1258,6 +1259,54 @@ import must use a sequence higher than `wiped_seq`.
 products. It advances the bound domain's guard counter and accepts any
 domain operation state, including `incomplete`.
 Only a new `products release create` can re-bind an unbound store.
+
+### Read products and features
+
+```sh
+curl -s 'http://localhost:8080/v1/products?store=example.test&product_id=example.test%3A42'
+curl -s 'http://localhost:8080/v1/products/stores'
+curl -s 'http://localhost:8080/v1/features'
+curl -s 'http://localhost:8080/v1/products/search' -H 'Content-Type: application/json' \
+  -d '{"domain":"catalog","feature":"length","min":"10","max":"20"}'
+```
+
+Use `GET /v1/products/{id}` when you have a graph product ID from search.
+Both lookups return product metadata and a `features` array with raw
+observations and their feature revisions. Feature edges appear only when
+their release ID matches the active release. After activation, a product
+can have an empty feature array until its store is imported for that release.
+
+The store list reports `active_release_id` separately from each store's
+materialized `release_id`. A wiped store has `wiped: true`, zero products
+and edges, null `release_id` and `imported_at`, and retained sequence
+watermarks. The feature list describes every feature in the active
+registry. Each key reports its store, source key, `numeric_search` flag
+and release status.
+
+Search takes a feature ID and either `value` or at least one of `min`
+and `max`. Value matching applies the kind's fold to the whole scalar or
+unsplit value and matches any item in a split value. Conflicting edges can
+match independently. For numeric search, use non-negative decimal strings
+in the canonical unit, with up to six fractional digits. Bounds are
+inclusive and match exact observations from numeric-enabled keys. If the
+feature has released keys in scope and none support numeric search, the
+search returns HTTP 400 with `error: not_numeric`. An unknown feature ID
+returns empty hits in either search mode. A numeric search without `domain`
+includes `numeric_excluded_stores` when any stores with released keys for
+the feature lack a numeric-enabled released key. The list is sorted by store.
+
+Search returns one hit per product with up to five matching evidence edges,
+defaulting to 20 hits with a maximum of 50. The JSON page fits within 1 MiB.
+`evidence_truncated: true` marks a hit whose evidence was cut. Pass the
+returned `cursor` with the same domain, feature, value or bounds, and page
+size to continue. A change to any of these parameters, a release activation,
+or a watermark change in the searched scope invalidates the cursor. Start
+again without it after HTTP 400 with `error: stale_cursor`.
+
+MCP clients can call `get_product` with `id` or `store` and `product_id`,
+`find_products` with the search fields above, and `list_features` with
+empty arguments. Large `find_products` pages are available in
+`structuredContent`.
 
 ## Domain administration
 

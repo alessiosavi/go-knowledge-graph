@@ -25,6 +25,9 @@ The tool set is the same on both transports:
 | `traverse`       | walk fact edges up to two hops with direction/relation filters          |
 | `list_documents` | documents with metadata, filterable by status and domain                           |
 | `cypher`         | guarded read-only Cypher with row cap and timeout                       |
+| `get_product`    | product metadata and active-release observations by graph ID or exact store and source product ID |
+| `find_products`  | products and matching evidence by feature value or numeric bounds       |
+| `list_features`  | active-release feature definitions and per-store key settings           |
 
 Prefer `ask` for natural-language questions. It runs the server-side agent's
 retrieval loop and spends the server's LLM budget per call. Use `search`,

@@ -39,6 +39,10 @@ type Rebuilder interface {
 const jsonBodyCap = 1 << 20
 
 type graphStore interface {
+	GetProduct(context.Context, graph.ProductLookup) (graph.ProductDetail, error)
+	FindProducts(context.Context, graph.ProductSearchRequest) (graph.ProductSearchResult, error)
+	ListProductStores(context.Context) (graph.ProductStores, error)
+	ListProductFeatures(context.Context) (graph.ProductFeatures, error)
 	search.Store
 	Chunks(context.Context, string) ([]graph.Chunk, error)
 	DeleteChain(context.Context, string) (int, error)
@@ -167,6 +171,11 @@ func (s *Server) routes() []mount {
 		{"GET /v1/documents/{id}/status", s.withReadTimeout(s.handleStatus)},
 		{"DELETE /v1/documents/{id}", http.HandlerFunc(s.handleDocumentDelete)},
 		{"GET /v1/documents/{id}/content", s.withReadTimeout(s.handleDocumentContent)},
+		{"GET /v1/products/{id}", s.withReadTimeout(s.handleProduct)},
+		{"GET /v1/products", s.withReadTimeout(s.handleProduct)},
+		{"GET /v1/products/stores", s.withReadTimeout(s.handleProductStores)},
+		{"POST /v1/products/search", s.withReadTimeout(s.handleProductSearch)},
+		{"GET /v1/features", s.withReadTimeout(s.handleProductFeatures)},
 		{"POST /v1/search", s.withReadTimeout(s.handleSearch)},
 		{"GET /v1/entities/{id}", s.withReadTimeout(s.handleEntity)},
 		{"POST /v1/traverse", s.withReadTimeout(s.handleTraverse)},

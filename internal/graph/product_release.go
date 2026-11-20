@@ -246,7 +246,8 @@ func (s *Store) ActivateProductRelease(ctx context.Context, id string) error {
 		if state != "created" && state != "retired" {
 			return fmt.Errorf("%w: release %q is %q, expected created or retired", ErrProductData, id, state)
 		}
-		if err := txRun(ctx, tx, `MERGE (m:GkgMeta {id:'product_release'}) SET m.value=$id`, params); err != nil {
+		if err := txRun(ctx, tx, `MERGE (m:GkgMeta {id:'product_release'})
+			SET m.value=$id, m.activation_seq=coalesce(m.activation_seq, 0)+1`, params); err != nil {
 			return err
 		}
 		if err := txRun(ctx, tx, `MATCH (r:ProductRelease) WHERE r.state='active' AND r.id <> $id SET r.state='retired'`, params); err != nil {

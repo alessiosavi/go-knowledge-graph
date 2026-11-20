@@ -29,6 +29,9 @@ func TestEdgeAllowlist(t *testing.T) {
 		"^(GET|HEAD):/docs(/.*)?$":                          "@edge_default",
 		"^(GET|HEAD):/ui(/.*)?$":                            "@edge_default",
 		"^(GET|HEAD):/v1/entities/[^/]+$":                   "@edge_default",
+		"^(GET|HEAD):/v1/products(/[^/]+)?$":                "@edge_default",
+		"^(GET|HEAD):/v1/features$":                         "@edge_default",
+		"^POST:/v1/products/search$":                        "@edge_default",
 		"^(GET|HEAD):/v1/domains$":                          "@edge_default",
 		"^(GET|HEAD):/v1/documents$":                        "@edge_default",
 		"^(GET|HEAD|DELETE):/v1/documents/[^/]+$":           "@edge_default",
@@ -346,7 +349,7 @@ func TestEdgeMaintenanceMode(t *testing.T) {
 				rendered = strings.ReplaceAll(rendered, "${"+key+"}", values[i])
 			}
 			if flag != "1" {
-				const baseline = "dd54d62726b73bded177f6e1c88c7758f9a3df2552b93d84c2da87ee70426db7"
+				const baseline = "3998e72256e1ee136fb2f0e8a034f4d5d66f94ed0cc9b7908ad88dd3bd104e0c"
 				if got := fmt.Sprintf("%x", sha256.Sum256([]byte(rendered))); got != baseline {
 					t.Errorf("default edge config SHA-256 = %s, want %s", got, baseline)
 				}

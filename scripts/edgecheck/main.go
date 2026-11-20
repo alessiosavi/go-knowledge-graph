@@ -187,6 +187,16 @@ func (p *probe) routing() {
 	p.check("SQL-looking search", "POST", "/v1/search", encode(map[string]any{"query": "SELECT * FROM users WHERE id = 1 OR 1=1; UNION SELECT password FROM users;"}), 200)
 	p.check("documents list", "GET", "/v1/documents", nil, 200)
 	p.check("domains list", "GET", "/v1/domains", nil, 200)
+	r = p.check("product stores", "GET", "/v1/products/stores", nil, 200)
+	expect(object(r.body)["stores"] != nil, "product stores response")
+	r = p.check("product features", "GET", "/v1/features", nil, 200)
+	expect(object(r.body)["features"] != nil, "product features response")
+	r = p.check("product search", "POST", "/v1/products/search", encode(map[string]any{"feature": "length", "value": "10 mm"}), 200)
+	expect(object(r.body)["hits"] != nil, "product search response")
+	for _, path := range []string{"/v1/products/00000000000000000000000000000000", "/v1/products?store=edge-fixture.test&product_id=edge-fixture.test%3A1"} {
+		r = p.check("missing product", "GET", path, nil, 404)
+		expect(object(r.body)["error"] == "not_found", "product read reached upstream")
+	}
 	p.check("encoded slash in query remains allowed", "GET", "/v1/documents?x=a%2Fb", nil, 200)
 	for _, suffix := range []string{"", "/status", "/content"} {
 		p.check("document read "+suffix, "GET", "/v1/documents/"+ids[0]+suffix, nil, 200)
@@ -451,7 +461,7 @@ func (p *probe) mcpDuring(long bool, reload func()) {
 		}
 		expect(r.code == 200 && err == nil, fmt.Sprintf("MCP call %d", i))
 		if i == 0 {
-			// edge-check.sh enables the agent, so ask is listed beside the eight graph tools.
+			// edge-check.sh enables the agent, so ask is listed beside the graph tools.
 			tools, _ := result["tools"].([]any)
 			names := make([]string, 0, len(tools))
 			for _, tool := range tools {
@@ -460,7 +470,7 @@ func (p *probe) mcpDuring(long bool, reload func()) {
 				names = append(names, name)
 			}
 			sort.Strings(names)
-			want := []string{"ask", "cypher", "get_chunks", "get_entity", "ingest", "list_documents", "search", "status", "traverse"}
+			want := []string{"ask", "cypher", "find_products", "get_chunks", "get_entity", "get_product", "ingest", "list_documents", "list_features", "search", "status", "traverse"}
 			expect(strings.Join(names, ",") == strings.Join(want, ","), "MCP lists the graph tools and ask")
 		}
 	}

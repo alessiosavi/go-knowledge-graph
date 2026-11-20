@@ -239,7 +239,7 @@ func TestMCPNearCap(t *testing.T) {
 		case "notifications/initialized":
 			w.WriteHeader(202)
 		case "tools/list":
-			fmt.Fprint(w, `{"result":{"tools":[{"name":"ingest"},{"name":"status"},{"name":"search"},{"name":"get_entity"},{"name":"get_chunks"},{"name":"traverse"},{"name":"list_documents"},{"name":"cypher"},{"name":"ask"}]}}`)
+			fmt.Fprint(w, `{"result":{"tools":[{"name":"ingest"},{"name":"status"},{"name":"search"},{"name":"get_entity"},{"name":"get_chunks"},{"name":"traverse"},{"name":"list_documents"},{"name":"cypher"},{"name":"get_product"},{"name":"find_products"},{"name":"list_features"},{"name":"ask"}]}}`)
 		default:
 			fmt.Fprint(w, `{"result":{}}`)
 		}

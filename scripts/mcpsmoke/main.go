@@ -1,5 +1,5 @@
 // Command mcpsmoke drives a gkg MCP server over stdio with the official SDK
-// client: tools/list must return exactly the eight agent tools and an
+// client: tools/list must return exactly the built-in MCP tools and an
 // optional search call must answer with at least one hit. It is the MCP
 // smoke check of scripts/acceptance.sh and of the design's criterion 2
 // (the real-agent-client check stays manual, see docs/agent-setup.md).
@@ -20,6 +20,7 @@ import (
 
 var wantTools = []string{
 	"ingest", "status", "search", "get_entity", "get_chunks", "traverse", "list_documents", "cypher",
+	"get_product", "find_products", "list_features",
 }
 
 func main() {
