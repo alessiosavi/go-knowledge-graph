@@ -1102,7 +1102,7 @@ Names go only to `--out`. Stdout contains aggregates.
 
 ### Domain-scoped reads
 
-`GET /v1/domains` returns `[{id, name, documents}]` for the UI pickers;
+`GET /v1/domains` returns `[{id, name, documents, products, products_bound}]` for the UI pickers;
 `documents` counts done documents, and empty domains remain listed. Search and
 Ask offer independent domain pickers, defaulting to all domains. Search hits,
 document list/detail responses, entity views, related entity references in facts,

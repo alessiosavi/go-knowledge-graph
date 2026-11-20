@@ -244,8 +244,8 @@ outside the script.
 MCP tools `ask`, `search`, `get_entity`, `get_chunks`, `traverse`,
 `list_documents` and `status` accept an optional `domain` slug. Empty selects
 all. Search hits, entity views, and document views include `domain`. `GET /v1/domains`
-provides domain names and done-document counts for the web UI's search and
-ask pickers.
+provides domain names, done-document and product counts, and whether a
+product store is bound, for the web UI's search and ask pickers.
 
 MCP ask and REST ask (JSON and stream) accept `domain` with the question.
 That request scope applies to all answer tools, regardless of model arguments. Out-of-scope

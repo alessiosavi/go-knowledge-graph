@@ -78,6 +78,7 @@ var secondaryIndexes = []struct {
 	{"FeatureRev", []string{"id"}},
 	{"ProductRelease", []string{"id"}},
 	{"ProductStore", []string{"store"}},
+	{"ProductStore", []string{"domain"}},
 	{"Product", []string{"id"}},
 	{"Product", []string{"store", "product_id"}},
 	{"Product", []string{"domain"}},
