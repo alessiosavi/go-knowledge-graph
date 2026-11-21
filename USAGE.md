@@ -296,6 +296,24 @@ to add evidence within a 32 KiB budget for one JSON copy of the result.
 exhausts the budget is returned in full with no evidence.
 Use `search`, `get_entity`, `get_chunks`, and `traverse` for targeted lookups.
 
+`get_chunks` accepts `with_products: true` to list exact product identifier
+matches on the full stored text. Chunk scope follows the requested domain.
+Products can come from any bound store, and identifiers shared by multiple
+products are excluded. Each chunk reports `products_total` before
+`products_limit` (1–50, default 10), with up to eight unique evidence entries
+per product. `outside_returned_text` means every matching span extends beyond
+the displayed text. `products_omitted_for_budget` counts additional products
+trimmed to fit the JSON response. Retry a single chunk with a higher
+`products_limit` for more results, or use `gkg products mentions-scan` for
+the complete offline scan of done documents.
+
+`get_chunks` reads the product index after reading the chunks and reports
+the product metadata from that index snapshot. If enrichment is unavailable,
+the chunk response still includes the text and reports `products_error` as
+`index_too_large`, `index_unavailable`, or `match_budget`. A domain-scoped
+agent can list cross-domain products but can only open products in its own
+domain with `get_product`.
+
 Example prompts:
 
 - "Ingest <url> and tell me when it is done."

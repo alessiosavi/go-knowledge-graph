@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/chunkread"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
@@ -327,6 +328,67 @@ func TestToolGetChunks(t *testing.T) {
 			t.Errorf("get_chunks accepted %s", raw)
 		}
 	}
+	raw := json.RawMessage(fmt.Sprintf(`{"ids":[%q],"with_products":true}`, fx.docID+"-c0"))
+	res, err = s.execTool(t.Context(), "get_chunks", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enriched := unmarshalResult[struct {
+		Chunks []map[string]json.RawMessage
+	}](t, res)
+	if len(enriched.Chunks) != 1 || string(enriched.Chunks[0]["products"]) != "[]" ||
+		string(enriched.Chunks[0]["products_total"]) != "0" {
+		t.Errorf("get_chunks products = %+v, want an empty array and zero total", enriched.Chunks)
+	}
+}
+
+type chunkProductsStore struct {
+	graphStore
+	index *graph.ProductMentionIndex
+}
+
+func (s chunkProductsStore) ChunkNeighbourhood(_ context.Context, id string, _ int) (graph.Chunk, []graph.Chunk, error) {
+	return graph.Chunk{ID: id, Text: "AB12345 and CD67890"}, nil, nil
+}
+
+func (s chunkProductsStore) LoadProductMentionIndex(context.Context) (*graph.ProductMentionIndex, error) {
+	return s.index, nil
+}
+
+func TestToolGetChunksProductsLimit(t *testing.T) {
+	s := NewServer(config.Config{}, nil, nil)
+	s.store = chunkProductsStore{index: graph.BuildProductMentionIndex([]graph.ProductIdentifierObservation{
+		{Product: graph.Product{ID: "a", Store: "products.test", ProductID: "products.test:a"}, Feature: "catalogue_code", ValueFold: new("AB12345")},
+		{Product: graph.Product{ID: "b", Store: "products.test", ProductID: "products.test:b"}, Feature: "catalogue_code", ValueFold: new("CD67890")},
+	})}
+	call := func(t *testing.T, limit string) (any, error) {
+		t.Helper()
+		raw := json.RawMessage(fmt.Sprintf(`{"ids":["c1"],"with_products":true,"products_limit":%s}`, limit))
+		return s.execTool(t.Context(), "get_chunks", raw)
+	}
+	for _, limit := range []string{"0", "51", "-1", "3.0", "1e1", "1.5", `"2"`, "null"} {
+		t.Run("reject="+limit, func(t *testing.T) {
+			if _, err := call(t, limit); err == nil || err.Error() != chunkread.ProductsLimitError {
+				t.Errorf("products_limit=%s: got %v, want a products_limit argument error", limit, err)
+			}
+		})
+	}
+	t.Run("limit=1", func(t *testing.T) {
+		res, err := call(t, "1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := unmarshalResult[struct {
+			Chunks []struct {
+				Products []chunkread.ChunkProduct
+				Total    int             `json:"products_total"`
+				Omitted  json.RawMessage `json:"products_omitted_for_budget"`
+			}
+		}](t, res)
+		if len(out.Chunks) != 1 || out.Chunks[0].Total != 2 || len(out.Chunks[0].Products) != 1 || out.Chunks[0].Omitted != nil {
+			t.Errorf("products_limit=1: got %+v, want one product of two with no budget omissions", out)
+		}
+	})
 }
 
 func TestToolResultSizeGuidance(t *testing.T) {

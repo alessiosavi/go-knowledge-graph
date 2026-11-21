@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -178,139 +177,15 @@ type productMentionCounts struct {
 	ProductsWithPairs int `json:"products_with_pairs"`
 }
 
-type productMentionIdentity struct {
-	ID    string `json:"id"`
-	Store string `json:"store"`
-}
-
-type productMentionAmbiguity struct {
-	Key      string                   `json:"key"`
-	Products []productMentionIdentity `json:"products"`
-}
-
-type productMentionDivergenceExample struct {
-	productMentionIdentity
-	Key       string `json:"key"`
-	Feature   string `json:"feature"`
-	ValueFold string `json:"value_fold"`
-}
-
-type productMentionDivergence struct {
-	Count    int                               `json:"count"`
-	Examples []productMentionDivergenceExample `json:"examples"`
-}
-
 type productMentionSummary struct {
-	MatcherRevision string                      `json:"matcher_revision"`
-	Release         string                      `json:"release"`
-	ActivationSeq   int64                       `json:"activation_seq"`
-	Stores          []graph.ProductMentionStore `json:"stores"`
-	Documents       []productMentionDocument    `json:"documents"`
-	Counts          productMentionCounts        `json:"counts"`
-	Ambiguous       []productMentionAmbiguity   `json:"ambiguous"`
-	Divergence      productMentionDivergence    `json:"divergence"`
-}
-
-type productMentionEvidence struct {
-	feature   string
-	valueFold string
-}
-
-type productMentionKey struct {
-	product  graph.Product
-	evidence []productMentionEvidence
-}
-
-func indexProductMentionKeys(observations []graph.ProductIdentifierObservation, summary *productMentionSummary) map[string]*productMentionKey {
-	byKey := make(map[string]map[string]*productMentionKey)
-	stores := make(map[string]*graph.ProductMentionStore, len(summary.Stores))
-	for i := range summary.Stores {
-		store := &summary.Stores[i]
-		stores[store.Store] = store
-	}
-	identifierProducts := make(map[string]struct{})
-	eligibleProducts := make(map[string]struct{})
-	type identifierValue struct {
-		productID string
-		productMentionEvidence
-	}
-	seenValues := make(map[identifierValue]struct{})
-	summary.Ambiguous = []productMentionAmbiguity{}
-	summary.Divergence.Examples = []productMentionDivergenceExample{}
-	addValue := func(observation graph.ProductIdentifierObservation, value string) {
-		product := observation.Product
-		evidence := productMentionEvidence{feature: observation.Feature, valueFold: value}
-		triple := identifierValue{productID: product.ID, productMentionEvidence: evidence}
-		if _, seen := seenValues[triple]; seen {
-			return
-		}
-		seenValues[triple] = struct{}{}
-		summary.Counts.IdentifierValues++
-		key := productobs.CodeKey(value)
-		if key != value {
-			summary.Divergence.Count++
-			if len(summary.Divergence.Examples) < 20 {
-				summary.Divergence.Examples = append(summary.Divergence.Examples, productMentionDivergenceExample{
-					productMentionIdentity: productMentionIdentity{ID: product.ID, Store: product.Store},
-					Key:                    key, Feature: observation.Feature, ValueFold: value,
-				})
-			}
-		}
-		if !productobs.EligibleCodeKey(key) {
-			summary.Counts.IneligibleValues++
-			return
-		}
-		if _, seen := eligibleProducts[product.ID]; !seen {
-			eligibleProducts[product.ID] = struct{}{}
-			stores[product.Store].EligibleProducts++
-		}
-		products := byKey[key]
-		if products == nil {
-			products = make(map[string]*productMentionKey)
-			byKey[key] = products
-		}
-		entry := products[product.ID]
-		if entry == nil {
-			entry = &productMentionKey{product: product}
-			products[product.ID] = entry
-		}
-		entry.evidence = append(entry.evidence, evidence)
-	}
-	for _, observation := range observations {
-		product := observation.Product
-		if _, seen := identifierProducts[product.ID]; !seen {
-			identifierProducts[product.ID] = struct{}{}
-			stores[product.Store].IdentifierProducts++
-		}
-		if observation.ValueFold != nil {
-			addValue(observation, *observation.ValueFold)
-		}
-		for _, item := range observation.ItemsFold {
-			addValue(observation, item)
-		}
-	}
-
-	summary.Counts.EligibleKeys = len(byKey)
-	keys := make(map[string]*productMentionKey, len(byKey))
-	for key, products := range byKey {
-		if len(products) == 1 {
-			for _, entry := range products {
-				slices.SortFunc(entry.evidence, func(a, b productMentionEvidence) int {
-					return cmp.Or(cmp.Compare(a.feature, b.feature), cmp.Compare(a.valueFold, b.valueFold))
-				})
-				keys[key] = entry
-			}
-			continue
-		}
-		ambiguous := productMentionAmbiguity{Key: key, Products: make([]productMentionIdentity, 0, len(products))}
-		for _, id := range slices.Sorted(maps.Keys(products)) {
-			ambiguous.Products = append(ambiguous.Products, productMentionIdentity{ID: id, Store: products[id].product.Store})
-		}
-		summary.Ambiguous = append(summary.Ambiguous, ambiguous)
-	}
-	slices.SortFunc(summary.Ambiguous, func(a, b productMentionAmbiguity) int { return cmp.Compare(a.Key, b.Key) })
-	summary.Counts.AmbiguousKeys = len(summary.Ambiguous)
-	return keys
+	MatcherRevision string                          `json:"matcher_revision"`
+	Release         string                          `json:"release"`
+	ActivationSeq   int64                           `json:"activation_seq"`
+	Stores          []graph.ProductMentionStore     `json:"stores"`
+	Documents       []productMentionDocument        `json:"documents"`
+	Counts          productMentionCounts            `json:"counts"`
+	Ambiguous       []graph.ProductMentionAmbiguity `json:"ambiguous"`
+	Divergence      graph.ProductMentionDivergence  `json:"divergence"`
 }
 
 type productMentionDocState struct {
@@ -323,7 +198,7 @@ func scanProductMentions(ctx context.Context, st *graph.Store, selection graph.P
 	summary := productMentionSummary{MatcherRevision: productobs.CodeMatcherRevision}
 	docs := make(map[string]productMentionDocState)
 	products := make(map[string]struct{})
-	var keys map[string]*productMentionKey
+	var index *graph.ProductMentionIndex
 	var pending []*productMentionPair
 	var source string
 	var seq int
@@ -344,7 +219,17 @@ func scanProductMentions(ctx context.Context, st *graph.Store, selection graph.P
 	}
 	begin := func(input graph.ProductMentionInput) error {
 		summary.Release, summary.ActivationSeq, summary.Stores = input.Release, input.ActivationSeq, input.Stores
-		keys = indexProductMentionKeys(input.Identifiers, &summary)
+		index = graph.BuildProductMentionIndex(input.Identifiers)
+		summary.Counts.IdentifierValues = index.Stats.IdentifierValues
+		summary.Counts.EligibleKeys = index.Stats.EligibleKeys
+		summary.Counts.IneligibleValues = index.Stats.IneligibleValues
+		summary.Counts.AmbiguousKeys = len(index.Stats.Ambiguous)
+		summary.Ambiguous, summary.Divergence = index.Stats.Ambiguous, index.Stats.Divergence
+		for i := range summary.Stores {
+			store := &summary.Stores[i]
+			stats := index.Stats.ByStore[store.Store]
+			store.IdentifierProducts, store.EligibleProducts = stats.IdentifierProducts, stats.EligibleProducts
+		}
 		summary.Documents = make([]productMentionDocument, len(input.Documents))
 		for i, doc := range input.Documents {
 			summary.Documents[i] = productMentionDocument{ID: doc.ID, Source: doc.Source, Hash: doc.Hash}
@@ -362,7 +247,7 @@ func scanProductMentions(ctx context.Context, st *graph.Store, selection graph.P
 			}
 			source, seq = state.doc.Source, chunk.Seq
 		}
-		pairs := matchProductMentionPairs(state.doc, chunk, keys)
+		pairs := matchProductMentionPairs(state.doc, chunk, index)
 		if len(pairs) > 0 {
 			summary.Counts.ChunksWithPairs++
 			summary.Counts.Pairs += len(pairs)
@@ -386,15 +271,14 @@ func scanProductMentions(ctx context.Context, st *graph.Store, selection graph.P
 	return summary, nil
 }
 
-func matchProductMentionPairs(doc graph.Document, chunk graph.Chunk, keys map[string]*productMentionKey) map[string]*productMentionPair {
-	matches := productobs.MatchCodes(chunk.Text, keys)
+func matchProductMentionPairs(doc graph.Document, chunk graph.Chunk, index *graph.ProductMentionIndex) map[string]*productMentionPair {
+	matches := index.Match(chunk.Text)
 	if len(matches) == 0 {
 		return nil
 	}
 	pairs := make(map[string]*productMentionPair)
 	for _, match := range matches {
-		entry := keys[match.Key]
-		product := entry.product
+		product := match.Product
 		pair := pairs[product.ID]
 		if pair == nil {
 			pair = &productMentionPair{
@@ -406,12 +290,12 @@ func matchProductMentionPairs(doc graph.Document, chunk graph.Chunk, keys map[st
 			pairs[product.ID] = pair
 		}
 		pair.SeparatorRun = pair.SeparatorRun || match.SeparatorRun()
-		for _, evidence := range entry.evidence {
+		for _, evidence := range match.Evidence {
 			pair.Matches = append(pair.Matches, productMentionMatch{
-				Key: match.Key, Feature: evidence.feature, ValueFold: evidence.valueFold,
+				Key: match.Key, Feature: evidence.Feature, ValueFold: evidence.ValueFold,
 				Span: match.Span, Text: match.Text, Tokens: match.Tokens,
 			})
-			pair.Features = append(pair.Features, evidence.feature)
+			pair.Features = append(pair.Features, evidence.Feature)
 		}
 	}
 	for _, pair := range pairs {
