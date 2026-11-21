@@ -1460,8 +1460,11 @@ The matcher checks whole windows of one to three tokens joined by spaces
 or tabs on a single line. Tokens contain letters, combining marks, digits
 and `.-_/+#`. It compares keys after NFKC normalization, uppercasing, and
 removal of whitespace and those six punctuation characters. Eligible keys
-have at least five runes with a letter and a digit, or at least seven
-digits. Keys shared by multiple products across bound stores are excluded.
+contain only letters, combining marks and digits, and have at least five
+runes with a letter and a digit, or at least seven digits. A key with any
+other character, such as `:` or `(`, can never match and counts as
+ineligible. Keys shared by multiple products across bound stores are
+excluded.
 
 The private JSONL file contains one row per product and chunk with product
 and document metadata, matched keys and feature values, original byte

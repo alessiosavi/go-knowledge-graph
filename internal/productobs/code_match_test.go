@@ -35,6 +35,10 @@ func TestEligibleCodeKey(t *testing.T) {
 		{"Q\u0301123", true},
 		{"1234567\u0301", false},
 		{"", false},
+		// Runes outside the token alphabet can never equal a window key.
+		{"AB:12345", false},
+		{"2010066 (ref on package)", false},
+		{"PR20156123;", false},
 	} {
 		key := CodeKey(tc.value)
 		if got := EligibleCodeKey(key); got != tc.want {

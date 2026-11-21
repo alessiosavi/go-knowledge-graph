@@ -44,6 +44,10 @@ func EligibleCodeKey(key string) bool {
 	}
 	letter, digit, allDigits := false, false, true
 	for _, r := range key {
+		// A window key holds only token runes after separator removal.
+		if !unicode.IsLetter(r) && !unicode.IsMark(r) && !unicode.IsDigit(r) {
+			return false
+		}
 		isDigit := unicode.IsDigit(r)
 		letter = letter || unicode.IsLetter(r)
 		digit = digit || isDigit
