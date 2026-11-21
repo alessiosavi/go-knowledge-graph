@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,111 @@ import (
 	"testing"
 	"time"
 )
+
+func TestProbeProductMutations(t *testing.T) {
+	const id = "edge-fixture.test:1"
+	type requestKind struct{ method, kind string }
+	requests := make(chan requestKind, 20)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		kind := "upstream"
+		defer func() { requests <- requestKind{r.Method, kind} }()
+		if r.Header.Get("Sec-Fetch-Site") == "cross-site" || r.Header.Get("Origin") == "https://evil.example" {
+			if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+				kind = "cross-site"
+			} else {
+				kind = "foreign-origin"
+			}
+			w.WriteHeader(403)
+			return
+		}
+		if login, pass, ok := r.BasicAuth(); !ok || login != "test" || pass != "pass" {
+			kind = "no Basic"
+			if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				kind = "bearer only"
+			}
+			w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+			w.WriteHeader(401)
+			return
+		}
+		if r.URL.Path != "/v1/products" {
+			kind = "closed path"
+			w.WriteHeader(404)
+			return
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		if len(data) > 128<<10 {
+			if len(data) != (128<<10)+1 {
+				t.Errorf("oversize probe has %d bytes, want 128 KiB + 1", len(data))
+			}
+			kind = "Content-Length"
+			if r.ContentLength == -1 && len(r.TransferEncoding) == 1 && r.TransferEncoding[0] == "chunked" {
+				kind = "chunked"
+			}
+			w.WriteHeader(413)
+			return
+		}
+		switch r.Method {
+		case http.MethodPut:
+			event := object(data)
+			record, _ := event["record"].(map[string]any)
+			if event["seq"] != float64(1) || record["product_id"] != id {
+				t.Errorf("bad fixture event: %v", event)
+			}
+		case http.MethodDelete:
+			if r.URL.Query().Get("product_id") != id || r.URL.Query().Get("seq") != "1" || len(data) != 0 {
+				t.Errorf("bad DELETE fixture: %s", r.URL)
+			}
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(409)
+		fmt.Fprint(w, `{"error":"release_changed","detail":"release_changed"}`)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	write(filepath.Join(dir, "auth.curl"), []byte("user = \"test:pass\"\n"))
+	write(filepath.Join(dir, "bearer.curl"), []byte("header = \"Authorization: Bearer fixture\"\n"))
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(testBinary, "-test.run=^TestProbeProductMutationsHelper$")
+	cmd.Env = append(os.Environ(), "EDGECHECK_PRODUCT_PROBE_TEST_DIR="+dir, "EDGECHECK_PRODUCT_PROBE_TEST_URL="+server.URL)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("product probes: %v\n%s", err, out)
+	}
+	got := map[requestKind]int{}
+	for len(requests) > 0 {
+		got[<-requests]++
+	}
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		for _, kind := range []string{"upstream", "cross-site", "foreign-origin", "no Basic", "bearer only"} {
+			key := requestKind{method, kind}
+			if got[key] != 1 {
+				t.Errorf("%+v got %d probes, want 1", key, got[key])
+			}
+		}
+	}
+	for _, kind := range []string{"Content-Length", "chunked", "closed path"} {
+		key := requestKind{http.MethodPut, kind}
+		if got[key] != 1 {
+			t.Errorf("%+v got %d probes, want 1", key, got[key])
+		}
+	}
+}
+
+func TestProbeProductMutationsHelper(t *testing.T) {
+	dir := os.Getenv("EDGECHECK_PRODUCT_PROBE_TEST_DIR")
+	if dir == "" {
+		return
+	}
+	os.Args = []string{"edgecheck", "product-mutations", dir, os.Getenv("EDGECHECK_PRODUCT_PROBE_TEST_URL")}
+	main()
+}
 
 func TestProbeCommandCA(t *testing.T) {
 	for _, tls := range []bool{false, true} {

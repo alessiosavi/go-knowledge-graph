@@ -126,6 +126,7 @@ for mode in DetectionOnly On; do
   # separate from the legitimate corpus whose CRS count must be zero.
   ok "section auth ($mode)"
   "$tmp/check" auth "$tmp" "$base" "$mode"
+  "$tmp/check" product-mutations "$tmp" "$base"
   "${compose[@]}" logs --no-color --no-log-prefix gkg >"$tmp/before-encoded-$mode.log" 2>&1
   "$tmp/check" encoded-paths "$tmp" "$base" "$mode"
   "${compose[@]}" logs --no-color --no-log-prefix gkg >"$tmp/after-encoded-$mode.log" 2>&1
@@ -178,7 +179,8 @@ for mode in DetectionOnly On; do
   "${compose[@]}" logs --no-color --no-log-prefix gkg >"$tmp/gkg.log" 2>&1
   grep -F '"path":"/v1/domains"' "$tmp/gkg.log" >/dev/null || fail 'domains list reached upstream'
   grep -F '"path":"/v1/documents"' "$tmp/gkg.log" >/dev/null || fail 'upstream request log positive control'
-  if grep -E '"path":"(/metrics|/readyz|/v1/cypher|/v1/admin/domains/(move|merge|rename|undo)|/v1/unknown|/ui/\.\./metrics)"|"method":"(PUT|OPTIONS)"' "$tmp/gkg.log" >/dev/null; then fail 'allowlist reached upstream'; fi
+  if grep -E '"path":"(/metrics|/readyz|/v1/cypher|/v1/admin/domains/(move|merge|rename|undo)|/v1/unknown|/ui/\.\./metrics)"|"method":"OPTIONS"' "$tmp/gkg.log" >/dev/null; then fail 'allowlist reached upstream'; fi
+  if grep -F '"method":"PUT"' "$tmp/gkg.log" | grep -Fv '"path":"/v1/products"' >/dev/null; then fail 'unlisted PUT reached upstream'; fi
   ok 'allowlist absent from upstream logs'
   ok 'section hygiene'
   "${compose[@]}" logs --no-color --no-log-prefix >"$tmp/all.log" 2>&1

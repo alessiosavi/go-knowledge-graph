@@ -4,11 +4,55 @@ import (
 	"bytes"
 	"net/http"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/alessiosavi/go-knowledge-graph/docs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"go.yaml.in/yaml/v4"
 )
+
+func TestOpenAPIProductStoreWatermark(t *testing.T) {
+	type property struct {
+		Type, Format string
+		Nullable     bool
+	}
+	var spec struct {
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]property
+				Required   []string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatal(err)
+	}
+	schema := spec.Components.Schemas["ProductStoreWatermark"]
+	for _, field := range reflect.VisibleFields(reflect.TypeFor[graph.ProductStoreWatermark]()) {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if !field.IsExported() || name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		if _, ok := schema.Properties[name]; !ok {
+			t.Errorf("ProductStoreWatermark.%s missing from OpenAPI", name)
+		}
+	}
+	for name, want := range map[string]property{
+		"materialized_activation_seq": {"integer", "int64", true},
+		"pushed_at":                   {"string", "date-time", true},
+	} {
+		if got := schema.Properties[name]; got != want || slices.Contains(schema.Required, name) {
+			t.Errorf("ProductStoreWatermark.%s = %+v, want optional %+v", name, got, want)
+		}
+	}
+}
 
 func TestDocsServesEmbeddedAssets(t *testing.T) {
 	h := NewServer(config.Config{}, nil, nil).Handler()
