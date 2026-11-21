@@ -180,6 +180,48 @@ loader, including those used by ingest, eval, and rejudge planning.
 **From an agent**: the MCP `ingest` tool takes `url` or `text`, plus an
 optional `source` label and `force` to re-run an unchanged document.
 
+### Link a document to products
+
+A document can name the products it describes, for example a product page or
+a catalogue that lists them. Pass product IDs in the `store:suffix` form used
+by product imports (at most 50, each at most 1 KiB):
+
+```bash
+# JSON
+curl -sS -u USER:PASS -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.example.com/p/1000","products":["example.com:1000"]}' \
+  https://HOST/v1/ingest
+# Multipart: repeat the field
+curl -sS -u USER:PASS -F file=@catalogue.pdf \
+  -F products=example.com:1000 -F products=example.com:1001 https://HOST/v1/ingest
+# CLI and MCP
+gkg ingest --product example.com:1000 --product example.com:1001 catalogue.pdf
+```
+
+The MCP `ingest` tool takes the same `products` list. Every store must be
+bound to a domain by a product release. When all stores share one
+bound domain, the document is placed in that domain; IDs from several
+domains leave the domain to detection.
+
+The refs are kept as a set, so order and repetition across submissions do
+not matter:
+
+| Submission | `products` supplied | `products` omitted | Cleared |
+| --- | --- | --- | --- |
+| New source | Stored | None | None |
+| Changed content | Stored | Inherited from the newest done version | Cleared |
+| Unchanged content | Same set: no-op. Different set: 409 `refs_changed_use_force` | Kept | 409 `refs_changed_use_force` if refs are stored |
+| `force` or a retry of a failed version | Replaced | Kept | Cleared |
+
+Clear the refs with `"products": []` in JSON, `products_clear=true` in a
+multipart form, an empty MCP `products` list, or `gkg ingest
+--clear-products`. Errors: 400 `invalid_products` (format, count, duplicates)
+and `products_unknown_store` (no bound store); 409 `refs_changed_use_force`,
+`domain_pin_conflict` (forced refs would move an existing version to another
+domain: delete it and ingest again) and `domain_missing` (the bound domain no
+longer exists). Refs survive product re-imports and pushes because they
+point at the stable product ID.
+
 ## 2. Explore the graph
 
 The graph is plain Memgraph — anything that speaks Bolt works. Three easy
