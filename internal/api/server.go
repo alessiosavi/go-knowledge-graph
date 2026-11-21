@@ -40,6 +40,8 @@ const jsonBodyCap = 1 << 20
 
 type graphStore interface {
 	GetProduct(context.Context, graph.ProductLookup) (graph.ProductDetail, error)
+	PushProduct(context.Context, int64, []byte) (graph.ProductMutationResult, error)
+	RemoveProduct(context.Context, string, int64) (graph.ProductMutationResult, error)
 	FindProducts(context.Context, graph.ProductSearchRequest) (graph.ProductSearchResult, error)
 	ListProductStores(context.Context) (graph.ProductStores, error)
 	ListProductFeatures(context.Context) (graph.ProductFeatures, error)
@@ -173,6 +175,8 @@ func (s *Server) routes() []mount {
 		{"GET /v1/documents/{id}/content", s.withReadTimeout(s.handleDocumentContent)},
 		{"GET /v1/products/{id}", s.withReadTimeout(s.handleProduct)},
 		{"GET /v1/products", s.withReadTimeout(s.handleProduct)},
+		{"PUT /v1/products", http.HandlerFunc(s.handleProductPut)},
+		{"DELETE /v1/products", http.HandlerFunc(s.handleProductDelete)},
 		{"GET /v1/products/stores", s.withReadTimeout(s.handleProductStores)},
 		{"POST /v1/products/search", s.withReadTimeout(s.handleProductSearch)},
 		{"GET /v1/features", s.withReadTimeout(s.handleProductFeatures)},
@@ -280,7 +284,11 @@ func writeError(w http.ResponseWriter, code int, kind, detail string) {
 
 // writeStoreError maps a store error onto a status and writes the body.
 func writeStoreError(w http.ResponseWriter, err error, what string) {
-	writeError(w, storeErrStatus(err), "store_error", fmt.Sprintf("%s: %v", what, err))
+	writeStoreErrorStatus(w, storeErrStatus(err), err, what)
+}
+
+func writeStoreErrorStatus(w http.ResponseWriter, status int, err error, what string) {
+	writeError(w, status, "store_error", fmt.Sprintf("%s: %v", what, err))
 }
 
 func writeReadError(w http.ResponseWriter, ctx context.Context, err error, what string) {

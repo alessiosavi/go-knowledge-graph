@@ -35,6 +35,64 @@ const pushRegistry = `{
   },"ignore":{},"deferred":[]}}
 }`
 
+func TestProductMutationPrepareTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Store) (ProductMutationResult, error)
+	}{
+		{"put", func(s *Store) (ProductMutationResult, error) {
+			record := pushRecord(pushOne, "one", "null", `{}`)
+			return s.PushProduct(context.Background(), 1, []byte(record))
+		}},
+		{"delete", func(s *Store) (ProductMutationResult, error) {
+			return s.RemoveProduct(context.Background(), pushOne, 1)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stop := errors.New("stop at prepare transaction")
+			session := &productPrepareSession{err: stop}
+			store := &Store{driver: productPrepareDriver{session: session}}
+			if _, err := tc.mutate(store); !errors.Is(err, stop) {
+				t.Fatalf("prepare error = %v, want %v", err, stop)
+			}
+			if session.budget <= 0 || session.budget > productPushTimeout {
+				t.Errorf("prepare context budget = %v, want (0, %v]", session.budget, productPushTimeout)
+			}
+			if session.config.Timeout <= 0 || session.config.Timeout > productPushTimeout {
+				t.Errorf("prepare transaction timeout = %v, want (0, %v]", session.config.Timeout, productPushTimeout)
+			}
+		})
+	}
+}
+
+type productPrepareDriver struct {
+	neo4j.Driver
+	session *productPrepareSession
+}
+
+func (d productPrepareDriver) NewSession(context.Context, neo4j.SessionConfig) neo4j.Session {
+	return d.session
+}
+
+type productPrepareSession struct {
+	neo4j.Session
+	err    error
+	budget time.Duration
+	config neo4j.TransactionConfig
+}
+
+func (s *productPrepareSession) BeginTransaction(ctx context.Context, opts ...func(*neo4j.TransactionConfig)) (neo4j.ExplicitTransaction, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		s.budget = time.Until(deadline)
+	}
+	for _, opt := range opts {
+		opt(&s.config)
+	}
+	return nil, s.err
+}
+
+func (*productPrepareSession) Close(context.Context) error { return nil }
+
 type pushFixture struct {
 	t     *testing.T
 	store *Store

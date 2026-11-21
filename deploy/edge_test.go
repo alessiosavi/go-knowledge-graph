@@ -30,6 +30,7 @@ func TestEdgeAllowlist(t *testing.T) {
 		"^(GET|HEAD):/ui(/.*)?$":                            "@edge_default",
 		"^(GET|HEAD):/v1/entities/[^/]+$":                   "@edge_default",
 		"^(GET|HEAD):/v1/products(/[^/]+)?$":                "@edge_default",
+		"^(PUT|DELETE):/v1/products$":                       "@edge_default",
 		"^(GET|HEAD):/v1/features$":                         "@edge_default",
 		"^POST:/v1/products/search$":                        "@edge_default",
 		"^(GET|HEAD):/v1/domains$":                          "@edge_default",
@@ -135,7 +136,8 @@ func TestEdgePolicy(t *testing.T) {
 		"client_max_body_size 1m;", "client_max_body_size 21037056;", "client_max_body_size 4m;",
 		"proxy_read_timeout ${EDGE_INGEST_TIMEOUT_S}s;", "proxy_read_timeout ${EDGE_ASK_TIMEOUT_S}s;", "proxy_read_timeout 3600s;",
 		"limit_req_zone $binary_remote_addr zone=edge:10m rate=20r/s;", "limit_req zone=edge burst=80 nodelay;",
-		"$http_sec_fetch_site", "$http_origin", "$scheme://$http_host", "cross-site", "same-site", "POST|DELETE",
+		"$http_sec_fetch_site", "$http_origin", "$scheme://$http_host", "cross-site", "same-site",
+		`"~^(POST|PUT|DELETE):(1:[01]|[01]:1)$" 1;`,
 	} {
 		if !strings.Contains(template, directive) {
 			t.Errorf("edge policy missing %s", directive)
@@ -175,6 +177,12 @@ func TestEdgePolicy(t *testing.T) {
 	}
 	if !strings.Contains(template, "location @edge_not_found { return 404; }") {
 		t.Error("unlisted routes must terminate locally")
+	}
+	productLocation := regexp.MustCompile(`(?s)location = /v1/products \{(.*?)\n    \}`).FindString(template)
+	for _, directive := range []string{"client_max_body_size 128k;", "try_files /__edge_missing $edge_route;"} {
+		if !strings.Contains(productLocation, directive) {
+			t.Errorf("initial /v1/products location missing %s", directive)
+		}
 	}
 }
 
@@ -349,7 +357,7 @@ func TestEdgeMaintenanceMode(t *testing.T) {
 				rendered = strings.ReplaceAll(rendered, "${"+key+"}", values[i])
 			}
 			if flag != "1" {
-				const baseline = "3998e72256e1ee136fb2f0e8a034f4d5d66f94ed0cc9b7908ad88dd3bd104e0c"
+				const baseline = "1f0407b26b152073b86bff6a15c67bef9700f16e2d5ab54919067bf27937c327"
 				if got := fmt.Sprintf("%x", sha256.Sum256([]byte(rendered))); got != baseline {
 					t.Errorf("default edge config SHA-256 = %s, want %s", got, baseline)
 				}

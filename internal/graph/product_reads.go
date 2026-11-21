@@ -75,8 +75,8 @@ type ProductDetail struct {
 	PagesMissing bool              `json:"pages_missing"`
 }
 
-// Keep the binding check in the projection so the optional match can use
-// the ProductStore(store) index.
+// Project the store's domain for page lookup. A missing or unbound store
+// yields a null page_domain.
 const getProductQuery = `
 MATCH (p:Product {id:$id})
 WHERE $store = '' OR (p.store = $store AND p.product_id = $product)

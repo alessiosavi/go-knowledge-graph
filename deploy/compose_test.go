@@ -316,7 +316,7 @@ func TestComposeEdgeWiring(t *testing.T) {
 		t.Error("edge needs healthy gkg and completed edge-init")
 	}
 	for key, value := range map[string]string{
-		"MODSEC_RESP_BODY_ACCESS": "Off", "ALLOWED_METHODS": "GET HEAD POST OPTIONS DELETE",
+		"MODSEC_RESP_BODY_ACCESS": "Off", "ALLOWED_METHODS": "GET HEAD POST PUT OPTIONS DELETE",
 		"MODSEC_REQ_BODY_LIMIT": "22020096", "MODSEC_REQ_BODY_NOFILES_LIMIT": "4259840",
 		"MODSEC_REQ_BODY_LIMIT_ACTION": "Reject", "NGINX_WORKER_PROCESSES": "2",
 		"MODSEC_AUDIT_LOG_PARTS": "ADEFHZ", "PARANOIA": "1", "BLOCKING_PARANOIA": "1", "ANOMALY_INBOUND": "5",
