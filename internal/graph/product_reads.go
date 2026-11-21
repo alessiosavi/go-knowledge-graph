@@ -75,6 +75,8 @@ type ProductDetail struct {
 	PagesMissing bool              `json:"pages_missing"`
 }
 
+// Keep the binding check in the projection so the optional match can use
+// the ProductStore(store) index.
 const getProductQuery = `
 MATCH (p:Product {id:$id})
 WHERE $store = '' OR (p.store = $store AND p.product_id = $product)
@@ -82,7 +84,8 @@ OPTIONAL MATCH (s:ProductStore {store:p.store})
 OPTIONAL MATCH (m:GkgMeta {id:'product_release'})
 OPTIONAL MATCH (p)-[e:HAS_FEATURE]->(f:FeatureRev)
 WHERE e.release_id = m.value
-RETURN properties(p) AS product, s.domain AS page_domain, properties(f) AS feature, properties(e) AS edge
+RETURN properties(p) AS product, CASE WHEN s.domain IS NOT NULL THEN s.domain ELSE null END AS page_domain,
+       properties(f) AS feature, properties(e) AS edge
 ORDER BY f.id, e.source_key`
 
 // GetProduct reads the product, active observations, and pages in one snapshot.
@@ -147,16 +150,18 @@ func readProductDetail(rows []*neo4j.Record) (ProductDetail, error) {
 }
 
 type ProductStoreWatermark struct {
-	Store        string  `json:"store"`
-	Domain       string  `json:"domain"`
-	SnapshotSeq  int64   `json:"snapshot_seq"`
-	SeenSeq      int64   `json:"seen_seq"`
-	WipedSeq     int64   `json:"wiped_seq"`
-	Wiped        bool    `json:"wiped"`
-	ReleaseID    *string `json:"release_id"`
-	ProductCount int64   `json:"product_count"`
-	EdgeCount    int64   `json:"edge_count"`
-	ImportedAt   *string `json:"imported_at"`
+	Store                     string  `json:"store"`
+	Domain                    string  `json:"domain"`
+	SnapshotSeq               int64   `json:"snapshot_seq"`
+	SeenSeq                   int64   `json:"seen_seq"`
+	WipedSeq                  int64   `json:"wiped_seq"`
+	Wiped                     bool    `json:"wiped"`
+	ReleaseID                 *string `json:"release_id"`
+	ProductCount              int64   `json:"product_count"`
+	EdgeCount                 int64   `json:"edge_count"`
+	ImportedAt                *string `json:"imported_at"`
+	MaterializedActivationSeq *int64  `json:"materialized_activation_seq"`
+	PushedAt                  *string `json:"pushed_at"`
 }
 
 type ProductStores struct {
@@ -166,7 +171,8 @@ type ProductStores struct {
 
 const productStoresMatch = `
 OPTIONAL MATCH (m:GkgMeta {id:'product_release'})
-OPTIONAL MATCH (s:ProductStore)`
+OPTIONAL MATCH (s:ProductStore)
+WHERE s.domain IS NOT NULL`
 
 const productStoresReturn = `
 RETURN m.value AS active_release_id, coalesce(m.activation_seq, 0) AS activation_seq,
@@ -211,6 +217,7 @@ func readProductStores(rows []*neo4j.Record) (ProductStores, int64, error) {
 			SnapshotSeq: seq, SeenSeq: seen, WipedSeq: wiped,
 			Wiped: hasWipe && release == nil, ReleaseID: release, ImportedAt: productOptional[string](p, "imported_at"),
 			ProductCount: productProp[int64](p, "product_count"), EdgeCount: productProp[int64](p, "edge_count"),
+			MaterializedActivationSeq: productOptional[int64](p, "materialized_activation_seq"), PushedAt: productOptional[string](p, "pushed_at"),
 		})
 	}
 	return out, productProp[int64](pointer, "activation_seq"), nil

@@ -13,10 +13,9 @@ import (
 )
 
 const (
-	maxProductImportEdges      = 60000
-	maxProductImportValueBytes = 1 << 10
-	maxProductImportPropBytes  = 64 << 20
-	maxProductReportDetails    = 1000
+	maxProductImportEdges     = 60000
+	maxProductImportPropBytes = 64 << 20
+	maxProductReportDetails   = 1000
 )
 
 type ProductImportReport struct {
@@ -76,29 +75,13 @@ func prepareProductReplacement(ctx context.Context, input ProductSnapshotInput, 
 	}, func(line int, record productobs.Record) error {
 		// The emitter computes conflicts across mapped aliases before projecting the release.
 		observations := registry.Observations(record, release)
-		for _, obs := range observations {
-			if len(obs.Raw) > maxProductImportValueBytes {
-				report.Reject(line, errors.New("released feature value exceeds 1 KiB"))
-				return nil
-			}
-			if len(obs.Items) > 64 {
-				report.Reject(line, errors.New("feature value splits into more than 64 items"))
-				return nil
-			}
-			for _, item := range obs.Items {
-				if len(item) > maxProductImportValueBytes {
-					report.Reject(line, errors.New("released feature item exceeds 1 KiB"))
-					return nil
-				}
-			}
+		if err := validateProductObservations(observations); err != nil {
+			report.Reject(line, err)
+			return nil
 		}
-		id := productobs.ProductID(record.Store, record.ProductID)
-		props := map[string]any{"id": id, "store": record.Store, "product_id": record.ProductID, "domain": domain,
-			"title": record.Title, "brand": record.Brand, "category": record.Category, "subcategory": record.Subcategory, "link": record.Link}
-		if record.ProductType != nil {
-			props["product_type"] = *record.ProductType
-		}
-		report.PropertyBytes += productPropertyBytes(props)
+		props := productRecordProperties(record, domain)
+		propBytes := productPropertyBytes(props)
+		report.PropertyBytes += propBytes
 		for sourceKey := range record.Attributes {
 			if _, mapped := registry.Lookup(record.Store, sourceKey); !mapped {
 				report.UnmappedCount++
@@ -112,14 +95,14 @@ func prepareProductReplacement(ctx context.Context, input ProductSnapshotInput, 
 				report.Reject(line, errors.New("snapshot exceeds 60,000 released edges"))
 				return report.RejectionError()
 			}
-			mapping, _ := registry.Lookup(record.Store, obs.SourceKey)
-			edge := productEdgeProperties(obs, input.Release, mapping.NumericSearch)
-			report.PropertyBytes += productPropertyBytes(edge)
+			edge, edgeBytes := productProjectedEdge(record, obs, registry, input.Release, rev, props["id"].(string))
+			propBytes += edgeBytes
+			report.PropertyBytes += edgeBytes
 			if report.PropertyBytes > maxProductImportPropBytes {
 				report.Reject(line, errors.New("replacement properties exceed 64 MiB"))
 				return report.RejectionError()
 			}
-			batch.edges = append(batch.edges, map[string]any{"product": id, "feature": rev + "/" + obs.Feature, "props": edge})
+			batch.edges = append(batch.edges, edge)
 			report.EdgeCount++
 			if obs.Conflict {
 				report.Conflicts++
@@ -137,6 +120,7 @@ func prepareProductReplacement(ctx context.Context, input ProductSnapshotInput, 
 			report.Reject(line, errors.New("replacement properties exceed 64 MiB"))
 			return report.RejectionError()
 		}
+		props["prop_bytes"] = int64(propBytes)
 		batch.products = append(batch.products, props)
 		return nil
 	})
@@ -147,6 +131,40 @@ func prepareProductReplacement(ctx context.Context, input ProductSnapshotInput, 
 		return productReplacement{}, errors.New("records changed after preflight")
 	}
 	return batch, report.RejectionError()
+}
+
+func validateProductObservations(observations []productobs.Observation) error {
+	for _, obs := range observations {
+		if len(obs.Raw) > productobs.MaxImportValueBytes {
+			return errors.New("released feature value exceeds 1 KiB")
+		}
+		if len(obs.Items) > productobs.MaxImportItems {
+			return errors.New("feature value splits into more than 64 items")
+		}
+		for _, item := range obs.Items {
+			if len(item) > productobs.MaxImportValueBytes {
+				return errors.New("released feature item exceeds 1 KiB")
+			}
+		}
+	}
+	return nil
+}
+
+func productRecordProperties(record productobs.Record, domain string) map[string]any {
+	props := map[string]any{"id": productobs.ProductID(record.Store, record.ProductID), "store": record.Store,
+		"product_id": record.ProductID, "domain": domain, "title": record.Title, "brand": record.Brand,
+		"category": record.Category, "subcategory": record.Subcategory, "link": record.Link}
+	if record.ProductType != nil {
+		props["product_type"] = *record.ProductType
+	}
+	return props
+}
+
+func productProjectedEdge(record productobs.Record, obs productobs.Observation, registry *productobs.Registry,
+	release, rev, id string) (map[string]any, int) {
+	mapping, _ := registry.Lookup(record.Store, obs.SourceKey)
+	edge := productEdgeProperties(obs, release, mapping.NumericSearch)
+	return map[string]any{"product": id, "feature": rev + "/" + obs.Feature, "props": edge}, productPropertyBytes(edge)
 }
 
 func productEdgeProperties(obs productobs.Observation, release string, numeric bool) map[string]any {
@@ -198,7 +216,8 @@ func scaleProductDecimal(decimal string) (int64, bool) {
 }
 
 // Count property names plus their payloads, including both JSON and folded
-// item values. Integers use eight bytes and booleans use one.
+// item values. Integers use eight bytes and booleans use one. The projection
+// excludes the prop_bytes bookkeeping property itself.
 func productPropertyBytes(props map[string]any) int {
 	var bytes int
 	for key, value := range props {

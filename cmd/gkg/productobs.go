@@ -34,6 +34,10 @@ func runFeatures(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, featuresCheckUsage)
 		fmt.Fprintln(stdout, featuresImportUsage)
 		return 0
+	case len(args) > 0 && args[0] == "push":
+		return runProductPush(args[1:], stdout, stderr)
+	case len(args) > 0 && args[0] == "remove":
+		return runProductRemove(args[1:], stdout, stderr)
 	case len(args) > 0 && args[0] == "import":
 		return runFeatureImport(args[1:], stdout, stderr)
 	case len(args) == 0 || args[0] != "check":
@@ -71,6 +75,10 @@ func runProducts(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case len(args) > 0 && args[0] == "release":
 		return runProductRelease(args[1:], stdout, stderr)
+	case len(args) > 0 && args[0] == "push":
+		return runProductPush(args[1:], stdout, stderr)
+	case len(args) > 0 && args[0] == "remove":
+		return runProductRemove(args[1:], stdout, stderr)
 	case len(args) > 0 && args[0] == "import":
 		return runProductImport(args[1:], stdout, stderr)
 	case len(args) > 0 && args[0] == "pages-report":
@@ -284,7 +292,8 @@ func productCommandError(command string, stderr io.Writer, err error) int {
 		return 0
 	}
 	fmt.Fprintf(stderr, "gkg %s: %v\n", command, err)
-	if errors.Is(err, graph.ErrProductData) {
+	var mutation *graph.ProductMutationError
+	if errors.Is(err, graph.ErrProductData) || (errors.As(err, &mutation) && mutation.Status != "unknown_outcome") {
 		return 5
 	}
 	return 1

@@ -50,6 +50,23 @@ func parseRecord(raw []byte) (Record, error) {
 	return parseRecordWithCaps(raw, false)
 }
 
+// ParseImportRecord decodes one strict A1 record with the snapshot row caps.
+func ParseImportRecord(raw []byte) (Record, error) {
+	if len(raw) > MaxImportRowBytes {
+		return Record{}, errors.New("row exceeds 64 KiB")
+	}
+	return parseRecordWithCaps(raw, true)
+}
+
+// ProductStoreFromID validates the shared write identity and returns its store.
+func ProductStoreFromID(id string) (string, error) {
+	store, suffix, found := strings.Cut(id, ":")
+	if len(id) > MaxImportIdentityBytes || !found || suffix == "" || !storePattern.MatchString(store) {
+		return "", errors.New("product_id must have a valid store prefix and a non-empty suffix, up to 1 KiB")
+	}
+	return store, nil
+}
+
 func parseRecordWithCaps(raw []byte, capped bool) (Record, error) {
 	var record Record
 	obj, err := readObject(raw, "store product_id title brand category subcategory product_type link attributes page_specs")
@@ -61,13 +78,13 @@ func parseRecordWithCaps(raw []byte, capped bool) (Record, error) {
 		dest     *string
 		maxBytes int
 	}{
-		{"store", &record.Store, maxImportIdentityBytes},
-		{"product_id", &record.ProductID, maxImportIdentityBytes},
-		{"title", &record.Title, maxImportProductScalarBytes},
-		{"brand", &record.Brand, maxImportProductScalarBytes},
-		{"category", &record.Category, maxImportProductScalarBytes},
-		{"subcategory", &record.Subcategory, maxImportProductScalarBytes},
-		{"link", &record.Link, maxImportProductScalarBytes},
+		{"store", &record.Store, MaxImportIdentityBytes},
+		{"product_id", &record.ProductID, MaxImportIdentityBytes},
+		{"title", &record.Title, MaxImportProductScalarBytes},
+		{"brand", &record.Brand, MaxImportProductScalarBytes},
+		{"category", &record.Category, MaxImportProductScalarBytes},
+		{"subcategory", &record.Subcategory, MaxImportProductScalarBytes},
+		{"link", &record.Link, MaxImportProductScalarBytes},
 	} {
 		value, ok := readString(obj[field.name])
 		if !ok {
@@ -87,7 +104,7 @@ func parseRecordWithCaps(raw []byte, capped bool) (Record, error) {
 		if !ok {
 			return record, errors.New("product_type: expected string or null")
 		}
-		if capped && len(productType) > maxImportProductScalarBytes {
+		if capped && len(productType) > MaxImportProductScalarBytes {
 			return record, errors.New("product_type value exceeds 4 KiB")
 		}
 		record.ProductType = &productType
@@ -97,7 +114,7 @@ func parseRecordWithCaps(raw []byte, capped bool) (Record, error) {
 	if err != nil {
 		return record, fmt.Errorf("attributes: %w", err)
 	}
-	if capped && len(attributes) > 512 {
+	if capped && len(attributes) > MaxImportAttributes {
 		return record, errors.New("row exceeds 512 attributes")
 	}
 	record.Attributes = make(map[string]string, len(attributes))

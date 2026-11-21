@@ -144,9 +144,9 @@ type ProductPagesReport struct {
 // ReportProductPages counts associations over the materialized products of
 // each selected store. It reads each store's documents once for all its links.
 func (s *Store) ReportProductPages(ctx context.Context, store string) ([]ProductPagesReport, error) {
-	query := `MATCH (s:ProductStore) RETURN s.store AS store, s.domain AS domain ORDER BY s.store`
+	query := `MATCH (s:ProductStore) WHERE s.domain IS NOT NULL RETURN s.store AS store, s.domain AS domain ORDER BY s.store`
 	if store != "" {
-		query = `MATCH (s:ProductStore {store:$store}) RETURN s.store AS store, s.domain AS domain`
+		query = `MATCH (s:ProductStore {store:$store}) WHERE s.domain IS NOT NULL RETURN s.store AS store, s.domain AS domain`
 	}
 	reports := []ProductPagesReport{}
 	err := s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {

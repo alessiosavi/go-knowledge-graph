@@ -233,8 +233,8 @@ func txRequireDomains(ctx context.Context, tx neo4j.ManagedTransaction) error {
 
 const domainBindingQuery = `
 MATCH (s:ProductStore)
-WHERE s.domain IN $domains
-   OR EXISTS { MATCH (d:Document {domain:s.domain}) WHERE d.id IN $docs }
+WHERE s.domain IS NOT NULL AND (s.domain IN $domains
+   OR EXISTS { MATCH (d:Document {domain:s.domain}) WHERE d.id IN $docs })
 RETURN s.domain AS domain, s.store AS store ORDER BY domain, store LIMIT 1`
 
 func domainBindingError(rows []*neo4j.Record, err error) error {
@@ -479,7 +479,7 @@ func (s *Store) DeleteEmptyDomain(ctx context.Context, slug string, destinations
 		rows, err := txRows(ctx, tx, `
 MATCH (n:Domain {id:$domain})
 WHERE NOT EXISTS { MATCH (:Document {domain:n.id}) }
-  AND NOT EXISTS { MATCH (:ProductStore {domain:n.id}) }
+  AND NOT EXISTS { MATCH (s:ProductStore {domain:n.id}) WHERE s.domain IS NOT NULL }
 DELETE n RETURN count(*) AS deleted`, map[string]any{"domain": slug})
 		if err != nil {
 			return err

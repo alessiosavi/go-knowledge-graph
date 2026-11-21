@@ -288,6 +288,12 @@ func TestProductsRunbook(t *testing.T) {
 			return slices.Contains(labels, any("ProductStore")) && props["store"] == runbookStore
 		}
 		var importedAt string
+		var propertyBytes int64
+		for key, props := range actual.properties {
+			if key.feature == "" {
+				propertyBytes += props["prop_bytes"].(int64)
+			}
+		}
 		after = after.WithoutRelationshipType("HAS_FEATURE").ProjectNodes(func(labels []any, props map[string]any) bool {
 			if isStore(labels, props) {
 				importedAt, _ = props["imported_at"].(string)
@@ -304,6 +310,7 @@ func TestProductsRunbook(t *testing.T) {
 				props["product_count"], props["edge_count"] = int64(products), int64(edges)
 				props["seen_seq"], props["snapshot_seq"] = int64(3), int64(3)
 				props["snapshot_digest"], props["imported_at"] = digest, importedAt
+				props["prop_bytes"] = propertyBytes
 			}
 			return keep(labels, props)
 		}).AssertEqual(t, after, "shrink snapshot outside rebuilt product records and ProductStore watermark")
