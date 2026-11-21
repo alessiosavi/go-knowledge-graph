@@ -273,6 +273,13 @@ func TestProductReadPaths(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid_domain", func(t *testing.T) {
+		out := rest(t, http.MethodGet, detailPath+"?domain=Bad!", "", http.StatusBadRequest)
+		if out["error"] != "invalid_request" {
+			t.Errorf("invalid domain response = %v, want invalid_request", out)
+		}
+	})
+
 	t.Run("pages", func(t *testing.T) {
 		assertPages := func(t *testing.T, out productReadJSON, want ...string) {
 			t.Helper()
@@ -397,6 +404,14 @@ func TestProductReadPaths(t *testing.T) {
 			assertPages(t, scoped, cross.ID)
 			assertPages(t, rest(t, "GET", "/v1/products/"+noLink+"?domain="+other, "", 200))
 			assertPages(t, tool(t, "get_product", productReadJSON{"id": id, "domain": other}, ""), cross.ID)
+		})
+		setUpdatedAt(same.ID, 4)
+		t.Run("refs_tie_break", func(t *testing.T) {
+			// cross was inserted first, but same has the lower graph ID.
+			if cross.ID <= same.ID {
+				t.Fatalf("expected refs inserted in descending ID order, got %s then %s", cross.ID, same.ID)
+			}
+			assertPages(t, rest(t, "GET", detailPath, "", 200), same.ID, cross.ID, competing[3])
 		})
 		t.Run("document_products_dtos", func(t *testing.T) {
 			assertProducts := func(doc productReadJSON) {

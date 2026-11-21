@@ -1483,11 +1483,12 @@ per product read. Setting a canonical URL property at ingest is the post-v1 path
 Use the read-only pages report to check coverage for imported product
 snapshots before rollout. It counts products with zero, one, or multiple
 matching pages in `zero`, `one`, and `multiple` per bound store, with up to 20
-`missing_product_ids` in ascending graph ID order. `refs` and `url` count page
-associations in each branch across products, and `total` counts their union
-per product. A page found by both branches contributes once to each branch and
-once to `total`. Report counts include all matches beyond the three-page read
-limit. The optional `-store` limits coverage to one store.
+`missing_product_ids` in ascending graph ID order. `refs` counts ref pages
+from any domain, and `url` counts URL matches in the store's bound domain only.
+`total` counts their union per product, including ref pages from any domain.
+A page found by both branches contributes once to each branch and once to
+`total`. Report counts include all matches beyond the three-page read limit.
+The optional `-store` limits coverage to one store.
 
 ```sh
 gkg products pages-report
@@ -1497,10 +1498,11 @@ gkg products pages-report -store example.test -json
 For rollout pages that rely on URL matching, place them in their target
 domain and let them reach `done` before creating the release.
 
-REST `GET /v1/documents`, `GET /v1/documents/{id}`, and
-`GET /v1/documents/{id}/status` and MCP `list_documents` and `status` expose
-`products`, the canonical list of store-prefixed product IDs recorded for the
-document version. The field is omitted when the list is empty.
+REST `GET /v1/documents`, `GET /v1/documents/{id}`,
+`GET /v1/documents/{id}/status`, and `GET /v1/documents/{id}/content`, as well as
+MCP `list_documents` and `status`, expose `products`, the canonical list of
+store-prefixed product IDs recorded for the document version. The field is
+omitted when the list is empty.
 
 The store list reports `active_release_id` separately from each store's
 materialized `release_id`. A wiped store has `wiped: true`, zero products

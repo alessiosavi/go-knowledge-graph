@@ -75,6 +75,15 @@ func TestProductToolArgumentErrors(t *testing.T) {
 	}
 }
 
+func TestGetProductRejectsInvalidDomain(t *testing.T) {
+	s := NewServer(config.Config{}, &graph.Store{}, nil)
+	_, err := s.execTool(t.Context(), "get_product", json.RawMessage(`{"id":"product","domain":"Bad!"}`))
+	var invalid argerr.Error
+	if !errors.As(err, &invalid) || !strings.Contains(err.Error(), "invalid domain slug") {
+		t.Errorf("get_product error = %v, want invalid domain argument error", err)
+	}
+}
+
 func TestGetProductUsesAgentRequestScope(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()

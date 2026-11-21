@@ -211,7 +211,7 @@ func toolDefs() []toolDef {
 					"id":         map[string]any{"type": "string", "description": "Graph product ID"},
 					"store":      map[string]any{"type": "string", "description": "Store for an exact lookup by product_id"},
 					"product_id": map[string]any{"type": "string", "description": "Full source product ID including its store prefix"},
-					"domain":     map[string]any{"type": "string", "description": "Optional domain slug for associated pages"},
+					"domain":     map[string]any{"type": "string", "description": "Optional domain slug for associated pages within the request scope. A domain outside the request scope is rejected."},
 				},
 			}),
 		functionTool("find_products", graph.ProductSearchDescription+
