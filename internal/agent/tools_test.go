@@ -327,6 +327,24 @@ func TestToolGetChunks(t *testing.T) {
 			t.Errorf("get_chunks accepted %s", raw)
 		}
 	}
+	for _, limit := range []string{"0", "51", "-1", "1.5", `"2"`, "null"} {
+		raw := json.RawMessage(fmt.Sprintf(`{"ids":[%q],"with_products":true,"products_limit":%s}`, fx.docID+"-c0", limit))
+		if _, err := s.execTool(t.Context(), "get_chunks", raw); err == nil {
+			t.Errorf("get_chunks accepted products_limit=%s", limit)
+		}
+	}
+	raw := json.RawMessage(fmt.Sprintf(`{"ids":[%q],"with_products":true}`, fx.docID+"-c0"))
+	res, err = s.execTool(t.Context(), "get_chunks", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enriched := unmarshalResult[struct {
+		Chunks []map[string]json.RawMessage
+	}](t, res)
+	if len(enriched.Chunks) != 1 || string(enriched.Chunks[0]["products"]) != "[]" ||
+		string(enriched.Chunks[0]["products_total"]) != "0" {
+		t.Errorf("get_chunks products = %+v, want an empty array and zero total", enriched.Chunks)
+	}
 }
 
 func TestToolResultSizeGuidance(t *testing.T) {

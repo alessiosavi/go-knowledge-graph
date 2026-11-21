@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
@@ -153,12 +154,15 @@ func toolDefs() []toolDef {
 				},
 			}),
 		functionTool("get_chunks",
-			"Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
+			"Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids."+
+				chunkread.ProductsToolDescription+" A domain-scoped agent cannot open a cross-domain result with get_product.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": chunkread.MaxIDs, "description": "1–20 chunk ids from search hits"},
-					"neighbours": map[string]any{"type": "integer", "minimum": 0, "maximum": chunkread.MaxNeighbours, "description": "chunks before and after each requested chunk (default 0, maximum 2)"},
+					"ids":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": chunkread.MaxIDs, "description": "1–20 chunk ids from search hits"},
+					"neighbours":     map[string]any{"type": "integer", "minimum": 0, "maximum": chunkread.MaxNeighbours, "description": "chunks before and after each requested chunk (default 0, maximum 2)"},
+					"with_products":  map[string]any{"type": "boolean", "default": false, "description": chunkread.WithProductsDescription},
+					"products_limit": map[string]any{"type": "integer", "minimum": 1, "maximum": chunkread.MaxProductsLimit, "default": chunkread.DefaultProductsLimit, "description": chunkread.ProductsLimitDescription},
 				},
 				"required": []string{"ids"},
 			}),
@@ -292,13 +296,31 @@ func (s *Server) execTool(ctx context.Context, name string, args json.RawMessage
 
 func (s *Server) toolGetChunks(ctx context.Context, raw json.RawMessage) (any, error) {
 	var args struct {
-		IDs        []string `json:"ids"`
-		Neighbours int      `json:"neighbours"`
+		IDs           []string        `json:"ids"`
+		Neighbours    int             `json:"neighbours"`
+		WithProducts  json.RawMessage `json:"with_products"`
+		ProductsLimit json.RawMessage `json:"products_limit"`
 	}
 	if err := decodeArgs(raw, &args); err != nil {
 		return nil, err
 	}
-	return chunkread.Read(ctx, s.store, chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours, Domain: requestDomain(ctx)})
+	req := chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours, Domain: requestDomain(ctx)}
+	if args.WithProducts != nil {
+		var value *bool
+		if err := json.Unmarshal(args.WithProducts, &value); err != nil || value == nil {
+			return nil, argerr.New("with_products must be a boolean")
+		}
+		req.WithProducts = *value
+	}
+	if args.ProductsLimit != nil {
+		var value *float64
+		if err := json.Unmarshal(args.ProductsLimit, &value); err != nil || value == nil ||
+			*value != math.Trunc(*value) || *value < 1 || *value > chunkread.MaxProductsLimit {
+			return nil, argerr.New(chunkread.ProductsLimitError)
+		}
+		req.ProductsLimit = new(int(*value))
+	}
+	return chunkread.Read(ctx, s.store, req)
 }
 
 func decodeArgs(raw json.RawMessage, dst any) error {

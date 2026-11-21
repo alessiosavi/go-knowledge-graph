@@ -185,6 +185,21 @@ func TestGetChunksTool(t *testing.T) {
 			t.Errorf("accepted invalid args=%v", args)
 		}
 	}
+	args := map[string]any{"ids": []string{doc.ID + "-c0"}, "with_products": true}
+	for _, limit := range []any{0, 51, -1, 1.5, "2", nil} {
+		args["products_limit"] = limit
+		if res := callTool(t, cs, "get_chunks", args); !res.IsError {
+			t.Errorf("accepted products_limit=%v", limit)
+		}
+	}
+	delete(args, "products_limit")
+	enriched := structured[struct {
+		Chunks []map[string]json.RawMessage
+	}](t, callTool(t, cs, "get_chunks", args))
+	if len(enriched.Chunks) != 1 || string(enriched.Chunks[0]["products"]) != "[]" ||
+		string(enriched.Chunks[0]["products_total"]) != "0" {
+		t.Errorf("get_chunks products = %+v, want an empty array and zero total", enriched.Chunks)
+	}
 }
 
 func TestToolResultSizeGuidance(t *testing.T) {

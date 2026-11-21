@@ -206,6 +206,18 @@ func TestProductMentionsScan(t *testing.T) {
 	domainArgs := append(baseArgs, "-domain", "catalogue-mentions", "-source-prefix", "catalogue/")
 	productCLI(t, 0, "", domainArgs...)
 	pairBytes, summaryBytes := readPrivate(t, out), readPrivate(t, summaryPath)
+	for name, actual := range map[string][]byte{
+		"product_mentions_pairs.jsonl":  pairBytes,
+		"product_mentions_summary.json": summaryBytes,
+	} {
+		want, err := os.ReadFile(filepath.Join("testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(actual, want) {
+			t.Errorf("%s differs from the d58956a fixture output", name)
+		}
+	}
 	productCLI(t, 0, "", domainArgs...)
 	if !bytes.Equal(pairBytes, readPrivate(t, out)) || !bytes.Equal(summaryBytes, readPrivate(t, summaryPath)) {
 		t.Error("repeated scans produced different bytes")
