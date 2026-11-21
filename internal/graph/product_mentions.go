@@ -14,11 +14,15 @@ type ProductMentionSelection struct {
 }
 
 type ProductMentionStore struct {
-	Store        string `json:"store"`
-	SeenSeq      int64  `json:"seen_seq"`
-	SnapshotSeq  int64  `json:"snapshot_seq"`
-	ProductCount int64  `json:"product_count"`
-	Domain       string `json:"domain"`
+	Store              string  `json:"store"`
+	SeenSeq            int64   `json:"seen_seq"`
+	SnapshotSeq        int64   `json:"snapshot_seq"`
+	WipedSeq           int64   `json:"wiped_seq"`
+	ReleaseID          *string `json:"release_id"`
+	ProductCount       int64   `json:"product_count"`
+	IdentifierProducts int     `json:"identifier_products"`
+	EligibleProducts   int     `json:"eligible_products"`
+	Domain             string  `json:"domain"`
 }
 
 type ProductIdentifierObservation struct {
@@ -61,7 +65,8 @@ RETURN m.value AS release, coalesce(m.activation_seq, 0) AS activation_seq`, nil
 		stores, err := txRows(ctx, tx, `
 MATCH (s:ProductStore) WHERE s.domain IS NOT NULL
 RETURN s.store AS store, s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
-       coalesce(s.snapshot_seq, 0) AS snapshot_seq, coalesce(s.product_count, 0) AS product_count
+       coalesce(s.snapshot_seq, 0) AS snapshot_seq, coalesce(s.product_count, 0) AS product_count,
+       coalesce(s.wiped_seq, 0) AS wiped_seq, s.release_id AS release_id
 ORDER BY s.store`, nil)
 		if err != nil {
 			return err
@@ -72,6 +77,7 @@ ORDER BY s.store`, nil)
 			store := ProductMentionStore{
 				Store: getString(row, "store"), Domain: getString(row, "domain"),
 				SeenSeq: productProp[int64](props, "seen_seq"), SnapshotSeq: productProp[int64](props, "snapshot_seq"),
+				WipedSeq: productProp[int64](props, "wiped_seq"), ReleaseID: productOptional[string](props, "release_id"),
 				ProductCount: productProp[int64](props, "product_count"),
 			}
 			input.Stores = append(input.Stores, store)

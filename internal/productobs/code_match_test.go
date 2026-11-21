@@ -43,6 +43,12 @@ func TestEligibleCodeKey(t *testing.T) {
 	}
 }
 
+func TestMatchCodesSkipsEmptyKey(t *testing.T) {
+	if got := MatchCodes(" . + # ", map[string]struct{}{"": {}}); len(got) != 0 {
+		t.Errorf("MatchCodes returned empty-key matches: %+v", got)
+	}
+}
+
 func TestMatchCodes(t *testing.T) {
 	keys := map[string]struct{}{"AB12345": {}, "Q\u03011234": {}, "12345CD": {}, "FI1234": {}}
 	for _, tc := range []struct {
@@ -56,11 +62,21 @@ func TestMatchCodes(t *testing.T) {
 		{"prefix", "AB12345X", nil},
 		{"space", "AB 12345", []CodeMatch{{"AB12345", [2]int{0, 8}, "AB 12345", 2}}},
 		{"spaces and tabs", "AB \t 123 45", []CodeMatch{{"AB12345", [2]int{0, 11}, "AB \t 123 45", 3}}},
+		{"punctuation token", "AB - 12345", []CodeMatch{{"AB12345", [2]int{0, 10}, "AB - 12345", 3}}},
+		{"punctuation token fills window", "AB - 123 45", nil},
 		{"four tokens", "A B 123 45", nil},
 		{"line feed", "AB\n12345", nil},
 		{"carriage return", "AB\r12345", nil},
 		{"other whitespace", "AB\u00a012345", nil},
+		{"line separator", "AB\u202812345", nil},
+		{"next line", "AB\u008512345", nil},
+		{"vertical tab", "AB\v12345", nil},
+		{"form feed", "AB\f12345", nil},
 		{"comma", "AB, 12345", nil},
+		{"invalid UTF-8", "AB12345\xffAB\xfe12345\x80ﬁ1234", []CodeMatch{
+			{"AB12345", [2]int{0, 7}, "AB12345", 1},
+			{"FI1234", [2]int{17, 24}, "ﬁ1234", 1},
+		}},
 		{"combining mark", "🦷:Q\u03011234", []CodeMatch{{"Q\u03011234", [2]int{5, 12}, "Q\u03011234", 1}}},
 		{"fullwidth", "（ＡＢ１２３４５）", []CodeMatch{{"AB12345", [2]int{3, 24}, "ＡＢ１２３４５", 1}}},
 		{"ligature", "ﬁ1234", []CodeMatch{{"FI1234", [2]int{0, 7}, "ﬁ1234", 1}}},
@@ -80,8 +96,7 @@ func TestMatchCodes(t *testing.T) {
 			}
 			for _, match := range got {
 				s, e := match.Span[0], match.Span[1]
-				if s < 0 || s >= e || e > len(tc.text) || !utf8.ValidString(tc.text[:s]) ||
-					!utf8.ValidString(tc.text[s:e]) || !utf8.ValidString(tc.text[e:]) || tc.text[s:e] != match.Text {
+				if s < 0 || s >= e || e > len(tc.text) || !utf8.ValidString(tc.text[s:e]) || tc.text[s:e] != match.Text {
 					t.Errorf("invalid original byte span: %+v in %q", match, tc.text)
 				}
 			}

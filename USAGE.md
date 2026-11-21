@@ -1451,8 +1451,10 @@ gkg products mentions-scan -domain dental -source-prefix catalogues/ -out pairs.
 
 The scan reads chunks of done documents and active `catalogue_code` and
 `product_reference` observations from every bound product store. A domain
-selector can narrow documents with a literal source prefix. The command
-writes nothing to the graph.
+selector takes a domain slug and can narrow documents with a literal source
+prefix. When the selection contains no documents, the command writes an empty
+pairs file and prints a warning to stderr. A requested summary still records
+the catalogue metadata and has an empty `documents` array. The scan is read-only.
 
 The matcher checks whole windows of one to three tokens joined by spaces
 or tabs on a single line. Tokens contain letters, combining marks, digits
@@ -1467,6 +1469,13 @@ spans and text, token counts, a separator flag, and an excerpt. The optional
 private JSON summary records the matcher revision, active release, store
 watermarks, document and chunk hashes, match and eligibility counts, excluded
 ambiguous keys, and differences between stored folds and matcher keys.
+Each bound store is listed with its materialized `release_id` and `wiped_seq`,
+including stores materialized on earlier releases. `identifier_products`
+counts distinct products in the store with an active identifier observation.
+`eligible_products` counts distinct products in the store with an eligible
+key before ambiguity exclusion. `identifier_values`, `ineligible_values`, and
+`divergence.count` each count distinct `(product id, feature, folded value)`
+triples.
 
 ## Domain administration
 

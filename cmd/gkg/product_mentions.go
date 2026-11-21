@@ -47,17 +47,23 @@ func runProductMentionsScan(args []string, stderr io.Writer) int {
 		prefixSet = prefixSet || f.Name == "source-prefix"
 	})
 	if fs.NArg() != 0 || *outPath == "" || (len(selection.DocumentIDs) > 0) == domainSet ||
-		(domainSet && strings.TrimSpace(selection.Domain) == "") || (prefixSet && !domainSet) {
+		(domainSet && !graph.ValidDomain(selection.Domain)) || (prefixSet && !domainSet) {
 		fs.Usage()
 		return 2
 	}
 
 	return withProductStore(fs.Name(), stderr, func(ctx context.Context, st *graph.Store) error {
-		return writeProductMentionScan(ctx, st, selection, *outPath, *summaryPath)
+		return writeProductMentionScan(ctx, st, selection, *outPath, *summaryPath, stderr)
 	})
 }
 
-func writeProductMentionScan(ctx context.Context, st *graph.Store, selection graph.ProductMentionSelection, outPath, summaryPath string) error {
+func writeProductMentionScan(ctx context.Context, st *graph.Store, selection graph.ProductMentionSelection,
+	outPath, summaryPath string, stderr io.Writer) error {
+	if summaryPath != "" {
+		if err := checkProductMentionOutputs(outPath, summaryPath); err != nil {
+			return err
+		}
+	}
 	out, err := stageProductOutput("-out", outPath, nil)
 	if err != nil {
 		return err
@@ -67,19 +73,6 @@ func writeProductMentionScan(ctx context.Context, st *graph.Store, selection gra
 
 	var summaryFile *os.File
 	if summaryPath != "" {
-		if filepath.Base(outPath) == filepath.Base(summaryPath) {
-			outDir, err := os.Stat(filepath.Dir(outPath))
-			if err != nil {
-				return err
-			}
-			summaryDir, err := os.Stat(filepath.Dir(summaryPath))
-			if err != nil {
-				return err
-			}
-			if os.SameFile(outDir, summaryDir) {
-				return errors.New("-out and -summary must name different files")
-			}
-		}
 		summaryFile, err = stageProductOutput("-summary", summaryPath, nil)
 		if err != nil {
 			return err
@@ -104,6 +97,39 @@ func writeProductMentionScan(ctx context.Context, st *graph.Store, selection gra
 		if err := finishProductOutput(summaryFile, summaryPath); err != nil {
 			return fmt.Errorf("-summary: %w", err)
 		}
+	}
+	if len(summary.Documents) == 0 {
+		fmt.Fprintln(stderr, "gkg products mentions-scan: warning: no documents selected")
+	}
+	return nil
+}
+
+func checkProductMentionOutputs(outPath, summaryPath string) error {
+	outAbs, err := filepath.Abs(outPath)
+	if err != nil {
+		return fmt.Errorf("resolve -out: %w", err)
+	}
+	summaryAbs, err := filepath.Abs(summaryPath)
+	if err != nil {
+		return fmt.Errorf("resolve -summary: %w", err)
+	}
+	if strings.EqualFold(outAbs, summaryAbs) {
+		return errors.New("-out and -summary must name different files")
+	}
+	if !strings.EqualFold(filepath.Base(outAbs), filepath.Base(summaryAbs)) {
+		return nil
+	}
+	// Different paths to the parent can still resolve to the same directory.
+	outDir, err := os.Stat(filepath.Dir(outAbs))
+	if err != nil {
+		return err
+	}
+	summaryDir, err := os.Stat(filepath.Dir(summaryAbs))
+	if err != nil {
+		return err
+	}
+	if os.SameFile(outDir, summaryDir) {
+		return errors.New("-out and -summary must name different files")
 	}
 	return nil
 }
@@ -197,12 +223,30 @@ type productMentionKey struct {
 
 func indexProductMentionKeys(observations []graph.ProductIdentifierObservation, summary *productMentionSummary) map[string]*productMentionKey {
 	byKey := make(map[string]map[string]*productMentionKey)
+	stores := make(map[string]*graph.ProductMentionStore, len(summary.Stores))
+	for i := range summary.Stores {
+		store := &summary.Stores[i]
+		stores[store.Store] = store
+	}
+	identifierProducts := make(map[string]struct{})
+	eligibleProducts := make(map[string]struct{})
+	type identifierValue struct {
+		productID string
+		productMentionEvidence
+	}
+	seenValues := make(map[identifierValue]struct{})
 	summary.Ambiguous = []productMentionAmbiguity{}
 	summary.Divergence.Examples = []productMentionDivergenceExample{}
 	addValue := func(observation graph.ProductIdentifierObservation, value string) {
+		product := observation.Product
+		evidence := productMentionEvidence{feature: observation.Feature, valueFold: value}
+		triple := identifierValue{productID: product.ID, productMentionEvidence: evidence}
+		if _, seen := seenValues[triple]; seen {
+			return
+		}
+		seenValues[triple] = struct{}{}
 		summary.Counts.IdentifierValues++
 		key := productobs.CodeKey(value)
-		product := observation.Product
 		if key != value {
 			summary.Divergence.Count++
 			if len(summary.Divergence.Examples) < 20 {
@@ -216,6 +260,10 @@ func indexProductMentionKeys(observations []graph.ProductIdentifierObservation, 
 			summary.Counts.IneligibleValues++
 			return
 		}
+		if _, seen := eligibleProducts[product.ID]; !seen {
+			eligibleProducts[product.ID] = struct{}{}
+			stores[product.Store].EligibleProducts++
+		}
 		products := byKey[key]
 		if products == nil {
 			products = make(map[string]*productMentionKey)
@@ -226,9 +274,14 @@ func indexProductMentionKeys(observations []graph.ProductIdentifierObservation, 
 			entry = &productMentionKey{product: product}
 			products[product.ID] = entry
 		}
-		entry.evidence = append(entry.evidence, productMentionEvidence{feature: observation.Feature, valueFold: value})
+		entry.evidence = append(entry.evidence, evidence)
 	}
 	for _, observation := range observations {
+		product := observation.Product
+		if _, seen := identifierProducts[product.ID]; !seen {
+			identifierProducts[product.ID] = struct{}{}
+			stores[product.Store].IdentifierProducts++
+		}
 		if observation.ValueFold != nil {
 			addValue(observation, *observation.ValueFold)
 		}
@@ -245,7 +298,6 @@ func indexProductMentionKeys(observations []graph.ProductIdentifierObservation, 
 				slices.SortFunc(entry.evidence, func(a, b productMentionEvidence) int {
 					return cmp.Or(cmp.Compare(a.feature, b.feature), cmp.Compare(a.valueFold, b.valueFold))
 				})
-				entry.evidence = slices.Compact(entry.evidence)
 				keys[key] = entry
 			}
 			continue

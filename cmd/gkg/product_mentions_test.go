@@ -37,25 +37,33 @@ func TestProductMentionsScan(t *testing.T) {
 	productCLI(t, 1, "no active product release", append(baseArgs, "-domain", "catalogue-mentions")...)
 	query(`CREATE (:GkgMeta {id:'product_release',value:'mentions-release',activation_seq:12,touched:7}),
 		(:ProductRelease {id:'mentions-release'}),
-		(:ProductStore {store:'mentions-a.test',domain:'mentions-products',seen_seq:8,snapshot_seq:6,product_count:2}),
-		(:ProductStore {store:'mentions-b.test',domain:'mentions-other-products',seen_seq:11,snapshot_seq:11,product_count:1}),
+		(:ProductStore {store:'mentions-a.test',domain:'mentions-products',release_id:'mentions-release',seen_seq:8,snapshot_seq:6,wiped_seq:4,product_count:2}),
+		(:ProductStore {store:'mentions-b.test',domain:'mentions-other-products',release_id:'mentions-release',seen_seq:11,snapshot_seq:11,product_count:3}),
+		(:ProductStore {store:'mentions-old.test',domain:'mentions-products',release_id:'mentions-old-release',seen_seq:5,snapshot_seq:5,product_count:1}),
 		(:ProductStore {store:'mentions-unbound.test',seen_seq:20,snapshot_seq:19,product_count:1}),
 		(a:Product {id:'mentions-product-a',product_id:'mentions-a.test:2',store:'mentions-a.test',domain:'mentions-products',title:'Handpiece'}),
 		(b:Product {id:'mentions-product-b',product_id:'mentions-b.test:1',store:'mentions-b.test',domain:'mentions-other-products',title:'Mirror'}),
+		(ba:Product {id:'mentions-product-b-ambiguous',product_id:'mentions-b.test:2',store:'mentions-b.test',domain:'mentions-other-products'}),
+		(bi:Product {id:'mentions-product-b-ineligible',product_id:'mentions-b.test:3',store:'mentions-b.test',domain:'mentions-other-products'}),
 		(c:Product {id:'mentions-product-c',product_id:'mentions-a.test:1',store:'mentions-a.test',domain:'mentions-products',title:'Handle'}),
+		(o:Product {id:'mentions-product-old',product_id:'mentions-old.test:1',store:'mentions-old.test',domain:'mentions-products'}),
 		(u:Product {id:'mentions-product-u',product_id:'mentions-unbound.test:1',store:'mentions-unbound.test',title:'Unbound'}),
 		(code:FeatureRev {id:'catalogue_code',key:'mentions-registry/catalogue_code',kind:'code'}),
 		(ref:FeatureRev {id:'product_reference',key:'mentions-registry/product_reference',kind:'code'}),
 		(iso:FeatureRev {id:'iso_size',key:'mentions-registry/iso_size',kind:'code'}),
 		(a)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'AB-12345'}]->(code),
+		(a)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'AB-12345'}]->(code),
 		(a)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'SH-12345'}]->(code),
 		(a)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'ABCDE'}]->(code),
-		(a)-[:HAS_FEATURE {release_id:'mentions-release',items_fold:['ZX_98765','AB12345','ZX_98765','12345']}]->(ref),
+		(a)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'ABCDE'}]->(ref),
+		(a)-[:HAS_FEATURE {release_id:'mentions-release',items_fold:['ZX_98765','AB12345','ZX_98765','12345','12345']}]->(ref),
 		(a)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'ISO12345'}]->(iso),
 		(a)-[:HAS_FEATURE {release_id:'mentions-old-release',value_fold:'OLD12345'}]->(code),
-		(b)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'SH12345'}]->(code),
+		(ba)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'SH12345'}]->(code),
+		(bi)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'ABCDE'}]->(code),
 		(b)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'BC12345'}]->(ref),
 		(c)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'AA12345'}]->(code),
+		(o)-[:HAS_FEATURE {release_id:'mentions-old-release',value_fold:'OLD12345'}]->(code),
 		(u)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'AB12345'}]->(code),
 		(u)-[:HAS_FEATURE {release_id:'mentions-release',value_fold:'NO12345'}]->(code)`, nil)
 	t.Cleanup(func() {
@@ -75,6 +83,8 @@ func TestProductMentionsScan(t *testing.T) {
 		(c)-[:HAS_CHUNK]->(:Chunk {id:'mentions-chunk-c',seq:0,text:'AA12345',hash:'c-hash'}),
 		(p:Document {id:'mentions-doc-pending',source:'catalogue/pending',title:'Pending',hash:'doc-p-hash',domain:'catalogue-mentions',status:'fetched'}),
 		(p)-[:HAS_CHUNK]->(:Chunk {id:'mentions-chunk-pending',seq:0,text:'AB12345',hash:'pending-hash'}),
+		(s:Document {id:'mentions-doc-superseded',source:'catalogue/superseded',hash:'doc-s-hash',domain:'catalogue-mentions',status:'superseded'}),
+		(s)-[:HAS_CHUNK]->(:Chunk {id:'mentions-chunk-superseded',seq:0,text:'AB12345',hash:'superseded-hash'}),
 		(:Document {id:'mentions-doc-empty',source:'catalogue/z',title:'Empty',hash:'doc-empty-hash',domain:'catalogue-mentions',status:'done'})`,
 		map[string]any{"chunkText": chunkText})
 
@@ -94,7 +104,7 @@ func TestProductMentionsScan(t *testing.T) {
 		return state
 	}
 	before := snapshot()
-	readPrivate := func(path string) []byte {
+	readPrivate := func(t *testing.T, path string) []byte {
 		t.Helper()
 		info, err := os.Stat(path)
 		if err != nil {
@@ -117,7 +127,7 @@ func TestProductMentionsScan(t *testing.T) {
 		}
 		return pairs
 	}
-	checkJSON := func(got any, want string) {
+	checkJSON := func(t *testing.T, got any, want string) {
 		t.Helper()
 		var decoded any
 		if err := json.Unmarshal([]byte(want), &decoded); err != nil {
@@ -127,9 +137,53 @@ func TestProductMentionsScan(t *testing.T) {
 			t.Errorf("got %#v, want %s", got, want)
 		}
 	}
+	t.Run("invalid_domain", func(t *testing.T) {
+		out := filepath.Join(t.TempDir(), "pairs.jsonl")
+		productCLI(t, 2, "usage: gkg products mentions-scan", "products", "mentions-scan", "-domain", "Dental", "-out", out)
+		if _, err := os.Lstat(out); !os.IsNotExist(err) {
+			t.Errorf("invalid domain output: %v, want no file", err)
+		}
+	})
+	t.Run("empty_selection", func(t *testing.T) {
+		dir := t.TempDir()
+		out, summary := filepath.Join(dir, "pairs.jsonl"), filepath.Join(dir, "summary.json")
+		var stdout, stderr bytes.Buffer
+		args := []string{"products", "mentions-scan", "-domain", "catalogue-mentions", "-source-prefix", "missing/",
+			"-out", out, "-summary", summary}
+		if code := run(args, &stdout, &stderr); code != 0 || !strings.Contains(stderr.String(), "warning: no documents selected") {
+			t.Errorf("empty selection exit %d, stderr %q, want success with warning", code, stderr.String())
+		}
+		if data := readPrivate(t, out); len(data) != 0 {
+			t.Errorf("empty selection produced pairs: %s", data)
+		}
+		result := readProductJSON(t, readPrivate(t, summary))
+		if docs, ok := result["documents"].([]any); !ok || len(docs) != 0 {
+			t.Errorf("empty selection documents: %v", result["documents"])
+		}
+	})
+	for _, tc := range []struct {
+		name, out, summary, diagnostic string
+	}{
+		{"case_alias", "pairs.jsonl", "PAIRS.jsonl", "must name different files"},
+		{"same_file", "pairs.jsonl", "pairs.jsonl", "must name different files"},
+		{"output_directory", ".", "summary.json", "-out must name a regular file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			var stdout, stderr bytes.Buffer
+			args := []string{"products", "mentions-scan", "-domain", "catalogue-mentions", "-out", tc.out, "-summary", tc.summary}
+			if code := run(args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), tc.diagnostic) {
+				t.Errorf("invalid output exit %d, stderr %q, want exit 1 and %q", code, stderr.String(), tc.diagnostic)
+			}
+			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+				t.Errorf("invalid output left files: %v, error %v", entries, err)
+			}
+		})
+	}
 
 	productCLI(t, 0, "", append(baseArgs, "-doc", "mentions-doc-b", "-doc", "mentions-doc-b")...)
-	pairs := readPairs(readPrivate(out))
+	pairs := readPairs(readPrivate(t, out))
 	if len(pairs) != 1 || pairs[0]["doc_id"] != "mentions-doc-b" || pairs[0]["id"] != "mentions-product-b" {
 		t.Fatalf("explicit scan pairs: %v", pairs)
 	}
@@ -137,9 +191,9 @@ func TestProductMentionsScan(t *testing.T) {
 		{"mentions-doc-pending", "not done"},
 		{"mentions-doc-missing", "not found"},
 	} {
-		previous, previousSummary := readPrivate(out), readPrivate(summaryPath)
+		previous, previousSummary := readPrivate(t, out), readPrivate(t, summaryPath)
 		productCLI(t, 1, tc.diagnostic, append(baseArgs, "-doc", "mentions-doc-b", "-doc", tc.id)...)
-		if !bytes.Equal(previous, readPrivate(out)) || !bytes.Equal(previousSummary, readPrivate(summaryPath)) {
+		if !bytes.Equal(previous, readPrivate(t, out)) || !bytes.Equal(previousSummary, readPrivate(t, summaryPath)) {
 			t.Error("invalid selector replaced an output file")
 		}
 	}
@@ -151,9 +205,9 @@ func TestProductMentionsScan(t *testing.T) {
 	}
 	domainArgs := append(baseArgs, "-domain", "catalogue-mentions", "-source-prefix", "catalogue/")
 	productCLI(t, 0, "", domainArgs...)
-	pairBytes, summaryBytes := readPrivate(out), readPrivate(summaryPath)
+	pairBytes, summaryBytes := readPrivate(t, out), readPrivate(t, summaryPath)
 	productCLI(t, 0, "", domainArgs...)
-	if !bytes.Equal(pairBytes, readPrivate(out)) || !bytes.Equal(summaryBytes, readPrivate(summaryPath)) {
+	if !bytes.Equal(pairBytes, readPrivate(t, out)) || !bytes.Equal(summaryBytes, readPrivate(t, summaryPath)) {
 		t.Error("repeated scans produced different bytes")
 	}
 
@@ -170,7 +224,7 @@ func TestProductMentionsScan(t *testing.T) {
 		}
 	}
 	pair := pairs[1]
-	checkJSON(pair["features"], `["catalogue_code","product_reference"]`)
+	checkJSON(t, pair["features"], `["catalogue_code","product_reference"]`)
 	if pair["product_id"] != "mentions-a.test:2" || pair["store"] != "mentions-a.test" ||
 		pair["product_domain"] != "mentions-products" || pair["title"] != "Handpiece" ||
 		pair["doc_id"] != "mentions-doc-a" || pair["doc_source"] != "catalogue/a" ||
@@ -178,7 +232,7 @@ func TestProductMentionsScan(t *testing.T) {
 		pair["separator_run"] != true || pairs[2]["separator_run"] != false {
 		t.Errorf("pair metadata: %v", pair)
 	}
-	checkJSON(pair["matches"], `[
+	checkJSON(t, pair["matches"], `[
 		{"key":"AB12345","feature":"catalogue_code","value_fold":"AB-12345","span":[301,310],"text":"AB-12345.","tokens":1},
 		{"key":"AB12345","feature":"product_reference","value_fold":"AB12345","span":[301,310],"text":"AB-12345.","tokens":1},
 		{"key":"ZX98765","feature":"product_reference","value_fold":"ZX_98765","span":[312,320],"text":"ZX 98765","tokens":2}
@@ -194,20 +248,28 @@ func TestProductMentionsScan(t *testing.T) {
 		summary["activation_seq"] != float64(12) {
 		t.Errorf("summary metadata: %v", summary)
 	}
-	checkJSON(summary["stores"], `[
-		{"store":"mentions-a.test","domain":"mentions-products","seen_seq":8,"snapshot_seq":6,"product_count":2},
-		{"store":"mentions-b.test","domain":"mentions-other-products","seen_seq":11,"snapshot_seq":11,"product_count":1}
-	]`)
-	checkJSON(summary["counts"], `{"identifier_values":10,"eligible_keys":5,"ineligible_values":2,
-		"ambiguous_keys":1,"pairs":4,"chunks_with_pairs":3,"products_with_pairs":3}`)
-	checkJSON(summary["ambiguous"], `[{"key":"SH12345","products":[
+	t.Run("store_watermarks", func(t *testing.T) {
+		checkJSON(t, summary["stores"], `[
+			{"store":"mentions-a.test","domain":"mentions-products","release_id":"mentions-release","seen_seq":8,"snapshot_seq":6,
+			 "wiped_seq":4,"product_count":2,"identifier_products":2,"eligible_products":2},
+			{"store":"mentions-b.test","domain":"mentions-other-products","release_id":"mentions-release","seen_seq":11,"snapshot_seq":11,
+			 "wiped_seq":0,"product_count":3,"identifier_products":3,"eligible_products":2},
+			{"store":"mentions-old.test","domain":"mentions-products","release_id":"mentions-old-release","seen_seq":5,"snapshot_seq":5,
+			 "wiped_seq":0,"product_count":1,"identifier_products":0,"eligible_products":0}
+		]`)
+	})
+	t.Run("distinct_values", func(t *testing.T) {
+		checkJSON(t, summary["counts"], `{"identifier_values":11,"eligible_keys":5,"ineligible_values":4,
+			"ambiguous_keys":1,"pairs":4,"chunks_with_pairs":3,"products_with_pairs":3}`)
+		divergence, _ := summary["divergence"].(map[string]any)
+		if examples, ok := divergence["examples"].([]any); divergence["count"] != float64(3) || !ok || len(examples) != 3 {
+			t.Errorf("divergence: %v", divergence)
+		}
+	})
+	checkJSON(t, summary["ambiguous"], `[{"key":"SH12345","products":[
 		{"id":"mentions-product-a","store":"mentions-a.test"},
-		{"id":"mentions-product-b","store":"mentions-b.test"}
+		{"id":"mentions-product-b-ambiguous","store":"mentions-b.test"}
 	]}]`)
-	divergence, _ := summary["divergence"].(map[string]any)
-	if examples, ok := divergence["examples"].([]any); divergence["count"] != float64(4) || !ok || len(examples) != 4 {
-		t.Errorf("divergence: %v", divergence)
-	}
 	docs, _ := summary["documents"].([]any)
 	aHash := productFixtureDigest("mentions-chunk-a0\ta0-hash\nmentions-chunk-a1\ta1-hash\n")
 	a2Hash := productFixtureDigest("mentions-chunk-a2\ta2-hash\n")
@@ -230,7 +292,7 @@ func TestProductMentionsScan(t *testing.T) {
 	}
 	domainOut := filepath.Join(dir, "domain.jsonl")
 	productCLI(t, 0, "", "products", "mentions-scan", "-domain", "catalogue-mentions", "-out", domainOut)
-	domainPairs := readPairs(readPrivate(domainOut))
+	domainPairs := readPairs(readPrivate(t, domainOut))
 	if len(domainPairs) != 5 || domainPairs[4]["doc_id"] != "mentions-doc-c" {
 		t.Errorf("domain scan without prefix: %v", domainPairs)
 	}

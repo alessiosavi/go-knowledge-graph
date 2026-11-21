@@ -79,6 +79,9 @@ func MatchCodes[V any](text string, keys map[string]V) []CodeMatch {
 		for i, windowStart := range starts[:n] {
 			window := text[windowStart:end]
 			key := codeKey(window, upper)
+			if key == "" {
+				continue
+			}
 			if _, ok := keys[key]; ok {
 				matches = append(matches, CodeMatch{Key: key, Span: [2]int{windowStart, end}, Text: window, Tokens: i + 1})
 			}
