@@ -23,6 +23,9 @@ type ProductLookup struct {
 	ProductID string `json:"product_id,omitempty" jsonschema:"Full source product ID including its store prefix"`
 }
 
+const ProductLookupDescription = "Get a product with its active feature observations and up to three associated pages (pages_missing when none). " +
+	"Provide id, or both store and the full source product_id."
+
 type Product struct {
 	ID          string  `json:"id"`
 	Store       string  `json:"store"`
@@ -230,6 +233,8 @@ type ProductFeatures struct {
 	ActiveReleaseID *string                 `json:"active_release_id"`
 	Features        []ProductFeatureListing `json:"features"`
 }
+
+const ProductFeaturesDescription = "List features in the active release's registry"
 
 func (s *Store) ListProductFeatures(ctx context.Context) (ProductFeatures, error) {
 	out := ProductFeatures{Features: []ProductFeatureListing{}}

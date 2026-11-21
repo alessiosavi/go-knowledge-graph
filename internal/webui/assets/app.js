@@ -467,6 +467,16 @@
       nodes.push(el("div", "snippet error", result.error));
       return nodes;
     }
+    if (item.tool === "find_products" && Array.isArray(result.hits)) {
+      for (const { product } of result.hits) {
+        if (!product) continue;
+        const line = el("div", "snippet");
+        line.append(el("span", "badge", "product"));
+        line.append(document.createTextNode([product.title, product.id].filter(Boolean).join(" · ")));
+        nodes.push(line);
+      }
+      return nodes.length ? nodes : [jsonPreview(result)];
+    }
     if (Array.isArray(result.hits)) {
       for (const h of result.hits.slice(0, 8)) {
         const line = el("div", "snippet");

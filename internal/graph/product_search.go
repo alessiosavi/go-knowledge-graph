@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -16,11 +17,14 @@ import (
 )
 
 const (
-	maxProductSearchLimit = 50
+	// MaxProductSearchLimit is the largest accepted find_products page size.
+	MaxProductSearchLimit = 50
 	maxProductEvidence    = 5
 	// Leave room for the REST newline and the MCP result envelope.
 	maxProductSearchBytes = (1 << 20) - 512
 )
+
+var errProductSearchEnvelopeBudget = errors.New("product search metadata exceeds the search response budget")
 
 type ProductSearchRequest struct {
 	Domain  string  `json:"domain,omitempty" jsonschema:"Restrict matches to this domain ID"`
@@ -31,6 +35,9 @@ type ProductSearchRequest struct {
 	Limit   *int    `json:"limit,omitempty" jsonschema:"Page size from 1 to 50 (default 20)"`
 	Cursor  string  `json:"cursor,omitempty" jsonschema:"Opaque continuation cursor from the previous page with the same filters and limit"`
 }
+
+const ProductSearchDescription = "Find products by a feature ID and either an exact folded value or inclusive numeric bounds in the canonical unit. " +
+	"Pass the same filters with the next cursor."
 
 type ProductHit struct {
 	Product           Product           `json:"product"`
@@ -95,9 +102,14 @@ func parseProductBound(field string, raw *string) (*int64, error) {
 	return &scaled, nil
 }
 
-// FindProducts uses one read snapshot for the release, store watermarks and
-// matching edges so a continuation cannot validate against a different page.
+// FindProducts searches with the default product response budget.
 func (s *Store) FindProducts(ctx context.Context, req ProductSearchRequest) (ProductSearchResult, error) {
+	return s.FindProductsBudget(ctx, req, maxProductSearchBytes)
+}
+
+// FindProductsBudget caps the encoded result at maxBytes. It uses one read
+// snapshot for the release, store watermarks and matching edges.
+func (s *Store) FindProductsBudget(ctx context.Context, req ProductSearchRequest, maxBytes int) (ProductSearchResult, error) {
 	var out ProductSearchResult
 	numeric := req.Min != nil || req.Max != nil
 	if req.Feature == "" || (req.Value != nil) == numeric {
@@ -106,8 +118,8 @@ func (s *Store) FindProducts(ctx context.Context, req ProductSearchRequest) (Pro
 	limit := 20
 	if req.Limit != nil {
 		limit = *req.Limit
-		if limit < 1 || limit > maxProductSearchLimit {
-			return out, fmt.Errorf("%w: limit must be between 1 and %d", ErrProductReadInput, maxProductSearchLimit)
+		if limit < 1 || limit > MaxProductSearchLimit {
+			return out, fmt.Errorf("%w: limit must be between 1 and %d", ErrProductReadInput, MaxProductSearchLimit)
 		}
 	}
 	lo, err := parseProductBound("min", req.Min)
@@ -133,6 +145,9 @@ func (s *Store) FindProducts(ctx context.Context, req ProductSearchRequest) (Pro
 	filterKey := productDigest(filters)
 	if req.Cursor != "" && cursor.Filters != filterKey {
 		return out, ErrProductCursor
+	}
+	if maxBytes < len(`{"hits":[]}`) {
+		return out, errProductSearchEnvelopeBudget
 	}
 
 	err = s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
@@ -201,7 +216,7 @@ func (s *Store) FindProducts(ctx context.Context, req ProductSearchRequest) (Pro
 		if err != nil {
 			return err
 		}
-		out, err = budgetProductSearch(hits, more, productCursor{Release: releaseKey, Snapshot: snapshot, Filters: filterKey}, excludedStores)
+		out, err = budgetProductSearch(hits, more, productCursor{Release: releaseKey, Snapshot: snapshot, Filters: filterKey}, excludedStores, maxBytes)
 		return err
 	})
 	return out, err
@@ -296,7 +311,7 @@ ORDER BY p.id`, params)
 // budgetProductSearch reserves room for hit metadata first, then fills in
 // evidence. A cursor points after the last emitted hit even if the byte
 // budget shortened the page.
-func budgetProductSearch(hits []ProductHit, more bool, cursor productCursor, excludedStores []string) (ProductSearchResult, error) {
+func budgetProductSearch(hits []ProductHit, more bool, cursor productCursor, excludedStores []string, maxBytes int) (ProductSearchResult, error) {
 	out := ProductSearchResult{Hits: make([]ProductHit, 0, len(hits)), NumericExcludedStores: excludedStores}
 	// Reserve a cursor even if this page ends up being the last. Product IDs
 	// have fixed length, so the final ID does not change the encoded size.
@@ -309,10 +324,10 @@ func budgetProductSearch(hits []ProductHit, more bool, cursor productCursor, exc
 		return out, err
 	}
 	out.Cursor = ""
-	remaining := maxProductSearchBytes - len(envelope)
-	if remaining < 0 {
-		return out, fmt.Errorf("product search metadata exceeds the search response budget")
+	if maxBytes < len(envelope) {
+		return out, errProductSearchEnvelopeBudget
 	}
+	remaining := maxBytes - len(envelope)
 	if len(hits) == 0 {
 		return out, nil
 	}

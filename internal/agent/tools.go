@@ -128,9 +128,7 @@ const (
 	traverseMaxLimit   = 200
 )
 
-// toolDefs returns the read-only tool set exposed to the model: the MCP
-// read set (search, get_entity, get_chunks, traverse, list_documents, status, cypher);
-// no ingestion in v1.
+// toolDefs returns the read-only graph and product tools exposed to the model.
 func toolDefs() []toolDef {
 	return []toolDef{
 		functionTool("search",
@@ -205,6 +203,39 @@ func toolDefs() []toolDef {
 				},
 				"required": []string{"query"},
 			}),
+		functionTool("get_product", graph.ProductLookupDescription+
+			" If some feature observations exceed the result budget, features_omitted counts the observations dropped from the end.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":         map[string]any{"type": "string", "description": "Graph product ID"},
+					"store":      map[string]any{"type": "string", "description": "Store for an exact lookup by product_id"},
+					"product_id": map[string]any{"type": "string", "description": "Full source product ID including its store prefix"},
+				},
+			}),
+		functionTool("find_products", graph.ProductSearchDescription+
+			" A page may contain fewer hits or less evidence to fit the result budget.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"domain":  map[string]any{"type": "string", "description": "Restrict matches to this domain ID within the request scope"},
+					"feature": map[string]any{"type": "string", "description": "Feature ID from list_features"},
+					"value":   map[string]any{"type": "string", "description": "Exact folded value or item. Use either value or numeric bounds"},
+					"min":     map[string]any{"type": "string", "description": "Inclusive lower bound as a decimal string in the canonical unit"},
+					"max":     map[string]any{"type": "string", "description": "Inclusive upper bound as a decimal string in the canonical unit"},
+					"limit":   map[string]any{"type": "integer", "description": "Maximum hits (default 10, capped at 20)"},
+					"cursor":  map[string]any{"type": "string", "description": "Opaque continuation cursor from the previous page with the same filters and limit"},
+				},
+				"required": []string{"feature"},
+			}),
+		functionTool("list_features", graph.ProductFeaturesDescription+
+			", with release status, numeric-search support and stores with released keys in scope. If truncated, narrow with query.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{"type": "string", "description": "Case-insensitive substring of the feature ID or name"},
+				},
+			}),
 	}
 }
 
@@ -227,6 +258,12 @@ func (s *Server) execTool(ctx context.Context, name string, args json.RawMessage
 		run = s.toolStatus
 	case "cypher":
 		run = s.toolCypher
+	case "get_product":
+		run = s.toolGetProduct
+	case "find_products":
+		run = s.toolFindProducts
+	case "list_features":
+		run = s.toolListFeatures
 	}
 	if run != nil && s.metrics != nil {
 		start := time.Now()

@@ -269,7 +269,9 @@ Claude Desktop are in [agent-setup.md](agent-setup.md); the tool set is
 `GKG_AGENT_ENABLED=true`, MCP also exposes `ask` for
 natural-language questions. Set `include_evidence: true` to add tool evidence
 within the 32 KiB MCP result budget. REST ask responses include the full tool
-results.
+results, except the product tools: `get_product`, `find_products` and
+`list_features` return results trimmed to the agent's 32 KB budget, which
+report what they omitted.
 
 ## 5. Local, fully-offline extraction
 
@@ -612,6 +614,10 @@ slug in the JSON body of `/v1/search`, `/v1/agent/ask` or `/v1/agent/ask/stream`
 `GET /v1/documents?domain=zorbo` filters documents before the page limit.
 Search hits, document list/detail responses, entity views, related entity
 references in facts, co-mentions, and traversal nodes carry `domain`.
+The built-in ask agent also scopes product lookup, product search and feature
+discovery. Product search inherits the ask domain and rejects a conflicting
+argument. Out-of-domain product lookups return the unknown-product error.
+Feature discovery uses keys from stores bound to the ask domain.
 MCP read tools accept the same optional scope; see [agent setup](agent-setup.md#domain-scope).
 `gkg eval-retrieval --questions questions.json --domain zorbo` scopes search,
 gold and null checks; per-question `domain` is used without the flag.

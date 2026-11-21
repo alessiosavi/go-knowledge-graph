@@ -270,18 +270,16 @@ var errNoStore = errors.New("knowledge graph unavailable: no store wired")
 
 func registerTools(s *Server) {
 	addReadTool(s, &mcpgo.Tool{
-		Name: "get_product",
-		Description: "Get a product with its active feature observations and up to three associated pages (pages_missing when none). " +
-			"Provide id, or both store and the full source product_id.",
+		Name:        "get_product",
+		Description: graph.ProductLookupDescription,
 	}, s.handleGetProduct)
 	addReadTool(s, &mcpgo.Tool{
-		Name: "find_products",
-		Description: "Find products by a feature ID and either an exact folded value or inclusive numeric bounds in the canonical unit. " +
-			"Pass the same filters with the next cursor. Pages over 256 KiB are returned only in structuredContent, with empty text content.",
+		Name:        "find_products",
+		Description: graph.ProductSearchDescription + " Pages over 256 KiB are returned only in structuredContent, with empty text content.",
 	}, s.handleFindProducts)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "list_features",
-		Description: "List features in the active release's registry, with release status and numeric-search support per source key and store.",
+		Description: graph.ProductFeaturesDescription + ", with release status and numeric-search support per source key and store.",
 	}, s.handleListFeatures)
 	addTool(s, &mcpgo.Tool{
 		Name:        "ingest",
