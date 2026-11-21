@@ -873,3 +873,23 @@ func (s *Server) ask(ctx context.Context, question string) (AskResponse, error) 
 func (s *Server) run(ctx context.Context, question string, emit func(streamEvent) error) (AskResponse, error) {
 	return s.runWithEvents(ctx, AskRequest{Question: question}, askEvents{tool: emit, delta: emit})
 }
+
+// A bare product code must route to find_products on an identifier feature,
+// not to get_product (seen live on 2026-11-21: the agent passed a code to
+// get_product and never searched by catalogue code).
+func TestSystemPromptProductCodeLookup(t *testing.T) {
+	for _, want := range []string{
+		"product code",
+		"find_products",
+		"kind code",
+		"list_features",
+		"get_product needs",
+	} {
+		if !strings.Contains(systemPrompt, want) {
+			t.Errorf("system prompt missing %q", want)
+		}
+	}
+	if !strings.HasPrefix(planSystemPrompt, systemPrompt) {
+		t.Error("plan prompt must extend the system prompt")
+	}
+}
