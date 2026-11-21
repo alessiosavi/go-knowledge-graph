@@ -15,7 +15,7 @@ info:
     `/mcp` is MCP streamable HTTP, not REST, and uses the same authentication;
     see docs/agent-setup.md for client setup.
     Body sizes are capped by configuration (`Ingest.MaxUploadMB` for ingestion,
-    1 MiB for other JSON endpoints, including ask); Cypher row count and timeout
+    128 KiB for product PUT, and 1 MiB for other JSON endpoints, including ask); Cypher row count and timeout
     are capped by `Limits.CypherRows` / `Limits.CypherTimeoutMS`. The search,
     entity, traverse, document, domain and product read routes share
     `Limits.ReadTimeoutMS` (default 15 s); a read that exceeds it is stopped on
@@ -42,7 +42,7 @@ tags:
   - name: graph
     description: Search entities and chunks, inspect evidence and traverse facts
   - name: products
-    description: Read products, released observations and store watermarks
+    description: Read products, released observations and store watermarks, and push or remove a product
   - name: agent
     description: Bounded read-only question answering and streaming
   - name: health
@@ -315,6 +315,11 @@ paths:
         server stops first (the document stays `received` meanwhile); poll
         `/v1/documents/{id}/status` until `done` or `failed`. Re-submitting
         unchanged content is a no-op (`noop: true`) unless `force` is set.
+        Changing or clearing refs on unchanged content requires `force`.
+        Omit refs to keep them on retries or inherit them from the latest
+        live completed version on new content. Newly supplied refs that
+        change the stored set must use bound stores. If those stores share
+        one domain, ingestion pins the document to it.
         `labels` selects an installed YAML preset under `labels.presets_dir`;
         omitted/empty uses built-in defaults. Shipped presets are general,
         meeting, documentation, mail, news, code and demo; custom names are
@@ -344,6 +349,14 @@ paths:
                 force:
                   type: string
                   description: '"true" or "1" re-runs unchanged content; all other values are false'
+                products:
+                  allOf:
+                    - $ref: "#/components/schemas/IngestProducts"
+                  description: Repeat the products field once per product ID.
+                products_clear:
+                  type: string
+                  enum: ["true", "false"]
+                  description: Set to "true" to clear refs. Omit the products field when clearing.
       responses:
         "202":
           description: queued for processing
@@ -358,7 +371,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/IngestResponse"
         "400":
-          description: invalid request or rejected input
+          description: Rejected input, including `invalid_products` or `products_unknown_store`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: |
+            Product refs changed on unchanged content (`refs_changed_use_force`),
+            the refs pin conflicts with the assigned domain (`domain_pin_conflict`),
+            or the pinned domain no longer exists (`domain_missing`).
           content:
             application/json:
               schema:
@@ -622,6 +644,88 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+    put:
+      tags: [products]
+      operationId: pushProduct
+      summary: Replace one product and its released observations
+      description: |
+        Use one increasing sequence per store across snapshot imports, pushes and deletes.
+        The request must be a single JSON object with exactly one seq and one record.
+        The body is capped at 128 KiB and the record at 64 KiB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductPushEvent"
+      responses:
+        "200":
+          $ref: "#/components/responses/ProductMutationApplied"
+        "400":
+          $ref: "#/components/responses/ProductMutationInvalid"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The edge rejected a cross-site or foreign-Origin request.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/ProductMutationConflict"
+        "413":
+          description: Body exceeds 128 KiB. The API returns a JSON error. The edge may return an HTML error page before forwarding.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example: { error: body_too_large, detail: request body exceeds 131072 bytes }
+            text/html:
+              schema: { type: string }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ProductMutationUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+    delete:
+      tags: [products]
+      operationId: removeProduct
+      summary: Remove one product and advance the store's sequence
+      description: Supply each query parameter exactly once. Deleting an absent product also advances the sequence.
+      parameters:
+        - name: product_id
+          in: query
+          required: true
+          schema: { type: string, minLength: 1 }
+          description: Full source product ID with a valid store prefix, a colon and a non-empty suffix.
+        - name: seq
+          in: query
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+          description: Next sequence in the same per-store sequence used by imports and pushes.
+      responses:
+        "200":
+          $ref: "#/components/responses/ProductMutationApplied"
+        "400":
+          $ref: "#/components/responses/ProductMutationInvalid"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The edge rejected a cross-site or foreign-Origin request.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/ProductMutationConflict"
+        "413":
+          description: The edge returns an HTML error page for a request body above 128 KiB. This operation takes its inputs in the query string.
+          content:
+            text/html:
+              schema: { type: string }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ProductMutationUnavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
   /v1/products/stores:
@@ -1155,6 +1259,36 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ProductDetail"
+    ProductMutationApplied:
+      description: The event applied or matched the latest applied event.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProductMutationResult"
+    ProductMutationInvalid:
+      description: Invalid JSON, product record, source ID, or query parameters (invalid_request).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ProductMutationConflict:
+      description: The event was refused. Stale and conflicting sequences include the store's seen_seq.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProductMutationConflict"
+    ProductMutationUnavailable:
+      description: >-
+        The graph store is unavailable or the write outcome is uncertain.
+        For unknown_outcome, resend the same event with the same sequence.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error, detail]
+            properties:
+              error: { type: string, enum: [unknown_outcome, unavailable] }
+              detail: { type: string }
     NotFound:
       description: No such document, entity, or product (error store_error).
       content:
@@ -1186,6 +1320,59 @@ components:
       properties:
         error: { type: string }
         detail: { type: string }
+    ProductPushEvent:
+      type: object
+      additionalProperties: false
+      required: [seq, record]
+      properties:
+        seq: { type: integer, format: int64, minimum: 1 }
+        record:
+          $ref: "#/components/schemas/ProductPushRecord"
+    ProductPushRecord:
+      type: object
+      additionalProperties: false
+      required: [store, product_id, title, brand, category, subcategory, product_type, link, attributes, page_specs]
+      properties:
+        store: { type: string }
+        product_id: { type: string, description: "The store followed by a colon and a non-empty suffix." }
+        title: { type: string }
+        brand: { type: string }
+        category: { type: string }
+        subcategory: { type: string }
+        product_type: { type: string, nullable: true }
+        link: { type: string }
+        attributes:
+          type: object
+          maxProperties: 512
+          additionalProperties: { type: string }
+        page_specs:
+          type: array
+          nullable: true
+          description: Validated on input. Observations are derived from attributes.
+          items:
+            type: object
+            additionalProperties: false
+            required: [label, value]
+            properties:
+              label: { type: string }
+              value: { type: string }
+    ProductMutationResult:
+      type: object
+      required: [status, product_id, id, seen_seq]
+      properties:
+        status: { type: string, enum: [created, updated, deleted, absent, duplicate] }
+        product_id: { type: string }
+        id: { type: string, pattern: "^[0-9a-f]{32}$" }
+        seen_seq: { type: integer, format: int64 }
+    ProductMutationConflict:
+      type: object
+      required: [error, detail]
+      properties:
+        error:
+          type: string
+          enum: [stale, seq_conflict, release_changed, release_not_materialized, store_not_bound, store_cap, retry, reimport_required]
+        detail: { type: string }
+        seen_seq: { type: integer, format: int64, description: Current store watermark for stale and seq_conflict. }
     Product:
       type: object
       required: [id, store, product_id, domain, title, brand, category, subcategory, link]
@@ -1296,6 +1483,8 @@ components:
         product_count: { type: integer, format: int64 }
         edge_count: { type: integer, format: int64 }
         imported_at: { type: string, format: date-time, nullable: true }
+        materialized_activation_seq: { type: integer, format: int64, nullable: true, description: Activation sequence stamped by the last successful import. }
+        pushed_at: { type: string, format: date-time, nullable: true, description: Time of the last applied product mutation. }
     ProductFeatures:
       type: object
       required: [active_release_id, features]
@@ -1378,7 +1567,7 @@ components:
         evidence_truncated: { type: boolean, description: Matching evidence was omitted due to the per-hit edge limit or response size. }
     IngestRequest:
       type: object
-      description: Exactly one non-empty url (trimmed) or text is required; source, labels and force are optional.
+      description: Exactly one non-empty url (trimmed) or text is required. Source, labels, force and products are optional.
       oneOf:
         - required: [url]
           properties:
@@ -1401,6 +1590,16 @@ components:
         force:
           type: boolean
           default: false
+        products:
+          $ref: "#/components/schemas/IngestProducts"
+    IngestProducts:
+      type: array
+      description: Unique store-prefixed product IDs, at most 1 KiB each. Pass an empty array to clear refs.
+      maxItems: 50
+      uniqueItems: true
+      items:
+        type: string
+        description: A store prefix followed by a colon and a non-empty suffix.
     IngestResponse:
       type: object
       required: [document_id, noop]

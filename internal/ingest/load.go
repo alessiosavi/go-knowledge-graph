@@ -218,7 +218,7 @@ func prepareSubmission(in Input, loaded *Loaded) (graph.DocumentInput, error) {
 	loaded.Title, loaded.TitleSource = title, titleSource
 	return graph.DocumentInput{
 		Kind: kind, Source: source, FinalURL: finalURL, Title: title, TitleSource: titleSource, Hash: hash, Labels: in.Labels,
-		TextCleanVersion: loaded.TextCleanVersion, TextClean: loaded.TextClean,
+		TextCleanVersion: loaded.TextCleanVersion, TextClean: loaded.TextClean, ProductRefs: in.Products,
 	}, nil
 }
 

@@ -277,6 +277,45 @@ var encodedPathProbes = [][2]string{
 	{"GET", "/v1%2fagent%2fstatus"},
 }
 
+func (p *probe) productMutations() {
+	const path = "/v1/products"
+	put := []byte(`{"seq":1,"record":{"store":"edge-fixture.test","product_id":"edge-fixture.test:1","title":"Edge fixture","brand":"","category":"","subcategory":"","product_type":null,"link":"","attributes":{},"page_specs":null}}`)
+	for _, req := range []struct {
+		method, path string
+		body         []byte
+	}{
+		{"PUT", path, put},
+		{"DELETE", path + "?product_id=edge-fixture.test%3A1&seq=1", nil},
+	} {
+		// This disposable graph has no active product release.
+		r := p.check("product "+req.method+" with Basic", req.method, req.path, req.body, 409)
+		expect(object(r.body)["error"] == "release_changed", "product "+req.method+" reached gkg without an active release")
+		for _, header := range []string{"Sec-Fetch-Site: cross-site", "Sec-Fetch-Site: same-site", "Origin: https://evil.example", "Origin: null"} {
+			r = p.request(req.method, req.path, "auth.curl", req.body, "-H", header)
+			expect(r.code == 403, "product "+req.method+" CSRF "+header)
+		}
+		for _, config := range []string{"", "bearer.curl"} {
+			r = p.request(req.method, req.path, config, req.body)
+			expect(r.code == 401 && strings.HasPrefix(r.headers.Get("WWW-Authenticate"), "Basic"), "product "+req.method+" Basic challenge "+config)
+		}
+	}
+	sameOrigin := p.request("PUT", path, "auth.curl", put, "-H", "Sec-Fetch-Site: same-origin", "-H", "Origin: "+p.base)
+	expect(sameOrigin.code == 409 && object(sameOrigin.body)["error"] == "release_changed", fmt.Sprintf("same-origin product PUT reached gkg (HTTP %d)", sameOrigin.code))
+	oversize := append(put, bytes.Repeat([]byte(" "), (128<<10)+1-len(put))...)
+	for _, tc := range []struct {
+		name  string
+		extra []string
+	}{
+		{"Content-Length", []string{"--http1.1"}},
+		{"chunked", []string{"--http1.1", "-H", "Transfer-Encoding: chunked"}},
+	} {
+		r := p.request("PUT", path, "auth.curl", oversize, tc.extra...)
+		expect(r.code == 413 && !strings.Contains(r.headers.Get("Content-Type"), "application/json"), fmt.Sprintf("product PUT %s cap at the edge (HTTP %d)", tc.name, r.code))
+	}
+	r := p.request("PUT", path+"/00000000000000000000000000000000", "auth.curl", put)
+	expect(r.code == 404 && !strings.Contains(r.headers.Get("Content-Type"), "application/json"), "product PUT by ID blocked at the edge")
+}
+
 func (p *probe) encodedPaths(mode string) {
 	for _, pair := range encodedPathProbes {
 		r := p.request(pair[0], pair[1], "auth.curl", nil)
@@ -709,6 +748,8 @@ func main() {
 			p.waitForDocuments("upstream routing after healthy gkg restart", 3*time.Second)
 		case "auth":
 			p.auth(args[3])
+		case "product-mutations":
+			p.productMutations()
 		case "encoded-paths":
 			p.encodedPaths(args[3])
 		case "reject-json":

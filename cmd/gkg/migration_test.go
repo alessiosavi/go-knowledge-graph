@@ -342,3 +342,51 @@ func migrationQuery(t *testing.T, query string, params map[string]any) []*neo4j.
 	}
 	return rows
 }
+
+func TestIngestProductFlagsPersistAndClear(t *testing.T) {
+	st := migrationCommandStore(t)
+	const source = "cli-refs-test"
+	const store = "cli-refs.test"
+	migrationQuery(t, `
+CREATE (:Domain {id:'cli-refs'}), (:ProductStore {store:$store,domain:'cli-refs'})`, map[string]any{"store": store})
+	t.Cleanup(func() {
+		for _, q := range []string{
+			`MATCH (d:Document {source:'cli-refs-test'}) DETACH DELETE d`,
+			`MATCH (r:ProductRef {store:$store}) DETACH DELETE r`,
+			`MATCH (s:ProductStore {store:$store}) DELETE s`,
+			`MATCH (d:Domain {id:'cli-refs'}) DELETE d`,
+		} {
+			migrationQuery(t, q, map[string]any{"store": store})
+		}
+	})
+	for _, test := range []struct {
+		input string
+		flags []string
+		want  []string
+	}{
+		{"First test page.", []string{"--product", store + ":2", "--product", store + ":1"}, []string{store + ":1", store + ":2"}},
+		{"Second test page inherits.", nil, []string{store + ":1", store + ":2"}},
+		{"Third test page clears.", []string{"--clear-products"}, []string{}},
+	} {
+		if err := os.WriteFile("page.txt", []byte(test.input), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out, errb bytes.Buffer
+		args := append([]string{"ingest", "--source", source}, test.flags...)
+		args = append(args, "page.txt")
+		if code := run(args, &out, &errb); code != 0 {
+			t.Fatalf("ingest %v: exit=%d, stderr=%s", args, code, errb.String())
+		}
+		id, _, _ := strings.Cut(strings.TrimPrefix(out.String(), "document_id="), " ")
+		doc, err := st.Document(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc.Status != graph.StatusDone || !reflect.DeepEqual(doc.ProductRefs, test.want) {
+			t.Errorf("ingest %v: status=%s refs=%#v, want done and %#v", args, doc.Status, doc.ProductRefs, test.want)
+		}
+		if doc.Domain != "cli-refs" {
+			t.Errorf("ingest %v: domain=%q, want cli-refs", args, doc.Domain)
+		}
+	}
+}

@@ -12,6 +12,7 @@ map "$request_method:$uri" $edge_route {
     "~^(GET|HEAD):/v1/entities/[^/]+$" @edge_default;
     "~^(GET|HEAD):/v1/domains$" @edge_default;
     "~^(GET|HEAD):/v1/products(/[^/]+)?$" @edge_default;
+    "~^(PUT|DELETE):/v1/products$" @edge_default;
     "~^(GET|HEAD):/v1/features$" @edge_default;
     "~^POST:/v1/products/search$" @edge_default;
     "~^(GET|HEAD):/v1/documents$" @edge_default;
@@ -45,7 +46,7 @@ map "$edge_has_origin:$edge_same_origin" $edge_foreign_origin {
 }
 map "$request_method:$edge_foreign_site:$edge_foreign_origin" $edge_csrf {
     default 0;
-    "~^(POST|DELETE):(1:[01]|[01]:1)$" 1;
+    "~^(POST|PUT|DELETE):(1:[01]|[01]:1)$" 1;
 }
 map "${EDGE_HTTPS_PORT}" $edge_https_suffix {
     default ":${EDGE_HTTPS_PORT}";
@@ -112,6 +113,10 @@ ${EDGE_MAINTENANCE_SERVER}    if ($edge_encoded_path) { return 400; }
     # try_files runs after access/auth; even unlisted paths first require login.
     # The initial locations set caps before nginx checks Content-Length.
     location / { try_files /__edge_missing $edge_route; }
+    location = /v1/products {
+        client_max_body_size 128k;
+        try_files /__edge_missing $edge_route;
+    }
     location = /v1/ingest {
         # gkg's 20 MiB cap includes multipart form overhead.
         client_max_body_size 21037056;

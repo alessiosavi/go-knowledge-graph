@@ -38,69 +38,108 @@ func (s *Store) UpsertDocument(ctx context.Context, in DocumentInput) (UpsertRes
 	if in.Domain != "" && !ValidDomain(in.Domain) {
 		return UpsertResult{}, fmt.Errorf("graph: invalid domain slug %q", in.Domain)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	live, err := s.liveDocuments(ctx, in.Kind, in.Source)
-	if err != nil {
-		return UpsertResult{}, err
+	if in.ProductRefs != nil && !in.productRefsValidated {
+		refs, err := ValidateProductRefs(in.ProductRefs)
+		if err != nil {
+			return UpsertResult{}, err
+		}
+		in.ProductRefs = refs
 	}
 	id := DocumentID(in.Kind, in.Source, in.Hash)
-	textClean := textCleanProperties(in)
-
-	for _, d := range live {
-		if d.Hash == in.Hash && d.Status != StatusFailed {
-			if in.Force {
-				// Preserve version ordering, but durably retain the new preset
-				// and metadata before the pipeline can discard its payload.
-				err := s.runWrite(ctx, `
-MATCH (d:Document {id: $id})
-SET d.status = $status, d.error = '', d.labels = $labels, d.title = $title,
-    d.title_source = $title_source, d.final_url = $final, d.updated_at = $now
-SET d += $text_clean`, map[string]any{
-					"id": d.ID, "status": string(StatusReceived), "labels": in.Labels,
-					"title": in.Title, "title_source": in.TitleSource, "final": in.FinalURL,
-					"now": time.Now().UTC().Format(timeLayout), "text_clean": textClean,
-				})
-				return UpsertResult{ID: d.ID}, err
-			}
-			return UpsertResult{ID: d.ID, Noop: true}, nil
-		}
-	}
-
-	// Previous is the newest live version by created_at — never updated_at:
-	// a status bump on the old version during the supersede window must not
-	// flip which version is current. Ordering by created_at, a failed
-	// same-id node (retry) is skipped because PreviousID would be self.
-	prevID := ""
-	for _, d := range live {
-		if d.ID != id {
-			prevID = d.ID
-			break
-		}
-	}
-
-	err = s.runWrite(ctx, `
-MERGE (d:Document {id: $id})
-ON CREATE SET d.created_at = $now
-SET d.source_kind = $kind, d.source = $source, d.final_url = $final, d.title = $title,
-    d.title_source = $title_source,
-    d.hash = $hash, d.labels = $labels, d.status = $status, d.error = '', d.updated_at = $now, d.version_at = $now,
-    d.supersedes = coalesce(d.supersedes, ''),
-    d.domain = CASE WHEN $domain <> '' THEN $domain ELSE d.domain END,
-    d.domain_tok = CASE WHEN $domain <> '' THEN $domain_tok ELSE d.domain_tok END
-SET d += $text_clean`,
-		map[string]any{
-			"id": id, "kind": in.Kind, "source": in.Source, "final": in.FinalURL,
-			"title": in.Title, "title_source": in.TitleSource, "hash": in.Hash, "labels": in.Labels,
-			"status": string(StatusReceived),
-			"domain": in.Domain, "domain_tok": domainTokenOrNil(in.Domain),
-			"now": time.Now().UTC().Format(timeLayout), "text_clean": textClean,
-		})
+	var result UpsertResult
+	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		var err error
+		result, err = txUpsertDocument(ctx, tx, id, in)
+		return err
+	})
 	if err != nil {
 		return UpsertResult{}, fmt.Errorf("graph: upsert document: %w", err)
 	}
-	return UpsertResult{ID: id, PreviousID: prevID}, nil
+	return result, nil
+}
+
+func txUpsertDocument(ctx context.Context, tx neo4j.ManagedTransaction, id string, in DocumentInput) (UpsertResult, error) {
+	current, previous, newestDone, err := txDocumentVersions(ctx, tx, id, in.Kind, in.Source)
+	if err != nil {
+		return UpsertResult{}, err
+	}
+	reuse := current != nil && current.status != StatusSuperseded
+	liveMatch := reuse && current.status != StatusFailed
+	if liveMatch && !in.Force {
+		if err := CheckProductRefsNoop(in.ProductRefs, current.refs); err != nil {
+			return UpsertResult{}, err
+		}
+		return UpsertResult{ID: id, Noop: true}, nil
+	}
+
+	stored := newestDone.refs
+	if current != nil {
+		stored = current.refs
+	}
+	refs := in.ProductRefs
+	if refs == nil {
+		refs = newestDone.refs
+		if reuse {
+			refs = current.refs
+		}
+	}
+	domain := in.Domain
+	if liveMatch || in.productRefsValidated {
+		// Force preserves the domain unless a changed set supplies a pin.
+		domain = ""
+	}
+	if len(in.ProductRefs) > 0 && !slices.Equal(in.ProductRefs, stored) {
+		pin := in.Domain
+		if !in.productRefsValidated {
+			pin, err = productRefDomain(in.ProductRefs, func(query string, params map[string]any) ([]*neo4j.Record, error) {
+				return txRows(ctx, tx, query, params)
+			})
+			if err != nil {
+				return UpsertResult{}, err
+			}
+		}
+		if pin != "" {
+			if reuse {
+				if err := checkProductRefPin(pin, current.domain, current.status); err != nil {
+					return UpsertResult{}, err
+				}
+			}
+			if err := txCheckProductRefDomain(ctx, tx, pin); err != nil {
+				return UpsertResult{}, err
+			}
+			domain = pin
+		}
+	}
+
+	params := map[string]any{
+		"id": id, "kind": in.Kind, "source": in.Source, "final": in.FinalURL,
+		"title": in.Title, "title_source": in.TitleSource, "hash": in.Hash, "labels": in.Labels,
+		"status": string(StatusReceived), "preserve_version": liveMatch,
+		"domain": domain, "domain_tok": domainTokenOrNil(domain),
+		"now": time.Now().UTC().Format(timeLayout), "text_clean": textCleanProperties(in),
+		"spool_digest": in.SpoolPayloadDigest,
+	}
+	if err := txRun(ctx, tx, `
+MERGE (d:Document {id: $id})
+ON CREATE SET d.created_at = $now
+SET d.source_kind = $kind, d.source = $source, d.final_url = $final, d.title = $title,
+    d.title_source = $title_source, d.hash = $hash, d.labels = $labels,
+    d.status = $status, d.error = '', d.updated_at = $now,
+    d.version_at = CASE WHEN $preserve_version THEN d.version_at ELSE $now END,
+    d.supersedes = coalesce(d.supersedes, ''),
+    d.domain = CASE WHEN $domain <> '' THEN $domain ELSE d.domain END,
+    d.domain_tok = CASE WHEN $domain <> '' THEN $domain_tok ELSE d.domain_tok END,
+    d.spool_payload_digest = $spool_digest
+SET d += $text_clean`, params); err != nil {
+		return UpsertResult{}, err
+	}
+	if err := txReplaceProductRefs(ctx, tx, id, refs); err != nil {
+		return UpsertResult{}, err
+	}
+	if liveMatch {
+		previous = ""
+	}
+	return UpsertResult{ID: id, PreviousID: previous}, nil
 }
 
 func textCleanProperties(in DocumentInput) map[string]any {
@@ -119,34 +158,45 @@ func textCleanProperties(in DocumentInput) map[string]any {
 	}
 }
 
-// liveDoc is one non-superseded document of an identity.
-type liveDoc struct {
-	ID     string
-	Hash   string
-	Status Status
+type documentVersion struct {
+	status Status
+	domain string
+	refs   []string
 }
 
-// liveDocuments returns the identity's live documents, newest version
-// first (created_at DESC, id DESC as a deterministic tie-breaker).
-func (s *Store) liveDocuments(ctx context.Context, kind, source string) ([]liveDoc, error) {
-	recs, err := s.runRead(ctx, `
-MATCH (d:Document {source_kind: $kind, source: $source})
-WHERE d.status <> $superseded
-RETURN d.id AS id, d.hash AS hash, d.status AS status
-ORDER BY d.created_at DESC, d.id DESC`,
-		map[string]any{"kind": kind, "source": source, "superseded": string(StatusSuperseded)})
+// txDocumentVersions reads the exact version (including superseded history),
+// the previous live ID in creation order, and the latest live done version
+// in submission order. A reused ID can have a new version_at.
+func txDocumentVersions(ctx context.Context, tx neo4j.ManagedTransaction, id, kind, source string) (current *documentVersion, previous string, done documentVersion, err error) {
+	rows, err := txRows(ctx, tx, `
+MATCH (d:Document {source_kind:$kind, source:$source})
+WHERE d.status <> 'superseded' OR d.id = $id
+RETURN d.id AS id, d.status AS status, d.domain AS domain, d.product_refs_raw AS refs,
+       coalesce(d.version_at, d.created_at) AS version_at
+ORDER BY d.created_at DESC, d.id DESC`, map[string]any{"id": id, "kind": kind, "source": source})
 	if err != nil {
-		return nil, fmt.Errorf("graph: lookup document: %w", err)
+		return nil, "", done, err
 	}
-	live := make([]liveDoc, 0, len(recs))
-	for _, r := range recs {
-		live = append(live, liveDoc{
-			ID:     getString(r, "id"),
-			Hash:   getString(r, "hash"),
-			Status: Status(getString(r, "status")),
-		})
+	var newestAt, newestID string
+	for _, row := range rows {
+		rowID := getString(row, "id")
+		v := documentVersion{
+			status: Status(getString(row, "status")), domain: getString(row, "domain"),
+			refs: getStringSlice(row, "refs"),
+		}
+		if rowID == id {
+			current = &v
+		} else if previous == "" {
+			previous = rowID
+		}
+		if v.status == StatusDone {
+			at := getString(row, "version_at")
+			if at > newestAt || (at == newestAt && rowID > newestID) {
+				done, newestAt, newestID = v, at, rowID
+			}
+		}
 	}
-	return live, nil
+	return current, previous, done, nil
 }
 
 // requireDocument returns ErrNotFound when the document does not exist.
@@ -326,6 +376,10 @@ SET d.labels = CASE WHEN $labels = '' THEN coalesce(d.labels, '') ELSE $labels E
 // superseded document is terminal: a late status write from a stale worker
 // is dropped instead of reviving it.
 func (s *Store) SetStatus(ctx context.Context, docID string, st Status, errMsg string) error {
+	if st == StatusDone {
+		_, err := s.finishDocument(ctx, docID, false, errMsg)
+		return err
+	}
 	if err := s.requireDocument(ctx, docID); err != nil {
 		return err
 	}
@@ -357,41 +411,108 @@ func (s *Store) Supersede(ctx context.Context, oldID, newID string) error {
 		return fmt.Errorf("graph: supersede %s: old and new are the same document", oldID)
 	}
 	return s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
-		st, err := txDocumentStatus(ctx, tx, oldID)
-		if err != nil {
-			return err
-		}
-		if st == StatusSuperseded {
-			return fmt.Errorf("graph: supersede %s: %w", oldID, ErrSuperseded)
-		}
 		if _, err := txDocumentStatus(ctx, tx, newID); err != nil {
 			return err
 		}
-		touched, err := txMentionedKeys(ctx, tx, oldID)
-		if err != nil {
-			return err
-		}
-		if err := txDeleteSubtree(ctx, tx, oldID); err != nil {
-			return err
-		}
-		if err := txRefreshMentionCounts(ctx, tx, touched); err != nil {
-			return err
-		}
-		now := time.Now().UTC().Format(timeLayout)
-		if err := txRun(ctx, tx, `
+		return txSupersede(ctx, tx, oldID, newID)
+	})
+}
+
+func txSupersede(ctx context.Context, tx neo4j.ManagedTransaction, oldID, newID string) error {
+	st, err := txDocumentStatus(ctx, tx, oldID)
+	if err != nil {
+		return err
+	}
+	if st == StatusSuperseded {
+		return fmt.Errorf("graph: supersede %s: %w", oldID, ErrSuperseded)
+	}
+	touched, err := txMentionedKeys(ctx, tx, oldID)
+	if err != nil {
+		return err
+	}
+	if err := txDeleteSubtree(ctx, tx, oldID); err != nil {
+		return err
+	}
+	if err := txRefreshMentionCounts(ctx, tx, touched); err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(timeLayout)
+	if err := txRun(ctx, tx, `
 MATCH (d:Document {id: $old})
 SET d.status = $superseded, d.error = '', d.updated_at = $now`,
-			map[string]any{"old": oldID, "superseded": string(StatusSuperseded), "now": now}); err != nil {
-			return fmt.Errorf("graph: mark superseded: %w", err)
-		}
-		if err := txRun(ctx, tx, `
-MATCH (d:Document {id: $new})
-SET d.supersedes = $old`,
-			map[string]any{"new": newID, "old": oldID}); err != nil {
-			return fmt.Errorf("graph: record supersedes: %w", err)
-		}
-		return txGC(ctx, tx, touched)
+		map[string]any{"old": oldID, "superseded": string(StatusSuperseded), "now": now}); err != nil {
+		return fmt.Errorf("graph: mark superseded: %w", err)
+	}
+	if err := txRun(ctx, tx, `
+MATCH (replacement:Document {id: $new})
+SET replacement.supersedes = $old
+WITH replacement WHERE replacement.status = 'done'
+MATCH (:Document {id: $old})-[r:REFS]->(:ProductRef)
+DELETE r`,
+		map[string]any{"new": newID, "old": oldID}); err != nil {
+		return fmt.Errorf("graph: record supersedes: %w", err)
+	}
+	return txGC(ctx, tx, touched)
+}
+
+// FinishDocument publishes a processed version and retires its older
+// versions atomically, so the prior done versions and their refs stay
+// visible until the replacement commits. The result lists the retired IDs.
+func (s *Store) FinishDocument(ctx context.Context, id string) ([]string, error) {
+	return s.finishDocument(ctx, id, true, "")
+}
+
+func (s *Store) finishDocument(ctx context.Context, id string, supersede bool, errMsg string) ([]string, error) {
+	var retired []string
+	err := s.runWriteTxLocked(ctx, func(tx neo4j.ManagedTransaction) error {
+		var err error
+		retired, err = txFinishDocument(ctx, tx, id, supersede, errMsg)
+		return err
 	})
+	return retired, err
+}
+
+func txFinishDocument(ctx context.Context, tx neo4j.ManagedTransaction, id string, supersede bool, errMsg string) ([]string, error) {
+	st, err := txDocumentStatus(ctx, tx, id)
+	if err != nil || st == StatusSuperseded {
+		return nil, err
+	}
+	var retired []string
+	if supersede {
+		if st != StatusMerged && st != StatusVerifying && st != StatusDone {
+			return nil, fmt.Errorf("graph: cannot finish document %s in status %q", id, st)
+		}
+		// Select and retire old IDs in one snapshot. A superseded ID
+		// resubmitted in the meantime has a newer version_at and is spared.
+		rows, err := txRows(ctx, tx, olderLiveVersionsQuery, map[string]any{"id": id})
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			old := getString(row, "id")
+			if err := txSupersede(ctx, tx, old, id); err != nil {
+				return nil, err
+			}
+			retired = append(retired, old)
+		}
+	}
+	if err := txRun(ctx, tx, `
+MATCH (d:Document {id:$id})
+SET d.status = 'done', d.error = $error, d.updated_at = $now`,
+		map[string]any{"id": id, "error": errMsg, "now": time.Now().UTC().Format(timeLayout)}); err != nil {
+		return nil, err
+	}
+	// Include already-superseded versions in case an earlier worker or
+	// standalone Supersede retired them before this replacement finished.
+	err = txRun(ctx, tx, `
+MATCH (d:Document {id:$id})
+MATCH (o:Document {source_kind:d.source_kind, source:d.source, status:'superseded'})-[r:REFS]->(:ProductRef)
+WHERE coalesce(o.version_at, o.created_at) < coalesce(d.version_at, d.created_at)
+DELETE r`, map[string]any{"id": id})
+	if err != nil {
+		return nil, err
+	}
+	return retired, nil
 }
 
 // DeleteDocument removes a document with its chunks, mentions and fact
@@ -553,6 +674,7 @@ RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url
        coalesce(d.title, '') AS title, coalesce(d.title_source, '') AS title_source,
        d.hash AS hash, d.status AS status, d.error AS error,
        coalesce(d.labels, '') AS labels, d.domain AS domain,
+       d.product_refs_raw AS product_refs_raw, d.spool_payload_digest AS spool_payload_digest,
        d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes`,
 		map[string]any{"id": id})
 	if err != nil {
@@ -721,19 +843,20 @@ RETURN d.id AS id`,
 	return ids, nil
 }
 
+const olderLiveVersionsQuery = `
+MATCH (d:Document {id: $id})
+MATCH (o:Document {source_kind: d.source_kind, source: d.source})
+WHERE o.id <> d.id AND o.status <> 'superseded'
+  AND coalesce(o.version_at, o.created_at) < coalesce(d.version_at, d.created_at)
+RETURN o.id AS id
+ORDER BY coalesce(o.version_at, o.created_at) ASC, o.id ASC`
+
 // OlderLiveVersions returns the live versions of the document's identity
 // that were submitted before it (ordered by version_at ascending): exactly
 // the versions this one supersedes once merged. Versions submitted after it
 // — even if processed earlier — are never superseded.
 func (s *Store) OlderLiveVersions(ctx context.Context, docID string) ([]string, error) {
-	recs, err := s.runRead(ctx, `
-MATCH (d:Document {id: $id})
-MATCH (o:Document {source_kind: d.source_kind, source: d.source})
-WHERE o.id <> d.id AND o.status <> $superseded
-  AND coalesce(o.version_at, o.created_at) < coalesce(d.version_at, d.created_at)
-RETURN o.id AS id
-ORDER BY coalesce(o.version_at, o.created_at) ASC, o.id ASC`,
-		map[string]any{"id": docID, "superseded": string(StatusSuperseded)})
+	recs, err := s.runRead(ctx, olderLiveVersionsQuery, map[string]any{"id": docID})
 	if err != nil {
 		return nil, fmt.Errorf("graph: older live versions: %w", err)
 	}
@@ -746,20 +869,22 @@ ORDER BY coalesce(o.version_at, o.created_at) ASC, o.id ASC`,
 
 func recordToDocument(r *neo4j.Record) *Document {
 	return &Document{
-		ID:          getString(r, "id"),
-		Domain:      getString(r, "domain"),
-		SourceKind:  getString(r, "source_kind"),
-		Source:      getString(r, "source"),
-		FinalURL:    getString(r, "final_url"),
-		Title:       getString(r, "title"),
-		TitleSource: getString(r, "title_source"),
-		Hash:        getString(r, "hash"),
-		Status:      Status(getString(r, "status")),
-		Error:       getString(r, "error"),
-		Labels:      getString(r, "labels"),
-		CreatedAt:   parseTime(getString(r, "created_at")),
-		UpdatedAt:   parseTime(getString(r, "updated_at")),
-		Supersedes:  getString(r, "supersedes"),
+		ID:                 getString(r, "id"),
+		Domain:             getString(r, "domain"),
+		SourceKind:         getString(r, "source_kind"),
+		Source:             getString(r, "source"),
+		FinalURL:           getString(r, "final_url"),
+		Title:              getString(r, "title"),
+		TitleSource:        getString(r, "title_source"),
+		Hash:               getString(r, "hash"),
+		Status:             Status(getString(r, "status")),
+		Error:              getString(r, "error"),
+		Labels:             getString(r, "labels"),
+		CreatedAt:          parseTime(getString(r, "created_at")),
+		UpdatedAt:          parseTime(getString(r, "updated_at")),
+		Supersedes:         getString(r, "supersedes"),
+		ProductRefs:        getStringSlice(r, "product_refs_raw"),
+		SpoolPayloadDigest: getString(r, "spool_payload_digest"),
 	}
 }
 

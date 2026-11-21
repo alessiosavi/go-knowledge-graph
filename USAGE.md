@@ -180,6 +180,51 @@ loader, including those used by ingest, eval, and rejudge planning.
 **From an agent**: the MCP `ingest` tool takes `url` or `text`, plus an
 optional `source` label and `force` to re-run an unchanged document.
 
+### Link a document to products
+
+A document can name the products it describes, for example a product page or
+a catalogue that lists them. Pass product IDs in the `store:suffix` form used
+by product imports (at most 50, each at most 1 KiB):
+
+```bash
+# JSON
+curl -sS -u USER:PASS -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.example.com/p/1000","products":["example.com:1000"]}' \
+  https://HOST/v1/ingest
+# Multipart: repeat the field
+curl -sS -u USER:PASS -F file=@catalogue.pdf \
+  -F products=example.com:1000 -F products=example.com:1001 https://HOST/v1/ingest
+# CLI and MCP
+gkg ingest --product example.com:1000 --product example.com:1001 catalogue.pdf
+```
+
+The MCP `ingest` tool takes the same `products` list. When a submission
+supplies a set that differs from the stored one, every store must be bound to
+a domain by a product release, and when all stores share one bound domain the
+document is placed in that domain; IDs from several domains leave the domain
+to detection. A submission that repeats or inherits the stored set skips both
+checks, so its domain comes from detection or the previous version even if a
+store has since been unbound or rebound.
+
+The refs are kept as a set, so order and repetition across submissions do
+not matter:
+
+| Submission | `products` supplied | `products` omitted | Cleared |
+| --- | --- | --- | --- |
+| New source | Stored | None | None |
+| Changed content | Stored | Inherited from the newest done version | Cleared |
+| Unchanged content | Same set: no-op. Different set: 409 `refs_changed_use_force` | Kept | 409 `refs_changed_use_force` if refs are stored |
+| `force` or a retry of a failed version | Replaced | Kept | Cleared |
+
+Clear the refs with `"products": []` in JSON, `products_clear=true` in a
+multipart form, an empty MCP `products` list, or `gkg ingest
+--clear-products`. Errors: 400 `invalid_products` (format, count, duplicates)
+and `products_unknown_store` (no bound store); 409 `refs_changed_use_force`,
+`domain_pin_conflict` (forced refs would move an existing version to another
+domain: delete it and ingest again) and `domain_missing` (the bound domain no
+longer exists). Refs survive product re-imports and pushes because they
+point at the stable product ID.
+
 ## 2. Explore the graph
 
 The graph is plain Memgraph — anything that speaks Bolt works. Three easy
@@ -1321,28 +1366,76 @@ Processing stops at the first error. Earlier successes stay committed.
 After any release activation, re-import **every store** at a higher sequence
 before pushing or removing products. The activation sequence is global. A
 wiped store also needs a new import before pushing or removing products.
-Each push recounts the store's products, edges and bytes. The 10,000-product case in `TestProductPushCapRollback` took at most 0.19 s including setup, well under the 30 s transaction timeout.
+Each push recounts the store's products, edges and bytes inside its
+transaction, bounded by the 10,000-product and 60,000-edge caps.
 
 | Exit | Status | Meaning |
 | --- | --- | --- |
 | 0 | `created`, `updated`, `deleted`, `absent` | The event applied and advanced the store's sequence, including removal of an already absent product. |
 | 0 | `duplicate` | The sequence, operation and product ID match the latest event. The original write stays in place. |
 | 5 | `stale`, `seq_conflict` | The sequence is at or below the wipe floor, below the watermark, or already belongs to a different event. The error includes `seen_seq`. |
-| 5 | `release_changed`, `release_not_materialized`, `store_not_bound`, `store_cap` | Check the active release and binding, materialize the store, or reduce its size as indicated. A rejected event leaves its sequence available. |
+| 5 | `release_changed`, `release_not_materialized`, `store_not_bound`, `store_cap` | Check the active release and binding, materialize the store, or reduce its size as indicated. |
 | 5 | `retry` | A concurrent writer held a fence. Retry the same event after that write finishes. |
 | 5 | `reimport_required` | A product is missing its projected byte count. Re-import the store at a sequence above its `seen_seq`. |
 | 1 | `unknown_outcome` | The write timed out or its commit could not be confirmed. |
 | 1 | Other errors | Input validation, including an invalid `seq` in a push JSONL line, or file or graph errors. |
 | 2 | Usage error | Check the required arguments and use a positive int64 for `products remove -seq`. |
 
+CLI exit 5 corresponds to HTTP 409 for the same event.
+
 Each successful event prints a JSON result with `status`, `product_id`, `id`
-and `seen_seq`. For `unknown_outcome`, resend the same sequence, operation
-and product ID. If it already applied and is still the latest event in a
-materialized store, the retry returns `duplicate`. After an activation,
-`release_not_materialized` (409) takes precedence over `duplicate` even for
-an identical retry of the last event. Re-import the store at a higher sequence
-and reconcile by reading the current product with GET or MCP `get_product`.
-Use the same product lookup to reconcile a `stale` result. The stores response shows
+and `seen_seq`. The REST section below describes retry and reconciliation
+for both interfaces.
+
+#### Push or remove through the REST edge
+
+The existing Basic users are writers with the same trust as `/v1/ingest`.
+Use the same edge login for both requests. Set `EDGE_URL` to the HTTPS edge
+base URL and `EDGE_USER` to your Basic username. Curl prompts for the password.
+The example `update.json` has one `{"seq":3,"record":{...}}` object containing
+the complete A1 record for `example.test:42`.
+
+```sh
+curl --user "$EDGE_USER" --request PUT --json @update.json "$EDGE_URL/v1/products"
+curl --user "$EDGE_USER" --request DELETE \
+  "$EDGE_URL/v1/products?product_id=example.test%3A42&seq=4"
+```
+
+PUT accepts a single JSON object with exactly the `seq` and `record`
+members. The edge and API cap the PUT body at 128 KiB (131,072 bytes),
+including chunked uploads. DELETE takes exactly one `product_id` and one
+`seq` in the query string. Percent-encode `product_id`, using `%3A` for
+`:` and `%2B` for a literal `+`. An unencoded `+` decodes to a space.
+The per-store sequence and materialization requirements are the same as for
+the CLI.
+
+| HTTP | Status or error | Meaning |
+| --- | --- | --- |
+| 200 | `created`, `updated`, `deleted`, `absent` | The event applied and advanced the watermark, including removal of an already absent product. |
+| 200 | `duplicate` | The sequence, operation and product ID match the latest event. |
+| 400 | `invalid_request` | Correct the request, record, source ID or sequence. |
+| 401 / 403 | Edge authentication / origin guard | Supply Basic credentials and send from the same origin or from a command-line client. |
+| 404 | `store_error` | The store reported a missing resource. |
+| 409 | `stale`, `seq_conflict` | The sequence is below the watermark, at or below the wipe floor, or belongs to a different event. The response includes `seen_seq`. |
+| 409 | `release_changed`, `release_not_materialized`, `store_not_bound`, `store_cap` | Check the active release and binding, materialize the store, or reduce its size as indicated. |
+| 409 | `retry` | A concurrent writer held a fence. Retry the same event after that write finishes. |
+| 409 | `reimport_required` | A product is missing its projected byte count. Re-import the store above its `seen_seq`. |
+| 413 | `body_too_large` | The body exceeds the cap. The edge can return its own 413 response. |
+| 500 | `store_error` | The store reported an unexpected failure. |
+| 503 | `unknown_outcome` | The write timed out or its commit could not be confirmed. |
+| 504 | `store_error` | The store operation exceeded its deadline. |
+
+A REST success returns `status`, `product_id`, `id` and `seen_seq`. For
+`unknown_outcome`, resend the same event with the same sequence, operation
+and product ID. If the event already applied and is still the latest event
+in a materialized store, the retry returns `duplicate`. If it never applied
+and its sequence is still available, the retry applies normally. If a newer
+event superseded it, the retry returns `stale`. Reconcile by reading the
+current product with `GET /v1/products/{id}`,
+`GET /v1/products?store=STORE&product_id=PRODUCT_ID`, or MCP `get_product`.
+After a release activation, `release_not_materialized` (HTTP 409, CLI exit 5)
+takes precedence over `duplicate`. Re-import at a higher sequence and
+reconcile by reading the current product. `GET /v1/products/stores` shows
 `seen_seq`, `materialized_activation_seq` and `pushed_at`. To correct an
 applied push, send the corrected record or a full snapshot at a higher sequence.
 

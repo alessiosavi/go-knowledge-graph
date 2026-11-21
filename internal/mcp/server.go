@@ -78,11 +78,12 @@ func (s *Server) SetMetrics(m *obs.Metrics) { s.metrics = m }
 // Tool input shapes. Optional fields carry omitempty so the inferred JSON
 // schema does not require them; empty values are treated as absent.
 type ingestArgs struct {
-	URL    string `json:"url,omitempty" jsonschema:"URL of the document to fetch and ingest"`
-	Text   string `json:"text,omitempty" jsonschema:"inline text to ingest"`
-	Source string `json:"source,omitempty" jsonschema:"identity override; defaults to the URL or a content hash"`
-	Labels string `json:"labels,omitempty" jsonschema:"label preset name"`
-	Force  bool   `json:"force,omitempty" jsonschema:"re-ingest even when the content is unchanged"`
+	URL      string   `json:"url,omitempty" jsonschema:"URL of the document to fetch and ingest"`
+	Text     string   `json:"text,omitempty" jsonschema:"inline text to ingest"`
+	Source   string   `json:"source,omitempty" jsonschema:"identity override; defaults to the URL or a content hash"`
+	Labels   string   `json:"labels,omitempty" jsonschema:"label preset name"`
+	Force    bool     `json:"force,omitempty" jsonschema:"re-ingest even when the content is unchanged"`
+	Products []string `json:"products,omitempty" jsonschema:"up to 50 unique store-prefixed product IDs; omit to retain or inherit refs, pass [] to clear"`
 }
 
 type statusArgs struct {
@@ -374,7 +375,7 @@ func (s *Server) handleIngest(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	case u == "" && args.Text == "":
 		return nil, ingestOut{}, argerr.New("url or text is required")
 	}
-	in := ingest.Input{Source: args.Source, Labels: args.Labels, Force: args.Force}
+	in := ingest.Input{Source: args.Source, Labels: args.Labels, Force: args.Force, Products: args.Products}
 	if u != "" {
 		in.Kind, in.URL = "url", u
 	} else {
@@ -382,6 +383,10 @@ func (s *Server) handleIngest(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	}
 	res, err := s.in.Submit(ctx, in)
 	if err != nil {
+		var refsErr *graph.DocumentRefsError
+		if errors.As(err, &refsErr) {
+			return nil, ingestOut{}, argerr.Wrap(refsErr)
+		}
 		return nil, ingestOut{}, err
 	}
 	return nil, ingestOut{DocumentID: res.DocumentID, Noop: res.Noop}, nil

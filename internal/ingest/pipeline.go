@@ -50,14 +50,15 @@ type TextLoader func(ctx context.Context, in Input) (Loaded, error)
 
 // Input is one submission (text, file bytes or URL).
 type Input struct {
-	Kind   string // url | file | text; inferred from the fields when empty
-	URL    string
-	Source string
-	Title  string
-	Bytes  []byte
-	Text   string
-	Labels string
-	Force  bool
+	Kind     string // url | file | text; inferred from the fields when empty
+	URL      string
+	Source   string
+	Title    string
+	Bytes    []byte
+	Text     string
+	Labels   string
+	Force    bool
+	Products []string // nil means omitted; an empty list clears refs
 }
 
 // Result tells the caller what a submission did.
@@ -121,6 +122,7 @@ type submission struct {
 // graph.Store; tests can exercise durable admission/recovery without a server.
 type pipelineStore interface {
 	duplicateRootStore
+	PrepareDocumentRefs(context.Context, *graph.DocumentInput, *graph.Document) error
 	UpsertDocument(context.Context, graph.DocumentInput) (graph.UpsertResult, error)
 	InFlight(context.Context) ([]graph.Document, error)
 	DoneDocumentIDs(context.Context) ([]string, error)
@@ -143,7 +145,7 @@ type pipelineStore interface {
 	EnsureVectorIndex(context.Context, int) error
 	SetEntityEmbeddings(context.Context, []string, [][]float64) (int, error)
 	OlderLiveVersions(context.Context, string) ([]string, error)
-	Supersede(context.Context, string, string) error
+	FinishDocument(context.Context, string) ([]string, error)
 	SameIdentityDocumentIDs(context.Context, string, string) (map[string]bool, error)
 	ChunkRefsByExactKey(context.Context, string, []string, string) ([]graph.ChunkRef, error)
 	DomainProfiles(context.Context, string) ([]domain.DocProfile, error)
@@ -257,6 +259,11 @@ func NewPipeline(cfg config.Config, st *graph.Store, prov extract.Provider, ix *
 // background drainer instead; past the drainer's cap, or when the server
 // stops first, restart recovery queues it.
 func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
+	refs, err := graph.ValidateProductRefs(in.Products)
+	if err != nil {
+		return Result{}, err
+	}
+	in.Products = refs
 	// Fail fast on an unusable label preset instead of failing the document
 	// later (the name is persisted with the document for recovery).
 	if _, _, err := p.labelsFor(in.Labels); err != nil {
@@ -370,6 +377,9 @@ func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submis
 		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
 	if err == nil && doc.Status != graph.StatusFailed && doc.Status != graph.StatusSuperseded && !force {
+		if err := graph.CheckProductRefsNoop(in.ProductRefs, doc.ProductRefs); err != nil {
+			return Result{}, err
+		}
 		return Result{DocumentID: id, Noop: true}, nil
 	}
 	lock := p.docLock(id)
@@ -387,18 +397,42 @@ func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submis
 		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
 	if err == nil && doc.Status != graph.StatusFailed && doc.Status != graph.StatusSuperseded && !force {
+		if err := graph.CheckProductRefsNoop(in.ProductRefs, doc.ProductRefs); err != nil {
+			return Result{}, err
+		}
 		return Result{DocumentID: id, Noop: true}, nil
 	}
-	if err := p.spool.putLocked(id, sub); err != nil {
+	if len(in.ProductRefs) > 0 {
+		if err := p.store.PrepareDocumentRefs(ctx, &in, doc); err != nil {
+			return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
+		}
+	}
+	var priorDigest string
+	if doc != nil {
+		priorDigest = doc.SpoolPayloadDigest
+	}
+	payload, err := p.spool.putLocked(id, sub, priorDigest)
+	if err != nil {
 		return Result{}, fmt.Errorf("%w: %w", ErrSpool, err)
 	}
-	in.Force = force
+	in.Force, in.SpoolPayloadDigest = force, payload.digest
 	res, err := p.store.UpsertDocument(ctx, in)
+	var refsErr *graph.DocumentRefsError
+	if errors.As(err, &refsErr) || (err == nil && res.Noop) {
+		if restoreErr := payload.restore(); restoreErr != nil {
+			return Result{}, fmt.Errorf("%w: restore submission: %w", ErrSpool, restoreErr)
+		}
+	}
 	if err != nil {
+		// If the commit outcome is uncertain, recovery reconciles the
+		// candidate and its backup against the digest stored on Document.
 		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
-	if res.Noop && !force {
+	if res.Noop {
 		return Result{DocumentID: res.ID, Noop: true}, nil
+	}
+	if err := payload.accept(); err != nil {
+		slog.Warn("ingest: spool backup cleanup failed", "doc", id, "err", err)
 	}
 	p.mu.Lock()
 	p.pending[res.ID] = sub
@@ -689,39 +723,28 @@ func (p *Pipeline) Process(ctx context.Context, docID string) error {
 		st = graph.StatusMerged
 	}
 
-	// Finish: supersede every older live version of this identity (ordering by
-	// submit time, so versions submitted after this one are untouched) and mark
-	// the document done. The list is re-derived from persisted state so a
-	// recovery run performs the supersede too. A vanished old version is
-	// skipped because its goal state already holds. A missing new version still
-	// fails the sweep, so a node recreated by a concurrent identical resubmit
-	// is marked failed and reprocessed by its own job instead of being marked
-	// done without chunks.
-	olds, err := p.store.OlderLiveVersions(ctx, docID)
-	if err != nil {
-		return fail("supersede", err)
-	}
+	// Retire older versions and publish the replacement together.
 	if p.beforeSupersede != nil {
+		olds, err := p.store.OlderLiveVersions(ctx, docID)
+		if err != nil {
+			return fail("supersede", err)
+		}
 		p.beforeSupersede(olds)
 	}
-	for _, oldID := range olds {
-		err := p.store.Supersede(ctx, oldID, docID)
-		if errors.Is(err, graph.ErrNotFound) {
-			if _, derr := p.store.Document(ctx, oldID); errors.Is(derr, graph.ErrNotFound) {
-				continue
-			}
-			return fail("supersede", err)
-		}
-		if err != nil && !errors.Is(err, graph.ErrSuperseded) {
-			return fail("supersede", err)
-		}
+	retired, err := p.store.FinishDocument(ctx, docID)
+	if err != nil {
+		// Leave the merged version recoverable. If the commit succeeded
+		// but the acknowledgement was lost, it is already done.
+		return fmt.Errorf("ingest: supersede: %w", err)
+	}
+	for _, oldID := range retired {
 		p.forgetSuperseded(ctx, oldID)
-		if err == nil && p.metrics != nil {
+	}
+	if p.metrics != nil {
+		for range retired {
 			p.metrics.DocumentStatus(string(graph.StatusSuperseded))
 		}
-	}
-	if err := p.setStatus(ctx, docID, graph.StatusDone, ""); err != nil {
-		return fail("status", err)
+		p.metrics.DocumentStatus(string(graph.StatusDone))
 	}
 	p.forget(docID)
 	return nil

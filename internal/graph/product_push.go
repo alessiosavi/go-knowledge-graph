@@ -55,6 +55,8 @@ type preparedProductEvent struct {
 
 // PushProduct validates and projects one A1 record, then applies it at seq.
 func (s *Store) PushProduct(ctx context.Context, seq int64, rawRecord []byte) (ProductMutationResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, productPushTimeout)
+	defer cancel()
 	if seq < 1 {
 		return ProductMutationResult{}, argerr.New("seq must be a positive int64")
 	}
@@ -76,6 +78,8 @@ func (s *Store) PushProduct(ctx context.Context, seq int64, rawRecord []byte) (P
 
 // RemoveProduct applies one delete event. An absent product still advances seq.
 func (s *Store) RemoveProduct(ctx context.Context, productID string, seq int64) (ProductMutationResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, productPushTimeout)
+	defer cancel()
 	if seq < 1 {
 		return ProductMutationResult{}, argerr.New("seq must be a positive int64")
 	}
@@ -148,8 +152,6 @@ RETURN m.value AS release, m.activation_seq AS activation_seq`, nil)
 }
 
 func (s *Store) writeProductEvent(ctx context.Context, event preparedProductEvent) (ProductMutationResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, productPushTimeout)
-	defer cancel()
 	cleanup := context.WithoutCancel(ctx)
 	session := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer session.Close(cleanup)

@@ -589,3 +589,40 @@ func TestDeleteDocumentClearsSupersedesPointer(t *testing.T) {
 		t.Errorf("newer chunk after delete = %d, want 1", got)
 	}
 }
+
+func TestSupersedeKeepsProductRefsUntilReplacementDone(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := t.Context()
+	uri := os.Getenv(graphtest.URIEnv)
+	source := fmt.Sprintf("supersede-refs-%d", time.Now().UnixNano())
+	upsert := func(hash string) string {
+		t.Helper()
+		res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "text", Source: source, Hash: hash})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.ID
+	}
+	old, replacement := upsert("old"), upsert("new")
+	anchor := "supersede-refs-" + old
+	rawRun(t, uri, fmt.Sprintf(`
+MATCH (d:Document {id:'%s'}) CREATE (d)-[:REFS]->(:ProductRef {id:'%s'})`, old, anchor))
+	t.Cleanup(func() {
+		rawRun(t, uri, fmt.Sprintf(`MATCH (a:ProductRef {id:'%s'}) DETACH DELETE a`, anchor))
+	})
+	count := func() int64 {
+		return rawCount(t, uri, fmt.Sprintf(`MATCH (:Document {id:'%s'})-[r:REFS]->() RETURN count(r) AS n`, old))
+	}
+	if err := st.Supersede(ctx, old, replacement); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("old REFS before replacement done = %d, want 1", got)
+	}
+	if err := st.SetStatus(ctx, replacement, graph.StatusDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(); got != 0 {
+		t.Errorf("old REFS after replacement done = %d, want 0", got)
+	}
+}
