@@ -1,10 +1,12 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -36,70 +38,187 @@ type submissionSpool struct {
 	dir      string
 	maxCount int
 	maxBytes int64
+	link     func(oldname, newname string) error
 }
 
 func spoolName(id, hash string) string { return id + "-" + hash + ".json" }
 
+// spoolWrite retains the previous same-ID payload until graph publication.
+type spoolWrite struct {
+	path   string
+	digest string
+	backup bool
+}
+
+const spoolBackupSuffix = ".prev"
+
+func (w spoolWrite) accept() error {
+	if !w.backup {
+		return nil
+	}
+	return os.Remove(w.path + spoolBackupSuffix)
+}
+
+func (w spoolWrite) restore() error {
+	var err error
+	if w.backup {
+		err = os.Rename(w.path+spoolBackupSuffix, w.path)
+	} else {
+		err = os.Remove(w.path)
+	}
+	if err != nil {
+		return err
+	}
+	return syncSpoolDir(filepath.Dir(w.path))
+}
+
+func syncSpoolDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+// stageSpoolFile writes and syncs a 0600 temp file before its caller publishes it.
+func stageSpoolFile(dir string, src io.Reader) (_ string, err error) {
+	f, err := os.CreateTemp(dir, ".spool-*")
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if err != nil {
+			f.Close()
+			os.Remove(f.Name())
+		}
+	}()
+	if _, err := io.Copy(f, src); err != nil {
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+func copySpoolBackup(path, backup string) (bool, error) {
+	src, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer src.Close()
+	staged, err := stageSpoolFile(filepath.Dir(backup), src)
+	if err != nil {
+		return false, err
+	}
+	defer os.Remove(staged)
+	if err := os.Rename(staged, backup); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// resolveSpoolBackup reconciles a crash or an uncertain graph commit.
+// The graph digest identifies the published payload without changing the
+// payload format. A legacy document with no digest uses the backup.
+func resolveSpoolBackup(path, digest string) error {
+	backup := path + spoolBackupSuffix
+	if _, err := os.Stat(backup); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if digest != "" {
+		data, err := os.ReadFile(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err == nil && sha256Hex(string(data)) == digest {
+			return os.Remove(backup)
+		}
+	}
+	return os.Rename(backup, path)
+}
+
 // putLocked commits the converted payload before the graph can advertise a
 // recoverable document. The caller holds mu until graph publication completes.
-func (s *submissionSpool) putLocked(id string, sub submission) error {
+func (s *submissionSpool) putLocked(id string, sub submission, priorDigest string) (spoolWrite, error) {
 	name := spoolName(id, sub.loaded.Hash)
 	if !spoolNameRE.MatchString(name) {
-		return errors.New("invalid spool identity")
+		return spoolWrite{}, errors.New("invalid spool identity")
 	}
 	data, err := json.Marshal(spoolEntry{Loaded: sub.loaded, Labels: sub.labels})
 	if err != nil {
-		return err
+		return spoolWrite{}, err
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
-		return err
+		return spoolWrite{}, err
+	}
+	path := filepath.Join(s.dir, name)
+	if err := resolveSpoolBackup(path, priorDigest); err != nil {
+		return spoolWrite{}, err
 	}
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
-		return err
+		return spoolWrite{}, err
 	}
 	count := 1
-	bytes := int64(len(data))
+	totalBytes := int64(len(data))
 	for _, e := range entries {
 		if e.Name() == name || !spoolNameRE.MatchString(e.Name()) {
 			continue
 		}
 		info, err := e.Info()
 		if err != nil {
-			return err
+			return spoolWrite{}, err
 		}
 		count++
-		bytes += info.Size()
+		totalBytes += info.Size()
 	}
-	if count > s.maxCount || bytes > s.maxBytes {
-		return ErrSpoolFull
+	if count > s.maxCount || totalBytes > s.maxBytes {
+		return spoolWrite{}, ErrSpoolFull
 	}
-	f, err := os.CreateTemp(s.dir, ".spool-*") // CreateTemp uses 0600
+	staged, err := stageSpoolFile(s.dir, bytes.NewReader(data))
 	if err != nil {
-		return err
+		return spoolWrite{}, err
 	}
-	defer os.Remove(f.Name())
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return err
+	defer os.Remove(staged)
+
+	write := spoolWrite{path: path, digest: sha256Hex(string(data))}
+	backup := path + spoolBackupSuffix
+	link := s.link
+	if link == nil {
+		link = os.Link
 	}
-	if err := f.Sync(); err != nil {
-		return err
+	if linkErr := link(path, backup); linkErr == nil {
+		write.backup = true
+	} else if !errors.Is(linkErr, os.ErrNotExist) {
+		write.backup, err = copySpoolBackup(path, backup)
+		if err != nil {
+			return spoolWrite{}, errors.Join(linkErr, err)
+		}
 	}
-	if err := f.Close(); err != nil {
-		return err
+	if write.backup {
+		if err := syncSpoolDir(s.dir); err != nil {
+			return spoolWrite{}, errors.Join(err, write.accept())
+		}
 	}
-	if err := os.Rename(f.Name(), filepath.Join(s.dir, name)); err != nil {
-		return err
+	if err := os.Rename(staged, path); err != nil {
+		return spoolWrite{}, errors.Join(err, write.accept())
 	}
-	// Sync the directory too: the rename must survive a host crash, not just
-	// a process restart. A failure is surfaced before acceptance.
-	dir, err := os.Open(s.dir)
-	if err != nil {
-		return err
+	// Sync the directory so the new file and its backup survive host crash.
+	if err := syncSpoolDir(s.dir); err != nil {
+		return spoolWrite{}, errors.Join(err, write.restore())
 	}
-	defer dir.Close()
-	return dir.Sync()
+	return write, nil
 }
 
 func (s *submissionSpool) load(doc *graph.Document) (submission, error) {
@@ -109,7 +228,11 @@ func (s *submissionSpool) load(doc *graph.Document) (submission, error) {
 	if !spoolNameRE.MatchString(name) {
 		return submission{}, errors.New("invalid spool identity")
 	}
-	data, err := os.ReadFile(filepath.Join(s.dir, name))
+	path := filepath.Join(s.dir, name)
+	if err := resolveSpoolBackup(path, doc.SpoolPayloadDigest); err != nil {
+		return submission{}, err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return submission{}, err
 	}
@@ -162,8 +285,9 @@ func (s *submissionSpool) sweepLocked(keep func(string) bool, temps bool) error 
 		return err
 	}
 	for _, e := range entries {
-		owned := spoolNameRE.MatchString(e.Name()) || (temps && strings.HasPrefix(e.Name(), ".spool-"))
-		if !e.IsDir() && owned && !keep(e.Name()) {
+		name := strings.TrimSuffix(e.Name(), spoolBackupSuffix)
+		owned := spoolNameRE.MatchString(name) || (temps && strings.HasPrefix(e.Name(), ".spool-"))
+		if !e.IsDir() && owned && !keep(name) {
 			if err := os.Remove(filepath.Join(s.dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}

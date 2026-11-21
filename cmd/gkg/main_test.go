@@ -400,3 +400,16 @@ func TestIngestArgSource(t *testing.T) {
 		t.Errorf("stdin Text = %q, want the piped content", in.Text)
 	}
 }
+
+func TestIngestProductFlagsValidation(t *testing.T) {
+	for _, args := range [][]string{
+		{"--product", "store.test:", "-"},
+		{"--product", "a:x", "--product", "a:x", "-"},
+		{"--product", "a:x", "--clear-products", "-"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := runIngest(args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "invalid_products") {
+			t.Errorf("args=%v: exit=%d stderr=%q, want exit 2 with invalid_products", args, code, stderr.String())
+		}
+	}
+}

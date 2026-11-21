@@ -97,7 +97,7 @@ func TestRebuildSkipsBusyDocument(t *testing.T) {
 	if err != nil || !slices.Equal(res.Busy, []string{"a"}) || !slices.Equal(res.Queued, []string{"b"}) {
 		t.Fatalf("Rebuild = %+v, err=%v", res, err)
 	}
-	if st.docs["a"] != before || st.gcCalls != 1 || queuedID(t, p) != "b" {
+	if !reflect.DeepEqual(st.docs["a"], before) || st.gcCalls != 1 || queuedID(t, p) != "b" {
 		t.Fatalf("busy document changed or ready document not queued: %+v", st)
 	}
 }

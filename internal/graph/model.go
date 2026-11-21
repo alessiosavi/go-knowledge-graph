@@ -53,6 +53,9 @@ type Document struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	Supersedes  string
+
+	ProductRefs        []string
+	SpoolPayloadDigest string
 }
 
 // Chunk is a piece of a document's cleaned text with absolute byte offsets.
@@ -77,9 +80,7 @@ type Chunk struct {
 
 // DocumentInput is the identity and content handle of a submitted document.
 type DocumentInput struct {
-	// Domain applies when a document version is created (new or changed content).
-	// Force and Noop leave an existing document's domain untouched; assigning
-	// domains to existing documents belongs to task 37.14b.
+	// Domain applies on version creation or when product refs pin an unassigned version.
 	Domain      string
 	Kind        string
 	Source      string
@@ -89,6 +90,10 @@ type DocumentInput struct {
 	Hash        string
 	Labels      string
 	Force       bool // reset an existing live version without changing its version order
+
+	ProductRefs          []string // nil means omitted; an empty list clears refs
+	SpoolPayloadDigest   string
+	productRefsValidated bool
 
 	TextCleanVersion int // Zero when the input has no cleaning metadata.
 	TextClean        textclean.Stats
