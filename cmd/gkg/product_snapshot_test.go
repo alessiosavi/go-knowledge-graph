@@ -204,7 +204,7 @@ func TestProductSnapshotLifecycle(t *testing.T) {
 	check(guard, []any{int64(1)})
 	productCLI(t, 0, "unbound", "products", "unbind", "z.example.test")
 	check(guard, []any{int64(2)})
-	check(`MATCH (s:ProductStore {store:'z.example.test'}) RETURN s.store`)
+	check(`MATCH (s:ProductStore {store:'z.example.test'}) RETURN s.domain,s.seen_seq`, []any{nil, int64(0)})
 	check(`MATCH (o:DomainOp {op_id:'snapshot-test-op'}) RETURN o.state`, []any{"incomplete"})
 	query(`MATCH (o:DomainOp {op_id:'snapshot-test-op'}) SET o.state='completed'`, nil)
 	create("rebound-snapshot", length+","+other)

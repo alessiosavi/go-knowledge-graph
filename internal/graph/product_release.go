@@ -164,7 +164,8 @@ func txBindProductStore(ctx context.Context, tx neo4j.ManagedTransaction, store,
 	}
 	params := map[string]any{"store": store, "domain": domain}
 	rows, err := txRows(ctx, tx, `MERGE (s:ProductStore {store:$store})
-		ON CREATE SET s.domain=$domain,s.seen_seq=0,s.snapshot_seq=0,s.product_count=0,s.edge_count=0
+		ON CREATE SET s.seen_seq=0,s.snapshot_seq=0,s.product_count=0,s.edge_count=0
+		SET s.domain=CASE WHEN s.domain IS NOT NULL THEN s.domain ELSE $domain END
 		RETURN s.domain AS domain`, params)
 	if err != nil {
 		return err

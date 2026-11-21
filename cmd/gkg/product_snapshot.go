@@ -21,7 +21,7 @@ const productsImportUsage = "usage: gkg products import -store S -release ID -sn
 
 func printProductsUsage(out io.Writer) {
 	for _, line := range []string{productsEmitUsage, productsImportUsage, releaseUsage,
-		productsPagesReportUsage, productsMentionsScanUsage, "usage: gkg products delete-store S", "usage: gkg products unbind S"} {
+		productsPushUsage, productsRemoveUsage, productsPagesReportUsage, productsMentionsScanUsage, "usage: gkg products delete-store S", "usage: gkg products unbind S"} {
 		fmt.Fprintln(out, line)
 	}
 }

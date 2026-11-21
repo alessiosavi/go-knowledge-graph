@@ -793,6 +793,8 @@ commands:
   products release create|activate|list
       manage product releases in Memgraph
   products import -store S -release ID -snapshot-seq N FILE.jsonl -report OUT.json [-allow-shrink]
+  products push FILE.jsonl
+  products remove -product P -seq N
   products pages-report [-store S] [-json]  count associated pages for materialized products
   products mentions-scan (-doc ID [-doc ID …] | -domain D [-source-prefix P]) -out FILE.jsonl [-summary FILE.json]
       scan done documents for active catalogue identifiers

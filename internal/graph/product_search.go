@@ -89,7 +89,7 @@ func (c productCursor) encode() string {
 var productSearchDecimal = regexp.MustCompile(`^(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)$`)
 
 const scopedProductStoresQuery = productStoresMatch + `
-WHERE $domain = '' OR s.domain = $domain` + productStoresReturn
+  AND ($domain = '' OR s.domain = $domain)` + productStoresReturn
 
 func parseProductBound(field string, raw *string) (*int64, error) {
 	if raw == nil {
