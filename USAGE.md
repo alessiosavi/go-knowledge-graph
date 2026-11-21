@@ -198,10 +198,13 @@ curl -sS -u USER:PASS -F file=@catalogue.pdf \
 gkg ingest --product example.com:1000 --product example.com:1001 catalogue.pdf
 ```
 
-The MCP `ingest` tool takes the same `products` list. Every store must be
-bound to a domain by a product release. When all stores share one
-bound domain, the document is placed in that domain; IDs from several
-domains leave the domain to detection.
+The MCP `ingest` tool takes the same `products` list. When a submission
+supplies a set that differs from the stored one, every store must be bound to
+a domain by a product release, and when all stores share one bound domain the
+document is placed in that domain; IDs from several domains leave the domain
+to detection. A submission that repeats or inherits the stored set skips both
+checks, so its domain comes from detection or the previous version even if a
+store has since been unbound or rebound.
 
 The refs are kept as a set, so order and repetition across submissions do
 not matter:
