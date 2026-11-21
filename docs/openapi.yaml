@@ -647,19 +647,25 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           description: The edge rejected a cross-site or foreign-Origin request.
+        "404":
+          $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/ProductMutationConflict"
         "413":
-          description: Body exceeds 128 KiB. The edge can return 413 before forwarding.
+          description: Body exceeds 128 KiB. The API returns a JSON error. The edge may return an HTML error page before forwarding.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
               example: { error: body_too_large, detail: request body exceeds 131072 bytes }
+            text/html:
+              schema: { type: string }
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ProductMutationUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
     delete:
       tags: [products]
       operationId: removeProduct
@@ -685,14 +691,21 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           description: The edge rejected a cross-site or foreign-Origin request.
+        "404":
+          $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/ProductMutationConflict"
         "413":
-          description: The edge rejected a request body above 128 KiB. This operation takes its inputs in the query string.
+          description: The edge returns an HTML error page for a request body above 128 KiB. This operation takes its inputs in the query string.
+          content:
+            text/html:
+              schema: { type: string }
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ProductMutationUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
   /v1/products/stores:
     get:
       tags: [products]

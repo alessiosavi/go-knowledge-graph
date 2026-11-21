@@ -290,7 +290,7 @@ func (p *probe) productMutations() {
 		// This disposable graph has no active product release.
 		r := p.check("product "+req.method+" with Basic", req.method, req.path, req.body, 409)
 		expect(object(r.body)["error"] == "release_changed", "product "+req.method+" reached gkg without an active release")
-		for _, header := range []string{"Sec-Fetch-Site: cross-site", "Origin: https://evil.example"} {
+		for _, header := range []string{"Sec-Fetch-Site: cross-site", "Sec-Fetch-Site: same-site", "Origin: https://evil.example", "Origin: null"} {
 			r = p.request(req.method, req.path, "auth.curl", req.body, "-H", header)
 			expect(r.code == 403, "product "+req.method+" CSRF "+header)
 		}
@@ -299,6 +299,8 @@ func (p *probe) productMutations() {
 			expect(r.code == 401 && strings.HasPrefix(r.headers.Get("WWW-Authenticate"), "Basic"), "product "+req.method+" Basic challenge "+config)
 		}
 	}
+	sameOrigin := p.request("PUT", path, "auth.curl", put, "-H", "Sec-Fetch-Site: same-origin", "-H", "Origin: "+p.base)
+	expect(sameOrigin.code == 409 && object(sameOrigin.body)["error"] == "release_changed", fmt.Sprintf("same-origin product PUT reached gkg (HTTP %d)", sameOrigin.code))
 	oversize := append(put, bytes.Repeat([]byte(" "), (128<<10)+1-len(put))...)
 	for _, tc := range []struct {
 		name  string

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -71,6 +72,13 @@ func TestProductMutationSuccess(t *testing.T) {
 			if rr.Code != 200 || decode[graph.ProductMutationResult](t, rr) != result {
 				t.Fatalf("response = %d %s, want 200 %+v", rr.Code, rr.Body, result)
 			}
+			var body map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatalf("invalid response body %s: %v", rr.Body, err)
+			}
+			if len(body) != 4 || body["status"] == nil || body["product_id"] == nil || body["id"] == nil || body["seen_seq"] == nil {
+				t.Errorf("response = %s, want exactly status, product_id, id, seen_seq", rr.Body)
+			}
 			if store.seq != 2 || store.input != tc.input {
 				t.Fatalf("store received (%d, %q), want (2, %q)", store.seq, store.input, tc.input)
 			}
@@ -98,8 +106,8 @@ func TestProductMutationErrors(t *testing.T) {
 		{&graph.ProductMutationError{Status: "unknown_outcome"}, 503, "unknown_outcome", nil},
 		{&graph.ProductMutationError{Status: "release_future", SeenSeq: &seen}, 500, "store_error", nil},
 		{errors.New("backend error"), 500, "store_error", nil},
-		{graph.ErrNotFound, 500, "store_error", nil},
-		{context.DeadlineExceeded, 500, "store_error", nil},
+		{graph.ErrNotFound, 404, "store_error", nil},
+		{context.DeadlineExceeded, 504, "store_error", nil},
 	}
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
 		for _, tc := range tests {
@@ -109,6 +117,14 @@ func TestProductMutationErrors(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestProductMutationUnavailable(t *testing.T) {
+	h := (&Server{}).Handler()
+	put := doJSON(t, h, http.MethodPut, testProductPut, testProductEvent)
+	assertProductMutationError(t, put, http.StatusServiceUnavailable, "unavailable", nil)
+	del := do(t, h, http.MethodDelete, testProductDelete, nil, nil)
+	assertProductMutationError(t, del, http.StatusServiceUnavailable, "unavailable", nil)
 }
 
 func assertProductMutationError(t *testing.T, rr *httptest.ResponseRecorder, code int, kind string, seen *int64) {

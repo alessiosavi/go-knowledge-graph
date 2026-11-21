@@ -1341,8 +1341,10 @@ curl --user "$EDGE_USER" --request DELETE \
 PUT accepts a single JSON object with exactly the `seq` and `record`
 members. The edge and API cap the PUT body at 128 KiB (131,072 bytes),
 including chunked uploads. DELETE takes exactly one `product_id` and one
-`seq` in the query string. The per-store sequence and materialization
-requirements are the same as for the CLI.
+`seq` in the query string. Percent-encode `product_id`, using `%3A` for
+`:` and `%2B` for a literal `+`. An unencoded `+` decodes to a space.
+The per-store sequence and materialization requirements are the same as for
+the CLI.
 
 | HTTP | Status or error | Meaning |
 | --- | --- | --- |
@@ -1350,6 +1352,7 @@ requirements are the same as for the CLI.
 | 200 | `duplicate` | The sequence, operation and product ID match the latest event. |
 | 400 | `invalid_request` | Correct the request, record, source ID or sequence. |
 | 401 / 403 | Edge authentication / origin guard | Supply Basic credentials and send from the same origin or from a command-line client. |
+| 404 | `store_error` | The store reported a missing resource. |
 | 409 | `stale`, `seq_conflict` | The sequence is below the watermark, at or below the wipe floor, or belongs to a different event. The response includes `seen_seq`. |
 | 409 | `release_changed`, `release_not_materialized`, `store_not_bound`, `store_cap` | Check the active release and binding, materialize the store, or reduce its size as indicated. |
 | 409 | `retry` | A concurrent writer held a fence. Retry the same event after that write finishes. |
@@ -1357,6 +1360,7 @@ requirements are the same as for the CLI.
 | 413 | `body_too_large` | The body exceeds the cap. The edge can return its own 413 response. |
 | 500 | `store_error` | The store reported an unexpected failure. |
 | 503 | `unknown_outcome` | The write timed out or its commit could not be confirmed. |
+| 504 | `store_error` | The store operation exceeded its deadline. |
 
 A REST success returns `status`, `product_id`, `id` and `seen_seq`. For
 `unknown_outcome`, resend the same event with the same sequence, operation

@@ -25,12 +25,18 @@ func TestProbeProductMutations(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		kind := "upstream"
 		defer func() { requests <- requestKind{r.Method, kind} }()
-		if r.Header.Get("Sec-Fetch-Site") == "cross-site" || r.Header.Get("Origin") == "https://evil.example" {
-			if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-				kind = "cross-site"
-			} else {
-				kind = "foreign-origin"
-			}
+		fetchSite, origin := r.Header.Get("Sec-Fetch-Site"), r.Header.Get("Origin")
+		switch {
+		case fetchSite == "cross-site" || fetchSite == "same-site":
+			kind = fetchSite
+			w.WriteHeader(403)
+			return
+		case origin == "https://evil.example":
+			kind = "foreign-origin"
+			w.WriteHeader(403)
+			return
+		case origin == "null":
+			kind = "null-origin"
 			w.WriteHeader(403)
 			return
 		}
@@ -77,6 +83,9 @@ func TestProbeProductMutations(t *testing.T) {
 		default:
 			t.Errorf("unexpected method %s", r.Method)
 		}
+		if fetchSite == "same-origin" && origin == "http://"+r.Host {
+			kind = "same-origin"
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(409)
 		fmt.Fprint(w, `{"error":"release_changed","detail":"release_changed"}`)
@@ -99,14 +108,14 @@ func TestProbeProductMutations(t *testing.T) {
 		got[<-requests]++
 	}
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
-		for _, kind := range []string{"upstream", "cross-site", "foreign-origin", "no Basic", "bearer only"} {
+		for _, kind := range []string{"upstream", "cross-site", "same-site", "foreign-origin", "null-origin", "no Basic", "bearer only"} {
 			key := requestKind{method, kind}
 			if got[key] != 1 {
 				t.Errorf("%+v got %d probes, want 1", key, got[key])
 			}
 		}
 	}
-	for _, kind := range []string{"Content-Length", "chunked", "closed path"} {
+	for _, kind := range []string{"same-origin", "Content-Length", "chunked", "closed path"} {
 		key := requestKind{http.MethodPut, kind}
 		if got[key] != 1 {
 			t.Errorf("%+v got %d probes, want 1", key, got[key])

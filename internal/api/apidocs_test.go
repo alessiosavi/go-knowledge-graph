@@ -2,10 +2,15 @@ package api
 
 import (
 	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -14,6 +19,132 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"go.yaml.in/yaml/v4"
 )
+
+func TestOpenAPIProductMutationBodyTooLarge(t *testing.T) {
+	type mediaType struct {
+		Schema struct {
+			Ref  string `yaml:"$ref"`
+			Type string
+		}
+	}
+	var spec struct {
+		Paths map[string]map[string]struct {
+			Responses map[string]struct {
+				Content map[string]mediaType
+			}
+		}
+	}
+	if err := yaml.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{"put", "delete"} {
+		content := spec.Paths["/v1/products"][method].Responses["413"].Content
+		if got := content["text/html"].Schema; got.Type != "string" || got.Ref != "" {
+			t.Errorf("%s 413 should document the edge's HTML body", method)
+		}
+		jsonBody, hasJSON := content["application/json"]
+		if method == "put" && jsonBody.Schema.Ref != "#/components/schemas/Error" {
+			t.Error("PUT 413 should document the API's JSON Error body")
+		}
+		if method == "delete" && hasJSON {
+			t.Error("DELETE 413 should only document the edge's HTML body")
+		}
+	}
+}
+
+func TestOpenAPIProductMutationStatuses(t *testing.T) {
+	type property struct{ Enum []string }
+	type schema struct{ Properties map[string]property }
+	var spec struct {
+		Components struct {
+			Schemas   map[string]schema
+			Responses map[string]struct {
+				Content map[string]struct{ Schema schema }
+			}
+		}
+	}
+	if err := yaml.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatal(err)
+	}
+	applied, refused := graphProductMutationStatuses(t)
+	success := spec.Components.Schemas["ProductMutationResult"].Properties["status"].Enum
+	conflict := spec.Components.Schemas["ProductMutationConflict"].Properties["error"].Enum
+	unavailable := spec.Components.Responses["ProductMutationUnavailable"].Content["application/json"].Schema.Properties["error"].Enum
+	for status := range applied {
+		rr := httptest.NewRecorder()
+		writeProductMutation(rr, graph.ProductMutationResult{Status: status}, nil)
+		if rr.Code != http.StatusOK || decode[graph.ProductMutationResult](t, rr).Status != status || !slices.Contains(success, status) {
+			t.Errorf("applied status %q: got %d %s, OpenAPI enum %v", status, rr.Code, rr.Body, success)
+		}
+	}
+	for status := range refused {
+		rr := httptest.NewRecorder()
+		writeProductMutation(rr, graph.ProductMutationResult{}, &graph.ProductMutationError{Status: status})
+		var enum []string
+		switch rr.Code {
+		case http.StatusConflict:
+			enum = conflict
+		case http.StatusServiceUnavailable:
+			enum = unavailable
+		}
+		if !slices.Contains(enum, status) || decode[errorBody](t, rr).Error != status {
+			t.Errorf("graph error %q: got %d %s, OpenAPI enum for that response %v", status, rr.Code, rr.Body, enum)
+		}
+	}
+}
+
+// Read status literals from the graph source so a new outcome requires
+// neither an update to a redundant test list nor a live database fixture.
+func graphProductMutationStatuses(t *testing.T) (applied, refused map[string]bool) {
+	t.Helper()
+	source, err := parser.ParseFile(token.NewFileSet(), "../graph/product_push.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, refused = map[string]bool{}, map[string]bool{}
+	for node := range ast.Preorder(source) {
+		switch node := node.(type) {
+		case *ast.ReturnStmt:
+			// The ordering, upsert, and remove helpers return ("status", nil).
+			if len(node.Results) != 2 {
+				continue
+			}
+			value, literal := node.Results[0].(*ast.BasicLit)
+			errResult, ident := node.Results[1].(*ast.Ident)
+			if literal && value.Kind == token.STRING && ident && errResult.Name == "nil" {
+				status, _ := strconv.Unquote(value.Value)
+				if status != "" {
+					applied[status] = true
+				}
+			}
+		case *ast.CompositeLit:
+			typ, ok := node.Type.(*ast.Ident)
+			if !ok || typ.Name != "ProductMutationError" {
+				continue
+			}
+			for _, field := range node.Elts {
+				pair, ok := field.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key, ok := pair.Key.(*ast.Ident)
+				if !ok || key.Name != "Status" {
+					continue
+				}
+				value, ok := pair.Value.(*ast.BasicLit)
+				if !ok || value.Kind != token.STRING {
+					t.Fatal("expected a ProductMutationError status literal")
+				}
+				status, _ := strconv.Unquote(value.Value)
+				refused[status] = true
+			}
+		}
+	}
+	if len(applied) == 0 || len(refused) == 0 {
+		t.Fatal("no product mutation statuses found in graph source")
+	}
+	return applied, refused
+}
 
 func TestOpenAPIProductStoreWatermark(t *testing.T) {
 	type property struct {

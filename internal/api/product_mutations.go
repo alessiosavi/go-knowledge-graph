@@ -85,6 +85,6 @@ func writeProductMutation(w http.ResponseWriter, result graph.ProductMutationRes
 	case errors.As(err, &invalid):
 		writeError(w, http.StatusBadRequest, "invalid_request", invalid.Error())
 	default:
-		writeStoreErrorStatus(w, http.StatusInternalServerError, err, "mutate product")
+		writeStoreError(w, err, "mutate product")
 	}
 }
