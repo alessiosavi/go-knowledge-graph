@@ -20,18 +20,23 @@ const (
 )
 
 type Request struct {
-	IDs        []string
-	Neighbours int
-	Domain     string
+	IDs           []string
+	Neighbours    int
+	Domain        string
+	WithProducts  bool
+	ProductsLimit *int
 }
 
 type Item struct {
-	ID          string `json:"id"`
-	DocID       string `json:"doc_id"`
-	Seq         int    `json:"seq"`
-	Text        string `json:"text"`
-	Truncated   bool   `json:"truncated,omitempty"`
-	NeighbourOf string `json:"neighbour_of,omitempty"`
+	ID                       string          `json:"id"`
+	DocID                    string          `json:"doc_id"`
+	Seq                      int             `json:"seq"`
+	Text                     string          `json:"text"`
+	Truncated                bool            `json:"truncated,omitempty"`
+	NeighbourOf              string          `json:"neighbour_of,omitempty"`
+	Products                 *[]ChunkProduct `json:"products,omitempty"`
+	ProductsTotal            *int            `json:"products_total,omitempty"`
+	ProductsOmittedForBudget int             `json:"products_omitted_for_budget,omitempty"`
 }
 
 type Meta struct {
@@ -42,8 +47,9 @@ type Meta struct {
 }
 
 type Result struct {
-	Chunks []Item `json:"chunks"`
-	Meta   Meta   `json:"meta"`
+	Chunks        []Item `json:"chunks"`
+	Meta          Meta   `json:"meta"`
+	ProductsError string `json:"products_error,omitempty"`
 }
 
 type Store interface {
@@ -65,11 +71,19 @@ func Read(ctx context.Context, st Store, req Request) (Result, error) {
 			return Result{}, argerr.New("chunk ids must be at most 128 bytes")
 		}
 	}
+	productsLimit := DefaultProductsLimit
+	if req.ProductsLimit != nil {
+		productsLimit = *req.ProductsLimit
+		if productsLimit < 1 || productsLimit > MaxProductsLimit {
+			return Result{}, argerr.New(ProductsLimitError)
+		}
+	}
 	result := Result{
 		Chunks: []Item{},
 		Meta:   Meta{Missing: []string{}, Truncated: []string{}, OmittedForBudget: []string{}},
 	}
 	seen, requested := map[string]bool{}, map[string]bool{}
+	var fullTexts []string
 	add := func(c graph.Chunk, neighbourOf string) {
 		if (req.Domain != "" && c.Domain != req.Domain) || seen[c.ID] {
 			return
@@ -85,6 +99,9 @@ func Read(ctx context.Context, st Store, req Request) (Result, error) {
 			result.Meta.Truncated = append(result.Meta.Truncated, item.ID)
 		}
 		result.Chunks = append(result.Chunks, item)
+		if req.WithProducts {
+			fullTexts = append(fullTexts, c.Text)
+		}
 	}
 	for _, id := range req.IDs {
 		if requested[id] {
@@ -109,6 +126,11 @@ func Read(ctx context.Context, st Store, req Request) (Result, error) {
 		}
 	}
 	result.Meta.Returned = len(result.Chunks)
+	if len(fullTexts) > 0 {
+		if err := enrichProducts(ctx, st, &result, fullTexts, productsLimit); err != nil {
+			return Result{}, err
+		}
+	}
 	// Remove only a suffix, measuring the entire wire result each time.
 	// This includes escaping, missing ids, truncation and omitted-id metadata.
 	for {

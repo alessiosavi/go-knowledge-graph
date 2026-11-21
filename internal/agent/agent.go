@@ -82,6 +82,7 @@ const responseBodyCap = 1 << 20
 type graphStore interface {
 	search.Store
 	chunkread.Store
+	chunkread.ProductMentionIndexLoader
 	Document(context.Context, string) (*graph.Document, error)
 	DocumentsIn(context.Context, graph.Status, string, int) ([]graph.Document, error)
 	EntityCandidatesByName(context.Context, string, string) ([]graph.EntityCandidate, error)

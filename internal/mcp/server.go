@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -108,9 +109,10 @@ type getEntityArgs struct {
 }
 
 type getChunksArgs struct {
-	Domain     string   `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
-	IDs        []string `json:"ids" jsonschema:"1–20 chunk ids from search hits"`
-	Neighbours int      `json:"neighbours,omitempty" jsonschema:"chunks before and after each requested chunk (default 0, maximum 2)"`
+	Domain       string   `json:"domain,omitempty"`
+	IDs          []string `json:"ids"`
+	Neighbours   int      `json:"neighbours,omitempty"`
+	WithProducts bool     `json:"with_products,omitempty"`
 }
 
 type traverseArgs struct {
@@ -299,8 +301,19 @@ func registerTools(s *Server) {
 		Description: "One entity with aliases, co-mentions and evidenced facts. Low-confidence facts need include_low_confidence unless the judge confirmed them. A merge redirect includes requested and resolved_via=merged. Name lookup tries exact matches first, then verified folds marked match=fold. Unscoped ambiguous names return one candidate per domain.",
 	}, s.handleGetEntity)
 	addReadTool(s, &mcpgo.Tool{
-		Name:        "get_chunks",
-		Description: "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids.",
+		Name: "get_chunks",
+		Description: "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids." +
+			chunkread.ProductsToolDescription,
+		InputSchema: map[string]any{
+			"type": "object", "required": []string{"ids"}, "additionalProperties": false,
+			"properties": map[string]any{
+				"domain":         map[string]any{"type": "string", "description": "optional domain slug; empty selects all"},
+				"ids":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "1–20 chunk ids from search hits"},
+				"neighbours":     map[string]any{"type": "integer", "description": "chunks before and after each requested chunk (default 0, maximum 2)"},
+				"with_products":  map[string]any{"type": "boolean", "default": false, "description": chunkread.WithProductsDescription},
+				"products_limit": map[string]any{"type": "integer", "minimum": 1, "maximum": chunkread.MaxProductsLimit, "default": chunkread.DefaultProductsLimit, "description": chunkread.ProductsLimitDescription},
+			},
+		},
 	}, s.handleGetChunks)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "traverse",
@@ -328,11 +341,26 @@ func addReadTool[In, Out any](s *Server, tool *mcpgo.Tool, handle mcpgo.ToolHand
 	})
 }
 
-func (s *Server) handleGetChunks(ctx context.Context, _ *mcpgo.CallToolRequest, args getChunksArgs) (*mcpgo.CallToolResult, chunkread.Result, error) {
+func (s *Server) handleGetChunks(ctx context.Context, req *mcpgo.CallToolRequest, args getChunksArgs) (*mcpgo.CallToolResult, chunkread.Result, error) {
+	// The SDK normalizes numbers while applying schema defaults. Decode the
+	// original limit to distinguish JSON integers from values like 3.0 and 1e1.
+	var raw struct {
+		ProductsLimit json.RawMessage `json:"products_limit"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &raw); err != nil {
+		return nil, chunkread.Result{}, argerr.Errorf("bad arguments: %w", err)
+	}
+	limit, err := chunkread.DecodeProductsLimit(raw.ProductsLimit)
+	if err != nil {
+		return nil, chunkread.Result{}, err
+	}
 	if s.store == nil {
 		return nil, chunkread.Result{}, errNoStore
 	}
-	result, err := chunkread.Read(ctx, s.store, chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours, Domain: args.Domain})
+	result, err := chunkread.Read(ctx, s.store, chunkread.Request{
+		IDs: args.IDs, Neighbours: args.Neighbours, Domain: args.Domain,
+		WithProducts: args.WithProducts, ProductsLimit: limit,
+	})
 	return nil, result, err
 }
 
