@@ -1278,6 +1278,21 @@ products. It advances the bound domain's guard counter and accepts any
 domain operation state, including `incomplete`.
 Only a new `products release create` can re-bind an unbound store.
 
+### Product rollout runbook (P8)
+
+Set `GKG_PRODUCTS_RUNBOOK_DIR` to the frozen Part A catalogue mirror and run
+[`scripts/products-runbook.sh`](scripts/products-runbook.sh) from the checkout.
+Docker must be running with the Memgraph image pinned in
+`deploy/docker-compose.yml` already pulled because the script uses `--pull=never`.
+The script starts a scratch database on loopback (`PORT` defaults to `17756`)
+and removes it on exit.
+
+The runbook checks the frozen oracle, snapshot replay and replacement,
+release remapping and narrowing, and maintenance output on a mixed graph.
+It prints the measurement JSON with one-store and three-store import timings
+and memory measurements. Set `GKG_PRODUCTS_RUNBOOK_OUT` to a directory to
+retain `measurements.json`.
+
 ### Read products and features
 
 ```sh
