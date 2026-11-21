@@ -1376,6 +1376,32 @@ MCP clients can call `get_product` with `id` or `store` and `product_id`,
 empty arguments. Large `find_products` pages are available in
 `structuredContent`.
 
+#### Catalogue mention scan
+
+```sh
+gkg products mentions-scan -doc DOC_ID -doc ANOTHER_ID -out pairs.jsonl
+gkg products mentions-scan -domain dental -source-prefix catalogues/ -out pairs.jsonl -summary scan.json
+```
+
+The scan reads chunks of done documents and active `catalogue_code` and
+`product_reference` observations from every bound product store. A domain
+selector can narrow documents with a literal source prefix. The command
+writes nothing to the graph.
+
+The matcher checks whole windows of one to three tokens joined by spaces
+or tabs on a single line. Tokens contain letters, combining marks, digits
+and `.-_/+#`. It compares keys after NFKC normalization, uppercasing, and
+removal of whitespace and those six punctuation characters. Eligible keys
+have at least five runes with a letter and a digit, or at least seven
+digits. Keys shared by multiple products across bound stores are excluded.
+
+The private JSONL file contains one row per product and chunk with product
+and document metadata, matched keys and feature values, original byte
+spans and text, token counts, a separator flag, and an excerpt. The optional
+private JSON summary records the matcher revision, active release, store
+watermarks, document and chunk hashes, match and eligibility counts, excluded
+ambiguous keys, and differences between stored folds and matcher keys.
+
 ## Domain administration
 
 Schema v4 domain mutations run inside `gkg serve` through loopback-only admin

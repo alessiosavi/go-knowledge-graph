@@ -794,6 +794,8 @@ commands:
       manage product releases in Memgraph
   products import -store S -release ID -snapshot-seq N FILE.jsonl -report OUT.json [-allow-shrink]
   products pages-report [-store S] [-json]  count associated pages for materialized products
+  products mentions-scan (-doc ID [-doc ID …] | -domain D [-source-prefix P]) -out FILE.jsonl [-summary FILE.json]
+      scan done documents for active catalogue identifiers
   products delete-store S
   products unbind S
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
