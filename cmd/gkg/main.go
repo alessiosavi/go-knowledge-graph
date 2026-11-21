@@ -819,6 +819,8 @@ commands:
   products push FILE.jsonl
   products remove -product P -seq N
   products pages-report [-store S] [-json]  count associated pages for materialized products
+  products mentions-scan (-doc ID [-doc ID …] | -domain D [-source-prefix P]) -out FILE.jsonl [-summary FILE.json]
+      scan done documents for active catalogue identifiers
   products delete-store S
   products unbind S
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
