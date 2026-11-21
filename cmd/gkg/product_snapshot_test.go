@@ -227,7 +227,12 @@ func TestProductSnapshotLifecycle(t *testing.T) {
 	productCLI(t, 5, "active", args("wide-snapshot", "1", file)...)
 	baseline.AssertUnchanged(t, "inactive release")
 	productCLI(t, 0, "activated", "products", "release", "activate", "wide-snapshot")
+	// A replacement import still writes the release pointer (the write conflict
+	// with activation) but restores its counter before commit.
+	const pointerTouched = `MATCH (m:GkgMeta {id:'product_release'}) RETURN m.touched`
+	touchedBefore := query(pointerTouched, nil)[0].Values
 	productCLI(t, 0, "imported", args("wide-snapshot", "1", file)...)
+	check(pointerTouched, touchedBefore)
 	var importReport graph.ProductImportReport
 	readReport := func() {
 		t.Helper()

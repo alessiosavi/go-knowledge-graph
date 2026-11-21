@@ -3,6 +3,7 @@ package graphtest
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"reflect"
 	"slices"
@@ -60,7 +61,45 @@ func Snapshot(t testing.TB) GraphSnapshot {
 // AssertUnchanged compares a fresh snapshot and reports each changed component.
 func (before GraphSnapshot) AssertUnchanged(t testing.TB, operation string) {
 	t.Helper()
-	before.assertEqual(t, Snapshot(t), operation)
+	before.AssertEqual(t, Snapshot(t), operation)
+}
+
+// ProjectNodes returns a snapshot view. The callback may edit the copied
+// property map and return false to exclude a node. Edges touching any retained
+// node stay in the view so unexpected links across the boundary are detected.
+func (s GraphSnapshot) ProjectNodes(keep func(labels []any, props map[string]any) bool) GraphSnapshot {
+	view := s
+	view.nodes = nil
+	view.relationships = nil
+	retained := make(map[int64]bool, len(s.nodes))
+	for _, row := range s.nodes {
+		props := maps.Clone(row.Values[2].(map[string]any))
+		if keep(row.Values[1].([]any), props) {
+			copyRow := *row
+			copyRow.Values = slices.Clone(row.Values)
+			copyRow.Values[2] = props
+			view.nodes = append(view.nodes, &copyRow)
+			retained[row.Values[0].(int64)] = true
+		}
+	}
+	for _, row := range s.relationships {
+		if retained[row.Values[1].(int64)] || retained[row.Values[4].(int64)] {
+			view.relationships = append(view.relationships, row)
+		}
+	}
+	return view
+}
+
+// WithoutRelationshipType excludes a relationship type compared separately.
+func (s GraphSnapshot) WithoutRelationshipType(kind string) GraphSnapshot {
+	view := s
+	view.relationships = nil
+	for _, row := range s.relationships {
+		if row.Values[2] != kind {
+			view.relationships = append(view.relationships, row)
+		}
+	}
+	return view
 }
 
 // AssertJudgeLeaseFenceAdvanced checks that advancing the fence was the only
@@ -87,10 +126,11 @@ func (before GraphSnapshot) AssertJudgeLeaseFenceAdvanced(t testing.TB, operatio
 	if initial, final := seq(&before), seq(&after); final != initial+advances {
 		t.Errorf("%s changed judge lease fence sequence from %d to %d, want +%d", operation, initial, final, advances)
 	}
-	before.assertEqual(t, after, operation)
+	before.AssertEqual(t, after, operation)
 }
 
-func (before GraphSnapshot) assertEqual(t testing.TB, after GraphSnapshot, operation string) {
+// AssertEqual compares two snapshots, including their captured schema.
+func (before GraphSnapshot) AssertEqual(t testing.TB, after GraphSnapshot, operation string) {
 	t.Helper()
 	for _, part := range []struct {
 		name          string

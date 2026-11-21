@@ -150,15 +150,15 @@ RETURN s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
 	}
 	unchanged := getString(store, "digest") == report.SnapshotDigest && getString(store, "release") == input.Release &&
 		seq > wiped && report.PreviousProductCount == len(batch.products) && getInt(store, "edges") == len(batch.edges)
-	if unchanged {
-		// Retain the write conflict with activation while leaving the pointer
-		// unchanged at commit. Null restores an originally absent property.
-		params["prior"], _ = pointer[0].Get("prior")
-		err = txRun(ctx, tx, `MATCH (m:GkgMeta {id:'product_release'}) SET m.touched=$prior`, params)
-	} else {
-		err = txReplaceProducts(ctx, tx, params, batch)
+	if !unchanged {
+		if err := txReplaceProducts(ctx, tx, params, batch); err != nil {
+			return err
+		}
 	}
-	if err != nil {
+	// The transaction retains its write conflict with activation. Restore the
+	// pointer's prior state on commit, including an originally absent property.
+	params["prior"], _ = pointer[0].Get("prior")
+	if err := txRun(ctx, tx, `MATCH (m:GkgMeta {id:'product_release'}) SET m.touched=$prior`, params); err != nil {
 		return err
 	}
 	report.Status = "imported"
