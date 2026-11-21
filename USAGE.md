@@ -1250,7 +1250,9 @@ Property bytes include names and stored values, including folded values.
 
 Use a positive sequence strictly above the last admitted sequence and any
 wipe sequence. A byte-identical file for the same release prints `unchanged`
-and advances only `seen_seq` when that materialization is still intact.
+when that materialization is still intact. Every successful import advances
+`seen_seq`, stamps the current activation and clears the last push or
+delete marker.
 A drop of more than 10% in the product count requires `-allow-shrink`.
 The private JSON report records the requested and previous counts, digest,
 override, rejection details, unmapped keys, conflicts and parse status counts
@@ -1273,10 +1275,58 @@ and edges and retains the binding, setting `wiped_seq` to `seen_seq` and the
 product and edge counts to zero. It clears `snapshot_digest`, `release_id`
 and `imported_at` while retaining `snapshot_seq` and `seen_seq`. The next
 import must use a sequence higher than `wiped_seq`.
-`products unbind` removes a store's binding and watermark once it has zero
-products. It advances the bound domain's guard counter and accepts any
-domain operation state, including `incomplete`.
-Only a new `products release create` can re-bind an unbound store.
+The wipe also clears the materialization stamp and last event marker.
+`products unbind` removes a store's domain binding once it has zero products.
+It advances the bound domain's guard counter and accepts any domain operation
+state, including `incomplete`. A new `products release create` can bind that
+store again. The store keeps its sequence floor across unbind and rebind.
+
+### Push or remove one product
+
+```sh
+gkg products push updates.jsonl
+gkg products remove -product example.test:42 -seq 4
+```
+
+A push file contains one `{"seq": N, "record": {...}}` JSON object per line.
+Use the complete A1 record from the normalizer, including the store and its
+full `product_id`. The ID must start with the store and a colon followed by
+a non-empty suffix. The push envelope allows 128 KiB and the embedded
+record uses the same row and projection limits as a snapshot import.
+A push replaces the product properties and released observations for that ID.
+A remove deletes that product and its edges. Remove any legacy `store:` IDs
+by omitting them from a full import.
+
+Use one increasing positive int64 sequence for all imports, pushes and
+removals in each store. Each line commits in its own transaction in file order.
+Processing stops at the first error. Earlier successes stay committed.
+After any release activation, re-import **every store** at a higher sequence
+before pushing or removing products. The activation sequence is global. A
+wiped store also needs a new import before pushing or removing products.
+Each push recounts the store's products, edges and bytes. The 10,000-product case in `TestProductPushCapRollback` took at most 0.19 s including setup, well under the 30 s transaction timeout.
+
+| Exit | Status | Meaning |
+| --- | --- | --- |
+| 0 | `created`, `updated`, `deleted`, `absent` | The event applied and advanced the store's sequence, including removal of an already absent product. |
+| 0 | `duplicate` | The sequence, operation and product ID match the latest event. The original write stays in place. |
+| 5 | `stale`, `seq_conflict` | The sequence is at or below the wipe floor, below the watermark, or already belongs to a different event. The error includes `seen_seq`. |
+| 5 | `release_changed`, `release_not_materialized`, `store_not_bound`, `store_cap` | Check the active release and binding, materialize the store, or reduce its size as indicated. A rejected event leaves its sequence available. |
+| 5 | `retry` | A concurrent writer held a fence. Retry the same event after that write finishes. |
+| 5 | `reimport_required` | A product is missing its projected byte count. Re-import the store at a sequence above its `seen_seq`. |
+| 1 | `unknown_outcome` | The write timed out or its commit could not be confirmed. |
+| 1 | Other errors | Input validation, including an invalid `seq` in a push JSONL line, or file or graph errors. |
+| 2 | Usage error | Check the required arguments and use a positive int64 for `products remove -seq`. |
+
+Each successful event prints a JSON result with `status`, `product_id`, `id`
+and `seen_seq`. For `unknown_outcome`, resend the same sequence, operation
+and product ID. If it already applied and is still the latest event in a
+materialized store, the retry returns `duplicate`. After an activation,
+`release_not_materialized` (409) takes precedence over `duplicate` even for
+an identical retry of the last event. Re-import the store at a higher sequence
+and reconcile by reading the current product with GET or MCP `get_product`.
+Use the same product lookup to reconcile a `stale` result. The stores response shows
+`seen_seq`, `materialized_activation_seq` and `pushed_at`. To correct an
+applied push, send the corrected record or a full snapshot at a higher sequence.
 
 ### Product rollout runbook (P8)
 
@@ -1375,6 +1425,22 @@ MCP clients can call `get_product` with `id` or `store` and `product_id`,
 `find_products` with the search fields above, and `list_features` with
 empty arguments. Large `find_products` pages are available in
 `structuredContent`.
+
+#### Find products sharing a released feature value
+
+Use the MCP or agent `cypher` tool with the seed's graph product ID as
+`$id`. Set `$domain` to a domain slug or the empty string for all domains.
+The query checks exact folded values and list items on both products.
+
+```cypher
+MATCH (m:GkgMeta {id:'product_release'})
+MATCH (p:Product {id:$id})-[e1:HAS_FEATURE]->(f:FeatureRev)<-[e2:HAS_FEATURE]-(q:Product)
+WHERE e1.release_id = m.value AND e2.release_id = m.value AND q <> p
+AND (e1.value_fold IS NOT NULL AND (e2.value_fold = e1.value_fold OR e1.value_fold IN coalesce(e2.items_fold, []))
+     OR any(v IN coalesce(e1.items_fold, []) WHERE v = e2.value_fold OR v IN coalesce(e2.items_fold, [])))
+AND ($domain = '' OR q.domain = $domain)
+RETURN q.id, q.title, collect(DISTINCT f.id) AS shared ORDER BY size(shared) DESC LIMIT 20
+```
 
 ## Domain administration
 

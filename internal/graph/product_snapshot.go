@@ -97,25 +97,27 @@ func (s *Store) writeProductSnapshot(ctx context.Context, input ProductSnapshotI
 
 	params := map[string]any{"release": input.Release, "store": input.Store, "domain": domain, "seq": input.Seq,
 		"digest": report.SnapshotDigest, "products": int64(len(batch.products)), "edges": int64(len(batch.edges)),
-		"at": time.Now().UTC().Format(timeLayout)}
+		"at": time.Now().UTC().Format(timeLayout), "bytes": int64(report.PropertyBytes)}
 	pointer, err := txRows(ctx, tx, `
 MATCH (m:GkgMeta {id:'product_release',value:$release})
 WITH m, m.touched AS prior
 SET m.touched=coalesce(prior, 0)+1
-RETURN prior`, params)
+RETURN prior, m.activation_seq AS activation_seq`, params)
 	if err != nil {
 		return err
 	}
-	if len(pointer) == 0 {
+	if len(pointer) != 1 {
 		return fmt.Errorf("%w: release %q is not active", ErrProductData, input.Release)
 	}
 
 	stores, err := txRows(ctx, tx, `
 MATCH (s:ProductStore {store:$store})
+WHERE s.domain IS NOT NULL
 RETURN s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
     coalesce(s.wiped_seq, 0) AS wiped_seq, coalesce(s.snapshot_seq, 0) AS snapshot_seq,
-    s.snapshot_digest AS digest, s.release_id AS release,
+    s.snapshot_digest AS digest, s.release_id AS release, s.prop_bytes AS prop_bytes,
     coalesce(s.product_count, 0) AS products, coalesce(s.edge_count, 0) AS edges,
+    EXISTS { MATCH (p:Product {store:$store}) WHERE p.prop_bytes IS NULL } AS missing_product_bytes,
     EXISTS { MATCH (:Domain {id:$domain}) } AS domain_exists`, params)
 	if err != nil {
 		return err
@@ -154,11 +156,21 @@ RETURN s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
 		if err := txReplaceProducts(ctx, tx, params, batch); err != nil {
 			return err
 		}
+	} else if bytes, _ := store.Get("prop_bytes"); bytes == nil || getBool(store, "missing_product_bytes") {
+		if err := txBackfillProductBytes(ctx, tx, batch.products); err != nil {
+			return err
+		}
+	}
+	params["act"], _ = pointer[0].Get("activation_seq")
+	if err := txRun(ctx, tx, `MATCH (s:ProductStore {store:$store})
+SET s.materialized_activation_seq=$act, s.prop_bytes=$bytes,
+    s.last_event_op=null, s.last_event_product_id=null, s.last_event_seq=null`, params); err != nil {
+		return err
 	}
 	// The transaction retains its write conflict with activation. Restore the
 	// pointer's prior state on commit, including an originally absent property.
 	params["prior"], _ = pointer[0].Get("prior")
-	if err := txRun(ctx, tx, `MATCH (m:GkgMeta {id:'product_release'}) SET m.touched=$prior`, params); err != nil {
+	if err := txRestoreProductPointer(ctx, tx, params["prior"]); err != nil {
 		return err
 	}
 	report.Status = "imported"
@@ -191,8 +203,18 @@ func txReplaceProducts(ctx context.Context, tx neo4j.ExplicitTransaction, params
 			return fmt.Errorf("create snapshot products: %w", err)
 		}
 	}
-	for start := 0; start < len(batch.edges); start += 512 {
-		rows := batch.edges[start:min(start+512, len(batch.edges))]
+	if err := txCreateProductEdges(ctx, tx, batch.edges); err != nil {
+		return err
+	}
+	return txRun(ctx, tx, `
+MATCH (s:ProductStore {store:$store})
+SET s.snapshot_seq=$seq, s.snapshot_digest=$digest, s.release_id=$release,
+    s.product_count=$products, s.edge_count=$edges, s.imported_at=$at`, params)
+}
+
+func txCreateProductEdges(ctx context.Context, tx neo4j.ManagedTransaction, edges []map[string]any) error {
+	for start := 0; start < len(edges); start += 512 {
+		rows := edges[start:min(start+512, len(edges))]
 		created, err := txRows(ctx, tx, `
 UNWIND $rows AS row
 MATCH (p:Product {id:row.product}), (f:FeatureRev {key:row.feature})
@@ -200,16 +222,36 @@ CREATE (p)-[e:HAS_FEATURE]->(f)
 SET e=row.props
 RETURN count(e) AS created`, map[string]any{"rows": rows})
 		if err != nil {
-			return fmt.Errorf("create snapshot feature edges: %w", err)
+			return fmt.Errorf("create product feature edges: %w", err)
 		}
 		if len(created) != 1 || getInt(created[0], "created") != len(rows) {
-			return fmt.Errorf("missing feature revision or product when replacing snapshot")
+			return fmt.Errorf("missing feature revision or product when creating feature edges")
 		}
 	}
-	return txRun(ctx, tx, `
-MATCH (s:ProductStore {store:$store})
-SET s.snapshot_seq=$seq, s.snapshot_digest=$digest, s.release_id=$release,
-    s.product_count=$products, s.edge_count=$edges, s.imported_at=$at`, params)
+	return nil
+}
+
+func txBackfillProductBytes(ctx context.Context, tx neo4j.ManagedTransaction, products []map[string]any) error {
+	for start := 0; start < len(products); start += 512 {
+		batch := products[start:min(start+512, len(products))]
+		rows := make([]map[string]any, 0, len(batch))
+		for _, props := range batch {
+			rows = append(rows, map[string]any{"id": props["id"], "bytes": props["prop_bytes"]})
+		}
+		updated, err := txRows(ctx, tx, `UNWIND $rows AS row MATCH (p:Product {id:row.id})
+SET p.prop_bytes=row.bytes RETURN count(p) AS updated`, map[string]any{"rows": rows})
+		if err != nil {
+			return err
+		}
+		if len(updated) != 1 || getInt(updated[0], "updated") != len(rows) {
+			return fmt.Errorf("missing product when backfilling projected bytes")
+		}
+	}
+	return nil
+}
+
+func txRestoreProductPointer(ctx context.Context, tx neo4j.ManagedTransaction, prior any) error {
+	return txRun(ctx, tx, `MATCH (m:GkgMeta {id:'product_release'}) SET m.touched=$prior`, map[string]any{"prior": prior})
 }
 
 // DeleteProductStore wipes the current snapshot and retains its binding and
@@ -219,8 +261,10 @@ func (s *Store) DeleteProductStore(ctx context.Context, store string) error {
 	return s.runProductWrite(ctx, func(tx neo4j.ManagedTransaction) error {
 		rows, err := txRows(ctx, tx, `
 MATCH (s:ProductStore {store:$store})
+WHERE s.domain IS NOT NULL
 SET s.wiped_seq=coalesce(s.seen_seq, s.snapshot_seq, 0), s.product_count=0, s.edge_count=0,
-    s.snapshot_digest=null, s.release_id=null, s.imported_at=null
+    s.snapshot_digest=null, s.release_id=null, s.imported_at=null, s.prop_bytes=0,
+    s.materialized_activation_seq=null, s.last_event_op=null, s.last_event_product_id=null, s.last_event_seq=null
 RETURN s.store`, params)
 		if err != nil {
 			return err
@@ -238,6 +282,7 @@ func (s *Store) UnbindProductStore(ctx context.Context, store string) error {
 	return s.runProductWrite(ctx, func(tx neo4j.ManagedTransaction) error {
 		rows, err := txRows(ctx, tx, `
 MATCH (s:ProductStore {store:$store})
+WHERE s.domain IS NOT NULL
 RETURN s.domain AS domain, (coalesce(s.product_count, 0)>0 OR EXISTS { MATCH (:Product {store:$store}) }) AS nonempty`, params)
 		if err != nil {
 			return err
@@ -251,6 +296,6 @@ RETURN s.domain AS domain, (coalesce(s.product_count, 0)>0 OR EXISTS { MATCH (:P
 		if err := txBumpProductDomainGuard(ctx, tx, store, getString(rows[0], "domain")); err != nil {
 			return err
 		}
-		return txRun(ctx, tx, `MATCH (s:ProductStore {store:$store}) DELETE s`, params)
+		return txRun(ctx, tx, `MATCH (s:ProductStore {store:$store}) SET s.domain=null`, params)
 	})
 }

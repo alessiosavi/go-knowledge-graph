@@ -21,7 +21,7 @@ func (s *Store) ListDomains(ctx context.Context) ([]DomainCount, error) {
  WITH d,count(DISTINCT doc) AS documents
  OPTIONAL MATCH (p:Product {domain:d.id})
  WITH d,documents,count(DISTINCT p) AS products
- OPTIONAL MATCH (s:ProductStore {domain:d.id})
+ OPTIONAL MATCH (s:ProductStore {domain:d.id}) WHERE s.domain IS NOT NULL
  RETURN d.id AS id,coalesce(d.name,d.id) AS name,documents,products,count(s)>0 AS products_bound
  ORDER BY id`, nil)
 	if err != nil {

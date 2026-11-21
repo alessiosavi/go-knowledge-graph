@@ -14,9 +14,12 @@ import (
 const MaxImportProducts = 10000
 
 const (
-	maxImportRowBytes           = 64 << 10
-	maxImportIdentityBytes      = 1 << 10
-	maxImportProductScalarBytes = 4 << 10
+	MaxImportRowBytes           = 64 << 10
+	MaxImportIdentityBytes      = 1 << 10
+	MaxImportProductScalarBytes = 4 << 10
+	MaxImportAttributes         = 512
+	MaxImportValueBytes         = 1 << 10
+	MaxImportItems              = 64
 )
 
 // ScanImportRecords validates the input envelope in bounded space, hashes its
@@ -25,7 +28,7 @@ const (
 // The scan stops at the first row past the product cap or a visitor error.
 func ScanImportRecords(ctx context.Context, source io.Reader, store string, reject func(int, error), visit func(int, Record) error) (string, error) {
 	hash := sha256.New()
-	reader := bufio.NewReaderSize(io.TeeReader(source, hash), maxImportRowBytes+1)
+	reader := bufio.NewReaderSize(io.TeeReader(source, hash), MaxImportRowBytes+1)
 	seen := make(map[string]struct{})
 	for line := 1; ; line++ {
 		if err := ctx.Err(); err != nil {
@@ -55,7 +58,7 @@ func ScanImportRecords(ctx context.Context, source io.Reader, store string, reje
 			}
 			continue
 		}
-		record, recordErr := parseRecordWithCaps(bytes.TrimSuffix(raw, []byte{'\n'}), true)
+		record, recordErr := ParseImportRecord(bytes.TrimSuffix(raw, []byte{'\n'}))
 		if recordErr == nil && record.Store != store {
 			recordErr = errors.New("row store does not match -store")
 		}
