@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
@@ -25,6 +26,18 @@ const (
 	ProductsLimitDescription = "Maximum matched products per chunk (1–50, default 10)"
 	ProductsToolDescription  = " Set with_products to list exact product identifier matches, including cross-domain products. Retry a single chunk with a higher products_limit for more results. Use gkg products mentions-scan for the complete offline scan."
 )
+
+// DecodeProductsLimit accepts an omitted field or a JSON integer in range.
+func DecodeProductsLimit(raw json.RawMessage) (*int, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	var limit *int
+	if err := json.Unmarshal(raw, &limit); err != nil || limit == nil || *limit < 1 || *limit > MaxProductsLimit {
+		return nil, argerr.New(ProductsLimitError)
+	}
+	return limit, nil
+}
 
 type MatchedIdentifier struct {
 	Feature string `json:"feature"`

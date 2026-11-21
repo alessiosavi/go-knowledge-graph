@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -107,11 +108,10 @@ type getEntityArgs struct {
 }
 
 type getChunksArgs struct {
-	Domain        string   `json:"domain,omitempty"`
-	IDs           []string `json:"ids"`
-	Neighbours    int      `json:"neighbours,omitempty"`
-	WithProducts  bool     `json:"with_products,omitempty"`
-	ProductsLimit *int     `json:"products_limit,omitempty"`
+	Domain       string   `json:"domain,omitempty"`
+	IDs          []string `json:"ids"`
+	Neighbours   int      `json:"neighbours,omitempty"`
+	WithProducts bool     `json:"with_products,omitempty"`
 }
 
 type traverseArgs struct {
@@ -340,13 +340,25 @@ func addReadTool[In, Out any](s *Server, tool *mcpgo.Tool, handle mcpgo.ToolHand
 	})
 }
 
-func (s *Server) handleGetChunks(ctx context.Context, _ *mcpgo.CallToolRequest, args getChunksArgs) (*mcpgo.CallToolResult, chunkread.Result, error) {
+func (s *Server) handleGetChunks(ctx context.Context, req *mcpgo.CallToolRequest, args getChunksArgs) (*mcpgo.CallToolResult, chunkread.Result, error) {
+	// The SDK normalizes numbers while applying schema defaults. Decode the
+	// original limit to distinguish JSON integers from values like 3.0 and 1e1.
+	var raw struct {
+		ProductsLimit json.RawMessage `json:"products_limit"`
+	}
+	if err := json.Unmarshal(req.Params.Arguments, &raw); err != nil {
+		return nil, chunkread.Result{}, argerr.Errorf("bad arguments: %w", err)
+	}
+	limit, err := chunkread.DecodeProductsLimit(raw.ProductsLimit)
+	if err != nil {
+		return nil, chunkread.Result{}, err
+	}
 	if s.store == nil {
 		return nil, chunkread.Result{}, errNoStore
 	}
 	result, err := chunkread.Read(ctx, s.store, chunkread.Request{
 		IDs: args.IDs, Neighbours: args.Neighbours, Domain: args.Domain,
-		WithProducts: args.WithProducts, ProductsLimit: args.ProductsLimit,
+		WithProducts: args.WithProducts, ProductsLimit: limit,
 	})
 	return nil, result, err
 }

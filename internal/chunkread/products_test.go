@@ -40,14 +40,16 @@ func indexedChunks(chunks []graph.Chunk, observations []graph.ProductIdentifierO
 func TestReadProductSpans(t *testing.T) {
 	// The first prefix splits a multibyte rune in a matching span. The
 	// second prefix ends in an apparent whole code inside a longer token.
+	const boundaryCode = "AB12345"
 	st := indexedChunks([]graph.Chunk{
 		{ID: "cross", Text: strings.Repeat(" ", ChunkTextCap-3) + "AB界12345"},
 		{ID: "apparent", Text: strings.Repeat(" ", ChunkTextCap-7) + "AB12345EXTRA"},
 		{ID: "inside", Text: "AB界12345, " + strings.Repeat(" ", ChunkTextCap) + "AB界12345"},
 		{ID: "tail", Text: strings.Repeat(" ", ChunkTextCap+1) + "AB12345"},
+		{ID: "boundary", Text: strings.Repeat(" ", ChunkTextCap-len(boundaryCode)) + boundaryCode + ", rest"},
 	}, []graph.ProductIdentifierObservation{mentionObservation("actual", "AB界12345"), mentionObservation("apparent", "AB12345")})
-	out, err := Read(t.Context(), st, Request{IDs: []string{"cross", "apparent", "inside", "tail"}, WithProducts: true})
-	if err != nil || len(out.Chunks) != 4 {
+	out, err := Read(t.Context(), st, Request{IDs: []string{"cross", "apparent", "inside", "tail", "boundary"}, WithProducts: true})
+	if err != nil || len(out.Chunks) != 5 {
 		t.Fatalf("Read = %+v, %v", out.Meta, err)
 	}
 	for i, want := range []string{
@@ -55,6 +57,7 @@ func TestReadProductSpans(t *testing.T) {
 		`[]`,
 		`[{"id":"actual","store":"products.test","product_id":"products.test:actual","title":"actual","matched":[{"feature":"catalogue_code","value":"AB界12345"}]}]`,
 		`[{"id":"apparent","store":"products.test","product_id":"products.test:apparent","title":"apparent","matched":[{"feature":"catalogue_code","value":"AB12345"}],"outside_returned_text":true}]`,
+		`[{"id":"apparent","store":"products.test","product_id":"products.test:apparent","title":"apparent","matched":[{"feature":"catalogue_code","value":"AB12345"}]}]`,
 	} {
 		t.Run(out.Chunks[i].ID, func(t *testing.T) {
 			var item map[string]json.RawMessage
@@ -72,6 +75,9 @@ func TestReadProductSpans(t *testing.T) {
 	}
 	if len(out.Chunks[0].Text) != ChunkTextCap-1 || !strings.HasSuffix(out.Chunks[1].Text, "AB12345") {
 		t.Fatal("fixture missed the expected clipping boundary")
+	}
+	if chunk := out.Chunks[4]; !chunk.Truncated || len(chunk.Text) != ChunkTextCap || !strings.HasSuffix(chunk.Text, boundaryCode) {
+		t.Fatal("fixture missed the exact clipping boundary")
 	}
 }
 
@@ -189,6 +195,46 @@ func TestReadProductsOffJSON(t *testing.T) {
 	const want = `{"chunks":[{"id":"c1","doc_id":"d1","seq":0,"text":"AB12345 \u003ctag\u003e"}],"meta":{"returned":1,"missing":["absent"],"truncated":[],"omitted_for_budget":[]}}`
 	if err != nil || string(resultJSON(t, out)) != want {
 		t.Fatalf("Read: %s, %v", resultJSON(t, out), err)
+	}
+}
+
+func TestReadProductMatchBudgetAcrossChunks(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		chunkBytes int
+		wantError  string
+	}{
+		{"over budget", 800 << 10, "match_budget"},
+		{"under budget", 600 << 10, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const code = "AB12345"
+			text := code + strings.Repeat(" ", tc.chunkBytes-len(code))
+			ids := []string{"a", "b", "c"}
+			var chunks []graph.Chunk
+			for seq, id := range ids {
+				chunks = append(chunks, graph.Chunk{ID: id, Seq: seq, Text: text})
+			}
+			st := mentionTestStore{&fakeStore{chunks: chunks}, func(context.Context) (*graph.ProductMentionIndex, error) {
+				if tc.wantError == "match_budget" {
+					t.Fatal("loaded index despite the combined chunk text exceeding the match budget")
+				}
+				return graph.BuildProductMentionIndex([]graph.ProductIdentifierObservation{mentionObservation("a", code)}), nil
+			}}
+			out, err := Read(t.Context(), st, Request{IDs: ids, WithProducts: true})
+			if err != nil || len(out.Chunks) != len(ids) || out.ProductsError != tc.wantError {
+				t.Fatalf("Read: meta=%+v products_error=%q, want %q, err=%v", out.Meta, out.ProductsError, tc.wantError, err)
+			}
+			for _, chunk := range out.Chunks {
+				if tc.wantError == "match_budget" {
+					if chunk.Products != nil || chunk.ProductsTotal != nil {
+						t.Errorf("chunk %q returned products after exceeding the match budget", chunk.ID)
+					}
+				} else if chunk.ProductsTotal == nil || *chunk.ProductsTotal != 1 || chunk.Products == nil || len(*chunk.Products) != 1 {
+					t.Errorf("chunk %q did not return its matching product", chunk.ID)
+				}
+			}
+		})
 	}
 }
 

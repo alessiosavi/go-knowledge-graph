@@ -54,7 +54,7 @@ func TestReadProductsMemgraph(t *testing.T) {
 			t.Fatalf("Read: %+v, %v", got, err)
 		}
 		item := got.Chunks[0]
-		if item.ProductsTotal == nil || *item.ProductsTotal != len(want) || item.Products == nil {
+		if item.ProductsTotal == nil || *item.ProductsTotal != len(want) || item.Products == nil || *item.Products == nil {
 			t.Fatalf("product totals: %+v, expected %v", item, want)
 		}
 		var ids []string
@@ -69,19 +69,33 @@ func TestReadProductsMemgraph(t *testing.T) {
 	read() // knowledge-only graph, no active release
 	query(`CREATE (:GkgMeta {id:'product_release', value:'chunk-mentions-release'})`, nil)
 	read() // release pointer with no bound stores
-	query(`CREATE (:ProductStore {store:'chunk-mentions-a.test', domain:'product-a'}),
-		(:ProductStore {store:'chunk-mentions-b.test', domain:'product-b'}),
+	checkEmpty := func(fixture string) {
+		t.Helper()
+		index, err := st.LoadProductMentionIndex(t.Context())
+		if err != nil || index == nil {
+			t.Fatalf("%s: load index = %v, %v", fixture, index, err)
+		}
+		if index.Stats.IdentifierValues != 0 || index.Stats.EligibleKeys != 0 || len(index.Match("AB12345, UN12345")) != 0 {
+			t.Fatalf("%s: expected an empty index, stats = %+v", fixture, index.Stats)
+		}
+		read()
+	}
+	query(`CREATE (:ProductStore {store:'chunk-mentions-a.test', domain:'product-a'})`, nil)
+	checkEmpty("release and bound store with no identifiers in the graph")
+	query(`CREATE (a:Product {id:'chunk-mentions-a', store:'chunk-mentions-a.test', product_id:'chunk-mentions-a.test:1', domain:'product-a', title:'A'}),
 		(:ProductStore {store:'chunk-mentions-unbound.test'}),
-		(a:Product {id:'chunk-mentions-a', store:'chunk-mentions-a.test', product_id:'chunk-mentions-a.test:1', domain:'product-a', title:'A'}),
-		(b:Product {id:'chunk-mentions-b', store:'chunk-mentions-b.test', product_id:'chunk-mentions-b.test:1', domain:'product-b', title:'B'}),
 		(u:Product {id:'chunk-mentions-u', store:'chunk-mentions-unbound.test', product_id:'chunk-mentions-unbound.test:1'}),
 		(f:FeatureRev {id:'catalogue_code', key:'chunk-mentions-code'}),
+		(u)-[:HAS_FEATURE {release_id:'chunk-mentions-release',value_fold:'UN12345'}]->(f)`, nil)
+	checkEmpty("bound product with zero identifier edges while an unbound identifier exists")
+	query(`MATCH (a:Product {id:'chunk-mentions-a'}), (f:FeatureRev {key:'chunk-mentions-code'})
+		CREATE (:ProductStore {store:'chunk-mentions-b.test', domain:'product-b'}),
+		(b:Product {id:'chunk-mentions-b', store:'chunk-mentions-b.test', product_id:'chunk-mentions-b.test:1', domain:'product-b', title:'B'}),
 		(r:FeatureRev {id:'product_reference', key:'chunk-mentions-ref'}),
 		(a)-[:HAS_FEATURE {release_id:'chunk-mentions-release',value_fold:'AB12345'}]->(f),
 		(a)-[:HAS_FEATURE {release_id:'chunk-mentions-release',value_fold:'AM12345'}]->(f),
 		(a)-[:HAS_FEATURE {release_id:'old-release',value_fold:'OLD12345'}]->(f),
-		(b)-[:HAS_FEATURE {release_id:'chunk-mentions-release',items_fold:['ZX_98765','ZX_98765','AM-12345']}]->(r),
-		(u)-[:HAS_FEATURE {release_id:'chunk-mentions-release',value_fold:'UN12345'}]->(f)`, nil)
+		(b)-[:HAS_FEATURE {release_id:'chunk-mentions-release',items_fold:['ZX_98765','ZX_98765','AM-12345']}]->(r)`, nil)
 	item := read("chunk-mentions-a", "chunk-mentions-b")
 	for i, want := range []chunkread.MatchedIdentifier{{Feature: "catalogue_code", Value: "AB12345"}, {Feature: "product_reference", Value: "ZX_98765"}} {
 		if !slices.Equal((*item.Products)[i].Matched, []chunkread.MatchedIdentifier{want}) {

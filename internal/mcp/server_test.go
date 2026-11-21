@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	mcpgo "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
+	"github.com/alessiosavi/go-knowledge-graph/internal/chunkread"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
@@ -186,13 +189,6 @@ func TestGetChunksTool(t *testing.T) {
 		}
 	}
 	args := map[string]any{"ids": []string{doc.ID + "-c0"}, "with_products": true}
-	for _, limit := range []any{0, 51, -1, 1.5, "2", nil} {
-		args["products_limit"] = limit
-		if res := callTool(t, cs, "get_chunks", args); !res.IsError {
-			t.Errorf("accepted products_limit=%v", limit)
-		}
-	}
-	delete(args, "products_limit")
 	enriched := structured[struct {
 		Chunks []map[string]json.RawMessage
 	}](t, callTool(t, cs, "get_chunks", args))
@@ -200,6 +196,64 @@ func TestGetChunksTool(t *testing.T) {
 		string(enriched.Chunks[0]["products_total"]) != "0" {
 		t.Errorf("get_chunks products = %+v, want an empty array and zero total", enriched.Chunks)
 	}
+}
+
+func TestGetChunksToolProductsLimit(t *testing.T) {
+	st := graphtest.Store(t)
+	drv, err := neo4j.NewDriver(os.Getenv(graphtest.URIEnv), neo4j.NoAuth())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = drv.Close(context.Background()) })
+	const prefix = "mcp-chunk-products-limit-"
+	params := map[string]any{"prefix": prefix}
+	t.Cleanup(func() {
+		_, err := neo4j.ExecuteQuery(context.Background(), drv, `
+			MATCH (n) WHERE n.id STARTS WITH $prefix OR n.store STARTS WITH $prefix
+				OR n.key STARTS WITH $prefix OR (n:GkgMeta AND n.id='product_release' AND n.value=$prefix)
+			DETACH DELETE n`, params, neo4j.EagerResultTransformer)
+		if err != nil {
+			t.Errorf("delete products limit fixture: %v", err)
+		}
+	})
+	_, err = neo4j.ExecuteQuery(t.Context(), drv, `
+		CREATE (:GkgMeta {id:'product_release', value:$prefix}),
+			(:ProductStore {store:$prefix + 'store.test', domain:'catalogue'}),
+			(:Chunk {id:$prefix + 'chunk', seq:0, text:'AB12345 and CD67890'}),
+			(f:FeatureRev {id:'catalogue_code', key:$prefix + 'code'}),
+			(a:Product {id:$prefix + 'a', store:$prefix + 'store.test', product_id:'a'}),
+			(b:Product {id:$prefix + 'b', store:$prefix + 'store.test', product_id:'b'}),
+			(a)-[:HAS_FEATURE {release_id:$prefix, value_fold:'AB12345'}]->(f),
+			(b)-[:HAS_FEATURE {release_id:$prefix, value_fold:'CD67890'}]->(f)`, params, neo4j.EagerResultTransformer)
+	if err != nil {
+		t.Fatalf("seed products limit fixture: %v", err)
+	}
+	cs := connectInMemory(t, config.Config{}, st, nil)
+	call := func(t *testing.T, limit string) *mcpgo.CallToolResult {
+		t.Helper()
+		return callTool(t, cs, "get_chunks", map[string]any{
+			"ids": []string{prefix + "chunk"}, "with_products": true, "products_limit": json.RawMessage(limit),
+		})
+	}
+	for _, limit := range []string{"0", "51", "-1", "3.0", "1e1", "1.5", `"2"`, "null"} {
+		t.Run("reject="+limit, func(t *testing.T) {
+			if res := call(t, limit); !res.IsError || !strings.Contains(toolErrorText(res), "products_limit") {
+				t.Errorf("products_limit=%s: got %q, want a products_limit argument error", limit, toolErrorText(res))
+			}
+		})
+	}
+	t.Run("limit=1", func(t *testing.T) {
+		out := structured[struct {
+			Chunks []struct {
+				Products []chunkread.ChunkProduct
+				Total    int             `json:"products_total"`
+				Omitted  json.RawMessage `json:"products_omitted_for_budget"`
+			}
+		}](t, call(t, "1"))
+		if len(out.Chunks) != 1 || out.Chunks[0].Total != 2 || len(out.Chunks[0].Products) != 1 || out.Chunks[0].Omitted != nil {
+			t.Errorf("products_limit=1: got %+v, want one product of two with no budget omissions", out)
+		}
+	})
 }
 
 func TestToolResultSizeGuidance(t *testing.T) {

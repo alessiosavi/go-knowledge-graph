@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
@@ -312,14 +311,11 @@ func (s *Server) toolGetChunks(ctx context.Context, raw json.RawMessage) (any, e
 		}
 		req.WithProducts = *value
 	}
-	if args.ProductsLimit != nil {
-		var value *float64
-		if err := json.Unmarshal(args.ProductsLimit, &value); err != nil || value == nil ||
-			*value != math.Trunc(*value) || *value < 1 || *value > chunkread.MaxProductsLimit {
-			return nil, argerr.New(chunkread.ProductsLimitError)
-		}
-		req.ProductsLimit = new(int(*value))
+	limit, err := chunkread.DecodeProductsLimit(args.ProductsLimit)
+	if err != nil {
+		return nil, err
 	}
+	req.ProductsLimit = limit
 	return chunkread.Read(ctx, s.store, req)
 }
 
