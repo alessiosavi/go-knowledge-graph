@@ -143,9 +143,6 @@ RETURN m.value AS release, m.activation_seq AS activation_seq`, nil)
 		propBytes += bytes
 		prepared.edges = append(prepared.edges, edge)
 	}
-	if propBytes > maxProductImportPropBytes {
-		return preparedProductEvent{}, &ProductMutationError{Status: "store_cap"}
-	}
 	prepared.props["prop_bytes"] = int64(propBytes)
 	return prepared, nil
 }
@@ -337,7 +334,9 @@ RETURN count(p) AS products, sum(edges) AS edges, sum(p.prop_bytes) AS bytes,
 		return &ProductMutationError{Status: "store_cap"}
 	}
 	if getInt(row, "tracked") != products {
-		return errors.New("missing projected product bytes in materialized store")
+		return &ProductMutationError{Status: "reimport_required", cause: fmt.Errorf(
+			"missing projected product bytes. Re-import the store at a sequence above its seen_seq with gkg products import -store %q -snapshot-seq N -release ACTIVE_RELEASE -report OUT.json FILE.jsonl",
+			params["store"])}
 	}
 	params["products"], params["edges"], params["bytes"] = int64(products), int64(edges), int64(bytes)
 	params["at"] = time.Now().UTC().Format(timeLayout)

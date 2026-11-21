@@ -72,13 +72,10 @@ func runProductRemove(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return productFlagExit(err)
 	}
-	if fs.NArg() != 0 || *product == "" || *seq == "" {
+	value, err := strconv.ParseInt(*seq, 10, 64)
+	if err != nil || value <= 0 || fs.NArg() != 0 || *product == "" {
 		fs.Usage()
 		return 2
-	}
-	value, err := strconv.ParseInt(*seq, 10, 64)
-	if err != nil || value < 1 {
-		return productCommandError(fs.Name(), stderr, errors.New("seq must be a positive int64"))
 	}
 	return withProductStore(fs.Name(), stderr, func(ctx context.Context, store *graph.Store) error {
 		result, err := store.RemoveProduct(ctx, *product, value)

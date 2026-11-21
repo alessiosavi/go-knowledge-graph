@@ -1303,6 +1303,7 @@ Processing stops at the first error. Earlier successes stay committed.
 After any release activation, re-import **every store** at a higher sequence
 before pushing or removing products. The activation sequence is global. A
 wiped store also needs a new import before pushing or removing products.
+Each push recounts the store's products, edges and bytes. The 10,000-product case in `TestProductPushCapRollback` took at most 0.19 s including setup, well under the 30 s transaction timeout.
 
 | Exit | Status | Meaning |
 | --- | --- | --- |
@@ -1311,15 +1312,19 @@ wiped store also needs a new import before pushing or removing products.
 | 5 | `stale`, `seq_conflict` | The sequence is at or below the wipe floor, below the watermark, or already belongs to a different event. The error includes `seen_seq`. |
 | 5 | `release_changed`, `release_not_materialized`, `store_not_bound`, `store_cap` | Check the active release and binding, materialize the store, or reduce its size as indicated. A rejected event leaves its sequence available. |
 | 5 | `retry` | A concurrent writer held a fence. Retry the same event after that write finishes. |
+| 5 | `reimport_required` | A product is missing its projected byte count. Re-import the store at a sequence above its `seen_seq`. |
 | 1 | `unknown_outcome` | The write timed out or its commit could not be confirmed. |
-| 1 | Other errors | Input validation, file or graph errors. |
-| 2 | Usage error | Check the required arguments. |
+| 1 | Other errors | Input validation, including an invalid `seq` in a push JSONL line, or file or graph errors. |
+| 2 | Usage error | Check the required arguments and use a positive int64 for `products remove -seq`. |
 
 Each successful event prints a JSON result with `status`, `product_id`, `id`
 and `seen_seq`. For `unknown_outcome`, resend the same sequence, operation
-and product ID. If it already applied and is still the latest event, the
-retry returns `duplicate`. If a newer event has advanced the store, reconcile
-a `stale` result by reading the current product. The stores response shows
+and product ID. If it already applied and is still the latest event in a
+materialized store, the retry returns `duplicate`. After an activation,
+`release_not_materialized` (409) takes precedence over `duplicate` even for
+an identical retry of the last event. Re-import the store at a higher sequence
+and reconcile by reading the current product with GET or MCP `get_product`.
+Use the same product lookup to reconcile a `stale` result. The stores response shows
 `seen_seq`, `materialized_activation_seq` and `pushed_at`. To correct an
 applied push, send the corrected record or a full snapshot at a higher sequence.
 

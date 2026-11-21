@@ -117,6 +117,7 @@ RETURN s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
     coalesce(s.wiped_seq, 0) AS wiped_seq, coalesce(s.snapshot_seq, 0) AS snapshot_seq,
     s.snapshot_digest AS digest, s.release_id AS release, s.prop_bytes AS prop_bytes,
     coalesce(s.product_count, 0) AS products, coalesce(s.edge_count, 0) AS edges,
+    EXISTS { MATCH (p:Product {store:$store}) WHERE p.prop_bytes IS NULL } AS missing_product_bytes,
     EXISTS { MATCH (:Domain {id:$domain}) } AS domain_exists`, params)
 	if err != nil {
 		return err
@@ -155,7 +156,7 @@ RETURN s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
 		if err := txReplaceProducts(ctx, tx, params, batch); err != nil {
 			return err
 		}
-	} else if bytes, _ := store.Get("prop_bytes"); bytes == nil {
+	} else if bytes, _ := store.Get("prop_bytes"); bytes == nil || getBool(store, "missing_product_bytes") {
 		if err := txBackfillProductBytes(ctx, tx, batch.products); err != nil {
 			return err
 		}

@@ -289,6 +289,19 @@ RETURN s.prop_bytes, sum(p.prop_bytes), s.materialized_activation_seq`, nil); !r
 	}
 }
 
+func TestProductPushActivationRetry(t *testing.T) {
+	f := newPushFixture(t)
+	record := pushRecord(pushOne, "one", "null", `{"scalar":"A1"}`)
+	f.snapshot(pushA, 1, "imported", record)
+	f.put(2, record, "updated")
+	f.activate(pushB)
+	_, err := f.store.PushProduct(t.Context(), 2, []byte(record))
+	assertProductMutationError(t, err, "release_not_materialized", nil)
+	f.watermark(int64(2), int64(1), nil, "put", pushOne, int64(2))
+	f.snapshot(pushB, 3, "imported", record)
+	f.put(4, record, "updated")
+}
+
 func TestProductPushActivationWipeAndRebind(t *testing.T) {
 	f := newPushFixture(t)
 	ctx := t.Context()
@@ -324,12 +337,18 @@ func TestProductPushActivationWipeAndRebind(t *testing.T) {
 	assertProductMutationError(t, err, "stale", &seen)
 	_, err = f.store.PushProduct(ctx, 4, []byte(record))
 	assertProductMutationError(t, err, "release_not_materialized", nil)
+	f.snapshot(pushA, 4, "imported", record)
+	f.put(5, record, "updated")
+	// Unbinding requires an empty store.
+	if err := f.store.DeleteProductStore(ctx, pushStore); err != nil {
+		t.Fatal(err)
+	}
 	node := f.query(`MATCH (s:ProductStore {store:'push.test'}) RETURN id(s)`, nil)
 	if err := f.store.UnbindProductStore(ctx, pushStore); err != nil {
 		t.Fatal(err)
 	}
-	f.watermark(int64(3), int64(1), int64(3), nil, nil, nil)
-	_, err = f.store.RemoveProduct(ctx, pushOne, 4)
+	f.watermark(int64(5), int64(4), int64(5), nil, nil, nil)
+	_, err = f.store.RemoveProduct(ctx, pushOne, 6)
 	assertProductMutationError(t, err, "store_not_bound", nil)
 	out, err := f.store.ListProductStores(ctx)
 	if err != nil || len(out.Stores) != 0 || out.ActiveReleaseID == nil || *out.ActiveReleaseID != pushA {
@@ -360,14 +379,54 @@ func TestProductPushActivationWipeAndRebind(t *testing.T) {
 	}
 	f.seedRelease("push-release-rebound", "push-rebound")
 	f.activate("push-release-rebound")
-	if _, err := f.importRows(f.store, "push-release-rebound", 3, nil, record); !errors.Is(err, ErrProductData) {
+	if _, err := f.importRows(f.store, "push-release-rebound", 5, nil, record); !errors.Is(err, ErrProductData) {
 		t.Fatalf("import at old floor after rebind: %v", err)
 	}
-	f.snapshot("push-release-rebound", 4, "imported", record)
-	f.put(5, record, "updated")
+	f.snapshot("push-release-rebound", 6, "imported", record)
+	f.put(7, record, "updated")
 	got := f.query(`MATCH (p:Product {product_id:'push.test:1'}) RETURN p.domain`, nil)
 	if !reflect.DeepEqual(got, [][]any{{"push-rebound"}}) {
 		t.Fatalf("push domain after rebind = %v", got)
+	}
+}
+
+func TestProductPushReimportRequired(t *testing.T) {
+	for _, tc := range []struct {
+		importStatus string
+		priorPush    bool
+	}{
+		{"unchanged", false},
+		{"imported", true},
+	} {
+		t.Run(tc.importStatus, func(t *testing.T) {
+			f := newPushFixture(t)
+			one := pushRecord(pushOne, "first", "null", `{"scalar":"A1"}`)
+			two := pushRecord(pushTwo, "second", "null", `{"scalar":"B2"}`)
+			f.snapshot(pushA, 1, "imported", one)
+			next := int64(2)
+			if tc.priorPush {
+				f.put(next, one, "updated")
+				next++
+			}
+			f.query(`MATCH (p:Product {store:$store, product_id:$product}) REMOVE p.prop_bytes`,
+				map[string]any{"store": pushStore, "product": pushOne})
+			const state = `MATCH (s:ProductStore {store:'push.test'})
+MATCH (p:Product {store:s.store}) OPTIONAL MATCH (p)-[e:HAS_FEATURE]->()
+WITH s, p, count(e) AS edges
+RETURN properties(s), count(p), sum(edges), count(p.prop_bytes)`
+			before := f.query(state, nil)
+			_, err := f.store.PushProduct(t.Context(), next, []byte(two))
+			assertProductMutationError(t, err, "reimport_required", nil)
+			if msg := err.Error(); !strings.Contains(msg, "above its seen_seq") ||
+				!strings.Contains(msg, `gkg products import -store "push.test" -snapshot-seq N`) {
+				t.Errorf("missing repair instructions in %q", msg)
+			}
+			if got := f.query(state, nil); !reflect.DeepEqual(got, before) {
+				t.Fatalf("refused push changed store state: got %v, before %v", got, before)
+			}
+			f.snapshot(pushA, next, tc.importStatus, one)
+			f.put(next+1, two, "created")
+		})
 	}
 }
 
