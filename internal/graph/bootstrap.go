@@ -30,6 +30,7 @@ var uniqueConstraints = []struct {
 	{"ProductRelease", "id"},
 	{"ProductStore", "store"},
 	{"Product", "id"},
+	{"ProductRef", "id"},
 }
 
 // secondaryIndexes are non-unique label-property indexes bootstrapped for
@@ -80,6 +81,7 @@ var secondaryIndexes = []struct {
 	{"ProductStore", []string{"store"}},
 	{"ProductStore", []string{"domain"}},
 	{"Product", []string{"id"}},
+	{"ProductRef", []string{"id"}},
 	{"Product", []string{"store", "product_id"}},
 	{"Product", []string{"domain"}},
 }

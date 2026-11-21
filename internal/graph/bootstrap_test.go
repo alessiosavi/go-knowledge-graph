@@ -422,7 +422,7 @@ func TestBootstrapProductSchema(t *testing.T) {
 	}
 	for _, key := range []struct{ label, prop string }{
 		{"FeatureRegistry", "rev"}, {"FeatureRev", "key"}, {"ProductRelease", "id"},
-		{"ProductStore", "store"}, {"Product", "id"},
+		{"ProductStore", "store"}, {"Product", "id"}, {"ProductRef", "id"},
 	} {
 		if !rawUniqueConstraintExists(t, uri, key.label, key.prop) {
 			t.Errorf("missing unique constraint %s(%s)", key.label, key.prop)

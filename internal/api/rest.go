@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -53,11 +54,12 @@ func (s *Server) handleAdminRebuild(w http.ResponseWriter, r *http.Request) {
 
 // ingestRequest is the JSON submission shape.
 type ingestRequest struct {
-	URL    string `json:"url"`
-	Text   string `json:"text"`
-	Source string `json:"source"`
-	Labels string `json:"labels"`
-	Force  bool   `json:"force"`
+	URL      string          `json:"url"`
+	Text     string          `json:"text"`
+	Source   string          `json:"source"`
+	Labels   string          `json:"labels"`
+	Force    bool            `json:"force"`
+	Products json.RawMessage `json:"products"`
 }
 
 type ingestResponse struct {
@@ -180,9 +182,7 @@ type cypherResponse struct {
 	Rows    []map[string]any `json:"rows"`
 }
 
-// handleIngest accepts a JSON submission ({url|text, source?, labels?,
-// force?}) or a multipart file upload (field "file", optional "source",
-// "labels" and "force" fields) and queues it for the worker pool.
+// handleIngest accepts a JSON or multipart submission and queues it for processing.
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if s.in == nil {
 		writeError(w, http.StatusNotImplemented, "ingest_disabled", "no ingestion pipeline wired")
@@ -198,6 +198,16 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.in.Submit(r.Context(), in)
 	if err != nil {
+		var productsErr *graph.DocumentRefsError
+		if errors.As(err, &productsErr) {
+			status := http.StatusConflict
+			if productsErr.Code == "invalid_products" || productsErr.Code == "products_unknown_store" {
+				status = http.StatusBadRequest
+			}
+			writeError(w, status, productsErr.Code, productsErr.Detail)
+			return
+		}
+
 		if errors.Is(err, ingest.ErrBusy) {
 			w.Header().Set("Retry-After", "30")
 			writeError(w, http.StatusServiceUnavailable, "document_busy", "document is being processed; retry later")
@@ -239,6 +249,19 @@ func (s *Server) decodeIngest(w http.ResponseWriter, r *http.Request, maxBytes i
 			writeError(w, http.StatusBadRequest, "invalid_multipart", err.Error())
 			return ingest.Input{}, false
 		}
+		products := r.MultipartForm.Value["products"]
+		clear := r.MultipartForm.Value["products_clear"]
+		if len(clear) > 1 || (len(clear) == 1 && clear[0] != "true" && clear[0] != "false") {
+			writeError(w, http.StatusBadRequest, "invalid_products", "products_clear must be a single true or false value")
+			return ingest.Input{}, false
+		}
+		if len(clear) == 1 && clear[0] == "true" {
+			if len(products) > 0 {
+				writeError(w, http.StatusBadRequest, "invalid_products", "products and products_clear cannot be used together")
+				return ingest.Input{}, false
+			}
+			products = []string{}
+		}
 		file, hdr, err := r.FormFile("file")
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", `multipart field "file" is required`)
@@ -262,17 +285,25 @@ func (s *Server) decodeIngest(w http.ResponseWriter, r *http.Request, maxBytes i
 			}
 		}
 		return ingest.Input{
-			Kind:   "file",
-			Bytes:  data,
-			Source: source,
-			Labels: r.FormValue("labels"),
-			Force:  formBool(r.FormValue("force")),
+			Kind:     "file",
+			Bytes:    data,
+			Source:   source,
+			Labels:   r.FormValue("labels"),
+			Force:    formBool(r.FormValue("force")),
+			Products: products,
 		}, true
 	}
 
 	var req ingestRequest
 	if !readJSON(w, r, maxBytes, &req) {
 		return ingest.Input{}, false
+	}
+	var products []string
+	if req.Products != nil {
+		if err := json.Unmarshal(req.Products, &products); err != nil || products == nil {
+			writeError(w, http.StatusBadRequest, "invalid_products", "products must be an array of product IDs")
+			return ingest.Input{}, false
+		}
 	}
 	u := strings.TrimSpace(req.URL)
 	switch {
@@ -283,9 +314,9 @@ func (s *Server) decodeIngest(w http.ResponseWriter, r *http.Request, maxBytes i
 		writeError(w, http.StatusBadRequest, "invalid_request", "url or text is required")
 		return ingest.Input{}, false
 	case u != "":
-		return ingest.Input{Kind: "url", URL: u, Source: req.Source, Labels: req.Labels, Force: req.Force}, true
+		return ingest.Input{Kind: "url", URL: u, Source: req.Source, Labels: req.Labels, Force: req.Force, Products: products}, true
 	default:
-		return ingest.Input{Kind: "text", Text: req.Text, Source: req.Source, Labels: req.Labels, Force: req.Force}, true
+		return ingest.Input{Kind: "text", Text: req.Text, Source: req.Source, Labels: req.Labels, Force: req.Force, Products: products}, true
 	}
 }
 

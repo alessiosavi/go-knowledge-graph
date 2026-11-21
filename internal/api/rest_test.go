@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1084,5 +1085,113 @@ func TestCandidateNotVisible(t *testing.T) {
 	view := decode[entityDTO](t, rr)
 	if len(view.Facts) != 0 || len(view.Together) != 1 || view.Together[0].Key != ents[1].Key {
 		t.Fatalf("candidate view = %+v", view)
+	}
+}
+
+func TestIngestProductRefsJSONValidation(t *testing.T) {
+	// Bad IDs must be rejected before a loader or store is needed.
+	h := apiHandler(t, config.Config{}, nil, ingest.NewPipeline(config.Config{}, nil, nil, nil, nil))
+	for _, value := range []string{`["bare"]`, `["store.test:"]`, `["a:x","b:y","a:x"]`, `null`, `[null]`, `"a:x"`} {
+		rr := doJSON(t, h, http.MethodPost, "/v1/ingest", `{"text":"page","products":`+value+`}`)
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), `"invalid_products"`) {
+			t.Errorf("products=%s: status=%d body=%s", value, rr.Code, rr.Body)
+		}
+	}
+}
+
+func TestIngestProductRefsMultipartValidation(t *testing.T) {
+	h := apiHandler(t, config.Config{}, nil, ingest.NewPipeline(config.Config{}, nil, nil, nil, nil))
+	for _, fields := range []map[string][]string{
+		{"products": {"a:x", "a:x"}},
+		{"products": {"a:x"}, "products_clear": {"true"}},
+	} {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		f, err := writer.CreateFormFile("file", "page.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(f, "a page"); err != nil {
+			t.Fatal(err)
+		}
+		for name, values := range fields {
+			for _, value := range values {
+				if err := writer.WriteField(name, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		rr := do(t, h, http.MethodPost, "/v1/ingest", &body, map[string]string{"Content-Type": writer.FormDataContentType()})
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), `"invalid_products"`) {
+			t.Errorf("fields=%v: status=%d body=%s", fields, rr.Code, rr.Body)
+		}
+	}
+}
+
+func TestIngestProductRefsPresence(t *testing.T) {
+	sub := &fakeSubmitter{res: ingest.Result{DocumentID: "doc"}}
+	h := apiHandler(t, config.Config{}, nil, sub)
+	for _, tc := range []struct {
+		products string
+		want     []string
+	}{
+		{},
+		{products: `,"products":[]`, want: []string{}},
+		{products: `,"products":["a:1","b:2"]`, want: []string{"a:1", "b:2"}},
+	} {
+		rr := doJSON(t, h, http.MethodPost, "/v1/ingest", `{"text":"Page"`+tc.products+`}`)
+		if rr.Code != http.StatusAccepted || !reflect.DeepEqual(sub.in.Products, tc.want) {
+			t.Errorf("JSON %q: status=%d products=%#v, want %#v", tc.products, rr.Code, sub.in.Products, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		fields map[string][]string
+		want   []string
+	}{
+		{},
+		{fields: map[string][]string{"products_clear": {"true"}}, want: []string{}},
+		{fields: map[string][]string{"products": {"a:1", "b:2"}}, want: []string{"a:1", "b:2"}},
+	} {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		f, err := writer.CreateFormFile("file", "page.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(f, "a page"); err != nil {
+			t.Fatal(err)
+		}
+		for name, values := range tc.fields {
+			for _, value := range values {
+				if err := writer.WriteField(name, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		rr := do(t, h, http.MethodPost, "/v1/ingest", &body, map[string]string{"Content-Type": writer.FormDataContentType()})
+		if rr.Code != http.StatusAccepted || !reflect.DeepEqual(sub.in.Products, tc.want) {
+			t.Errorf("multipart %v: status=%d products=%#v, want %#v", tc.fields, rr.Code, sub.in.Products, tc.want)
+		}
+	}
+}
+
+func TestIngestProductRefsStoreErrorMapping(t *testing.T) {
+	for code, status := range map[string]int{
+		"products_unknown_store": http.StatusBadRequest,
+		"refs_changed_use_force": http.StatusConflict,
+		"domain_pin_conflict":    http.StatusConflict,
+		"domain_missing":         http.StatusConflict,
+	} {
+		sub := &fakeSubmitter{err: fmt.Errorf("%w: %w", ingest.ErrStore, &graph.DocumentRefsError{Code: code, Detail: "specific detail"})}
+		rr := doJSON(t, apiHandler(t, config.Config{}, nil, sub), http.MethodPost, "/v1/ingest", `{"text":"Page"}`)
+		if rr.Code != status || !strings.Contains(rr.Body.String(), `"error":"`+code+`"`) {
+			t.Errorf("%s: status=%d body=%s", code, rr.Code, rr.Body.String())
+		}
 	}
 }

@@ -315,6 +315,11 @@ paths:
         server stops first (the document stays `received` meanwhile); poll
         `/v1/documents/{id}/status` until `done` or `failed`. Re-submitting
         unchanged content is a no-op (`noop: true`) unless `force` is set.
+        Changing or clearing refs on unchanged content requires `force`.
+        Omit refs to keep them on retries or inherit them from the latest
+        live completed version on new content. Newly supplied refs that
+        change the stored set must use bound stores. If those stores share
+        one domain, ingestion pins the document to it.
         `labels` selects an installed YAML preset under `labels.presets_dir`;
         omitted/empty uses built-in defaults. Shipped presets are general,
         meeting, documentation, mail, news, code and demo; custom names are
@@ -344,6 +349,14 @@ paths:
                 force:
                   type: string
                   description: '"true" or "1" re-runs unchanged content; all other values are false'
+                products:
+                  allOf:
+                    - $ref: "#/components/schemas/IngestProducts"
+                  description: Repeat the products field once per product ID.
+                products_clear:
+                  type: string
+                  enum: ["true", "false"]
+                  description: Set to "true" to clear refs. Omit the products field when clearing.
       responses:
         "202":
           description: queued for processing
@@ -358,7 +371,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/IngestResponse"
         "400":
-          description: invalid request or rejected input
+          description: Rejected input, including `invalid_products` or `products_unknown_store`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: |
+            Product refs changed on unchanged content (`refs_changed_use_force`),
+            the refs pin conflicts with the assigned domain (`domain_pin_conflict`),
+            or the pinned domain no longer exists (`domain_missing`).
           content:
             application/json:
               schema:
@@ -1378,7 +1400,7 @@ components:
         evidence_truncated: { type: boolean, description: Matching evidence was omitted due to the per-hit edge limit or response size. }
     IngestRequest:
       type: object
-      description: Exactly one non-empty url (trimmed) or text is required; source, labels and force are optional.
+      description: Exactly one non-empty url (trimmed) or text is required. Source, labels, force and products are optional.
       oneOf:
         - required: [url]
           properties:
@@ -1401,6 +1423,16 @@ components:
         force:
           type: boolean
           default: false
+        products:
+          $ref: "#/components/schemas/IngestProducts"
+    IngestProducts:
+      type: array
+      description: Unique store-prefixed product IDs, at most 1 KiB each. Pass an empty array to clear refs.
+      maxItems: 50
+      uniqueItems: true
+      items:
+        type: string
+        description: A store prefix followed by a colon and a non-empty suffix.
     IngestResponse:
       type: object
       required: [document_id, noop]

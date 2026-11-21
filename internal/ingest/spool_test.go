@@ -58,7 +58,7 @@ func (s *spoolStore) UpsertDocument(_ context.Context, in graph.DocumentInput) (
 	if d, ok := s.docs[id]; ok && d.Status != graph.StatusFailed && d.Status != graph.StatusSuperseded && !in.Force {
 		return graph.UpsertResult{ID: id, Noop: true}, nil
 	}
-	s.docs[id] = graph.Document{ID: id, Hash: in.Hash, SourceKind: in.Kind, Source: in.Source, Title: in.Title, Labels: in.Labels, Status: graph.StatusReceived}
+	s.docs[id] = graph.Document{ID: id, Hash: in.Hash, SourceKind: in.Kind, Source: in.Source, Title: in.Title, Labels: in.Labels, Status: graph.StatusReceived, SpoolPayloadDigest: in.SpoolPayloadDigest}
 	return graph.UpsertResult{ID: id}, nil
 }
 func (s *spoolStore) SetStatus(_ context.Context, id string, status graph.Status, msg string) error {
@@ -100,6 +100,14 @@ func (s *spoolStore) Supersede(ctx context.Context, old, _ string) error {
 		s.afterSupersede()
 	}
 	return err
+}
+func (s *spoolStore) FinishDocument(ctx context.Context, id string) ([]string, error) {
+	for _, old := range s.older {
+		if err := s.Supersede(ctx, old, id); err != nil {
+			return nil, err
+		}
+	}
+	return s.older, s.SetStatus(ctx, id, graph.StatusDone, "")
 }
 func (s *spoolStore) InFlight(context.Context) ([]graph.Document, error) {
 	s.mu.Lock()
@@ -539,7 +547,11 @@ func TestSpoolFailureAndSupersedeCleanup(t *testing.T) {
 		res := submitSpool(t, p, Input{Text: "Original text."})
 		// A corrupt converted payload is detected by the same hash check as reloads.
 		sub := submission{loaded: Loaded{Text: "Changed text.", Hash: st.docs[res.DocumentID].Hash}}
-		if err := p.spool.putLocked(res.DocumentID, sub); err != nil {
+		data, err := json.Marshal(spoolEntry{Loaded: sub.loaded})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(spoolPath(p, res.DocumentID), data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		p.pending = make(map[string]submission)
@@ -896,4 +908,137 @@ func TestExtractionFailureReleasesSpool(t *testing.T) {
 		t.Fatal("not failed")
 	}
 	absentSpool(t, p, res.DocumentID)
+}
+
+type lateSpoolNoopStore struct {
+	*spoolStore
+	beforeNoop func()
+}
+
+func (s lateSpoolNoopStore) Document(context.Context, string) (*graph.Document, error) {
+	return nil, graph.ErrNotFound
+}
+
+func (s lateSpoolNoopStore) UpsertDocument(_ context.Context, in graph.DocumentInput) (graph.UpsertResult, error) {
+	s.beforeNoop()
+	return graph.UpsertResult{ID: graph.DocumentID(in.Kind, in.Source, in.Hash), Noop: true}, nil
+}
+
+func TestSpoolLateNoopRestoresPreviousPayload(t *testing.T) {
+	p, st := spoolPipeline(t)
+	in := Input{Text: "The same content.", Title: "Previous"}
+	old := submitSpool(t, p, in)
+	path := spoolPath(p, old.DocumentID)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.store = lateSpoolNoopStore{spoolStore: st, beforeNoop: func() {
+		backup, err := os.ReadFile(path + ".prev")
+		if err != nil || !bytes.Equal(backup, before) {
+			t.Errorf("before upsert, backup = %s, %v", backup, err)
+		}
+		written, err := p.spool.loadForTest(path)
+		if err != nil || written.Loaded.Title != "Candidate" {
+			t.Errorf("before upsert, candidate = %+v, %v", written, err)
+		}
+	}}
+	in.Title = "Candidate"
+	got, err := p.Submit(t.Context(), in)
+	if err != nil || !got.Noop {
+		t.Fatalf("submit: %+v, %v", got, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Errorf("after noop, payload = %s, %v, want %s", after, err, before)
+	}
+	if _, err := os.Stat(path + ".prev"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("after noop, backup stat = %v, want not exist", err)
+	}
+}
+
+func TestSubmitLockedNoopChecksProductRefs(t *testing.T) {
+	for _, refs := range [][]string{nil, {"a:2", "a:1"}, {"a:1"}, {}} {
+		p, st := spoolPipeline(t)
+		in := Input{Text: "Concurrent admission content."}
+		id := submitSpool(t, p, in).DocumentID
+		doc := st.docs[id]
+		doc.ProductRefs = []string{"a:1", "a:2"}
+		st.docs[id] = doc
+		p.spool.maxCount = 0
+		racing := &staleAdmissionStore{spoolStore: st}
+		p.store = racing
+		in.Products = refs
+		res, err := p.Submit(t.Context(), in)
+		if refs == nil || len(refs) == 2 {
+			if err != nil || !res.Noop || res.DocumentID != id {
+				t.Errorf("refs=%#v: submit=%+v, %v", refs, res, err)
+			}
+		} else {
+			var refsErr *graph.DocumentRefsError
+			if !errors.As(err, &refsErr) || refsErr.Code != "refs_changed_use_force" {
+				t.Errorf("refs=%#v: submit error=%v, want refs_changed_use_force", refs, err)
+			}
+		}
+		if racing.reads != 2 || len(p.jobs) != 1 {
+			t.Errorf("refs=%#v: status reads/jobs = %d/%d, want 2/1", refs, racing.reads, len(p.jobs))
+		}
+	}
+}
+
+func TestSpoolRecoveryAfterInterruptedReplacement(t *testing.T) {
+	for _, published := range []bool{false, true} {
+		t.Run(fmt.Sprintf("graph published=%t", published), func(t *testing.T) {
+			p, st := spoolPipeline(t)
+			in := Input{Text: "Same text after restart.", Title: "Previous"}
+			id := submitSpool(t, p, in).DocumentID
+			doc := st.docs[id]
+			in.Title = "Candidate"
+			sub := submission{loaded: Loaded{Text: in.Text, Hash: doc.Hash, Title: in.Title}}
+			write, err := p.spool.putLocked(id, sub, doc.SpoolPayloadDigest)
+			if err != nil || !write.backup {
+				t.Fatalf("interrupted put = %+v, %v", write, err)
+			}
+			want := "Previous"
+			if published {
+				doc.SpoolPayloadDigest, want = write.digest, in.Title
+				st.docs[id] = doc
+			}
+
+			// A fresh spool has no in-memory knowledge of the interrupted write.
+			restarted := &submissionSpool{dir: p.spool.dir}
+			if err := restarted.sweep(t.Context(), st); err != nil {
+				t.Fatal(err)
+			}
+			got, err := restarted.load(&doc)
+			if err != nil || got.loaded.Title != want {
+				t.Errorf("recovered title = %q, %v, want %q", got.loaded.Title, err, want)
+			}
+			if _, err := os.Stat(write.path + ".prev"); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("backup after recovery = %v, want not exist", err)
+			}
+		})
+	}
+}
+
+type lostFinishAckStore struct{ *spoolStore }
+
+func (s lostFinishAckStore) FinishDocument(ctx context.Context, id string) ([]string, error) {
+	if _, err := s.spoolStore.FinishDocument(ctx, id); err != nil {
+		return nil, err
+	}
+	return nil, errors.New("finish acknowledgement lost")
+}
+
+func TestProcessPreservesCommittedFinishAfterLostAcknowledgement(t *testing.T) {
+	p, st := spoolPipeline(t)
+	id := submitSpool(t, p, Input{Text: "Already published by the graph."}).DocumentID
+	p.store = lostFinishAckStore{st}
+	err := p.Process(t.Context(), id)
+	if err == nil || !strings.Contains(err.Error(), "finish acknowledgement lost") {
+		t.Fatalf("Process = %v, want finish acknowledgement error", err)
+	}
+	if status := st.docs[id].Status; status != graph.StatusDone {
+		t.Errorf("status after lost acknowledgement = %q, want done", status)
+	}
 }

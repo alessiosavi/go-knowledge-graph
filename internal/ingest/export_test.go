@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
@@ -47,4 +48,19 @@ func SetDomainOpStore(p *Pipeline, st interface {
 	domainOpStore
 }) {
 	p.store = st
+}
+
+// SetBeforeDocumentUpsert installs a hook after the candidate is spooled.
+func SetBeforeDocumentUpsert(p *Pipeline, f func()) {
+	p.store = documentUpsertHook{pipelineStore: p.store, before: f}
+}
+
+type documentUpsertHook struct {
+	pipelineStore
+	before func()
+}
+
+func (s documentUpsertHook) UpsertDocument(ctx context.Context, in graph.DocumentInput) (graph.UpsertResult, error) {
+	s.before()
+	return s.pipelineStore.UpsertDocument(ctx, in)
 }

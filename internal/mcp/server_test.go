@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -688,5 +689,29 @@ func TestCandidateNotVisible(t *testing.T) {
 	view := structured[entityOut](t, res)
 	if len(view.Facts) != 0 || len(view.Together) != 1 || view.Together[0].Key != ents[1].Key {
 		t.Fatalf("candidate view = %+v", view)
+	}
+}
+
+func TestIngestToolProductRefsValidation(t *testing.T) {
+	pipe := ingest.NewPipeline(config.Config{}, nil, nil, nil, nil)
+	cs := connectInMemory(t, config.Config{}, nil, pipe)
+	res := callTool(t, cs, "ingest", map[string]any{"text": "page", "products": []string{"store.test:"}})
+	if !res.IsError || !strings.Contains(toolErrorText(res), "invalid_products") {
+		t.Errorf("result=%+v error=%q, want invalid_products", res, toolErrorText(res))
+	}
+}
+
+func TestIngestToolProductRefsPresence(t *testing.T) {
+	sub := &fakeSubmitter{res: ingest.Result{DocumentID: "doc"}}
+	cs := connectInMemory(t, config.Config{}, nil, sub)
+	for _, products := range [][]string{nil, {}, {"a:1", "b:2"}} {
+		args := map[string]any{"text": "page"}
+		if products != nil {
+			args["products"] = products
+		}
+		res := callTool(t, cs, "ingest", args)
+		if res.IsError || !reflect.DeepEqual(sub.in.Products, products) {
+			t.Errorf("products input=%#v, forwarded=%#v, error=%q", products, sub.in.Products, toolErrorText(res))
+		}
 	}
 }
