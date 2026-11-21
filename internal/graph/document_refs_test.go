@@ -56,6 +56,128 @@ func TestValidateProductRefs(t *testing.T) {
 	}
 }
 
+func TestProductRefDomainDeduplicatesStores(t *testing.T) {
+	refs := []string{"b:one", "a:two", "b:three"}
+	_, err := productRefDomain(refs, func(_ string, params map[string]any) ([]*neo4j.Record, error) {
+		if got := params["stores"]; !reflect.DeepEqual(got, []string{"a", "b"}) {
+			t.Errorf("binding query stores = %v, want [a b]", got)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newDocumentRefsFixture(t *testing.T) (pushFixture, DocumentInput) {
+	t.Helper()
+	f := newPushFixture(t)
+	t.Cleanup(func() {
+		params := map[string]any{"source": t.Name(), "store": pushStore}
+		for _, query := range []string{
+			`MATCH (d:Document {source:$source}) DETACH DELETE d`,
+			`MATCH (a:ProductRef {store:$store}) DETACH DELETE a`,
+		} {
+			if err := f.store.runWrite(context.Background(), query, params); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	return f, DocumentInput{Kind: "text", Source: t.Name(), Hash: "page", ProductRefs: []string{pushOne}}
+}
+
+func TestInFlightCarriesCommittedSpoolDigestAndRefs(t *testing.T) {
+	f, in := newDocumentRefsFixture(t)
+	ctx := t.Context()
+	in.SpoolPayloadDigest = productDigest([]byte("committed spool payload"))
+	res, err := f.store.UpsertDocument(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs, err := f.store.InFlight(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, doc := range docs {
+		if doc.ID != res.ID {
+			continue
+		}
+		if doc.SpoolPayloadDigest != in.SpoolPayloadDigest || !slices.Equal(doc.ProductRefs, in.ProductRefs) {
+			t.Errorf("InFlight digest and refs = %q, %v, want %q, %v",
+				doc.SpoolPayloadDigest, doc.ProductRefs, in.SpoolPayloadDigest, in.ProductRefs)
+		}
+		return
+	}
+	t.Fatalf("document %s missing from InFlight", res.ID)
+}
+
+func TestUpsertDocumentRejectsChangedRefsOnLiveMatch(t *testing.T) {
+	f, in := newDocumentRefsFixture(t)
+	ctx := t.Context()
+	res, err := f.store.UpsertDocument(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SetStatus(ctx, res.ID, StatusDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	const state = `
+MATCH (d:Document {id:$id})
+OPTIONAL MATCH (d)-[:REFS]->(a:ProductRef)
+RETURN d.product_refs_raw, collect(a.id)`
+	params := map[string]any{"id": res.ID}
+	want := [][]any{{[]any{pushOne}, []any{productobs.ProductID(pushStore, pushOne)}}}
+	if got := f.query(state, params); !reflect.DeepEqual(got, want) {
+		t.Fatalf("initial raw refs and REFS = %v, want %v", got, want)
+	}
+
+	in.ProductRefs = []string{pushTwo}
+	second, err := f.other.UpsertDocument(ctx, in)
+	var refsErr *DocumentRefsError
+	if !errors.As(err, &refsErr) || refsErr.Code != "refs_changed_use_force" {
+		t.Errorf("second upsert = %+v, %v, want refs_changed_use_force", second, err)
+	}
+	if got := f.query(state, params); !reflect.DeepEqual(got, want) {
+		t.Errorf("raw refs and REFS after rejected upsert = %v, want %v", got, want)
+	}
+}
+
+func TestAdminSupersedeRetiresRefsWithDoneReplacement(t *testing.T) {
+	f, in := newDocumentRefsFixture(t)
+	ctx := t.Context()
+	old, err := f.store.UpsertDocument(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SetStatus(ctx, old.ID, StatusDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	in.Hash, in.ProductRefs = "replacement", []string{pushTwo}
+	replacement, err := f.store.UpsertDocument(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mark the replacement done while the old version is still live.
+	if err := f.store.SetStatus(ctx, replacement.ID, StatusDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Supersede(ctx, old.ID, replacement.ID); err != nil {
+		t.Fatal(err)
+	}
+	const state = `
+MATCH (d:Document {id:$id})
+OPTIONAL MATCH (d)-[:REFS]->(a:ProductRef)
+RETURN d.status, d.product_refs_raw, collect(a.id)`
+	wantOld := [][]any{{"superseded", []any{pushOne}, []any{}}}
+	if got := f.query(state, map[string]any{"id": old.ID}); !reflect.DeepEqual(got, wantOld) {
+		t.Errorf("retired document status, raw refs and REFS = %v, want %v", got, wantOld)
+	}
+	wantReplacement := [][]any{{"done", []any{pushTwo}, []any{productobs.ProductID(pushStore, pushTwo)}}}
+	if got := f.query(state, map[string]any{"id": replacement.ID}); !reflect.DeepEqual(got, wantReplacement) {
+		t.Errorf("replacement status, raw refs and REFS = %v, want %v", got, wantReplacement)
+	}
+}
+
 func TestDocumentProductRefAnchorSurvivesProductWrites(t *testing.T) {
 	f := newPushFixture(t)
 	ctx := t.Context()

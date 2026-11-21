@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -987,12 +988,26 @@ func TestSubmitLockedNoopChecksProductRefs(t *testing.T) {
 }
 
 func TestSpoolRecoveryAfterInterruptedReplacement(t *testing.T) {
-	for _, published := range []bool{false, true} {
-		t.Run(fmt.Sprintf("graph published=%t", published), func(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		published bool
+		linkFails bool
+	}{
+		{name: "unpublished"},
+		{name: "published", published: true},
+		{name: "unpublished with copy", linkFails: true},
+		{name: "published with copy", published: true, linkFails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			p, st := spoolPipeline(t)
 			in := Input{Text: "Same text after restart.", Title: "Previous"}
 			id := submitSpool(t, p, in).DocumentID
 			doc := st.docs[id]
+			if tc.linkFails {
+				p.spool.link = func(oldname, newname string) error {
+					return &os.LinkError{Op: "link", Old: oldname, New: newname, Err: syscall.EXDEV}
+				}
+			}
 			in.Title = "Candidate"
 			sub := submission{loaded: Loaded{Text: in.Text, Hash: doc.Hash, Title: in.Title}}
 			write, err := p.spool.putLocked(id, sub, doc.SpoolPayloadDigest)
@@ -1000,7 +1015,7 @@ func TestSpoolRecoveryAfterInterruptedReplacement(t *testing.T) {
 				t.Fatalf("interrupted put = %+v, %v", write, err)
 			}
 			want := "Previous"
-			if published {
+			if tc.published {
 				doc.SpoolPayloadDigest, want = write.digest, in.Title
 				st.docs[id] = doc
 			}

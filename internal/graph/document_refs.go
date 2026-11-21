@@ -94,6 +94,7 @@ func productRefDomain(refs []string, read func(string, map[string]any) ([]*neo4j
 		}
 		stores = append(stores, store)
 	}
+	slices.Sort(stores)
 	stores = slices.Compact(stores)
 	rows, err := read(`
 UNWIND $stores AS store
@@ -143,6 +144,7 @@ RETURN d.id`, map[string]any{"domain": pin})
 	return nil
 }
 
+// A retired version keeps its REFS only while its replacement is unfinished.
 func txReplaceProductRefs(ctx context.Context, tx neo4j.ManagedTransaction, id string, refs []string) error {
 	if len(refs) == 0 {
 		refs = []string{}

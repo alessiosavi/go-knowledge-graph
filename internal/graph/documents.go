@@ -444,8 +444,11 @@ SET d.status = $superseded, d.error = '', d.updated_at = $now`,
 		return fmt.Errorf("graph: mark superseded: %w", err)
 	}
 	if err := txRun(ctx, tx, `
-MATCH (d:Document {id: $new})
-SET d.supersedes = $old`,
+MATCH (replacement:Document {id: $new})
+SET replacement.supersedes = $old
+WITH replacement WHERE replacement.status = 'done'
+MATCH (:Document {id: $old})-[r:REFS]->(:ProductRef)
+DELETE r`,
 		map[string]any{"new": newID, "old": oldID}); err != nil {
 		return fmt.Errorf("graph: record supersedes: %w", err)
 	}

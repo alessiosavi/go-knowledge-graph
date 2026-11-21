@@ -220,7 +220,7 @@ func TestProductsRunbook(t *testing.T) {
 			t.Fatalf("domain binding guards: %v", guards)
 		}
 		project := func(labels []any, props map[string]any) bool {
-			for _, label := range []string{"Product", "ProductStore", "ProductRelease", "FeatureRev", "FeatureRegistry"} {
+			for _, label := range []string{"Product", "ProductRef", "ProductStore", "ProductRelease", "FeatureRev", "FeatureRegistry"} {
 				if slices.Contains(labels, any(label)) {
 					return false
 				}
