@@ -78,6 +78,7 @@ type documentDTO struct {
 	Status      string    `json:"status"`
 	Error       string    `json:"error,omitempty"`
 	Labels      string    `json:"labels,omitempty"`
+	Products    []string  `json:"products,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	Supersedes  string    `json:"supersedes,omitempty"`
@@ -92,6 +93,7 @@ type statusResponse struct {
 	Status    string    `json:"status"`
 	Error     string    `json:"error,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
+	Products  []string  `json:"products,omitempty"`
 }
 
 // deleteResponse reports how many document versions a DELETE removed.
@@ -382,7 +384,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, statusResponse{
-		ID: doc.ID, Status: string(doc.Status), Error: doc.Error, UpdatedAt: doc.UpdatedAt,
+		ID: doc.ID, Status: string(doc.Status), Error: doc.Error, UpdatedAt: doc.UpdatedAt, Products: doc.ProductRefs,
 	})
 }
 
@@ -614,6 +616,7 @@ func toDocumentDTO(d graph.Document) documentDTO {
 		Status:      string(d.Status),
 		Error:       d.Error,
 		Labels:      d.Labels,
+		Products:    d.ProductRefs,
 		CreatedAt:   d.CreatedAt,
 		UpdatedAt:   d.UpdatedAt,
 		Supersedes:  d.Supersedes,

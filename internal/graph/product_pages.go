@@ -63,6 +63,19 @@ const productPageDocuments = `
 MATCH (d:Document {domain:$domain})
 WHERE d.status = 'done'`
 
+const productPageRefDocuments = `
+WITH a MATCH (a)<-[:REFS]-(d:Document)
+WHERE d.status = 'done'`
+
+const productPageFields = `d.id AS id, d.title AS title, d.source AS source, d.source_kind AS source_kind,
+       d.final_url AS final_url, d.updated_at AS updated_at`
+
+const productRefPagesQuery = `
+MATCH (a:ProductRef {id:$id})` + productPageRefDocuments + `
+  AND ($scope = '' OR d.domain = $scope)
+RETURN ` + productPageFields + `
+ORDER BY d.updated_at DESC, d.id`
+
 // Memgraph's toLower only folds ASCII. Keep non-ASCII authorities as
 // candidates as well, then apply the same exact canonical match in Go.
 const nonASCIIProductPageAuthority = `[^:/?#]+://[^/?#]*[^ -~][\s\S]*`
@@ -74,8 +87,7 @@ const productPagesQuery = productPageDocuments + `
     toLower(d.source) CONTAINS $anchor OR toLower(d.final_url) CONTAINS $anchor
       OR d.source =~ $non_ascii_authority OR d.final_url =~ $non_ascii_authority
   ELSE d.source CONTAINS $anchor OR d.final_url CONTAINS $anchor END
-RETURN d.id AS id, d.title AS title, d.source AS source, d.source_kind AS source_kind,
-       d.final_url AS final_url, d.updated_at AS updated_at
+RETURN ` + productPageFields + `
 ORDER BY d.updated_at DESC, d.id`
 
 const productPageURLsQuery = productPageDocuments + `
@@ -94,26 +106,37 @@ func productPageSourceKey(r *neo4j.Record, source, canonicalSource string) produ
 	return productPageSource{kind: getString(r, "source_kind"), source: canonicalSource}
 }
 
-func txProductPages(ctx context.Context, tx neo4j.ManagedTransaction, domain, link string) ([]ProductPage, error) {
-	pages := []ProductPage{}
+func txProductPages(ctx context.Context, tx neo4j.ManagedTransaction, id, domain, link, scope string) ([]ProductPage, error) {
+	// Refs have priority. Stream both ordered branches through the same set
+	// so only distinct page identities take a slot in the result.
+	seen := make(map[productPageSource]struct{}, productPageLimit)
+	pages, err := txAppendProductPages(ctx, tx, productRefPagesQuery, map[string]any{"id": id, "scope": scope},
+		"", make([]ProductPage, 0, productPageLimit), seen)
+	if err != nil || len(pages) == productPageLimit {
+		return pages, err
+	}
 	canonical := canonicalProductPageURL(link)
-	if domain == "" || canonical == "" {
+	if domain == "" || canonical == "" || (scope != "" && scope != domain) {
 		return pages, nil
 	}
 	anchor, authorityOnly := productPageAnchor(canonical)
-	rows, err := tx.Run(ctx, productPagesQuery, map[string]any{
+	return txAppendProductPages(ctx, tx, productPagesQuery, map[string]any{
 		"domain": domain, "anchor": anchor, "authority_only": authorityOnly, "non_ascii_authority": nonASCIIProductPageAuthority,
-	})
+	}, canonical, pages, seen)
+}
+
+func txAppendProductPages(ctx context.Context, tx neo4j.ManagedTransaction, query string, params map[string]any,
+	canonicalLink string, pages []ProductPage, seen map[productPageSource]struct{},
+) ([]ProductPage, error) {
+	rows, err := tx.Run(ctx, query, params)
 	if err != nil {
 		return nil, err
 	}
-	// The query orders matches newest first, so the first per source wins.
-	seen := make(map[productPageSource]struct{}, productPageLimit)
 	for rows.Next(ctx) {
 		r := rows.Record()
 		source := getString(r, "source")
 		canonicalSource := canonicalProductPageURL(source)
-		if canonicalSource != canonical && canonicalProductPageURL(getString(r, "final_url")) != canonical {
+		if canonicalLink != "" && canonicalSource != canonicalLink && canonicalProductPageURL(getString(r, "final_url")) != canonicalLink {
 			continue
 		}
 		key := productPageSourceKey(r, source, canonicalSource)
@@ -139,10 +162,14 @@ type ProductPagesReport struct {
 	One               int      `json:"one"`
 	Multiple          int      `json:"multiple"`
 	MissingProductIDs []string `json:"missing_product_ids"`
+	Total             int      `json:"total"`
+	Refs              int      `json:"refs"`
+	URL               int      `json:"url"`
 }
 
 // ReportProductPages counts associations over the materialized products of
-// each selected store. It reads each store's documents once for all its links.
+// each selected store. It reads bound-domain URL candidates once per store
+// and looks up explicit refs by anchor ID.
 func (s *Store) ReportProductPages(ctx context.Context, store string) ([]ProductPagesReport, error) {
 	query := `MATCH (s:ProductStore) WHERE s.domain IS NOT NULL RETURN s.store AS store, s.domain AS domain ORDER BY s.store`
 	if store != "" {
@@ -177,9 +204,18 @@ MATCH (p:Product {store:$store})
 WHERE p.product_id IS NOT NULL
 RETURN p.id AS id, p.link AS link ORDER BY p.id`
 
-type productPageCount struct {
-	first productPageSource
-	count int
+const productPageRefsReportQuery = `
+UNWIND $ids AS id
+MATCH (a:ProductRef {id:id})` + productPageRefDocuments + `
+RETURN a.id AS id, d.source AS source, d.source_kind AS source_kind`
+
+type productPageSources map[productPageSource]struct{}
+
+func addProductPageSource(sets map[string]productPageSources, id string, key productPageSource) {
+	if sets[id] == nil {
+		sets[id] = make(productPageSources)
+	}
+	sets[id][key] = struct{}{}
 }
 
 func txProductPagesReport(ctx context.Context, tx neo4j.ManagedTransaction, store, domain string) (ProductPagesReport, error) {
@@ -189,24 +225,40 @@ func txProductPagesReport(ctx context.Context, tx neo4j.ManagedTransaction, stor
 		return report, err
 	}
 	links := make([]string, len(products))
-	counts := make(map[string]productPageCount, len(products))
+	ids := make([]string, len(products))
+	urls := make(map[string]productPageSources, len(products))
 	for i, product := range products {
+		ids[i] = getString(product, "id")
 		links[i] = canonicalProductPageURL(getString(product, "link"))
 		if links[i] != "" {
-			counts[links[i]] = productPageCount{}
+			urls[links[i]] = nil
 		}
 	}
-	if domain != "" && len(counts) > 0 {
-		if err := txCountProductPages(ctx, tx, domain, counts); err != nil {
+	if domain != "" && len(urls) > 0 {
+		if err := txCountProductPages(ctx, tx, domain, urls); err != nil {
 			return report, err
 		}
 	}
-	for i, product := range products {
-		switch counts[links[i]].count {
+	refs, err := txProductPageRefs(ctx, tx, ids)
+	if err != nil {
+		return report, err
+	}
+	for i, id := range ids {
+		refPages, urlPages := refs[id], urls[links[i]]
+		report.Refs += len(refPages)
+		report.URL += len(urlPages)
+		count := len(refPages) + len(urlPages)
+		for key := range refPages {
+			if _, ok := urlPages[key]; ok {
+				count--
+			}
+		}
+		report.Total += count
+		switch count {
 		case 0:
 			report.Zero++
 			if len(report.MissingProductIDs) < productPageMissingLimit {
-				report.MissingProductIDs = append(report.MissingProductIDs, getString(product, "id"))
+				report.MissingProductIDs = append(report.MissingProductIDs, id)
 			}
 		case 1:
 			report.One++
@@ -217,7 +269,7 @@ func txProductPagesReport(ctx context.Context, tx neo4j.ManagedTransaction, stor
 	return report, nil
 }
 
-func txCountProductPages(ctx context.Context, tx neo4j.ManagedTransaction, domain string, counts map[string]productPageCount) error {
+func txCountProductPages(ctx context.Context, tx neo4j.ManagedTransaction, domain string, urls map[string]productPageSources) error {
 	rows, err := tx.Run(ctx, productPageURLsQuery, map[string]any{"domain": domain})
 	if err != nil {
 		return err
@@ -229,18 +281,27 @@ func txCountProductPages(ctx context.Context, tx neo4j.ManagedTransaction, domai
 		final := canonicalProductPageURL(getString(r, "final_url"))
 		key := productPageSourceKey(r, source, canonicalSource)
 		for _, link := range [...]string{canonicalSource, final} {
-			matches, ok := counts[link]
-			if !ok || matches.count == 2 {
-				continue
-			}
-			// Track the first identity and stop counting after two distinct
-			// sources because the report only needs the "multiple" bucket.
-			if matches.count == 0 {
-				counts[link] = productPageCount{first: key, count: 1}
-			} else if matches.first != key {
-				counts[link] = productPageCount{count: 2}
+			if _, ok := urls[link]; ok {
+				addProductPageSource(urls, link, key)
 			}
 		}
 	}
 	return rows.Err()
+}
+
+func txProductPageRefs(ctx context.Context, tx neo4j.ManagedTransaction, ids []string) (map[string]productPageSources, error) {
+	refs := make(map[string]productPageSources)
+	if len(ids) == 0 {
+		return refs, nil
+	}
+	rows, err := tx.Run(ctx, productPageRefsReportQuery, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next(ctx) {
+		r := rows.Record()
+		source := getString(r, "source")
+		addProductPageSource(refs, getString(r, "id"), productPageSourceKey(r, source, canonicalProductPageURL(source)))
+	}
+	return refs, rows.Err()
 }

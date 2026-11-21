@@ -75,8 +75,10 @@ func TestProductPageQueryPlans(t *testing.T) {
 		params      map[string]any
 		indexes     []string
 	}{
-		{"detail", getProductQuery, map[string]any{"id": "product", "store": "", "product": ""},
+		{"detail", getProductQuery, map[string]any{"id": "product", "store": "", "product": "", "seed_domain": "catalog"},
 			[]string{":Product {id}", ":ProductStore {store}"}},
+		{"ref_pages", productRefPagesQuery, map[string]any{"id": "product", "scope": "catalog"},
+			[]string{":ProductRef {id}"}},
 		{"pages", productPagesQuery, map[string]any{
 			"domain": "catalog", "anchor": "/item", "authority_only": false, "non_ascii_authority": nonASCIIProductPageAuthority,
 		}, []string{":Document {domain}"}},
@@ -88,6 +90,8 @@ func TestProductPageQueryPlans(t *testing.T) {
 			[]string{":Product {store, product_id}"}},
 		{"report_pages", productPageURLsQuery, map[string]any{"domain": "catalog"},
 			[]string{":Document {domain}"}},
+		{"report_ref_pages", productPageRefsReportQuery, map[string]any{"ids": []string{"product"}},
+			[]string{":ProductRef {id}"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rows, err := st.runRead(t.Context(), "EXPLAIN "+tc.query, tc.params)

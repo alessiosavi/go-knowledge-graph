@@ -38,6 +38,7 @@ func TestProductReadPaths(t *testing.T) {
 	t.Cleanup(func() {
 		query(`MATCH (n) WHERE n:FeatureRegistry OR n:FeatureRev OR n:ProductRelease OR n:ProductStore
 			OR n:Product OR (n:GkgMeta AND n.id IN ['product_release','feature_registry_import'])
+			OR (n:ProductRef AND n.store IN ['example.test','z.example.test'])
 			OR (n:Domain AND n.id IN ['product-reads','other-product-reads'])
 			OR (n:Document AND n.domain IN ['product-reads','other-product-reads']) DETACH DELETE n`, nil)
 	})
@@ -229,7 +230,7 @@ func TestProductReadPaths(t *testing.T) {
 			t.Fatalf("unexpected bound store: %v", list)
 		}
 		out := productCLI(t, 0, "example.test", "products", "pages-report", "-store", "example.test", "-json")
-		const want = `[{"store":"example.test","domain":"product-reads","zero":0,"one":0,"multiple":0,"missing_product_ids":[]}]`
+		const want = `[{"store":"example.test","domain":"product-reads","zero":0,"one":0,"multiple":0,"missing_product_ids":[],"total":0,"refs":0,"url":0}]`
 		if strings.TrimSpace(out) != want {
 			t.Fatalf("pages-report for an empty store = %s, want %s", out, want)
 		}
@@ -273,7 +274,7 @@ func TestProductReadPaths(t *testing.T) {
 	})
 
 	t.Run("pages", func(t *testing.T) {
-		assertPages := func(out productReadJSON, want ...string) {
+		assertPages := func(t *testing.T, out productReadJSON, want ...string) {
 			t.Helper()
 			pages, ok := out["pages"].([]any)
 			if !ok || len(pages) != len(want) || out["pages_missing"] != (len(want) == 0) {
@@ -290,10 +291,10 @@ func TestProductReadPaths(t *testing.T) {
 			}
 		}
 		get := func() productReadJSON { return rest(t, "GET", detailPath, "", 200) }
-		add := func(kind, source, final, domain, hash string, status graph.Status) graph.UpsertResult {
+		add := func(kind, source, final, domain, hash string, status graph.Status, refs ...string) graph.UpsertResult {
 			t.Helper()
 			doc, err := st.UpsertDocument(ctx, graph.DocumentInput{
-				Kind: kind, Domain: domain, Source: source, FinalURL: final, Title: hash, Hash: hash,
+				Kind: kind, Domain: domain, Source: source, FinalURL: final, Title: hash, Hash: hash, ProductRefs: refs,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -311,13 +312,13 @@ func TestProductReadPaths(t *testing.T) {
 		}
 		const domain, other = "product-reads", "other-product-reads"
 		const matching = "hTTps://EXample.tesT/Item///?sku=A%2F1&z=2#old"
-		assertPages(get())
-		assertPages(tool(t, "get_product", productReadJSON{"store": "example.test", "product_id": "example.test:1"}, ""))
+		assertPages(t, get())
+		assertPages(t, tool(t, "get_product", productReadJSON{"store": "example.test", "product_id": "example.test:1"}, ""))
 		add("url", matching, "", other, "elsewhere", graph.StatusDone)
 		add("text", pageLink, "", domain, "pending", graph.StatusReceived)
 		add("url", "https://example.test/item?sku=A%2F1&z=2", "", domain, "different path case", graph.StatusDone)
 		add("url", "https://example.test/Item?z=2&sku=A%2F1", "", domain, "different query order", graph.StatusDone)
-		assertPages(get())
+		assertPages(t, get())
 		for i, link := range []string{"/item", ""} {
 			add("text", link, "", domain, fmt.Sprintf("invalid link %d", i), graph.StatusDone)
 			productID := productobs.ProductID("example.test", fmt.Sprintf("example.test:%d", i+3))
@@ -325,17 +326,17 @@ func TestProductReadPaths(t *testing.T) {
 			if out["link"] != link {
 				t.Fatalf("product link = %q, want %q", out["link"], link)
 			}
-			assertPages(out)
+			assertPages(t, out)
 		}
 
 		first := add("file", matching, pageLink, domain, "first", graph.StatusDone)
-		assertPages(get(), first.ID)
+		assertPages(t, get(), first.ID)
 		exact := rest(t, "GET", exactPath, "", 200)
-		assertPages(exact, first.ID)
+		assertPages(t, exact, first.ID)
 		if page := exact["pages"].([]any)[0].(productReadJSON); page["source"] != matching || page["title"] != "first" {
 			t.Fatalf("page metadata = %v", page)
 		}
-		assertPages(tool(t, "get_product", productReadJSON{"id": id}, ""), first.ID)
+		assertPages(t, tool(t, "get_product", productReadJSON{"id": id}, ""), first.ID)
 
 		newer := add("file", matching, "", domain, "newer", graph.StatusDone)
 		if newer.PreviousID != first.ID {
@@ -345,12 +346,12 @@ func TestProductReadPaths(t *testing.T) {
 		setUpdatedAt(first.ID, 1)
 		setUpdatedAt(variant.ID, 2)
 		setUpdatedAt(newer.ID, 3)
-		assertPages(get(), newer.ID)
+		assertPages(t, get(), newer.ID)
 		productCLI(t, 0, "zero=3 one=1 multiple=0", "products", "pages-report", "-store", "example.test")
 
 		otherKind := add("url", pageLink, "", domain, "different kind", graph.StatusDone)
 		setUpdatedAt(otherKind.ID, 1)
-		assertPages(get(), newer.ID, otherKind.ID)
+		assertPages(t, get(), newer.ID, otherKind.ID)
 		for _, doc := range []graph.UpsertResult{variant, otherKind} {
 			if err := st.DeleteDocument(ctx, doc.ID); err != nil {
 				t.Fatal(err)
@@ -359,11 +360,11 @@ func TestProductReadPaths(t *testing.T) {
 		if err := st.Supersede(ctx, first.ID, newer.ID); err != nil {
 			t.Fatal(err)
 		}
-		assertPages(get(), newer.ID)
+		assertPages(t, get(), newer.ID)
 		if err := st.DeleteDocument(ctx, newer.ID); err != nil {
 			t.Fatal(err)
 		}
-		assertPages(get())
+		assertPages(t, get())
 
 		var competing []string
 		for i, second := range []int{2, 4, 1, 4} {
@@ -372,22 +373,77 @@ func TestProductReadPaths(t *testing.T) {
 			setUpdatedAt(d.ID, second)
 			competing = append(competing, d.ID)
 		}
-		assertPages(get(), min(competing[1], competing[3]), max(competing[1], competing[3]), competing[0])
+		assertPages(t, get(), min(competing[1], competing[3]), max(competing[1], competing[3]), competing[0])
 		add("url", "https://EXAMPLE.test/single/#page", "https://example.test/single", domain, "single", graph.StatusDone)
-		missing := []string{productobs.ProductID("example.test", "example.test:3"), productobs.ProductID("example.test", "example.test:4")}
-		slices.Sort(missing)
+
+		refsOnly := add("text", "refs-only", "", domain, "refs only", graph.StatusDone, "example.test:99", "example.test:4")
+		for _, status := range []graph.Status{graph.StatusSuperseded, graph.StatusFailed, graph.StatusReceived} {
+			add("text", "ref-"+string(status), "", domain, string(status), status, "example.test:4")
+		}
+		noLink := productobs.ProductID("example.test", "example.test:4")
+		// The cross-domain ref wins over a different document with the same
+		// canonical source. The other ref document also matches the product URL.
+		cross := add("url", "https://REDIRECT.example.test/1/#ref", "", other, "cross-domain", graph.StatusDone,
+			"example.test:1", "z.example.test:99")
+		same := add("url", "HTTPS://EXAMPLE.TEST/Item/?sku=A%2F1&z=2#refs", "", domain, "both branches", graph.StatusDone, "example.test:1")
+		setUpdatedAt(cross.ID, 4)
+		setUpdatedAt(same.ID, 1)
+		t.Run("refs_and_scope", func(t *testing.T) {
+			assertPages(t, rest(t, "GET", "/v1/products/"+noLink, "", 200), refsOnly.ID)
+			assertPages(t, rest(t, "GET", detailPath, "", 200), cross.ID, same.ID, competing[3])
+			assertPages(t, rest(t, "GET", detailPath+"?domain="+domain, "", 200), same.ID, min(competing[1], competing[3]), max(competing[1], competing[3]))
+			scoped := rest(t, "GET", exactPath+"&domain="+other, "", 200)
+			assertDetail(t, scoped, wide, 3)
+			assertPages(t, scoped, cross.ID)
+			assertPages(t, rest(t, "GET", "/v1/products/"+noLink+"?domain="+other, "", 200))
+			assertPages(t, tool(t, "get_product", productReadJSON{"id": id, "domain": other}, ""), cross.ID)
+		})
+		t.Run("document_products_dtos", func(t *testing.T) {
+			assertProducts := func(doc productReadJSON) {
+				t.Helper()
+				got, ok := doc["products"].([]any)
+				if !ok || !slices.Equal(got, []any{"example.test:4", "example.test:99"}) {
+					t.Errorf("document %s products = %v, want canonical refs", doc["id"], doc["products"])
+				}
+			}
+			assertListed := func(out productReadJSON) {
+				t.Helper()
+				for _, raw := range out["documents"].([]any) {
+					if doc := raw.(productReadJSON); doc["id"] == refsOnly.ID {
+						assertProducts(doc)
+						return
+					}
+				}
+				t.Errorf("document %s missing from list", refsOnly.ID)
+			}
+			docPath := "/v1/documents/" + refsOnly.ID
+			assertProducts(rest(t, "GET", docPath, "", 200))
+			assertProducts(rest(t, "GET", docPath+"/status", "", 200))
+			assertListed(rest(t, "GET", "/v1/documents?domain="+domain, "", 200))
+			assertListed(tool(t, "list_documents", productReadJSON{"domain": domain}, ""))
+			assertListed(tool(t, "status", productReadJSON{"document_id": refsOnly.ID}, ""))
+			if doc := rest(t, "GET", "/v1/documents/"+competing[0], "", 200); doc["products"] != nil {
+				t.Errorf("URL-only document products = %v, want absent", doc["products"])
+			}
+		})
+		missing := productobs.ProductID("example.test", "example.test:3")
 		out := productCLI(t, 0, "example.test", "products", "pages-report", "-json")
-		want := fmt.Sprintf(`[{"store":"example.test","domain":"product-reads","zero":2,"one":1,"multiple":1,"missing_product_ids":[%q,%q]},`+
-			`{"store":"z.example.test","domain":"other-product-reads","zero":1,"one":0,"multiple":0,"missing_product_ids":[%q]}]`,
-			missing[0], missing[1], productobs.ProductID("z.example.test", "z.example.test:5"))
+		want := fmt.Sprintf(`[{"store":"example.test","domain":"product-reads","zero":1,"one":2,"multiple":1,"missing_product_ids":[%q],"total":7,"refs":3,"url":6},`+
+			`{"store":"z.example.test","domain":"other-product-reads","zero":1,"one":0,"multiple":0,"missing_product_ids":[%q],"total":0,"refs":0,"url":0}]`,
+			missing, productobs.ProductID("z.example.test", "z.example.test:5"))
 		if strings.TrimSpace(out) != want {
 			t.Fatalf("pages-report = %s, want %s", out, want)
 		}
-		out = productCLI(t, 0, "zero=2 one=1 multiple=1", "products", "pages-report", "-store", "example.test")
+		out = productCLI(t, 0, "total=7 refs=3 url=6", "products", "pages-report", "-store", "example.test")
 		if strings.Contains(out, "z.example.test") {
 			t.Fatalf("pages-report included another store: %s", out)
 		}
 		productCLI(t, 1, "missing.test", "products", "pages-report", "-store", "missing.test")
+		for _, doc := range []graph.UpsertResult{refsOnly, cross, same} {
+			if err := st.DeleteDocument(ctx, doc.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
 
 		t.Run("bare_host", func(t *testing.T) {
 			setLink := func(link string) {
@@ -401,7 +457,7 @@ func TestProductReadPaths(t *testing.T) {
 			} {
 				setLink(tc.link)
 				doc := add("url", tc.source, "", domain, tc.source, graph.StatusDone)
-				assertPages(get(), doc.ID)
+				assertPages(t, get(), doc.ID)
 			}
 		})
 	})

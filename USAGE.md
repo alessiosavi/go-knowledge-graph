@@ -91,7 +91,7 @@ alongside Memgraph's data. For standalone `gkg serve`, the default is
 `GKG_INGEST_SPOOL_DIR` to another writable persistent directory if needed.
 Use one gkg process per spool directory. `GKG_INGEST_SPOOL_MAX_COUNT` (1024)
 and `GKG_INGEST_SPOOL_MAX_BYTES` (1073741824, 1 GiB of serialized payloads)
-bound queued storage. When full, REST returns `503` (`error: ingest_busy`)
+bound queued storage, including leftover `.prev` backups. When full, REST returns `503` (`error: ingest_busy`)
 with `Retry-After: 30`; retry after capacity is freed. A force or failed/superseded
 re-submit while a worker holds that document's processing lock returns `503`
 (`error: document_busy`) with the same retry header. An unchanged live version
@@ -1452,16 +1452,22 @@ observations and their feature revisions. Feature edges appear only when
 their release ID matches the active release. After activation, a product
 can have an empty feature array until its store is imported for that release.
 
-Both lookups and MCP `get_product` return `pages` with up to three live,
-`done` documents from the store's bound domain. Each page contains `id`,
-`title`, the stored `source`, and `updated_at`. Pages are ordered by newest
-`updated_at`, with ascending document ID breaking ties. Only the first
-matching version per source kind and canonical source counts as a page.
-An empty `pages` array has `pages_missing: true`. Pages can appear after
-a product import as soon as their documents reach `done`.
+Both REST lookups and MCP and agent `get_product` return `pages` with up to
+three live `done` documents. Explicit product refs associate documents from
+any domain, including for products with no valid link. URL matching adds
+documents from the store's bound domain. Explicit refs come first, followed
+by URL matches. Each group sorts by newest `updated_at`, then ascending
+document ID. A source kind and canonical source identify one page per product
+across both groups. The first match for each identity takes a slot in the limit.
+Each page contains `id`, `title`, the stored `source`, and `updated_at`.
+An empty `pages` array has `pages_missing: true`.
 
-The product link must match the document's `source` or `final_url` after
-canonicalization. Any source kind can match. For absolute URLs with a host,
+Set `domain` on either REST lookup or on `get_product` to limit pages to that
+domain. An empty `domain` includes all eligible pages. An agent request's
+domain scopes both the product lookup and its pages.
+
+For URL matching, the product link must match the document's `source` or
+`final_url` after canonicalization. Any source kind can match. For absolute URLs with a host,
 canonicalization lowercases the scheme and host, removes the fragment, and
 strips trailing `/` characters from the path. It preserves the rest of the
 URL, including user info, path case and query order. HTTP and HTTPS,
@@ -1470,22 +1476,31 @@ paths and queries, dot segments and explicit default ports are compared as-is.
 These variants identify different pages. Redirect targets can still match
 through `final_url`.
 
-The page candidate scan costs O(done documents in the bound domain) per
-product read. Setting a canonical URL property at ingest is the post-v1 path.
+Explicit refs use the product's stable anchor ID and survive re-imports and
+pushes. The URL candidate scan costs O(done documents in the bound domain)
+per product read. Setting a canonical URL property at ingest is the post-v1 path.
 
 Use the read-only pages report to check coverage for imported product
 snapshots before rollout. It counts products with zero, one, or multiple
-matching pages per bound store, with up to 20 missing graph product IDs in
-ascending order. The optional `-store` limits coverage to one store.
+matching pages in `zero`, `one`, and `multiple` per bound store, with up to 20
+`missing_product_ids` in ascending graph ID order. `refs` and `url` count page
+associations in each branch across products, and `total` counts their union
+per product. A page found by both branches contributes once to each branch and
+once to `total`. Report counts include all matches beyond the three-page read
+limit. The optional `-store` limits coverage to one store.
 
 ```sh
 gkg products pages-report
 gkg products pages-report -store example.test -json
 ```
 
-Place rollout pages in their target domain before `gkg products release
-create` binds it. If domain detection places a page elsewhere, move it into
-the target domain and let it reach `done` before creating the release.
+For rollout pages that rely on URL matching, place them in their target
+domain and let them reach `done` before creating the release.
+
+REST `GET /v1/documents`, `GET /v1/documents/{id}`, and
+`GET /v1/documents/{id}/status` and MCP `list_documents` and `status` expose
+`products`, the canonical list of store-prefixed product IDs recorded for the
+document version. The field is omitted when the list is empty.
 
 The store list reports `active_release_id` separately from each store's
 materialized `release_id`. A wiped store has `wiped: true`, zero products
