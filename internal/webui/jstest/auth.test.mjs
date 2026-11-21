@@ -222,6 +222,36 @@ test("domain pickers scope search, JSON ask and streaming ask", async () => {
   for (const req of asks) assert.equal(JSON.parse(req.body).domain, "b");
 });
 
+test("ask renders find_products titles and graph IDs alongside search evidence", async () => {
+  const p = await page(savedKey, { enabled: true, stream: false });
+  p.elements.get("ask-input").value = "Find a product";
+  p.replies.set("/v1/agent/ask", { evidence: [
+    { tool: "find_products", result: { hits: [{ product: { id: "p-1", title: "Blue Widget" } }] } },
+    { tool: "search", result: { hits: [{ kind: "entity", id: "e-1", title: "Widget Maker", snippet: "A manufacturer" }] } },
+  ] });
+  await p.fire("ask-form", "submit");
+  const [products, search] = p.elements.get("ask-evidence").children;
+  const texts = (element) => [element.textContent, ...element.children.flatMap(texts)].join(" ");
+  assert.match(texts(products), /Blue Widget.*p-1/);
+  assert.equal(search.children[1].children[0].textContent, "entity");
+  assert.equal(search.children[1].children[1].textContent, "Widget Maker");
+  assert.equal(search.children[1].children[2].textContent, "A manufacturer");
+});
+
+test("ask previews get_product and list_features as JSON", async () => {
+  const p = await page(savedKey, { enabled: true, stream: false });
+  p.elements.get("ask-input").value = "Show product details and feature IDs";
+  const detail = { id: "p-1", title: "Blue Widget", features: [], features_omitted: 2 };
+  const listing = { active_release_id: "r1", features: [{ id: "color", stores: ["example.test"] }] };
+  p.replies.set("/v1/agent/ask", { evidence: [
+    { tool: "get_product", result: detail }, { tool: "list_features", result: listing },
+  ] });
+  await p.fire("ask-form", "submit");
+  const [product, features] = p.elements.get("ask-evidence").children;
+  assert.equal(product.children[1].textContent, JSON.stringify(detail));
+  assert.equal(features.children[1].textContent, JSON.stringify(listing));
+});
+
 const markdown = "# Résumé\n\n| Key | Value |\n| --- | --- |\n| α | β |\n\n```go\nfmt.Println(\"🌱\")\n```\n";
 const capabilities = { top_k: true, reasoning_efforts: ["none", "high", "max"] };
 const frame = (name, data) => "event: " + name + "\ndata: " + JSON.stringify(data) + "\n\n";

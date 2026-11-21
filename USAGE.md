@@ -263,13 +263,24 @@ Example prompts:
 With `GKG_AGENT_ENABLED=true` the web UI grows an **Ask the graph** panel
 and `POST /v1/agent/ask` answers natural-language questions server-side: an
 OpenAI-compatible model plans and runs the graph read tools —
-search, entity cards, traversal, documents, guarded Cypher — and the
-response carries the raw tool results as `evidence`, so every answer is
-checkable. Answers use GitHub-flavoured Markdown: `answer` is the source
-text and `answer_html` is server-sanitized HTML, shared with the document
-reader. Raw HTML and all answer images are omitted; links follow the
+search, entity cards, chunks, traversal, documents, status, guarded Cypher,
+`get_product`, `find_products`, and `list_features`. The response carries the
+tool results as `evidence`, so every answer is checkable. Answers use
+GitHub-flavoured Markdown. The `answer` field gives the source text and
+`answer_html` gives server-sanitized HTML, shared with the document reader.
+The renderer omits raw HTML and images. Links follow the
 reader’s policy. The UI falls back to plain text if `answer_html` is absent.
 The browser never sees the provider key.
+
+Product searches default to 10 hits and cap the requested limit at 20. The
+byte budget can shorten a page or omit hit evidence. Pass the returned cursor
+with the same filters and effective limit to continue. Product detail preserves
+the associated pages and reports dropped feature observations in
+`features_omitted`. The feature list shows IDs, names, release status and
+numeric-search support without source-key rows. Use its case-insensitive
+`query` over feature IDs and names to narrow a result marked `truncated`.
+The `omitted` count reports how many matching features were dropped. A
+product tool returns an error if its required metadata exceeds the budget.
 
 Open **Generation settings** before asking a question. Temperature ranges
 from 0 to 2. An ask without a temperature uses the deployment setting, which
@@ -1113,12 +1124,18 @@ query parameter on `GET /v1/documents`. Slugs use `[a-z0-9-]{1,40}`; empty
 means all domains. MCP `ask`, `search`, `get_entity`, `get_chunks`, `traverse`,
 `list_documents` and `status` also accept `domain`.
 
-An ask's domain applies to every answer tool; model arguments cannot widen it.
-An entity or traversal start outside scope is not found; `get_chunks` reports
-out-of-scope ids in `missing`. Cypher is not domain-enforced; the prompt states
-the scope. At schema v4, name resolution uses `EntityKey` folding (including
-possessives and edge punctuation), covering document-scoped entities; older
-schemas keep case-folded display-name matching. When the exact name lookup
+Answer tools enforce the ask domain regardless of model arguments. Entity
+lookups and traversal starts outside that domain return a not-found error.
+`get_chunks` reports out-of-scope ids in `missing`. `find_products` inherits
+the ask domain and rejects a different domain argument. `get_product` returns
+the unknown-product error for out-of-scope products. `list_features` keeps
+features with a key in a store bound to the ask domain and computes release
+and numeric-search status from those keys. The feature registry and store
+bindings are read in separate snapshots. The prompt instructs the model to
+apply the domain in Cypher queries. At schema v4, name resolution
+uses `EntityKey` folding (including possessives and edge punctuation) for
+document-scoped entities. Older schemas use case-folded display-name
+matching. When the exact name lookup
 returns no matches, MCP and agent `get_entity` can use verified advisory fold
 hints. A fold hit carries `match: "fold"`. Unscoped ambiguous names return
 `candidates`, one per domain. Text filters run before ranking and the

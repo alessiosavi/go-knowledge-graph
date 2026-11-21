@@ -170,9 +170,19 @@ plug it in:
   use `POST /v1/agent/ask`.
 - **Targeted tools over MCP.** Connect to `https://<host>/mcp` and hand gkg's
   read tools (`search`, `get_entity`, `get_chunks`, `traverse`, `list_documents`,
-  `status`, `cypher`) to your model, which then does the retrieval itself.
+  `status`, `cypher`, `get_product`, `find_products`, `list_features`) to your
+  model, which then does the retrieval itself.
   Every login can also `ingest`; leave that tool out if the agent should
   only read.
+
+The built-in ask agent also uses these three product tools. `find_products`
+defaults to 10 hits and caps the requested limit at 20. A byte budget may
+shorten the page. To continue, pass its cursor with the same filters and
+effective limit. `get_product` reports omitted observations in
+`features_omitted`. `list_features` returns a compact listing and accepts a
+case-insensitive substring `query` over IDs and names. Narrow the query when
+`truncated` is true. The `omitted` field gives the count of dropped features.
+A product tool returns an error if its required metadata exceeds the budget.
 
 Python, with the official MCP SDK (`mcp` 2.x; on 1.x use
 `streamablehttp_client(url, headers=...)` instead of the httpx2 client):
@@ -251,10 +261,16 @@ provides domain names, done-document and product counts, and whether a
 product store is bound, for the web UI's search and ask pickers.
 
 MCP ask and REST ask (JSON and stream) accept `domain` with the question.
-That request scope applies to all answer tools, regardless of model arguments. Out-of-scope
-entities/traversal starts are not found; chunks are `missing`; lists filter
-before their limit. Cypher is not domain-enforced; the system prompt states
-the scope. At v4, `get_entity` names use `EntityKey` folding (possessives,
-edge punctuation), including document-scoped entities; older graphs keep
-case folding. Unscoped ambiguous names return `candidates`, one per domain.
+That request scope applies to all answer tools, regardless of model arguments.
+Out-of-scope entity lookups and traversal starts return a not-found error.
+Chunk reads report those chunks as `missing`. Lists filter before their limit.
+`find_products` inherits the ask domain and rejects a different domain
+argument. Out-of-scope products return the unknown-product
+error. `list_features` uses only keys from stores bound to the ask domain and
+omits features without a key in those stores. Store bindings and the registry
+are read in separate snapshots. The system prompt passes the scope to Cypher
+for the model to apply. At v4, `get_entity` names use `EntityKey` folding
+(possessives and edge punctuation), including document-scoped entities.
+Older graphs use case folding. Unscoped ambiguous names return `candidates`,
+one per domain.
 Scoped vector search over-fetches 5× then filters, which can yield fewer hits.

@@ -879,10 +879,19 @@ paths:
         evidence. A step/context budget reached without a final answer still
         returns 200 with the evidence gathered. A disabled agent returns 501
         before reading the body. Questions are trimmed and must not be empty.
-        Domain is request scope for search, get_entity, get_chunks, traverse and
-        list_documents; model arguments cannot widen it. Out-of-scope entities
-        are not found and chunks are reported missing. Cypher is not domain-enforced;
-        the system prompt states the scope.
+        Domain scopes search, get_entity, get_chunks, traverse, list_documents,
+        status, get_product, find_products and list_features. Out-of-scope
+        entities and products are reported as not found. Out-of-scope chunks
+        are reported missing. find_products inherits the ask domain and rejects
+        a different domain argument. list_features uses keys from stores bound
+        to the ask domain and omits features with no key in those stores.
+        Cypher receives the scope in the system prompt without domain enforcement.
+        Product search pages default to 10 hits, cap at 20 and may be shorter
+        under the byte budget. Continuation uses the same filters and effective
+        limit. Product details may report features_omitted. Feature listings
+        project released stores and numeric-search support. They accept a
+        case-insensitive substring query over feature IDs and names and report
+        truncated and omitted when the result exceeds the byte budget.
       requestBody:
         $ref: "#/components/requestBodies/AskQuestion"
       responses:

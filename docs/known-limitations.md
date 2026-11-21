@@ -177,7 +177,10 @@ Redirect targets can still match through the document's `final_url`.
   the threshold; skipped calls still get paired budget-error results. This
   is a tool-result byte budget, not a token or total-context limit: questions,
   tool arguments, and other messages also consume model context. Evidence
-  retains complete results and may still be large.
+  retains complete results and may still be large. The exception is the
+  product tools, whose results are trimmed to the agent's 32 KB budget and
+  report what was omitted (`features_omitted`, `truncated`/`omitted`, or a
+  shorter `find_products` page with a cursor).
 - Answer HTML uses the reader’s sanitized Markdown pipeline, with all images
   omitted. Raw HTML is omitted and unsafe link destinations become `#`.
   Progressive deltas remain plain text until the done event replaces them.
