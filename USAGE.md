@@ -674,12 +674,12 @@ gkg eval -replay sample.jsonl -predictions predictions.jsonl -labels general \
 Split a graph sample by its stored `labels` and replay one preset per file.
 `-judge-inputs` requires `-pins`. You can also use `-pins` with predictions alone.
 Pinned replay uses the pinned write mode and confidence floors. It checks the
-graph schema, stoplist and selected preset. The configured sidecar model and
-the model reported by `/healthz` must both match the pin. A health check error
-or a reported model mismatch exits 2 before writing any replay artifact. If
-the configured sidecar image includes a digest, replay checks it against the pin.
-The predictions header records the pinned `source`, `backup_tar_sha256` and
-`sidecar_image_digest`.
+graph schema, stoplist and selected preset. The pin binds the configured
+sidecar model label. When the configured image includes a digest, replay checks
+it against the pin. The predictions header records the model reported by
+`/healthz` as `sidecar_model`, along with the pinned `source`,
+`backup_tar_sha256` and `sidecar_image_digest`. A health check error or a missing
+reported model exits 2 before writing any replay artifact.
 
 The pins object requires `source`, `backup_tar_sha256`, `schema_version`,
 `write_mode` (`hygiene`, `domains`, `facts_as_candidates`), `store_floor`,

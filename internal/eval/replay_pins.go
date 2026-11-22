@@ -155,12 +155,12 @@ func (p *replayPins) checkPreset(name string, preset ingest.CheckedPreset) error
 	return nil
 }
 
-func (p *replayPins) checkSidecarHealth(model string, healthErr error) error {
+func checkSidecarHealth(model string, healthErr error) error {
 	if healthErr != nil {
 		return argerr.Errorf("pins: sidecar health check failed: %w", healthErr)
 	}
-	if model != p.SidecarModel {
-		return argerr.Errorf("pins: sidecar.model is %q, health reports %q", p.SidecarModel, model)
+	if model == "" {
+		return argerr.New("pins: sidecar health check did not report a model")
 	}
 	return nil
 }

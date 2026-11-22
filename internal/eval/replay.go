@@ -229,7 +229,7 @@ func replay(ctx context.Context, cfg config.Config, input, presetName, gkgVersio
 		model, healthErr = provider.HealthModel(ctx)
 	}
 	if pins != nil {
-		if err := pins.checkSidecarHealth(model, healthErr); err != nil {
+		if err := checkSidecarHealth(model, healthErr); err != nil {
 			return counts, err
 		}
 	}

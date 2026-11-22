@@ -21,10 +21,11 @@ import (
 )
 
 const (
-	judgeFixtureDomain = "ta2-replay"
-	judgeFixtureModel  = "fixture-gliner"
-	judgeFixtureHead   = "Zorvax Ltd"
-	judgeFixtureTail   = "Nimbrix"
+	judgeFixtureDomain      = "ta2-replay"
+	judgeFixtureModelLabel  = "glinerel-314m"
+	judgeFixtureHealthModel = "314m"
+	judgeFixtureHead        = "Zorvax Ltd"
+	judgeFixtureTail        = "Nimbrix"
 )
 
 func TestEvalReplayJudgeInputsMatchStoredWinners(t *testing.T) {
@@ -107,7 +108,9 @@ func TestEvalReplayJudgeInputsMatchStoredWinners(t *testing.T) {
 			predictionRows, _ := readEvalArtifact(t, predictions)
 			if header := predictionRows[0]; header["source"] != pins["source"] ||
 				header["backup_tar_sha256"] != pins["backup_tar_sha256"] ||
-				header["sidecar_image_digest"] != pins["sidecar"].(map[string]any)["digest"] {
+				header["sidecar_image_digest"] != pins["sidecar"].(map[string]any)["digest"] ||
+				header["sidecar_model"] != judgeFixtureHealthModel ||
+				header["extractor_version"] != "sidecar:"+judgeFixtureModelLabel {
 				t.Fatalf("predictions provenance: %+v", header)
 			}
 			got := readSingleJudgeInput(t, judgeInputs)
@@ -357,10 +360,9 @@ func TestEvalReplayJudgeInputsRefuseSidecarHealth(t *testing.T) {
 		status                int
 		emptySample           bool
 	}{
-		{"model mismatch", `{"model":"other-model"}`, `health reports "other-model"`, http.StatusOK, false},
-		{"model missing", `{}`, `health reports ""`, http.StatusOK, false},
+		{"model missing", `{}`, "health check did not report a model", http.StatusOK, false},
 		{"health error", "synthetic health failure", "synthetic health failure", http.StatusServiceUnavailable, false},
-		{"empty sample", `{"model":"other-model"}`, `health reports "other-model"`, http.StatusOK, true},
+		{"empty sample", "synthetic health failure", "synthetic health failure", http.StatusServiceUnavailable, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.emptySample {
@@ -388,8 +390,6 @@ func TestEvalReplayJudgeInputsRefuseSidecarHealth(t *testing.T) {
 
 func TestEvalReplayJudgeInputsAcceptDefaultSidecarModel(t *testing.T) {
 	_, pins, _ := judgeExportFixture(t)
-	const model = "glinerel-314m"
-	pins["sidecar"].(map[string]any)["model"] = model
 	writeJudgePins(t, pins)
 	writeJudgeSample(t, "sample.jsonl", nil, 0, 0)
 	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -398,7 +398,7 @@ func TestEvalReplayJudgeInputsAcceptDefaultSidecarModel(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprintf(w, `{"model":%q}`, model)
+		fmt.Fprintf(w, `{"model":%q}`, judgeFixtureHealthModel)
 	}))
 	defer sidecar.Close()
 	t.Setenv("GKG_EXTRACTOR_SIDECAR_URL", sidecar.URL)
@@ -406,7 +406,7 @@ func TestEvalReplayJudgeInputsAcceptDefaultSidecarModel(t *testing.T) {
 	assertEvalCLI(t, judgeReplayArgs(), 0,
 		"chunks=0 ok=0 empty=0 errors=0 occurrences=0 stored_winners=0 duplicate_roots_outside_sample=0 duplicate_root_cycles=0\n", "")
 	rows, _ := readEvalArtifact(t, "predictions.jsonl")
-	if header := rows[0]; header["sidecar_model"] != model || header["extractor_version"] != "sidecar:"+model {
+	if header := rows[0]; header["sidecar_model"] != judgeFixtureHealthModel || header["extractor_version"] != "sidecar:"+judgeFixtureModelLabel {
 		t.Fatalf("predictions sidecar provenance: %v", header)
 	}
 }
@@ -520,7 +520,7 @@ func judgeExportFixture(t *testing.T) (*graph.Store, map[string]any, *atomic.Boo
 	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /healthz":
-			fmt.Fprintf(w, `{"status":"ok","model":%q}`, judgeFixtureModel)
+			fmt.Fprintf(w, `{"status":"ok","model":%q}`, judgeFixtureHealthModel)
 		case "POST /v1/extract":
 			var req struct {
 				Chunks    []extract.RequestChunk
@@ -577,7 +577,7 @@ func judgeExportFixture(t *testing.T) (*graph.Store, map[string]any, *atomic.Boo
 	digest := "sha256:" + strings.Repeat("3f", 32)
 	for key, value := range map[string]string{
 		"GKG_EXTRACTOR_MODE": "sidecar", "GKG_EXTRACTOR_SIDECAR_URL": sidecar.URL,
-		"GKG_EXTRACTOR_SIDECAR_MODEL": judgeFixtureModel, "GKG_EXTRACTOR_SIDECAR_IMAGE": "fixture@" + digest,
+		"GKG_EXTRACTOR_SIDECAR_MODEL": judgeFixtureModelLabel, "GKG_EXTRACTOR_SIDECAR_IMAGE": "fixture@" + digest,
 		"GKG_LABELS_PRESETS_DIR": presetDir, "GKG_INGEST_STOPLIST_FILE": stoplistPath,
 		"GKG_JUDGE_STORE_INPUTS": "true", "GKG_FACTS_REQUIRE_CONFIRMATION": "false",
 		"GKG_INGEST_STORE_FLOOR": "0.15", "GKG_INGEST_ASSERT_FLOOR": "0.5",
@@ -588,7 +588,7 @@ func judgeExportFixture(t *testing.T) (*graph.Store, map[string]any, *atomic.Boo
 		"source": "synthetic", "backup_tar_sha256": strings.Repeat("a", 64), "schema_version": graph.ExtractionSchemaVersion,
 		"write_mode":  map[string]any{"hygiene": true, "domains": true, "facts_as_candidates": false},
 		"store_floor": .15, "assert_floor": .5,
-		"stoplist_sha256": fmt.Sprintf("%x", sha256.Sum256(stoplist)), "sidecar": map[string]any{"model": judgeFixtureModel, "digest": digest},
+		"stoplist_sha256": fmt.Sprintf("%x", sha256.Sum256(stoplist)), "sidecar": map[string]any{"model": judgeFixtureModelLabel, "digest": digest},
 		"presets": presets,
 	}, &failChunk
 }
