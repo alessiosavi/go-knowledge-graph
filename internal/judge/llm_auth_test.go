@@ -49,6 +49,22 @@ func fakeJudgeToken(token string) judgeTokens {
 	return func(context.Context) (string, time.Time, error) { return token, time.Now().Add(time.Hour), nil }
 }
 
+func TestWithTokenProviderOverridesDefault(t *testing.T) {
+	for _, auth := range []string{config.AuthStatic, config.AuthGCP} {
+		t.Run(auth, func(t *testing.T) {
+			cfg := config.Config{Judge: config.JudgeConfig{Auth: auth}}
+			client := NewClientWithOptions(cfg, WithTokenProvider(fakeJudgeToken("replacement")), WithTokenProvider(nil))
+			provider, ok := client.tokens.(judgeTokens)
+			if !ok {
+				t.Fatalf("token provider = %T, want injected provider", client.tokens)
+			}
+			if got, _, err := provider.Token(t.Context()); err != nil || got != "replacement" {
+				t.Fatalf("Token = %q, %v", got, err)
+			}
+		})
+	}
+}
+
 func TestCandidateBackfillStopsOnPermanentAuthFailure(t *testing.T) {
 	st := graphtest.Store(t)
 	const tag = "candidate-auth-permanent"
@@ -371,5 +387,23 @@ func TestV3RetainsFrozenWireSettings(t *testing.T) {
 	req := Request{Profile: NewV2Profile(c.Model(), nil), RequestBytes: []byte("{}")}
 	if _, err := c.VerifyRequest(t.Context(), req, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEvalJudgeAttemptGateStopsBeforeVertexTokenFetch(t *testing.T) {
+	client := NewClientWithOptions(config.Config{Judge: config.JudgeConfig{Auth: config.AuthGCP}},
+		WithEvalTransport(rejudgeTestTransport(func(*http.Request) (*http.Response, error) {
+			t.Error("provider called with stopped attempt gate")
+			return nil, errors.New("unexpected provider request")
+		})),
+		WithTokenProvider(judgeTokens(func(context.Context) (string, time.Time, error) {
+			t.Error("token provider called with stopped attempt gate")
+			return "", time.Time{}, &llmauth.AuthPermanent{Detail: "unexpected token fetch"}
+		})),
+	)
+	stop := errors.New("ledger stopped")
+	client.SetAttemptGate(func() error { return stop })
+	if _, err := client.VerifyFact(t.Context(), ingest.FactInput{}); !errors.Is(err, stop) {
+		t.Fatalf("VerifyFact error = %v, want %v", err, stop)
 	}
 }
