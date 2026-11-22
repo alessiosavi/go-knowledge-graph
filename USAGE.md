@@ -1253,6 +1253,34 @@ scope returns not found.
 scope to all questions, including gold resolution and null checks. Without
 `--domain`, each question's optional `domain` is used.
 
+### Run frozen asks with `gkg eval-agent`
+
+Run against the configured, restored graph and the enabled ask agent. The
+command opens Memgraph for reads and meters provider calls on the existing
+arm ledger. Use a separate answer file for each arm.
+
+```sh
+gkg eval-agent --questions A.jsonl --out answers-DS.jsonl \
+  --arm DS --manifest "$MANIFEST_SHA" --ledger ledger-DS.jsonl \
+  --ledger-genesis "$LEDGER_GENESIS_SHA" --run-id agent-DS-W-H1 --allotment 2.5
+```
+
+Use `DS` for static auth and `GM` for GCP auth. The ledger header must match
+the arm and configured agent model. Its genesis is the SHA-256 of the header
+line including the newline. `--family A` is the default. Use `--family S`
+for smoke, probe or warm-up runs.
+
+Each question can set a `domain`, request SSE with `sse: true`, or override
+`reasoning_effort` with a value supported by the configured agent. Use
+`--only id1,id2` to select questions. Resume skips IDs already recorded for
+the same arm, model and manifest. A successful invocation closes its ledger
+allotment. Use a new run ID to add questions after that invocation.
+
+Answer rows include model-visible tool evidence, per-call usage and SSE event
+counts. Exit `0` means all selected asks were recorded, including model
+failures. Exit `2` means a refusal or permanent auth failure. Exit `4` means
+the ledger stopped the run before an answer row could be recorded for that ask.
+
 ## Product feature observations
 
 ```sh

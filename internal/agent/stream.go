@@ -44,6 +44,9 @@ func (s *Server) StreamHandler() http.Handler {
 		defer cancel()
 		ctx, err := s.llm.prepareStream(ctx)
 		if err != nil {
+			if o := evalObservation(r.Context()); o != nil {
+				o.Err = err
+			}
 			kind, detail := classifyStreamError(err)
 			writeError(w, http.StatusBadGateway, kind, detail)
 			return
@@ -62,7 +65,16 @@ func (s *Server) StreamHandler() http.Handler {
 		}
 		events := make(chan streamEvent, streamEventsBuf)
 		done := make(chan askResult, 1)
+		if evalObservation(ctx) != nil {
+			// Wait for the observations and ledger settlement even when
+			// the local HTTP client disconnects early.
+			defer func() {
+				for range done {
+				}
+			}()
+		}
 		go func() {
+			defer close(done)
 			emit := func(ev streamEvent) error {
 				select {
 				case events <- ev:

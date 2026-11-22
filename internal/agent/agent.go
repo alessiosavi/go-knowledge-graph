@@ -257,7 +257,10 @@ type askEvents struct {
 // or a budget is reached. The delta callback opts into provider streaming
 // when supported. Tool events can also be delivered with plain provider
 // turns. A provider that rejects tools falls back to the constrained JSON plan.
-func (s *Server) runWithEvents(ctx context.Context, ask AskRequest, events askEvents) (AskResponse, error) {
+func (s *Server) runWithEvents(ctx context.Context, ask AskRequest, events askEvents) (resp AskResponse, err error) {
+	if o := evalObservation(ctx); o != nil {
+		defer func() { o.Steps, o.Err = resp.Steps, err }()
+	}
 	msgs := []chatMessage{
 		{Role: "system", Content: scopedPrompt(ctx, systemPrompt)},
 		{Role: "user", Content: ask.Question},
@@ -305,12 +308,14 @@ func (s *Server) runWithEvents(ctx context.Context, ask AskRequest, events askEv
 			if encErr != nil {
 				raw = json.RawMessage(`{"error":"unencodable tool result"}`)
 			}
-			ev = append(ev, EvidenceItem{
+			item := EvidenceItem{
 				Tool:      tc.Function.Name,
 				Arguments: rawOrNull([]byte(tc.Function.Arguments)),
 				Result:    raw,
-			})
+			}
+			ev = append(ev, item)
 			copy := transcriptResult(raw)
+			s.observeEvalEvidence(ctx, item, copy)
 			transcriptBytes += len(copy)
 			msgs = append(msgs, chatMessage{Role: "tool", ToolCallID: tc.ID, Content: copy})
 		}
@@ -474,8 +479,10 @@ func (s *Server) askWithPlan(ctx context.Context, ask AskRequest, events askEven
 		if encErr != nil {
 			raw = json.RawMessage(`{"error":"unencodable tool result"}`)
 		}
-		ev = append(ev, EvidenceItem{Tool: tc.Name, Arguments: rawOrNull(tc.Arguments), Result: raw})
+		item := EvidenceItem{Tool: tc.Name, Arguments: rawOrNull(tc.Arguments), Result: raw}
+		ev = append(ev, item)
 		copy := transcriptResult(raw)
+		s.observeEvalEvidence(ctx, item, copy)
 		transcriptBytes += len(copy)
 		// Keep result text outside a JSON envelope: encoding a truncated
 		// string again would expand escapes beyond the transcript byte cap.

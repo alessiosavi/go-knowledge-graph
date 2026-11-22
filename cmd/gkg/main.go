@@ -72,6 +72,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runEval(args[1:], stdout, stderr)
 	case "eval-sample":
 		return runEvalSample(args[1:], stdout, stderr)
+	case "eval-agent":
+		return runEvalAgent(args[1:], stderr)
 	case "preset":
 		return runPreset(args[1:], stdout, stderr)
 	case "features":
@@ -808,6 +810,7 @@ commands:
   eval -replay FILE -predictions OUT [-labels PRESET]  replay stored chunks with the sidecar
   eval-sample -domain SLUG -out FILE [-docs N -seed S]  export done documents and stored chunks read-only
   eval-sample -from FILE.jsonl -domain SLUG -out FILE   build a replay sample from external text
+  eval-agent  run frozen questions through the metered ask agent
   preset check FILE [-stoplist FILE]  validate a label and hygiene preset
   features check R.json  validate a product feature registry and print its digest and counts
   features import R.json  import a validated registry revision into Memgraph
