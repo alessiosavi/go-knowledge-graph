@@ -266,6 +266,16 @@ func readEvalAgentQuestions(opt evalAgentOptions, cfg config.AgentConfig) ([]eva
 		return nil, err
 	}
 	defer f.Close()
+	var onlyIDs []string
+	if opt.only != "" {
+		onlyIDs = strings.Split(opt.only, ",")
+	}
+	selected := make(map[string]bool, len(onlyIDs))
+	for i, id := range onlyIDs {
+		id = strings.TrimSpace(id)
+		onlyIDs[i] = id
+		selected[id] = true
+	}
 	var questions []evalAgentQuestion
 	ids := make(map[string]bool)
 	err = scanEvalJSONL(f, func(raw []byte) error {
@@ -282,6 +292,10 @@ func readEvalAgentQuestions(opt evalAgentOptions, cfg config.AgentConfig) ([]eva
 		if strings.TrimSpace(row.ID) == "" || ids[row.ID] || row.SSE == nil {
 			return errors.New("question needs a unique nonempty id and a boolean sse field")
 		}
+		ids[row.ID] = true
+		if len(onlyIDs) > 0 && !selected[row.ID] {
+			return nil
+		}
 		req := agent.AskRequest{Question: row.Question, Domain: row.Domain}
 		if row.ReasoningEffort != nil {
 			req.Generation = &agent.GenerationSettings{ReasoningEffort: row.ReasoningEffort}
@@ -290,28 +304,21 @@ func readEvalAgentQuestions(opt evalAgentOptions, cfg config.AgentConfig) ([]eva
 		if err != nil {
 			return fmt.Errorf("ask %q: %w", row.ID, err)
 		}
-		ids[row.ID] = true
 		questions = append(questions, evalAgentQuestion{id: row.ID, ask: req, sse: *row.SSE})
 		return nil
 	}, nil)
 	if err != nil {
 		return nil, err
 	}
-	if len(questions) == 0 {
+	if len(ids) == 0 {
 		return nil, errors.New("no questions")
 	}
-	if opt.only == "" {
-		return questions, nil
-	}
-	selected := make(map[string]bool)
-	for _, id := range strings.Split(opt.only, ",") {
-		id = strings.TrimSpace(id)
+	for _, id := range onlyIDs {
 		if !ids[id] {
 			return nil, fmt.Errorf("unknown --only id %q", id)
 		}
-		selected[id] = true
 	}
-	return slices.DeleteFunc(questions, func(q evalAgentQuestion) bool { return !selected[q.id] }), nil
+	return questions, nil
 }
 
 func openEvalAgentResume(opt evalAgentOptions, model string, ledgerInfo os.FileInfo) (*os.File, map[string]bool, error) {
