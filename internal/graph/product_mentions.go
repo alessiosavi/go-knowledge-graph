@@ -15,15 +15,16 @@ type ProductMentionSelection struct {
 }
 
 type ProductMentionStore struct {
-	Store              string  `json:"store"`
-	SeenSeq            int64   `json:"seen_seq"`
-	SnapshotSeq        int64   `json:"snapshot_seq"`
-	WipedSeq           int64   `json:"wiped_seq"`
-	ReleaseID          *string `json:"release_id"`
-	ProductCount       int64   `json:"product_count"`
-	IdentifierProducts int     `json:"identifier_products"`
-	EligibleProducts   int     `json:"eligible_products"`
-	Domain             string  `json:"domain"`
+	Store                     string  `json:"store"`
+	SeenSeq                   int64   `json:"seen_seq"`
+	SnapshotSeq               int64   `json:"snapshot_seq"`
+	WipedSeq                  int64   `json:"wiped_seq"`
+	ReleaseID                 *string `json:"release_id"`
+	ProductCount              int64   `json:"product_count"`
+	IdentifierProducts        int     `json:"identifier_products"`
+	EligibleProducts          int     `json:"eligible_products"`
+	Domain                    string  `json:"domain"`
+	MaterializedActivationSeq *int64  `json:"-"`
 }
 
 type ProductIdentifierObservation struct {
@@ -41,6 +42,9 @@ type ProductMentionInput struct {
 	Identifiers   []ProductIdentifierObservation
 }
 
+// ErrNoActiveProductRelease signals that there is no active catalogue to scan.
+var ErrNoActiveProductRelease = errors.New("no active product release")
+
 // ReadProductMentions delivers catalogue and document metadata before visiting
 // chunks. All reads share one snapshot, and visits are ordered by source and seq.
 func (s *Store) ReadProductMentions(ctx context.Context, selection ProductMentionSelection,
@@ -51,7 +55,7 @@ func (s *Store) ReadProductMentions(ctx context.Context, selection ProductMentio
 			return err
 		}
 		if release == "" {
-			return fmt.Errorf("no active product release")
+			return ErrNoActiveProductRelease
 		}
 		input := ProductMentionInput{Release: release, ActivationSeq: activation}
 		input.Documents, err = txMentionDocuments(ctx, tx, selection)
@@ -119,7 +123,7 @@ RETURN sum(CASE WHEN e.value_fold IS NULL THEN 0 ELSE 1 END + coalesce(size(e.it
 	if err != nil {
 		return nil, err
 	}
-	return buildProductMentionIndex(ctx, observations)
+	return buildProductMentionIndex(ctx, observations, true)
 }
 
 func txMentionRelease(ctx context.Context, tx neo4j.ManagedTransaction) (string, int64, error) {
@@ -137,7 +141,8 @@ func txMentionStores(ctx context.Context, tx neo4j.ManagedTransaction) ([]Produc
 MATCH (s:ProductStore) WHERE s.domain IS NOT NULL
 RETURN s.store AS store, s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
        coalesce(s.snapshot_seq, 0) AS snapshot_seq, coalesce(s.product_count, 0) AS product_count,
-       coalesce(s.wiped_seq, 0) AS wiped_seq, s.release_id AS release_id
+       coalesce(s.wiped_seq, 0) AS wiped_seq, s.release_id AS release_id,
+       s.materialized_activation_seq AS materialized_activation_seq
 ORDER BY s.store`, nil)
 	if err != nil {
 		return nil, err
@@ -149,7 +154,8 @@ ORDER BY s.store`, nil)
 			Store: getString(row, "store"), Domain: getString(row, "domain"),
 			SeenSeq: productProp[int64](props, "seen_seq"), SnapshotSeq: productProp[int64](props, "snapshot_seq"),
 			WipedSeq: productProp[int64](props, "wiped_seq"), ReleaseID: productOptional[string](props, "release_id"),
-			ProductCount: productProp[int64](props, "product_count"),
+			MaterializedActivationSeq: productOptional[int64](props, "materialized_activation_seq"),
+			ProductCount:              productProp[int64](props, "product_count"),
 		})
 	}
 	return stores, nil

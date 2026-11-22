@@ -94,14 +94,23 @@ func (s *productPrepareSession) BeginTransaction(ctx context.Context, opts ...fu
 func (*productPrepareSession) Close(context.Context) error { return nil }
 
 type pushFixture struct {
-	t     *testing.T
-	store *Store
-	other *Store
-	rev   string
+	t        *testing.T
+	store    *Store
+	other    *Store
+	rev      string
+	registry string
+	feature  string
 }
 
 func newPushFixture(t *testing.T) pushFixture {
 	t.Helper()
+	return newPushFixtureWithFeature(t, "code")
+}
+
+func newPushFixtureWithFeature(t *testing.T, feature string) pushFixture {
+	t.Helper()
+	registry := strings.ReplaceAll(pushRegistry, `"id":"code"`, `"id":"`+feature+`"`)
+	registry = strings.ReplaceAll(registry, `"feature":"code"`, `"feature":"`+feature+`"`)
 	uri := os.Getenv("GKG_TEST_MEMGRAPH_URI")
 	if uri == "" {
 		t.Skip("requires a disposable Memgraph integration database")
@@ -116,7 +125,7 @@ func newPushFixture(t *testing.T) pushFixture {
 		t.Cleanup(func() { _ = st.Close(context.Background()) })
 		return st
 	}
-	f := pushFixture{t: t, store: open(), other: open()}
+	f := pushFixture{t: t, store: open(), other: open(), registry: registry, feature: feature}
 	if err := f.store.Bootstrap(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +139,7 @@ DETACH DELETE n`, nil)
 			t.Error(err)
 		}
 	})
-	reg, err := f.store.ImportFeatureRegistry(t.Context(), []byte(pushRegistry))
+	reg, err := f.store.ImportFeatureRegistry(t.Context(), []byte(registry))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +156,11 @@ DETACH DELETE n`, nil)
 func (f pushFixture) seedRelease(id, domain string) {
 	f.t.Helper()
 	manifest, err := json.Marshal(productManifest{
-		RegistryRev: f.rev, RegistrySHA256: productDigest([]byte(pushRegistry)),
+		RegistryRev: f.rev, RegistrySHA256: productDigest([]byte(f.registry)),
 		StoreDomains: map[string]string{pushStore: domain},
 		Triples: []productobs.ReleaseTriple{
-			{Store: pushStore, Feature: "code", SourceKey: "scalar"},
-			{Store: pushStore, Feature: "code", SourceKey: "list"},
+			{Store: pushStore, Feature: f.feature, SourceKey: "scalar"},
+			{Store: pushStore, Feature: f.feature, SourceKey: "list"},
 		},
 	})
 	if err != nil {

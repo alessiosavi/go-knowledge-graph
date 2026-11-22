@@ -1554,6 +1554,53 @@ MCP clients can call `get_product` with `id` or `store` and `product_id`,
 empty arguments. Large `find_products` pages are available in
 `structuredContent`.
 
+#### Catalogue passages for a product
+
+Set `with_mentions=true` on either product GET route or in the MCP
+`get_product` arguments. `mentions_limit` defaults to 5 and accepts integers
+from 1 through 20. Invalid values return HTTP 400 or an MCP argument error,
+including when enrichment is off. A missing product retains its HTTP 404
+or MCP tool error. When `with_mentions` is omitted or false, the response is
+the ordinary product detail.
+
+```sh
+curl -s 'http://localhost:8080/v1/products?store=example.test&product_id=example.test%3A42&domain=dental&with_mentions=true&mentions_limit=10'
+```
+
+The optional `domain` filters both associated pages and catalogue passages.
+An empty domain includes all domains. Passage evidence comes from done
+documents. The matcher uses the full stored chunk and globally unambiguous
+`catalogue_code` and `product_reference` keys from all bound stores. It reads
+product detail, the key index, and chunk text in successive snapshots. A
+committed change between those reads can show earlier product features
+alongside passage matches for the same product ID using newer keys.
+
+A successful enrichment returns `mentions` (possibly `[]`), `mentions_total`
+(the number of matching chunks among checked candidates), `mentions_keys`
+(the number of keys emitted into the query), and `mentions_partial`. Entries
+contain `doc_id`, `chunk_id`, `seq`, `doc_title`, `doc_source`, `domain`,
+`excerpt`, and `matched`. Chunks sort by document source, document ID, then
+chunk sequence. The excerpt is UTF-8, fits within 300 bytes, and contains the
+start of the first match for this product. `matched` contains up to eight
+distinct `{feature, value}` entries sorted by feature and folded value.
+
+`mentions_partial` reports candidate saturation, a byte or query budget
+limit, or a skipped clause. Searches can miss a separator inside a stored
+letter run (`151L-Z` for `151LZ` or `A-B12345` for `AB12345`), whitespace
+inside a stored run (`TC 2SL` for `TC2SL`), NFKC-only forms such as fullwidth
+characters, case-mapping differences such as `ß` and `İ`, and tokens of
+40 bytes or more, even when `mentions_partial` is false. Use
+`gkg products mentions-scan` for an exact offline scan.
+
+An enrichment failure retains HTTP 200 or a successful MCP product result
+with `mentions_error` as the only mention field. The codes are
+`index_too_large` when the global index exceeds 200,000 raw identifier values,
+`index_unavailable` on an index load failure or timeout, and
+`search_unavailable` on a candidate search or match failure or timeout.
+With no active release or an unbound product store the result normally
+contains empty mentions. The global 200,000-value gate also applies to
+products in unbound stores.
+
 #### Find products sharing a released feature value
 
 Use the MCP or agent `cypher` tool with the seed's graph product ID as
@@ -1607,6 +1654,34 @@ counts distinct products in the store with an active identifier observation.
 key before ambiguity exclusion. `identifier_values`, `ineligible_values`, and
 `divergence.count` each count distinct `(product id, feature, folded value)`
 triples.
+
+#### Catalogue mention parity
+
+`mentions-parity` runs the same enriched product read as REST and MCP for
+every product with a globally unambiguous key, including products with
+zero frozen matches. Supply the two frozen scan files and their trusted
+SHA-256 digests.
+
+```sh
+gkg products mentions-parity -summary scan.json -pairs pairs.jsonl \
+  -summary-sha256 SUMMARY_SHA256 -pairs-sha256 PAIRS_SHA256 \
+  -out parity.json -timeout 30m
+```
+
+Use a frozen dataset with zero in-flight documents and no concurrent
+pushes. The command refuses mismatched digests. A frozen metadata mismatch
+produces a FAIL report before the first product read. The command checks
+the bound stores, document chunks and live identifier digest again after
+reading. Changed state, a stored chunk hash that differs from the hash of
+its text, or a timeout makes the gate fail. The command reports matching pair
+and entry recall for the frozen documents, losses by partial status,
+extras, entry strata, error and partial rates, and cold and warm timings.
+PASS requires zero enrichment errors and zero extras, at least 99% recall
+for pairs and entries and for each entry stratum with at least 20 entries,
+a partial rate of at most 10%, and end-to-end p95 at most 500 ms. Exit
+codes are 0 for PASS, 1 for FAIL or refusal, and 2 for invalid CLI usage.
+The report goes to stdout and `-out` additionally writes a private file.
+The default timeout is 30 minutes.
 
 ## Domain administration
 

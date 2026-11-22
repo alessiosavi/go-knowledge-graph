@@ -70,11 +70,13 @@ type ProductMentionIndex struct {
 // BuildProductMentionIndex accepts the observations from every bound store.
 // The input order determines which normalization examples appear in the stats.
 func BuildProductMentionIndex(observations []ProductIdentifierObservation) *ProductMentionIndex {
-	index, _ := buildProductMentionIndex(context.Background(), observations)
+	index, _ := buildProductMentionIndex(context.Background(), observations, false)
 	return index
 }
 
-func buildProductMentionIndex(ctx context.Context, observations []ProductIdentifierObservation) (*ProductMentionIndex, error) {
+// grouped indicates that each product/feature pair occurs in exactly one
+// observation, as grouped by txLoadMentionIdentifiers.
+func buildProductMentionIndex(ctx context.Context, observations []ProductIdentifierObservation, grouped bool) (*ProductMentionIndex, error) {
 	var numValues int
 	for _, observation := range observations {
 		numValues += len(observation.ItemsFold)
@@ -100,20 +102,31 @@ func buildProductMentionIndex(ctx context.Context, observations []ProductIdentif
 		productID string
 		ProductMentionEvidence
 	}
-	seenValues := make(map[identifierValue]struct{}, numValues)
+	var seenValues map[identifierValue]struct{}
+	seenGroup := make(map[string]struct{})
+	if !grouped {
+		seenValues = make(map[identifierValue]struct{}, numValues)
+	}
 	// Single-value keys share backing storage. Restrict each slice's
 	// capacity so extra evidence for one key cannot overwrite another.
 	evidenceBuffer := make([]ProductMentionEvidence, 0, numValues)
 	addValue := func(state *productState, feature, value string) {
 		product := &state.product
 		evidence := ProductMentionEvidence{Feature: feature, ValueFold: value}
-		triple := identifierValue{productID: product.ID, ProductMentionEvidence: evidence}
-		if _, seen := seenValues[triple]; seen {
-			return
+		if grouped {
+			if _, seen := seenGroup[value]; seen {
+				return
+			}
+			seenGroup[value] = struct{}{}
+		} else {
+			triple := identifierValue{productID: product.ID, ProductMentionEvidence: evidence}
+			if _, seen := seenValues[triple]; seen {
+				return
+			}
+			seenValues[triple] = struct{}{}
 		}
-		seenValues[triple] = struct{}{}
 		index.Stats.IdentifierValues++
-		key := productobs.CodeKey(value)
+		key := mentionIndexKey(value)
 		if key != value {
 			index.Stats.Divergence.Count++
 			if len(index.Stats.Divergence.Examples) < 20 {
@@ -158,6 +171,7 @@ func buildProductMentionIndex(ctx context.Context, observations []ProductIdentif
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		clear(seenGroup)
 		product := observation.Product
 		state := products[product.ID]
 		if state == nil {
@@ -192,6 +206,17 @@ func buildProductMentionIndex(ctx context.Context, observations []ProductIdentif
 		return nil, err
 	}
 	return index, nil
+}
+
+// Uppercase ASCII letters and digits are unchanged by CodeKey. Use the
+// full matcher normalization for all other values.
+func mentionIndexKey(value string) string {
+	for i := range len(value) {
+		if c := value[i]; !(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+			return productobs.CodeKey(value)
+		}
+	}
+	return value
 }
 
 // Match returns exact matches in original byte-span order. The returned
