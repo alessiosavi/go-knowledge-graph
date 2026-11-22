@@ -19,17 +19,33 @@ gkg ingest notes.md                      # a file
 gkg ingest https://example.com/article   # a URL
 echo "Ada Lovelace wrote the first algorithm." | gkg ingest -
 gkg ingest -source notes/ada renamed.md  # keep an earlier source's identity
+gkg ingest -date 2024-03-01 catalogue.md # record the source's publication date
 ```
 
 **REST**:
 
 ```sh
-curl -s -F 'file=@notes.pdf' localhost:8080/v1/ingest
+curl -s -F 'file=@notes.pdf' -F 'document_date=2024-03-01' localhost:8080/v1/ingest
 curl -s -H 'Content-Type: application/json' \
-     -d '{"url":"https://example.com/article"}' localhost:8080/v1/ingest
+     -d '{"url":"https://example.com/article","document_date":"2024-03-01T12:30:00+01:00"}' localhost:8080/v1/ingest
 curl -s -H 'Content-Type: application/json' \
      -d '{"text":"...","source":"notes/ada"}' localhost:8080/v1/ingest
 ```
+
+**Document date.** Use the optional `document_date` field in REST or MCP,
+`-date` in the CLI, or **Document date** in the web UI for text, URLs and
+files. Enter the date the source was written, sent or published as
+`YYYY-MM-DD` (midnight UTC) or an RFC 3339 timestamp with an offset.
+gkg normalizes the value to UTC and rejects dates before 1900 or more than
+24 hours ahead of the server clock.
+
+Document views show the effective `document_date` and
+`document_date_source`. The origin is `caller` for a supplied date and
+`ingest` for the version's ingest timestamp, with creation time as the
+fallback for older records. Omitting the date on a reused version keeps
+its stored date. An unchanged-content resubmission can update the date and
+return `noop: true` without reprocessing. Changed content still creates a
+new version, with its own date. Supersession follows ingest version order.
 
 Submissions are queued: poll the returned id until it reaches `done`:
 
@@ -92,11 +108,13 @@ alongside Memgraph's data. For standalone `gkg serve`, the default is
 Use one gkg process per spool directory. `GKG_INGEST_SPOOL_MAX_COUNT` (1024)
 and `GKG_INGEST_SPOOL_MAX_BYTES` (1073741824, 1 GiB of serialized payloads)
 bound queued storage, including leftover `.prev` backups. When full, REST returns `503` (`error: ingest_busy`)
-with `Retry-After: 30`; retry after capacity is freed. A force or failed/superseded
-re-submit while a worker holds that document's processing lock returns `503`
-(`error: document_busy`) with the same retry header. An unchanged live version
-without force returns a no-op immediately, even while processing or when the
-spool is full or unavailable. A spool write failure returns `500`
+with `Retry-After: 30`; retry after capacity is freed. A forced resubmit,
+a failed or superseded version retry, or a date change can return `503`
+(`error: document_busy`) with the same retry header while a worker holds the
+document's processing lock. An unchanged live version without force returns
+a no-op immediately when the date is omitted or equals the date an earlier
+submission stored on that version,
+even while processing or when the spool is full or unavailable. A spool write failure returns `500`
 (`error: ingest_unavailable`).
 
 `GKG_INGEST_STOPLIST_FILE` optionally points to a private entity-name stoplist

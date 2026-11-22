@@ -1195,3 +1195,90 @@ func TestIngestProductRefsStoreErrorMapping(t *testing.T) {
 		}
 	}
 }
+
+func TestIngestDocumentDateREST(t *testing.T) {
+	for _, encoding := range []string{"json_text", "json_url", "multipart"} {
+		t.Run(encoding, func(t *testing.T) {
+			for _, tc := range []struct {
+				raw, want string
+			}{
+				{"", ""},
+				{"2024-03-01T00:30:00+01:00", "2024-02-29T23:30:00.000000000Z"},
+				{"bad-date", ""},
+			} {
+				sub := &fakeSubmitter{res: ingest.Result{DocumentID: "doc"}}
+				h := apiHandler(t, config.Config{}, nil, sub)
+				var rr *httptest.ResponseRecorder
+				switch encoding {
+				case "multipart":
+					var body bytes.Buffer
+					writer := multipart.NewWriter(&body)
+					file, err := writer.CreateFormFile("file", "page.txt")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := io.WriteString(file, "a page"); err != nil {
+						t.Fatal(err)
+					}
+					if tc.raw != "" {
+						if err := writer.WriteField("document_date", tc.raw); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := writer.Close(); err != nil {
+						t.Fatal(err)
+					}
+					rr = do(t, h, http.MethodPost, "/v1/ingest", &body, map[string]string{"Content-Type": writer.FormDataContentType()})
+				default:
+					body := `{"text":"a page"`
+					if encoding == "json_url" {
+						body = `{"url":"https://example.test/page"`
+					}
+					if tc.raw != "" {
+						body += fmt.Sprintf(`,"document_date":%q`, tc.raw)
+					}
+					rr = doJSON(t, h, http.MethodPost, "/v1/ingest", body+"}")
+				}
+				if tc.raw == "bad-date" {
+					if rr.Code != http.StatusBadRequest || sub.called ||
+						!strings.Contains(rr.Body.String(), `"invalid_request"`) || !strings.Contains(rr.Body.String(), "document_date") {
+						t.Errorf("invalid document date: status=%d body=%s submitted=%t", rr.Code, rr.Body, sub.called)
+					}
+				} else if rr.Code != http.StatusAccepted || !sub.called || sub.in.DocumentDate != tc.want {
+					t.Errorf("document date %q: status=%d body=%s submitted date=%q, want %q", tc.raw, rr.Code, rr.Body, sub.in.DocumentDate, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestDocumentDateRESTWire(t *testing.T) {
+	st := graphtest.Store(t)
+	res, err := st.UpsertDocument(t.Context(), graph.DocumentInput{
+		Kind: "text", Source: apiSource(t), Hash: "date-rest",
+		DocumentDate: "2024-03-01T00:00:00.000000000Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.DeleteDocument(context.Background(), res.ID) })
+	h := apiHandler(t, config.Config{}, st, nil)
+	rr := do(t, h, http.MethodGet, "/v1/documents?status=received&limit=1", nil, nil)
+	out := decode[struct {
+		Documents []map[string]any `json:"documents"`
+	}](t, rr)
+	if rr.Code != http.StatusOK || len(out.Documents) != 1 || out.Documents[0]["id"] != res.ID ||
+		out.Documents[0]["document_date"] != "2024-03-01T00:00:00Z" || out.Documents[0]["document_date_source"] != "caller" {
+		t.Fatalf("document list = %d %s, want the caller date and origin", rr.Code, rr.Body)
+	}
+}
+
+func TestDocumentDateRESTWireOmitsAbsentValues(t *testing.T) {
+	data, err := json.Marshal(toDocumentDTO(graph.Document{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(`"document_date`)) {
+		t.Fatalf("absent date fields present in %s", data)
+	}
+}

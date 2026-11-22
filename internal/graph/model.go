@@ -54,6 +54,10 @@ type Document struct {
 	UpdatedAt   time.Time
 	Supersedes  string
 
+	RawDocumentDate    string // caller-supplied value in timeLayout, empty when absent
+	DocumentDate       *time.Time
+	DocumentDateSource *string // "caller" or "ingest"
+
 	ProductRefs        []string
 	SpoolPayloadDigest string
 }
@@ -91,6 +95,7 @@ type DocumentInput struct {
 	Labels      string
 	Force       bool // reset an existing live version without changing its version order
 
+	DocumentDate         string   // normalized caller date, empty when omitted
 	ProductRefs          []string // nil means omitted; an empty list clears refs
 	SpoolPayloadDigest   string
 	productRefsValidated bool

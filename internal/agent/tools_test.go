@@ -255,6 +255,12 @@ func TestToolListDocumentsAndStatus(t *testing.T) {
 	if len(one.Documents) != 1 || one.Documents[0].ID != fx.docID {
 		t.Errorf("status = %+v, want the one seeded document", one.Documents)
 	}
+	wire := unmarshalResult[struct {
+		Documents []map[string]any `json:"documents"`
+	}](t, res)
+	if len(wire.Documents) != 1 || wire.Documents[0]["document_date"] == nil || wire.Documents[0]["document_date_source"] != "ingest" {
+		t.Errorf("status wire = %+v, want the ingest date and its origin", wire)
+	}
 }
 
 func TestToolCypherReadsAndRejectsWrites(t *testing.T) {

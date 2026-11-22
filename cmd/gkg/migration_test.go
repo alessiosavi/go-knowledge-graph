@@ -390,3 +390,34 @@ CREATE (:Domain {id:'cli-refs'}), (:ProductStore {store:$store,domain:'cli-refs'
 		}
 	}
 }
+
+func TestIngestDateFlagRoundTrip(t *testing.T) {
+	st := migrationCommandStore(t)
+	const file = "dated-catalogue.txt"
+	if err := os.WriteFile(file, []byte("Catalogue with a publication date."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	args := []string{"ingest", "-date", "2024-03-01T00:30:00+01:00", file}
+	if code := run(args, &out, &errb); code != 0 {
+		t.Fatalf("ingest -date: exit=%d, stderr=%s", code, errb.String())
+	}
+	id, _, _ := strings.Cut(strings.TrimPrefix(out.String(), "document_id="), " ")
+	t.Cleanup(func() { _ = st.DeleteDocument(context.Background(), id) })
+	doc, err := st.Document(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Status != graph.StatusDone || doc.DocumentDate == nil || doc.DocumentDate.Format(time.RFC3339) != "2024-02-29T23:30:00Z" ||
+		doc.DocumentDateSource == nil || *doc.DocumentDateSource != "caller" {
+		t.Fatalf("ingested document = %+v, want done with 2024-02-29T23:30:00Z from caller", doc)
+	}
+}
+
+func TestIngestDateFlagRejectsInvalidDate(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run([]string{"ingest", "-date", "bad-date", "unused.txt"}, &out, &errb); code != 2 ||
+		!strings.Contains(errb.String(), "document_date") {
+		t.Fatalf("bad -date: exit=%d, stderr=%s, want a document_date argument error", code, errb.String())
+	}
+}
