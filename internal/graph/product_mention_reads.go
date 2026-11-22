@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -17,7 +18,9 @@ import (
 )
 
 const (
-	defaultMentionsLimit = 5
+	DefaultMentionsLimit = 5
+	MaxMentionsLimit     = 20
+
 	mentionRawLimit      = 1000
 	mentionEligibleLimit = 200
 	mentionByteBudget    = 2 << 20
@@ -34,7 +37,7 @@ const (
 )
 
 // ValidMentionsLimit checks an explicitly supplied display limit.
-func ValidMentionsLimit(limit int) bool { return limit >= 1 && limit <= 20 }
+func ValidMentionsLimit(limit int) bool { return limit >= 1 && limit <= MaxMentionsLimit }
 
 type ProductMentionFieldMatch struct {
 	Feature string `json:"feature"`
@@ -80,7 +83,7 @@ func (out *ProductDetailWithMentions) LimitMentions(limit int) {
 		return
 	}
 	if limit == 0 {
-		limit = defaultMentionsLimit
+		limit = DefaultMentionsLimit
 	}
 	out.Mentions = out.Mentions[:min(limit, len(out.Mentions))]
 }
@@ -281,8 +284,8 @@ type mentionCandidates struct {
 
 // Keep one null candidate when no hit matches an eligible document so even
 // a completely filtered search can report the pre-filter count.
-const mentionCandidateQuery = `
-CALL text_search.search('chunk_text_v2', $q, {limit: 1000}) YIELD node, score
+var mentionCandidateQuery = fmt.Sprintf(`
+CALL text_search.search('chunk_text_v2', $q, {limit: %d}) YIELD node, score
 WITH collect({node: node, score: score}) AS raw
 WITH raw, size(raw) AS raw_n
 UNWIND CASE WHEN raw_n = 0 THEN [{node: null, score: null}] ELSE raw END AS hit
@@ -292,9 +295,9 @@ WHERE d.status = 'done' AND ($domain = '' OR d.domain = $domain)
 WITH DISTINCT raw_n, d, CASE WHEN d IS NULL THEN null ELSE node END AS ch,
      CASE WHEN d IS NULL THEN null ELSE score END AS score
 ORDER BY CASE WHEN d IS NULL THEN 1 ELSE 0 END, score DESC, ch.id
-LIMIT 201
+LIMIT %d
 RETURN raw_n, ch.id AS id, ch.seq AS seq, size(ch.text) AS chars, d.id AS doc_id,
-       d.title AS doc_title, d.source AS doc_source, d.domain AS domain`
+       d.title AS doc_title, d.source AS doc_source, d.domain AS domain`, mentionRawLimit, mentionEligibleLimit+1)
 
 func (s *Store) productMentionCandidates(ctx context.Context, query, scope string) (out mentionCandidates, err error) {
 	err = s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {

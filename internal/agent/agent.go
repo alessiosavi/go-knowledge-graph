@@ -52,6 +52,7 @@ Rules:
 - You cannot modify anything; the tool set is read-only.
 - If the tools cannot answer the question, say so plainly instead of guessing.
 - To resolve a product code, SKU or reference, call find_products with an identifier feature (features of kind code, such as catalogue_code or product_reference; list_features shows them) and the code as value; codes ignore case and spaces. get_product needs the graph product id, or store plus the full product_id (for example dentalica.com:1000), never a bare code.
+- For what documents or catalogues say about a product, call get_product with with_mentions=true; for the products a passage cites, call get_chunks with with_products=true.
 
 Graph schema for Cypher queries:
 Document{id, source, title, status, labels, domain}
@@ -69,7 +70,7 @@ This endpoint does not support tool calls. Reply with ONLY a JSON object of one 
 {"tool_calls":[{"name":"<tool>","arguments":{...}}]} — the read-only tools you need, or
 {"answer":"<answer>"} — when you can answer without tools.
 
-For product questions, list_features accepts an optional query to narrow feature IDs and names. find_products takes a feature ID and either value or numeric min/max strings in the canonical unit, plus optional domain, limit and cursor. get_product takes id, or both store and the full source product_id.`
+For product questions, list_features accepts an optional query to narrow feature IDs and names. find_products takes a feature ID and either value or numeric min/max strings in the canonical unit, plus optional domain, limit and cursor. get_product takes id, or both store and the full source product_id, plus optional with_mentions (boolean) and mentions_limit (1–20, default 5, used only when with_mentions is true).`
 
 const planFinalPrompt = `Using only the tool results above, answer the question now in GitHub-flavoured Markdown, without raw HTML. Do not request more tools. Cite entity ids, chunk ids, document ids and product ids.`
 
@@ -90,6 +91,7 @@ type graphStore interface {
 	RunReadQuery(context.Context, string, map[string]any, int) (graph.QueryResult, error)
 	TraverseOpts(context.Context, string, string, string, int, int, graph.ViewOptions) (graph.Subgraph, error)
 	GetProduct(context.Context, graph.ProductLookup) (graph.ProductDetail, error)
+	GetProductWithMentions(context.Context, graph.ProductLookup) (graph.ProductDetailWithMentions, graph.ProductMentionRead, error)
 	FindProductsBudget(context.Context, graph.ProductSearchRequest, int) (graph.ProductSearchResult, error)
 	ListProductFeatures(context.Context) (graph.ProductFeatures, error)
 	ListProductStores(context.Context) (graph.ProductStores, error)

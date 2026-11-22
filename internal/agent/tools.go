@@ -207,14 +207,20 @@ func toolDefs() []toolDef {
 				"required": []string{"query"},
 			}),
 		functionTool("get_product", graph.ProductLookupDescription+
-			" If some feature observations exceed the result budget, features_omitted counts the observations dropped from the end.",
+			" Set with_mentions to include passages from done documents with exact matches for the product's catalogue_code or product_reference. Domain also filters passages."+
+			" Retrieval is approximate: it can miss splits inside stored codes (151L-Z, A-B12345, TC 2SL), fullwidth forms, case-mapping differences (ß, İ) and tokens of 40 bytes or more; mentions_partial means search limits or skipped clauses may have left matches unchecked."+
+			" mentions_error means mentions could not be computed (index_too_large, index_unavailable or search_unavailable); the product itself is still returned."+
+			" Use gkg products mentions-scan for the complete offline scan."+
+			" To fit the result budget, mentions are dropped from the end before features. See mentions_omitted_for_budget and features_omitted for the counts.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"id":         map[string]any{"type": "string", "description": "Graph product ID"},
-					"store":      map[string]any{"type": "string", "description": "Store for an exact lookup by product_id"},
-					"product_id": map[string]any{"type": "string", "description": "Full source product ID including its store prefix"},
-					"domain":     map[string]any{"type": "string", "description": "Optional domain slug for associated pages within the request scope. A domain outside the request scope is rejected."},
+					"id":             map[string]any{"type": "string", "description": "Graph product ID"},
+					"store":          map[string]any{"type": "string", "description": "Store for an exact lookup by product_id"},
+					"product_id":     map[string]any{"type": "string", "description": "Full source product ID including its store prefix"},
+					"domain":         map[string]any{"type": "string", "description": "Optional domain slug for associated pages and passages within the request scope. A domain outside the request scope is rejected."},
+					"with_mentions":  map[string]any{"type": "boolean", "default": false, "description": "Include passages with exact identifier matches"},
+					"mentions_limit": map[string]any{"type": "integer", "minimum": 1, "maximum": graph.MaxMentionsLimit, "default": graph.DefaultMentionsLimit, "description": "Maximum passages returned when with_mentions is true"},
 				},
 			}),
 		functionTool("find_products", graph.ProductSearchDescription+

@@ -179,7 +179,9 @@ The built-in ask agent also uses these three product tools. `find_products`
 defaults to 10 hits and caps the requested limit at 20. A byte budget may
 shorten the page. To continue, pass its cursor with the same filters and
 effective limit. `get_product` reports omitted observations in
-`features_omitted`. `list_features` returns a compact listing and accepts a
+`features_omitted`; with `with_mentions` it also returns catalogue passages
+that cite the product and reports trimmed passages in
+`mentions_omitted_for_budget` (passages are dropped before features). `list_features` returns a compact listing and accepts a
 case-insensitive substring `query` over IDs and names. Narrow the query when
 `truncated` is true. The `omitted` field gives the count of dropped features.
 A product tool returns an error if its required metadata exceeds the budget.
