@@ -53,14 +53,16 @@ Rules:
 - If the tools cannot answer the question, say so plainly instead of guessing.
 - To resolve a product code, SKU or reference, call find_products with an identifier feature (features of kind code, such as catalogue_code or product_reference; list_features shows them) and the code as value; codes ignore case and spaces. get_product needs the graph product id, or store plus the full product_id (for example dentalica.com:1000), never a bare code.
 - For what documents or catalogues say about a product, call get_product with with_mentions=true; for the products a passage cites, call get_chunks with with_products=true.
+- document_date_source 'caller' is the source's own date; 'ingest' is only when gkg received it and does not show how recent the content is. For a current-state question with conflicting comparable evidence, prefer the newest caller-dated source, cite its date, and mention any undated conflicting source.
 
 Graph schema for Cypher queries:
-Document{id, source, title, status, labels, domain}
+Document{id, source, title, status, labels, domain, document_date, version_at, created_at}
 Chunk{id, doc_id, seq, text, domain}
 Entity{id, key, name, type, mention_count, domain}
+document_date is set only when the caller gave one; in Cypher use coalesce(document_date, version_at, created_at).
 Entity.key is case-folded; match on id or name.
 Relationships: (:Document)-[:HAS_CHUNK]->(:Chunk), (:Chunk)-[:MENTIONS]->(:Entity); typed fact edges connect entities and carry confidence, doc_id, chunk_id.
-Chunk search hits carry document_id, the owning Chunk.doc_id; entity hits carry none.
+Chunk search hits carry document_id, document_date and document_date_source; entity hits carry none.
 
 Strategy: search with keywords, then read chunks with get_chunks; use cypher last.`
 

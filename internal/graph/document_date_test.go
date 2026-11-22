@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
+
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 )
 
@@ -40,5 +42,17 @@ func TestParseDocumentDate(t *testing.T) {
 				t.Fatalf("ParseDocumentDate(%q) = %q, %v, want %q", tc.input, got, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestRecordDocumentDateOmitsOriginWithoutDate(t *testing.T) {
+	keys := []string{"document_date", "document_date_source"}
+	date, source := recordDocumentDate(&neo4j.Record{Keys: keys, Values: []any{nil, "ingest"}})
+	if date != nil || source != nil {
+		t.Fatalf("undated record: got date=%v source=%v, want both omitted", date, source)
+	}
+	date, source = recordDocumentDate(&neo4j.Record{Keys: keys, Values: []any{"2024-03-01T00:00:00.000000000Z", "caller"}})
+	if date == nil || !date.Equal(time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)) || source == nil || *source != "caller" {
+		t.Fatalf("dated record: got date=%v source=%v", date, source)
 	}
 }

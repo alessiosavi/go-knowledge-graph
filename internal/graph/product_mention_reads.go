@@ -61,6 +61,9 @@ type ProductChunkMention struct {
 	Excerpt   string                     `json:"excerpt"`
 	Matched   []ProductMentionFieldMatch `json:"matched"`
 	Entries   []ProductMentionEntry      `json:"-"`
+
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type ProductMentionFields struct {
@@ -297,7 +300,7 @@ WITH DISTINCT raw_n, d, CASE WHEN d IS NULL THEN null ELSE node END AS ch,
 ORDER BY CASE WHEN d IS NULL THEN 1 ELSE 0 END, score DESC, ch.id
 LIMIT %d
 RETURN raw_n, ch.id AS id, ch.seq AS seq, size(ch.text) AS chars, d.id AS doc_id,
-       d.title AS doc_title, d.source AS doc_source, d.domain AS domain`, mentionRawLimit, mentionEligibleLimit+1)
+       d.title AS doc_title, d.source AS doc_source, d.domain AS domain, `+documentDateColumns("d"), mentionRawLimit, mentionEligibleLimit+1)
 
 func (s *Store) productMentionCandidates(ctx context.Context, query, scope string) (out mentionCandidates, err error) {
 	err = s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
@@ -309,10 +312,12 @@ func (s *Store) productMentionCandidates(ctx context.Context, query, scope strin
 		for _, row := range rows {
 			out.rawSaturated = getInt(row, "raw_n") >= mentionRawLimit
 			if id := getString(row, "id"); id != "" {
+				date, origin := recordDocumentDate(row)
 				eligible = append(eligible, mentionCandidate{
 					ProductChunkMention: ProductChunkMention{
 						ChunkID: id, Seq: getInt(row, "seq"), DocID: getString(row, "doc_id"),
 						DocTitle: getString(row, "doc_title"), DocSource: getString(row, "doc_source"), Domain: getString(row, "domain"),
+						DocumentDate: date, DocumentDateSource: origin,
 					},
 					chars: getInt(row, "chars"),
 				})

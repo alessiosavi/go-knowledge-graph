@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
@@ -25,6 +26,9 @@ type PathEdge struct {
 	DocID         string
 	ChunkID       string
 	Excerpt       string
+
+	DocumentDate       *time.Time
+	DocumentDateSource *string
 }
 
 // Subgraph is the nodes and edges reachable from a traversal start.
@@ -324,8 +328,8 @@ MATCH (expanded:Entity {key: key}), (other:Entity {key: r.` + endpoint + `})`
 WITH id, [edge IN rest WHERE NOT edge.key IN $filled][..share] AS kept
 WHERE size(kept) > 0`
 	}
-	// Keep the ordered prefix per source before joining chunks. Carry its rank
-	// through UNWIND and the join so the result order is explicit.
+	// Keep the ordered prefix per source before joining chunks and documents.
+	// Carry its rank through UNWIND and the joins so the result order is explicit.
 	query := pattern + "\nWHERE " + visibility + `
 WITH id, share, row_offset, expanded, other, r, ` + relation + ` AS rel, ` + edgeKey + ` AS edge_key
 WHERE NOT edge_key IN $excluded
@@ -338,12 +342,13 @@ UNWIND range(0, size(kept) - 1) AS rank
 WITH id, rank, kept[rank] AS edge
 WITH id, rank, edge.source_key AS source_key, edge.other AS other, edge.fact AS r, edge.rel AS rel
 OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
+OPTIONAL MATCH (d:Document {id: r.doc_id})
 RETURN id AS source_id, source_key, rel, other.id AS other_id, other.key AS other_key,
        other.name AS other_name, other.type AS other_type, other.domain AS other_domain,
        coalesce(r.confidence, 0) AS confidence, coalesce(r.judge, '') AS judge,
        coalesce(r.low_confidence, false) AS low, coalesce(r.doc_id, '') AS doc_id,
        coalesce(r.chunk_id, '') AS chunk_id, coalesce(r.head_start, -1) AS head_start,
-       coalesce(r.tail_start, -1) AS tail_start, coalesce(c.text, '') AS text
+       coalesce(r.tail_start, -1) AS tail_start, coalesce(c.text, '') AS text, ` + documentDateColumns("d") + `
 ORDER BY source_id, rank`
 	recs, err := s.runRead(ctx, query, params)
 	if err != nil {
@@ -359,6 +364,7 @@ ORDER BY source_id, rank`
 			center = getInt(r, "tail_start")
 		}
 		id := getString(r, "source_id")
+		date, origin := recordDocumentDate(r)
 		rows[id] = append(rows[id], traverseRow{
 			edge: PathEdge{
 				From:          from,
@@ -371,6 +377,9 @@ ORDER BY source_id, rank`
 				DocID:         getString(r, "doc_id"),
 				ChunkID:       getString(r, "chunk_id"),
 				Excerpt:       ExcerptWindow(getString(r, "text"), center, 120),
+
+				DocumentDate:       date,
+				DocumentDateSource: origin,
 			},
 			other: EntityRef{
 				ID:     getString(r, "other_id"),
@@ -452,13 +461,16 @@ func entitySearchRows(recs []*neo4j.Record) []EntitySearchRow {
 	return out
 }
 
-// ChunkSearchRow is one chunk text-search hit with its document title.
+// ChunkSearchRow is one chunk text-search hit with its document metadata.
 type ChunkSearchRow struct {
 	Domain string
 	ID     string
 	DocID  string
 	Title  string
 	Text   string
+
+	DocumentDate       *time.Time
+	DocumentDateSource *string
 }
 
 // ChunkTextSearch runs the Tantivy chunk index. The hits are cut to limit
@@ -483,7 +495,8 @@ WITH node, score
 ORDER BY score DESC
 LIMIT $limit
 OPTIONAL MATCH (d:Document {id: node.doc_id})
-RETURN node.id AS id, node.doc_id AS doc_id, node.text AS text, node.domain AS domain, coalesce(d.title, '') AS title, score
+RETURN node.id AS id, node.doc_id AS doc_id, node.text AS text, node.domain AS domain, coalesce(d.title, '') AS title, score,
+       `+documentDateColumns("d")+`
 ORDER BY score DESC`,
 		map[string]any{"q": q, "limit": limit, "domain": slug})
 	if err != nil {
@@ -491,12 +504,16 @@ ORDER BY score DESC`,
 	}
 	out := make([]ChunkSearchRow, 0, len(recs))
 	for _, r := range recs {
+		date, origin := recordDocumentDate(r)
 		out = append(out, ChunkSearchRow{
 			ID:     getString(r, "id"),
 			DocID:  getString(r, "doc_id"),
 			Title:  getString(r, "title"),
 			Text:   getString(r, "text"),
 			Domain: getString(r, "domain"),
+
+			DocumentDate:       date,
+			DocumentDateSource: origin,
 		})
 	}
 	return out, nil

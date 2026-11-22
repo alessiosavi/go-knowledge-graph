@@ -83,16 +83,14 @@ func TestPresetPickerMatchesShippedPresets(t *testing.T) {
 	}
 }
 
-func TestUIAuthJS(t *testing.T) {
-	testUIJS(t, "auth.test.mjs")
-}
-
-func TestUIIngestJS(t *testing.T) {
-	testUIJS(t, "ingest.test.mjs")
-}
-
-func testUIJS(t *testing.T, name string) {
-	t.Helper()
+func TestUIJS(t *testing.T) {
+	files, err := filepath.Glob("jstest/*.test.mjs")
+	if err != nil {
+		t.Fatalf("glob UI JavaScript tests: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no UI JavaScript tests match jstest/*.test.mjs")
+	}
 	node, err := exec.LookPath("node")
 	if err != nil {
 		if os.Getenv("GKG_REQUIRE_NODE") == "1" {
@@ -101,9 +99,9 @@ func testUIJS(t *testing.T, name string) {
 		t.Skip("node is not installed")
 	}
 	// Test files are explicit because passing the directory runs only its package entry point.
-	cmd := exec.Command(node, "--test", filepath.Join("jstest", name))
+	cmd := exec.Command(node, append([]string{"--test"}, files...)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("UI JavaScript tests %s: %v\n%s", name, err, out)
+		t.Fatalf("UI JavaScript tests: %v\n%s", err, out)
 	}
 }
 

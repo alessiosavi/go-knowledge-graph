@@ -1494,6 +1494,8 @@ components:
         seq: { type: integer }
         doc_title: { type: string }
         doc_source: { type: string }
+        document_date: { type: string, format: date-time, description: Effective date of the document in UTC. }
+        document_date_source: { type: string, enum: [caller, ingest], description: Origin of the effective date. }
         domain: { type: string }
         excerpt:
           type: string
@@ -1847,6 +1849,8 @@ components:
         document_id:
           type: string
           description: chunk hits only — the owning document id
+        document_date: { type: string, format: date-time, description: Effective date of the chunk's document in UTC. }
+        document_date_source: { type: string, enum: [caller, ingest], description: Origin of the effective date. }
     DocumentContent:
       type: object
       required: [document, html, chunks]
@@ -1922,6 +1926,8 @@ components:
           description: Whether the extractor score was below the assert floor.
         outgoing: { type: boolean }
         doc_id: { type: string }
+        document_date: { type: string, format: date-time, description: Effective date of the document in UTC. }
+        document_date_source: { type: string, enum: [caller, ingest], description: Origin of the effective date. }
         chunk_id: { type: string }
         excerpt: { type: string }
     Entity:
@@ -2024,6 +2030,8 @@ components:
           type: boolean
           description: Whether the extractor score was below the assert floor.
         doc_id: { type: string }
+        document_date: { type: string, format: date-time, description: Effective date of the document in UTC. }
+        document_date_source: { type: string, enum: [caller, ingest], description: Origin of the effective date. }
         chunk_id: { type: string }
         excerpt: { type: string }
     TraverseResponse:

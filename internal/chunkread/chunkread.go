@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 	"unicode/utf8"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
@@ -18,6 +19,9 @@ const (
 	ChunkTextCap   = 4 << 10
 	ResponseBudget = 24 << 10
 )
+
+const ToolDescription = "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids." +
+	" Chunks with an owning document include its effective document_date and document_date_source (caller or ingest). The 24 KiB response budget can omit chunks."
 
 type Request struct {
 	IDs           []string
@@ -37,6 +41,9 @@ type Item struct {
 	Products                 *[]ChunkProduct `json:"products,omitempty"`
 	ProductsTotal            *int            `json:"products_total,omitempty"`
 	ProductsOmittedForBudget int             `json:"products_omitted_for_budget,omitempty"`
+
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type Meta struct {
@@ -53,6 +60,7 @@ type Result struct {
 }
 
 type Store interface {
+	// ChunkNeighbourhood returns the center and its neighbours with the owner's date metadata when available.
 	ChunkNeighbourhood(ctx context.Context, id string, n int) (graph.Chunk, []graph.Chunk, error)
 }
 
@@ -89,7 +97,10 @@ func Read(ctx context.Context, st Store, req Request) (Result, error) {
 			return
 		}
 		seen[c.ID] = true
-		item := Item{ID: c.ID, DocID: c.DocID, Seq: c.Seq, Text: c.Text, NeighbourOf: neighbourOf}
+		item := Item{
+			ID: c.ID, DocID: c.DocID, Seq: c.Seq, Text: c.Text, NeighbourOf: neighbourOf,
+			DocumentDate: c.DocumentDate, DocumentDateSource: c.DocumentDateSource,
+		}
 		if len(item.Text) > ChunkTextCap {
 			end := ChunkTextCap
 			for end > 0 && !utf8.RuneStart(item.Text[end]) {

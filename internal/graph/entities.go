@@ -894,27 +894,29 @@ RETURN coalesce(e.aliases, []) AS aliases, coalesce(e.mention_count, 0) AS menti
 MATCH (e:Entity {key: $key})-[r]-(o:Entity)
 WHERE `+typedFactVisibility+`
 OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
+OPTIONAL MATCH (d:Document {id: r.doc_id})
 RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type, o.domain AS domain,
        coalesce(r.confidence, 0) AS confidence, coalesce(r.judge, '') AS judge,
        coalesce(r.low_confidence, false) AS low, coalesce(r.doc_id, '') AS doc_id,
        coalesce(r.chunk_id, '') AS chunk_id,
        coalesce(r.head_key, '') AS head_key, coalesce(r.tail_key, '') AS tail_key,
        coalesce(r.head_start, -1) AS head_start, coalesce(r.tail_start, -1) AS tail_start,
-       coalesce(c.text, '') AS text`,
+       coalesce(c.text, '') AS text, `+documentDateColumns("d"),
 		map[string]any{"key": view.Key, "include": opt.IncludeLowConfidence, "confirmed_only": opt.ConfirmedOnly})
 	if err != nil {
 		return EntityView{}, fmt.Errorf("graph: entity facts: %w", err)
 	}
 	if opt.IncludeUnverified && !opt.ConfirmedOnly {
-		const projection = `
+		projection := `
 OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
+OPTIONAL MATCH (d:Document {id: r.doc_id})
 RETURN r.rel AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type, o.domain AS domain,
        coalesce(r.confidence, 0) AS confidence, coalesce(r.judge, '') AS judge, true AS unverified,
        coalesce(r.low_confidence, false) AS low, coalesce(r.doc_id, '') AS doc_id,
        coalesce(r.chunk_id, '') AS chunk_id,
        r.head_key AS head_key, r.tail_key AS tail_key,
        coalesce(r.head_start, -1) AS head_start, coalesce(r.tail_start, -1) AS tail_start,
-       coalesce(c.text, '') AS text`
+       coalesce(c.text, '') AS text, ` + documentDateColumns("d")
 		candidates, err := s.runRead(ctx, `
 MATCH (r:FactCandidate {head_key: $key})
 WHERE coalesce(r.judge, '') IN ['', 'unclear']
@@ -954,6 +956,7 @@ MATCH (o:Entity {key: r.head_key})`+projection, map[string]any{"key": view.Key})
 			ChunkID:       getString(fr, "chunk_id"),
 			Excerpt:       ExcerptWindow(getString(fr, "text"), center, 120),
 		}
+		fv.DocumentDate, fv.DocumentDateSource = recordDocumentDate(fr)
 		facts = append(facts, fv)
 		groupCount[fv.Rel+"\x00"+fv.Other.Key]++
 	}

@@ -291,6 +291,14 @@ MATCH p=(h:Entity)-[r]->(t:Entity) WHERE NOT h.id = t.id RETURN p LIMIT 200
 MATCH (d:Document) RETURN d.source, d.status, d.title ORDER BY d.created_at DESC
 ```
 
+REST, MCP and agent reads include `document_date` (effective date in RFC 3339
+UTC) and `document_date_source` on chunk search hits, entity facts, traverse
+edges and product mentions. A source of `caller` means the supplied date
+describes when the source was written, sent or published. A source of `ingest`
+means the date comes from the document version's ingest time, or its creation
+time for older records. Entity search hits and evidence with no owning document
+omit both fields.
+
 ## 3. Query from an agent (MCP)
 
 `gkg` is an MCP server (stdio and streamable HTTP) exposing
@@ -313,6 +321,12 @@ to add evidence within a 32 KiB budget for one JSON copy of the result.
 `truncated: true` means evidence was shortened or omitted. An answer that
 exhausts the budget is returned in full with no evidence.
 Use `search`, `get_entity`, `get_chunks`, and `traverse` for targeted lookups.
+
+`get_chunks` includes `document_date` and `document_date_source` for each
+returned center or neighbour with an owning document, including center-only
+reads. It returns up to 4 KiB of text per chunk. The 24 KiB response budget may
+omit chunks, including neighbours, whose IDs are listed in
+`meta.omitted_for_budget`.
 
 `get_chunks` accepts `with_products: true` to list exact product identifier
 matches on the full stored text. Chunk scope follows the requested domain.
@@ -1739,7 +1753,8 @@ A successful enrichment returns `mentions` (possibly `[]`), `mentions_total`
 (the number of matching chunks among checked candidates), `mentions_keys`
 (the number of keys emitted into the query), and `mentions_partial`. Entries
 contain `doc_id`, `chunk_id`, `seq`, `doc_title`, `doc_source`, `domain`,
-`excerpt`, and `matched`. Chunks sort by document source, document ID, then
+`excerpt`, and `matched`, with `document_date` and `document_date_source` for
+the owning document. Chunks sort by document source, document ID, then
 chunk sequence. The excerpt is UTF-8, fits within 300 bytes, and contains the
 start of the first match for this product. `matched` contains up to eight
 distinct `{feature, value}` entries sorted by feature and folded value.
