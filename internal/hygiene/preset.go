@@ -2,7 +2,9 @@ package hygiene
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -70,6 +72,18 @@ func LoadPreset(dir, name, overlayPath string) (Preset, error) {
 // BuildPreset applies the hygiene settings from a decoded label preset.
 // An empty name selects the built-in policy.
 func BuildPreset(name string, entities []extract.Label, settings PresetSettings, overlayPath string) (Preset, error) {
+	return buildPreset(name, entities, settings, overlayPath, nil)
+}
+
+// BuildPresetWithStoplistHash reports the SHA-256 of the exact overlay bytes
+// used by the policy, or the empty byte stream when no overlay is configured.
+func BuildPresetWithStoplistHash(name string, entities []extract.Label, settings PresetSettings, overlayPath string) (Preset, string, error) {
+	digest := sha256.New()
+	p, err := buildPreset(name, entities, settings, overlayPath, digest)
+	return p, fmt.Sprintf("%x", digest.Sum(nil)), err
+}
+
+func buildPreset(name string, entities []extract.Label, settings PresetSettings, overlayPath string, overlayDigest io.Writer) (Preset, error) {
 	p := Preset{Name: name, Allow: make(map[string]bool), Stop: make(map[string]bool), Values: make(map[string]bool)}
 	keepTypes := settings.SectionLabelKeepTypes
 	if keepTypes == nil {
@@ -120,7 +134,11 @@ func BuildPreset(name string, entities []extract.Label, settings PresetSettings,
 			return Preset{}, fmt.Errorf("hygiene overlay: %w", err)
 		}
 		defer f.Close()
-		scanner := bufio.NewScanner(f)
+		var overlay io.Reader = f
+		if overlayDigest != nil {
+			overlay = io.TeeReader(f, overlayDigest)
+		}
+		scanner := bufio.NewScanner(overlay)
 		for scanner.Scan() {
 			word := strings.TrimSpace(scanner.Text())
 			if word != "" && !strings.HasPrefix(word, "#") {

@@ -140,10 +140,11 @@ func decodePresetFile(data []byte, preset *presetFile) error {
 // CheckedPreset holds the same label and hygiene settings used by ingestion,
 // with a fingerprint of the YAML from which they were validated.
 type CheckedPreset struct {
-	Entities  []extract.Label
-	Relations []extract.Label
-	Hygiene   hygiene.Preset
-	SHA256    string
+	Entities       []extract.Label
+	Relations      []extract.Label
+	Hygiene        hygiene.Preset
+	SHA256         string
+	StoplistSHA256 string
 }
 
 // LoadCheckedPreset validates a named preset, or the built-in preset if name
@@ -225,12 +226,12 @@ func (raw presetFile) checked(name, overlayPath string, data []byte) (CheckedPre
 			return CheckedPreset{}, fmt.Errorf("label preset %q: unknown entity label name %q in section_label_keep_types", name, keepType)
 		}
 	}
-	policy, err := hygiene.BuildPreset(name, raw.Entities, raw.PresetSettings, overlayPath)
+	policy, stoplistSHA256, err := hygiene.BuildPresetWithStoplistHash(name, raw.Entities, raw.PresetSettings, overlayPath)
 	if err != nil {
 		return CheckedPreset{}, err
 	}
 	return CheckedPreset{
 		Entities: raw.Entities, Relations: raw.Relations, Hygiene: policy,
-		SHA256: fmt.Sprintf("%x", sha256.Sum256(data)),
+		SHA256: fmt.Sprintf("%x", sha256.Sum256(data)), StoplistSHA256: stoplistSHA256,
 	}, nil
 }

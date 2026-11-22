@@ -31,6 +31,9 @@ import (
 // PromptVersion must be bumped whenever judgePrompt changes.
 const PromptVersion = "1"
 
+// Prompt returns the system prompt used for v1 verification.
+func Prompt() string { return judgePrompt }
+
 // DefaultBaseURL is the v1 endpoint used when the config leaves it empty.
 const DefaultBaseURL = "https://api.openai.com/v1"
 

@@ -84,7 +84,8 @@ func runEvalReplay(input, output, preset string, opts eval.ReplayOptions, stdout
 	counts, err := eval.ReplayWithOptions(ctx, cfg, input, output, preset, version, opts, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg eval: %v\n", err)
-		if errors.Is(err, os.ErrExist) {
+		var usageErr argerr.Error
+		if errors.Is(err, os.ErrExist) || (opts.PinsPath != "" && errors.As(err, &usageErr)) {
 			return 2
 		}
 		return 1

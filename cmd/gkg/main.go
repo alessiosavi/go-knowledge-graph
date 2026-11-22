@@ -74,6 +74,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runEvalSample(args[1:], stdout, stderr)
 	case "eval-agent":
 		return runEvalAgent(args[1:], stderr)
+	case "eval-settings":
+		return runEvalSettings(args[1:], stdout, stderr)
 	case "preset":
 		return runPreset(args[1:], stdout, stderr)
 	case "features":
@@ -124,6 +126,8 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 	replay := fs.String("replay", "", "replay stored chunks from an eval-sample JSONL file")
 	predictions := fs.String("predictions", "", "create a private JSONL predictions file in replay mode")
 	mentions := fs.String("mentions", "", "create a private JSONL file of validated replay mentions")
+	judgeInputs := fs.String("judge-inputs", "", "create a private JSONL file of replay judge inputs")
+	pins := fs.String("pins", "", "validate replay provenance and use pinned write settings")
 	noBorrow := fs.Bool("no-borrow", false, "extract every replay chunk locally, including duplicates")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -149,6 +153,20 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "gkg eval: replay requires the sidecar provider")
 			return 2
 		}
+		if flags["pins"] && *pins == "" {
+			fmt.Fprintln(stderr, "gkg eval: -pins requires a file path")
+			return 2
+		}
+		if flags["judge-inputs"] {
+			if *judgeInputs == "" {
+				fmt.Fprintln(stderr, "gkg eval: -judge-inputs requires a file path")
+				return 2
+			}
+			if *pins == "" {
+				fmt.Fprintln(stderr, "gkg eval: -judge-inputs requires -pins FILE")
+				return 2
+			}
+		}
 		if flags["mentions"] {
 			if *mentions == "" {
 				fmt.Fprintln(stderr, "gkg eval: -mentions requires a file path")
@@ -168,10 +186,10 @@ func runEval(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 		}
-		opts := eval.ReplayOptions{MentionsPath: *mentions, NoBorrow: *noBorrow}
+		opts := eval.ReplayOptions{MentionsPath: *mentions, NoBorrow: *noBorrow, JudgeInputsPath: *judgeInputs, PinsPath: *pins}
 		return runEvalReplay(*replay, *predictions, *labels, opts, stdout, stderr)
 	}
-	for _, name := range []string{"predictions", "mentions", "no-borrow"} {
+	for _, name := range []string{"predictions", "mentions", "no-borrow", "judge-inputs", "pins"} {
 		if flags[name] {
 			fmt.Fprintf(stderr, "gkg eval: -%s requires -replay\n", name)
 			return 2
@@ -807,10 +825,12 @@ commands:
   serve     run the REST API, MCP endpoint and ingestion workers
   ingest    ingest a file, URL or stdin into the knowledge graph (-source <s> overrides the identity)
   eval      run the golden-set evaluation harness
-  eval -replay FILE -predictions OUT [-labels PRESET]  replay stored chunks with the sidecar
+  eval -replay FILE -predictions OUT [-labels PRESET] [-pins FILE] [-judge-inputs OUT]
+      replay stored chunks with the sidecar and optionally export exact judge payloads
   eval-sample -domain SLUG -out FILE [-docs N -seed S]  export done documents and stored chunks read-only
   eval-sample -from FILE.jsonl -domain SLUG -out FILE   build a replay sample from external text
   eval-agent  run frozen questions through the metered ask agent
+  eval-settings  print the eval settings projection, overrides, asserted fields and hash
   preset check FILE [-stoplist FILE]  validate a label and hygiene preset
   features check R.json  validate a product feature registry and print its digest and counts
   features import R.json  import a validated registry revision into Memgraph
