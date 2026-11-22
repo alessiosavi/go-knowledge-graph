@@ -217,7 +217,9 @@ CREATE (:ProductStore {store:'agent-mention.test', domain:'agent-catalog'}),
 	})
 	var ids []string
 	for _, domain := range []string{"agent-catalog", "agent-other"} {
-		doc, err := st.UpsertDocument(ctx, graph.DocumentInput{Domain: domain, Source: "agent-mentions/" + domain, Hash: domain, Kind: "text"})
+		doc, err := st.UpsertDocument(ctx, graph.DocumentInput{
+			Domain: domain, Source: "agent-mentions/" + domain, Hash: domain, Kind: "text", DocumentDate: storedAgentEvidenceDate,
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,6 +258,7 @@ CREATE (:ProductStore {store:'agent-mention.test', domain:'agent-catalog'}),
 		var got []string
 		for _, mention := range out.Mentions {
 			got = append(got, mention.DocID)
+			assertAgentEvidenceDate(t, mention, true)
 		}
 		if !slices.Equal(got, tc.want) {
 			t.Errorf("scope %q, args %s: documents=%v want %v", tc.scope, tc.args, got, tc.want)

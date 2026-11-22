@@ -902,12 +902,7 @@ func recordToDocument(r *neo4j.Record) *Document {
 		ProductRefs:        getStringSlice(r, "product_refs_raw"),
 		SpoolPayloadDigest: getString(r, "spool_payload_digest"),
 	}
-	if date := parseTime(getString(r, "document_date")).UTC(); !date.IsZero() {
-		doc.DocumentDate = &date
-	}
-	if origin := getString(r, "document_date_source"); origin != "" {
-		doc.DocumentDateSource = &origin
-	}
+	doc.DocumentDate, doc.DocumentDateSource = recordDocumentDate(r)
 	return doc
 }
 
@@ -921,15 +916,16 @@ func parseTime(s string) time.Time {
 
 // ChunkNeighbourhood returns the requested chunk followed separately by its
 // same-document neighbours within n sequence positions, ordered by sequence.
-// Only ID, DocID, Seq, Text and Domain are populated.
+// Populates ID, DocID, Seq, Text, Domain and the owning document's date and origin.
 // A missing center returns ErrNotFound.
 func (s *Store) ChunkNeighbourhood(ctx context.Context, id string, n int) (center Chunk, around []Chunk, err error) {
 	recs, err := s.runRead(ctx, `
 MATCH (c:Chunk {id: $id})
-OPTIONAL MATCH (:Document {id: c.doc_id})-[:HAS_CHUNK]->(ch:Chunk)
+OPTIONAL MATCH (d:Document {id: c.doc_id})
+OPTIONAL MATCH (d)-[:HAS_CHUNK]->(ch:Chunk)
 WHERE ch.seq >= c.seq - $n AND ch.seq <= c.seq + $n AND ch.id <> c.id
 RETURN c.id AS center_id, c.doc_id AS center_doc_id, c.seq AS center_seq, c.text AS center_text, c.domain AS center_domain,
-       ch.id AS id, ch.doc_id AS doc_id, ch.seq AS seq, ch.text AS text, ch.domain AS domain
+       ch.id AS id, ch.doc_id AS doc_id, ch.seq AS seq, ch.text AS text, ch.domain AS domain, `+documentDateColumns("d")+`
 ORDER BY ch.seq`, map[string]any{"id": id, "n": n})
 	if err != nil {
 		return Chunk{}, nil, fmt.Errorf("graph: chunk neighbourhood %s: %w", id, err)
@@ -941,12 +937,14 @@ ORDER BY ch.seq`, map[string]any{"id": id, "n": n})
 		ID: getString(recs[0], "center_id"), DocID: getString(recs[0], "center_doc_id"),
 		Seq: getInt(recs[0], "center_seq"), Text: getString(recs[0], "center_text"), Domain: getString(recs[0], "center_domain"),
 	}
+	center.DocumentDate, center.DocumentDateSource = recordDocumentDate(recs[0])
 	around = []Chunk{}
 	for _, r := range recs {
 		if getString(r, "id") != "" {
 			around = append(around, Chunk{
 				ID: getString(r, "id"), DocID: getString(r, "doc_id"),
 				Seq: getInt(r, "seq"), Text: getString(r, "text"), Domain: getString(r, "domain"),
+				DocumentDate: center.DocumentDate, DocumentDateSource: center.DocumentDateSource,
 			})
 		}
 	}

@@ -22,13 +22,15 @@ import (
 
 func TestSystemPromptSchema(t *testing.T) {
 	for _, want := range []string{
-		"Document{id, source, title, status, labels, domain}",
+		"Document{id, source, title, status, labels, domain, document_date, version_at, created_at}",
 		"Chunk{id, doc_id, seq, text, domain}",
 		"Entity{id, key, name, type, mention_count, domain}",
 		"(:Document)-[:HAS_CHUNK]->(:Chunk)",
 		"(:Chunk)-[:MENTIONS]->(:Entity)",
 		"typed fact edges connect entities",
-		"Chunk search hits carry document_id, the owning Chunk.doc_id; entity hits carry none.",
+		"document_date is set only when the caller gave one; in Cypher use coalesce(document_date, version_at, created_at)",
+		"Chunk search hits carry document_id, document_date and document_date_source; entity hits carry none.",
+		"document_date_source 'caller' is the source's own date; 'ingest' is only when gkg received it and does not show how recent the content is. For a current-state question with conflicting comparable evidence, prefer the newest caller-dated source, cite its date, and mention any undated conflicting source.",
 	} {
 		if !strings.Contains(systemPrompt, want) {
 			t.Errorf("system prompt missing %q", want)
@@ -74,6 +76,7 @@ func TestSystemPromptPropertiesExist(t *testing.T) {
 	res, err := p.Submit(ctx, ingest.Input{
 		Kind: "text", Source: fmt.Sprintf("text:prompt-schema-%d", tag),
 		Title: "Zorbo guide", Text: fmt.Sprintf("Zorbo%d uses Acme%d", tag, tag),
+		DocumentDate: "2024-03-01T00:00:00.000000000Z",
 	})
 	if err != nil {
 		t.Fatalf("Submit: %v", err)

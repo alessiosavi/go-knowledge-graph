@@ -41,13 +41,35 @@ type agentFixture struct {
 	otherKey  string
 }
 
+const agentEvidenceDate = "2024-03-01T00:00:00Z"
+const storedAgentEvidenceDate = "2024-03-01T00:00:00.000000000Z"
+
+func assertAgentEvidenceDate(t *testing.T, value any, present bool) {
+	t.Helper()
+	row := unmarshalResult[map[string]any](t, value)
+	if !present {
+		_, hasDate := row["document_date"]
+		_, hasSource := row["document_date_source"]
+		if hasDate || hasSource {
+			t.Errorf("date fields should be omitted: %v", row)
+		}
+	} else if row["document_date"] != agentEvidenceDate || row["document_date_source"] != "caller" {
+		t.Errorf("document_date=%v document_date_source=%v, want %s (caller)", row["document_date"], row["document_date_source"], agentEvidenceDate)
+	}
+}
+
 func newAgentFixture(t *testing.T) agentFixture {
+	t.Helper()
+	return seedAgentFixture(t, "")
+}
+
+func seedAgentFixture(t *testing.T, documentDate string) agentFixture {
 	t.Helper()
 	st := graphtest.Store(t)
 	ctx := context.Background()
 	token := fmt.Sprintf("agq%d", time.Now().UnixNano())
 	doc, err := st.UpsertDocument(ctx, graph.DocumentInput{
-		Kind: "file", Source: "file:agent-" + token, Hash: "hash-agent-" + token,
+		Kind: "file", Source: "file:agent-" + token, Hash: "hash-agent-" + token, DocumentDate: documentDate,
 	})
 	if err != nil {
 		t.Fatalf("UpsertDocument: %v", err)
@@ -78,7 +100,7 @@ func newAgentFixture(t *testing.T) agentFixture {
 }
 
 func TestToolSearch(t *testing.T) {
-	fx := newAgentFixture(t)
+	fx := seedAgentFixture(t, storedAgentEvidenceDate)
 	s := NewServer(config.Config{}, fx.st, nil)
 
 	res, err := s.execTool(context.Background(), "search", json.RawMessage(fmt.Sprintf(`{"query":%q}`, fx.token)))
@@ -93,12 +115,14 @@ func TestToolSearch(t *testing.T) {
 			if h.DocumentID != "" {
 				t.Errorf("entity hit carries document_id = %q, want empty", h.DocumentID)
 			}
+			assertAgentEvidenceDate(t, h, false)
 		}
 		if h.Kind == "chunk" && h.ID == fx.docID+"-c0" {
 			foundChunk = true
 			if h.DocumentID != fx.docID {
 				t.Errorf("chunk hit document_id = %q, want %s", h.DocumentID, fx.docID)
 			}
+			assertAgentEvidenceDate(t, h, true)
 		}
 	}
 	if !found || !foundChunk {
@@ -111,7 +135,7 @@ func TestToolSearch(t *testing.T) {
 }
 
 func TestToolGetEntityByIDAndName(t *testing.T) {
-	fx := newAgentFixture(t)
+	fx := seedAgentFixture(t, storedAgentEvidenceDate)
 
 	s := NewServer(config.Config{}, fx.st, nil)
 	res, err := s.execTool(context.Background(), "get_entity", json.RawMessage(fmt.Sprintf(`{"id":%q,"include_low_confidence":true}`, fx.entityID)))
@@ -132,6 +156,7 @@ func TestToolGetEntityByIDAndName(t *testing.T) {
 	for _, f := range out.Facts {
 		if f.Rel == "uses" && f.Other.Key == fx.otherKey {
 			found = true
+			assertAgentEvidenceDate(t, f, true)
 		}
 	}
 	if !found {
@@ -152,7 +177,7 @@ func TestToolGetEntityByIDAndName(t *testing.T) {
 }
 
 func TestToolTraverse(t *testing.T) {
-	fx := newAgentFixture(t)
+	fx := seedAgentFixture(t, storedAgentEvidenceDate)
 	s := NewServer(config.Config{}, fx.st, nil)
 
 	res, err := s.execTool(context.Background(), "traverse", json.RawMessage(fmt.Sprintf(
@@ -165,6 +190,7 @@ func TestToolTraverse(t *testing.T) {
 	for _, e := range out.Edges {
 		if e.Rel == "uses" && e.To == fx.otherKey {
 			foundEdge = true
+			assertAgentEvidenceDate(t, e, true)
 		}
 	}
 	if !foundEdge {
@@ -313,7 +339,7 @@ func TestToolUnknownName(t *testing.T) {
 }
 
 func TestToolGetChunks(t *testing.T) {
-	fx := newAgentFixture(t)
+	fx := seedAgentFixture(t, storedAgentEvidenceDate)
 	s := NewServer(config.Config{}, fx.st, nil)
 	res, err := s.execTool(context.Background(), "get_chunks", json.RawMessage(fmt.Sprintf(`{"ids":[%q,"absent"],"neighbours":1}`, fx.docID+"-c0")))
 	if err != nil {
@@ -345,6 +371,8 @@ func TestToolGetChunks(t *testing.T) {
 	if len(enriched.Chunks) != 1 || string(enriched.Chunks[0]["products"]) != "[]" ||
 		string(enriched.Chunks[0]["products_total"]) != "0" {
 		t.Errorf("get_chunks products = %+v, want an empty array and zero total", enriched.Chunks)
+	} else {
+		assertAgentEvidenceDate(t, enriched.Chunks[0], true)
 	}
 }
 
@@ -404,6 +432,9 @@ func TestToolResultSizeGuidance(t *testing.T) {
 	}
 	for _, def := range toolDefs() {
 		if desc, ok := want[def.Function.Name]; ok {
+			if def.Function.Name == "get_chunks" && !strings.Contains(def.Function.Description, "document_date and document_date_source") {
+				t.Error("get_chunks description does not explain the document date fields")
+			}
 			if !strings.Contains(def.Function.Description, desc) {
 				t.Errorf("%s description=%q, want %q", def.Function.Name, def.Function.Description, desc)
 			}

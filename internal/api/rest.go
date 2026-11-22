@@ -114,6 +114,9 @@ type hitDTO struct {
 	Score      float64 `json:"score"`
 	Snippet    string  `json:"snippet"`
 	DocumentID string  `json:"document_id,omitempty"`
+
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type searchResponse struct {
@@ -144,6 +147,9 @@ type factDTO struct {
 	DocID         string       `json:"doc_id"`
 	ChunkID       string       `json:"chunk_id"`
 	Excerpt       string       `json:"excerpt"`
+
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type entityDTO struct {
@@ -173,6 +179,9 @@ type edgeDTO struct {
 	DocID         string  `json:"doc_id"`
 	ChunkID       string  `json:"chunk_id"`
 	Excerpt       string  `json:"excerpt"`
+
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type traverseResponse struct {
@@ -648,7 +657,10 @@ func toDocumentDTO(d graph.Document) documentDTO {
 func toHitDTOs(hits []search.Hit) []hitDTO {
 	out := make([]hitDTO, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, hitDTO{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID, Domain: h.Domain})
+		out = append(out, hitDTO{
+			Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID, Domain: h.Domain,
+			DocumentDate: h.DocumentDate, DocumentDateSource: h.DocumentDateSource,
+		})
 	}
 	return out
 }
@@ -675,6 +687,9 @@ func toEntityDTO(v graph.EntityView) entityDTO {
 			DocID:         f.DocID,
 			ChunkID:       f.ChunkID,
 			Excerpt:       f.Excerpt,
+
+			DocumentDate:       f.DocumentDate,
+			DocumentDateSource: f.DocumentDateSource,
 		})
 	}
 	together := make([]coMentionDTO, 0, len(v.Together))
@@ -726,6 +741,9 @@ func toTraverseResponse(sub graph.Subgraph) traverseResponse {
 			DocID:         e.DocID,
 			ChunkID:       e.ChunkID,
 			Excerpt:       e.Excerpt,
+
+			DocumentDate:       e.DocumentDate,
+			DocumentDateSource: e.DocumentDateSource,
 		})
 	}
 	var hidden *graph.HiddenCounts

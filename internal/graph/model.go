@@ -63,6 +63,7 @@ type Document struct {
 }
 
 // Chunk is a piece of a document's cleaned text with absolute byte offsets.
+// ChunkNeighbourhood includes the owning document's effective date and origin.
 // An absent fingerprint property reads back as a nil slice and a stored
 // empty list as a non-nil empty slice; use len() == 0, not == nil, when
 // testing them.
@@ -80,6 +81,9 @@ type Chunk struct {
 	BandKeys         []int64
 	SignatureVersion int
 	DuplicateOf      string
+
+	DocumentDate       *time.Time
+	DocumentDateSource *string
 }
 
 // DocumentInput is the identity and content handle of a submitted document.
@@ -220,6 +224,9 @@ type FactView struct {
 	DocID         string
 	ChunkID       string
 	Excerpt       string
+
+	DocumentDate       *time.Time
+	DocumentDateSource *string
 }
 
 // EntityView is an entity with aliases, mention count, fact evidence and co-mentions.

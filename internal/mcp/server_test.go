@@ -199,6 +199,106 @@ func TestGetChunksTool(t *testing.T) {
 	}
 }
 
+const (
+	evidenceDate          = "2024-03-01T00:00:00Z"
+	evidenceVersion       = "2025-03-01T00:00:00Z"
+	storedEvidenceDate    = "2024-03-01T00:00:00.000000000Z"
+	storedEvidenceVersion = "2025-03-01T00:00:00.000000000Z"
+)
+
+func assertEvidenceDate(t *testing.T, row map[string]any, date, source string) {
+	t.Helper()
+	if date == "" {
+		_, hasDate := row["document_date"]
+		_, hasSource := row["document_date_source"]
+		if hasDate || hasSource {
+			t.Errorf("expected date fields to be omitted: %v", row)
+		}
+	} else if row["document_date"] != date || row["document_date_source"] != source {
+		t.Errorf("document_date=%v document_date_source=%v, want %s (%s)", row["document_date"], row["document_date_source"], date, source)
+	}
+}
+
+func writeEvidenceFixture(t *testing.T, query string, params map[string]any) {
+	t.Helper()
+	ctx := context.Background()
+	drv, err := neo4j.NewDriver(os.Getenv(graphtest.URIEnv), neo4j.NoAuth())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer drv.Close(ctx)
+	if _, err := neo4j.ExecuteQuery(ctx, drv, query, params, neo4j.EagerResultTransformer); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func deleteEvidenceDocument(t *testing.T, id string) {
+	t.Helper()
+	params := map[string]any{"id": id}
+	writeEvidenceFixture(t, "MATCH (d:Document {id:$id}) DETACH DELETE d", params)
+	t.Cleanup(func() {
+		// Reattach the chunks so the fixture's normal cleanup can remove its evidence.
+		writeEvidenceFixture(t, `CREATE (d:Document {id:$id})
+WITH d MATCH (c:Chunk {doc_id:$id}) CREATE (d)-[:HAS_CHUNK]->(c)`, params)
+	})
+}
+
+func TestGetChunksDocumentDateMCP(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	cs := connectInMemory(t, config.Config{}, st, nil)
+	for _, tc := range []struct {
+		name                          string
+		chunks, neighbours, wantCount int
+	}{
+		{"neighbours_zero", 2, 0, 1},
+		{"with_neighbour", 2, 1, 2},
+		{"single_chunk", 1, 2, 1},
+		{"orphan_chunk", 1, 2, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tok := mcpToken(t)
+			doc, err := st.UpsertDocument(ctx, graph.DocumentInput{
+				Kind: "text", Source: mcpSource(t), Hash: tok, DocumentDate: storedEvidenceDate,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := st.DeleteDocument(ctx, doc.ID); err != nil {
+					t.Error(err)
+				}
+			})
+			chunks := make([]graph.Chunk, tc.chunks)
+			for i := range chunks {
+				chunks[i] = graph.Chunk{Seq: i, Text: tok}
+			}
+			if err := st.PutChunks(ctx, doc.ID, chunks); err != nil {
+				t.Fatal(err)
+			}
+			date, source := evidenceDate, "caller"
+			if tc.name == "orphan_chunk" {
+				deleteEvidenceDocument(t, doc.ID)
+				date, source = "", ""
+				search := structured[struct{ Hits []map[string]any }](t,
+					callTool(t, cs, "search", map[string]any{"query": tok, "kind": "chunk"}))
+				if len(search.Hits) != 1 || search.Hits[0]["id"] != doc.ID+"-c0" {
+					t.Fatalf("orphan search hits = %v, want chunk %s-c0", search.Hits, doc.ID)
+				}
+				assertEvidenceDate(t, search.Hits[0], date, source)
+			}
+			out := structured[struct{ Chunks []map[string]any }](t, callTool(t, cs, "get_chunks",
+				map[string]any{"ids": []string{doc.ID + "-c0"}, "neighbours": tc.neighbours}))
+			if len(out.Chunks) != tc.wantCount || out.Chunks[0]["id"] != doc.ID+"-c0" {
+				t.Fatalf("chunks = %v, want %d including center %s-c0", out.Chunks, tc.wantCount, doc.ID)
+			}
+			for _, row := range out.Chunks {
+				assertEvidenceDate(t, row, date, source)
+			}
+		})
+	}
+}
+
 func TestGetChunksToolProductsLimit(t *testing.T) {
 	st := graphtest.Store(t)
 	drv, err := neo4j.NewDriver(os.Getenv(graphtest.URIEnv), neo4j.NoAuth())
@@ -270,6 +370,9 @@ func TestToolResultSizeGuidance(t *testing.T) {
 	}
 	for _, tool := range res.Tools {
 		if desc, ok := want[tool.Name]; ok {
+			if tool.Name == "get_chunks" && !strings.Contains(tool.Description, "document_date and document_date_source") {
+				t.Error("get_chunks description does not explain the document date fields")
+			}
 			if !strings.Contains(tool.Description, desc) {
 				t.Errorf("%s description=%q, want %q", tool.Name, tool.Description, desc)
 			}
@@ -373,10 +476,13 @@ func TestStatusToolLists(t *testing.T) {
 func TestSearchShapedHits(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()
-	doc, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: mcpSource(t), Hash: "hash-mcp-search"})
+	doc, err := st.UpsertDocument(ctx, graph.DocumentInput{
+		Kind: "file", Source: mcpSource(t), Hash: "hash-mcp-search", DocumentDate: storedEvidenceDate,
+	})
 	if err != nil {
 		t.Fatalf("UpsertDocument: %v", err)
 	}
+	t.Cleanup(func() { _ = st.DeleteDocument(ctx, doc.ID) })
 	tok := mcpToken(t)
 	text := "The " + tok + " guidance explains the procedure step by step."
 	if err := st.PutChunks(ctx, doc.ID, []graph.Chunk{{Seq: 0, Text: text, Start: 0, End: len(text)}}); err != nil {
@@ -390,23 +496,25 @@ func TestSearchShapedHits(t *testing.T) {
 
 	cs := connectInMemory(t, config.Config{}, st, nil)
 	res := callTool(t, cs, "search", map[string]any{"query": tok, "kind": "auto"})
-	out := structured[searchOut](t, res)
+	out := structured[struct{ Hits []map[string]any }](t, res)
 	var foundEntity, foundChunk bool
 	for _, hit := range out.Hits {
-		if hit.Kind == "entity" && hit.ID == graph.EntityID(key) {
+		if hit["kind"] == "entity" && hit["id"] == graph.EntityID(key) {
 			foundEntity = true
-			if hit.DocumentID != "" {
-				t.Errorf("entity hit carries document_id = %q, want empty", hit.DocumentID)
+			if _, present := hit["document_id"]; present {
+				t.Errorf("entity hit carries document_id = %v, want omitted", hit["document_id"])
 			}
+			assertEvidenceDate(t, hit, "", "")
 		}
-		if hit.Kind == "chunk" && hit.ID == doc.ID+"-c0" {
+		if hit["kind"] == "chunk" && hit["id"] == doc.ID+"-c0" {
 			foundChunk = true
-			if hit.DocumentID != doc.ID {
-				t.Errorf("chunk hit document_id = %q, want %s", hit.DocumentID, doc.ID)
+			if hit["document_id"] != doc.ID {
+				t.Errorf("chunk hit document_id = %v, want %s", hit["document_id"], doc.ID)
 			}
-			if !strings.Contains(hit.Snippet, tok) {
-				t.Errorf("chunk snippet = %q, want the token inside", hit.Snippet)
+			if snippet, _ := hit["snippet"].(string); !strings.Contains(snippet, tok) {
+				t.Errorf("chunk snippet = %q, want the token inside", snippet)
 			}
+			assertEvidenceDate(t, hit, evidenceDate, "caller")
 		}
 	}
 	if !foundEntity || !foundChunk {

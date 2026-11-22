@@ -40,6 +40,9 @@ type Hit struct {
 	Score   float64
 	Snippet string
 
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
+
 	mentions int
 }
 
@@ -255,6 +258,9 @@ func chunkHits(ctx context.Context, st Store, q string, limit int, slug string) 
 			DocID:   r.DocID,
 			Title:   r.Title,
 			Snippet: Snippet(r.Text, snippetQuery(q)),
+
+			DocumentDate:       r.DocumentDate,
+			DocumentDateSource: r.DocumentDateSource,
 		}
 	}
 	fused := FuseRanks([][]string{leg})

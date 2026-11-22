@@ -25,6 +25,10 @@ func TestChunkNeighbourhood(t *testing.T) {
 		_ = st.DeleteDocument(ctx, doc.ID)
 		_ = st.DeleteDocument(ctx, other.ID)
 	})
+	owner, err := st.Document(ctx, doc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	chunks := []graph.Chunk{
 		{Seq: 0, Text: "Zorbo starts."}, {Seq: 1, Text: "Acme-Max follows."},
 		{Seq: 2, Text: "Quillon Ltd continues."}, {Seq: 4, Text: "A sequence gap."},
@@ -60,6 +64,7 @@ func TestChunkNeighbourhood(t *testing.T) {
 			}
 			wantCenter, err := st.ChunkByID(ctx, id)
 			wantCenter = graph.Chunk{ID: wantCenter.ID, DocID: wantCenter.DocID, Seq: wantCenter.Seq, Text: wantCenter.Text}
+			wantCenter.DocumentDate, wantCenter.DocumentDateSource = owner.DocumentDate, owner.DocumentDateSource
 			if err != nil || !reflect.DeepEqual(center, wantCenter) {
 				t.Fatalf("center=%+v, want=%+v, err=%v", center, wantCenter, err)
 			}
@@ -71,6 +76,7 @@ func TestChunkNeighbourhood(t *testing.T) {
 				seqs = append(seqs, c.Seq)
 				wantChunk, err := st.ChunkByID(ctx, c.ID)
 				wantChunk = graph.Chunk{ID: wantChunk.ID, DocID: wantChunk.DocID, Seq: wantChunk.Seq, Text: wantChunk.Text}
+				wantChunk.DocumentDate, wantChunk.DocumentDateSource = owner.DocumentDate, owner.DocumentDateSource
 				if err != nil || !reflect.DeepEqual(c, wantChunk) {
 					t.Fatalf("neighbour=%+v, want=%+v, err=%v", c, wantChunk, err)
 				}

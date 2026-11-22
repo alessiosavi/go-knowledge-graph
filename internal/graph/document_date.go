@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 // time.Parse accepts some inputs outside RFC 3339, including a single-digit
@@ -47,4 +48,17 @@ func documentDateCypher(node string) (effective, origin string) {
 func documentDateColumns(node string) string {
 	effective, origin := documentDateCypher(node)
 	return effective + " AS document_date, " + origin + " AS document_date_source"
+}
+
+// recordDocumentDate decodes documentDateColumns. The origin is reported only
+// with a date, so a Document without any usable date omits both fields.
+func recordDocumentDate(r *neo4j.Record) (date *time.Time, source *string) {
+	parsed := parseTime(getString(r, "document_date")).UTC()
+	if parsed.IsZero() {
+		return nil, nil
+	}
+	if origin := getString(r, "document_date_source"); origin != "" {
+		source = &origin
+	}
+	return &parsed, source
 }

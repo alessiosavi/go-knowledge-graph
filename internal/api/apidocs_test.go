@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/docs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
@@ -182,6 +183,66 @@ func TestOpenAPIProductStoreWatermark(t *testing.T) {
 		if got := schema.Properties[name]; got != want || slices.Contains(schema.Required, name) {
 			t.Errorf("ProductStoreWatermark.%s = %+v, want optional %+v", name, got, want)
 		}
+	}
+}
+
+func TestOpenAPIEvidenceDocumentDateParity(t *testing.T) {
+	type property struct {
+		Type, Format string
+		Nullable     bool
+		Enum         []string
+	}
+	var spec struct {
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]property
+				Required   []string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatal(err)
+	}
+	for name, dto := range map[string]reflect.Type{
+		"Document":            reflect.TypeFor[documentDTO](),
+		"Hit":                 reflect.TypeFor[hitDTO](),
+		"Fact":                reflect.TypeFor[factDTO](),
+		"Edge":                reflect.TypeFor[edgeDTO](),
+		"ProductChunkMention": reflect.TypeFor[graph.ProductChunkMention](),
+	} {
+		t.Run(name, func(t *testing.T) {
+			schema := spec.Components.Schemas[name]
+			optionalPointers := make(map[string]reflect.Type)
+			for _, field := range reflect.VisibleFields(dto) {
+				name, options, _ := strings.Cut(field.Tag.Get("json"), ",")
+				if !field.IsExported() || name == "-" {
+					continue
+				}
+				if name == "" {
+					name = field.Name
+				}
+				if _, ok := schema.Properties[name]; !ok {
+					t.Errorf("JSON field %s missing from OpenAPI", name)
+				}
+				if slices.Contains(strings.Split(options, ","), "omitempty") {
+					optionalPointers[name] = field.Type
+				}
+			}
+			if optionalPointers["document_date"] != reflect.TypeFor[*time.Time]() ||
+				optionalPointers["document_date_source"] != reflect.TypeFor[*string]() {
+				t.Error("DTO must have optional pointer fields for document date and source")
+			}
+			for field, want := range map[string]property{
+				"document_date":        {Type: "string", Format: "date-time"},
+				"document_date_source": {Type: "string", Enum: []string{"caller", "ingest"}},
+			} {
+				got := schema.Properties[field]
+				if got.Type != want.Type || got.Format != want.Format || got.Nullable ||
+					!slices.Equal(got.Enum, want.Enum) || slices.Contains(schema.Required, field) {
+					t.Errorf("%s = %+v, want optional %+v", field, got, want)
+				}
+			}
+		})
 	}
 }
 

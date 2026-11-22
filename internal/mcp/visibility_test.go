@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"testing"
@@ -104,6 +105,55 @@ func TestConfirmedOnlyReadsMCP(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestFactAndEdgeDocumentDateMCP(t *testing.T) {
+	f := graphtest.Visibility(t)
+	cfg := config.Config{}
+	cfg.Facts.AllowUnverifiedReads = true
+	cs := connectInMemory(t, cfg, f.Store, nil)
+	params := map[string]any{"id": f.DocID, "date": storedEvidenceDate, "version": storedEvidenceVersion}
+	writeEvidenceFixture(t, "MATCH (d:Document {id:$id}) SET d.document_date=$date, d.version_at=$version", params)
+	for _, tc := range []struct {
+		name, date, source string
+	}{
+		{"caller", evidenceDate, "caller"},
+		{"ingest", evidenceVersion, "ingest"},
+		{"deleted_document", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			switch tc.name {
+			case "ingest":
+				writeEvidenceFixture(t, "MATCH (d:Document {id:$id}) REMOVE d.document_date", params)
+			case "deleted_document":
+				deleteEvidenceDocument(t, f.DocID)
+			}
+			for _, read := range []struct {
+				tool, field string
+				args        map[string]any
+			}{
+				{"get_entity", "facts", map[string]any{"id": f.ID, "include_unverified": true}},
+				{"traverse", "edges", map[string]any{"entity": f.ID, "direction": "both", "include_unverified": true}},
+			} {
+				t.Run(read.tool, func(t *testing.T) {
+					out := structured[map[string]json.RawMessage](t, callTool(t, cs, read.tool, read.args))
+					var rows []map[string]any
+					if err := json.Unmarshal(out[read.field], &rows); err != nil {
+						t.Fatal(err)
+					}
+					var rels []string
+					for _, row := range rows {
+						rels = append(rels, row["rel"].(string))
+						assertEvidenceDate(t, row, tc.date, tc.source)
+					}
+					slices.Sort(rels)
+					if want := []string{"advises", "pending_in", "pending_out", "unclear", "works_at"}; !slices.Equal(rels, want) {
+						t.Errorf("relations = %v, want %v", rels, want)
+					}
+				})
+			}
+		})
 	}
 }
 

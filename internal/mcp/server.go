@@ -180,6 +180,9 @@ type searchHit struct {
 	Score      float64 `json:"score"`
 	Snippet    string  `json:"snippet"`
 	DocumentID string  `json:"document_id,omitempty"`
+
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type searchOut struct {
@@ -210,6 +213,9 @@ type factOut struct {
 	DocID         string       `json:"doc_id"`
 	ChunkID       string       `json:"chunk_id"`
 	Excerpt       string       `json:"excerpt"`
+
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type entityOut struct {
@@ -249,6 +255,9 @@ type edgeOut struct {
 	DocID         string  `json:"doc_id"`
 	ChunkID       string  `json:"chunk_id"`
 	Excerpt       string  `json:"excerpt"`
+
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type traverseOut struct {
@@ -308,9 +317,8 @@ func registerTools(s *Server) {
 		Description: "One entity with aliases, co-mentions and evidenced facts. Low-confidence facts need include_low_confidence unless the judge confirmed them. A merge redirect includes requested and resolved_via=merged. Name lookup tries exact matches first, then verified folds marked match=fold. Unscoped ambiguous names return one candidate per domain.",
 	}, s.handleGetEntity)
 	addReadTool(s, &mcpgo.Tool{
-		Name: "get_chunks",
-		Description: "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids." +
-			chunkread.ProductsToolDescription,
+		Name:        "get_chunks",
+		Description: chunkread.ToolDescription + chunkread.ProductsToolDescription,
 		InputSchema: map[string]any{
 			"type": "object", "required": []string{"ids"}, "additionalProperties": false,
 			"properties": map[string]any{
@@ -456,7 +464,10 @@ func (s *Server) handleSearch(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	}
 	out := make([]searchHit, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, searchHit{Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID, Domain: h.Domain})
+		out = append(out, searchHit{
+			Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID, Domain: h.Domain,
+			DocumentDate: h.DocumentDate, DocumentDateSource: h.DocumentDateSource,
+		})
 	}
 	return nil, searchOut{Hits: out}, nil
 }
@@ -564,6 +575,9 @@ func (s *Server) handleTraverse(ctx context.Context, _ *mcpgo.CallToolRequest, a
 			DocID:         e.DocID,
 			ChunkID:       e.ChunkID,
 			Excerpt:       e.Excerpt,
+
+			DocumentDate:       e.DocumentDate,
+			DocumentDateSource: e.DocumentDateSource,
 		})
 	}
 	var hidden *graph.HiddenCounts
@@ -696,6 +710,9 @@ func toEntityOut(view graph.EntityView) entityOut {
 			DocID:         f.DocID,
 			ChunkID:       f.ChunkID,
 			Excerpt:       f.Excerpt,
+
+			DocumentDate:       f.DocumentDate,
+			DocumentDateSource: f.DocumentDateSource,
 		})
 	}
 	together := make([]coMentionOut, 0, len(view.Together))

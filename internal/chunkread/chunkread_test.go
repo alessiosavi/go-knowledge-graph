@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
@@ -237,6 +238,28 @@ func TestReadMissingAndJSONKeys(t *testing.T) {
 		}
 	}
 	assertKeys(decoded["chunks"].([]any)[0].(map[string]any), "id", "doc_id", "seq", "text")
+}
+
+func TestReadDocumentDateJSON(t *testing.T) {
+	date := time.Date(2024, time.March, 1, 0, 0, 0, 0, time.UTC)
+	source := "caller"
+	st := &fakeStore{chunks: []graph.Chunk{
+		{ID: "c0", DocID: "d1", Seq: 0, DocumentDate: &date, DocumentDateSource: &source},
+		{ID: "c1", DocID: "d1", Seq: 1, DocumentDate: &date, DocumentDateSource: &source},
+	}}
+	result, err := Read(t.Context(), st, Request{IDs: []string{"c0"}, Neighbours: 1})
+	if err != nil || len(result.Chunks) != 2 {
+		t.Fatalf("read = %+v, %v", result, err)
+	}
+	var wire struct{ Chunks []map[string]any }
+	if err := json.Unmarshal(resultJSON(t, result), &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range wire.Chunks {
+		if item["document_date"] != "2024-03-01T00:00:00Z" || item["document_date_source"] != "caller" {
+			t.Errorf("chunk %s lost document date metadata: %v", item["id"], item)
+		}
+	}
 }
 
 func TestReadStoreErrors(t *testing.T) {
