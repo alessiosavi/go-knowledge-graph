@@ -249,9 +249,22 @@ func (c *client) streamState() (unsupported, contentOnly bool) {
 	return c.streamUnsupported, c.contentOnlyStreaming
 }
 
+// ResolveEndpoint returns the effective base URL and model for agent requests.
+func ResolveEndpoint(cfg config.AgentConfig) (base, model string) {
+	base = strings.TrimRight(cfg.BaseURL, "/")
+	if base == "" {
+		base = config.DefaultAgentBaseURL
+	}
+	model = cfg.Model
+	if model == "" {
+		model = config.DefaultAgentModel
+	}
+	return base, model
+}
+
 // newClient builds the chat client from the Agent configuration.
 func newClient(cfg config.AgentConfig) *client {
-	base, model := providerEndpoint(cfg)
+	base, model := ResolveEndpoint(cfg)
 	c := &client{
 		baseURL: base,
 		apiKey:  cfg.APIKey,
@@ -264,18 +277,6 @@ func newClient(cfg config.AgentConfig) *client {
 		c.http.CheckRedirect = llmauth.RejectRedirect
 	}
 	return c
-}
-
-func providerEndpoint(cfg config.AgentConfig) (base, model string) {
-	base = strings.TrimRight(cfg.BaseURL, "/")
-	if base == "" {
-		base = "https://api.openai.com/v1"
-	}
-	model = cfg.Model
-	if model == "" {
-		model = "deepseek-v4.1-flash"
-	}
-	return base, model
 }
 
 // preparedAuthorization carries the SSE preflight credential into the

@@ -43,7 +43,7 @@ func WithEvalTokenProvider(tokens llmauth.TokenProvider) EvalOption {
 
 // EvalEndpoint returns the effective model and host for ledger validation.
 func EvalEndpoint(cfg config.AgentConfig) (model, host string, err error) {
-	base, model := providerEndpoint(cfg)
+	base, model := ResolveEndpoint(cfg)
 	u, err := url.Parse(base)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" ||
 		u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
@@ -55,7 +55,7 @@ func EvalEndpoint(cfg config.AgentConfig) (model, host string, err error) {
 // NormalizeEvalAsk uses the JSON endpoint's request validation before the
 // runner sends any ask from the frozen input.
 func NormalizeEvalAsk(cfg config.AgentConfig, req AskRequest) (AskRequest, error) {
-	_, model := providerEndpoint(cfg)
+	_, model := ResolveEndpoint(cfg)
 	return normalizeAskQuestion(req, configuredGeneration(cfg, model))
 }
 

@@ -645,10 +645,10 @@ from the selected preset. Each chunk has one result row with the document's stor
 `labels` and a `label_mismatch` flag. Older samples without stored labels
 show `null` for `labels`.
 
-Replay checks sidecar health once for a nonempty sample and batches each
-document's nonduplicate chunks (every chunk with `-no-borrow`) in sequence
-order as ingest does. In replay,
-each batch must return exactly one result for every requested chunk ID.
+Replay checks sidecar health once for a nonempty sample. Pinned replays check
+sidecar health even for an empty sample. Replay batches each document's
+nonduplicate chunks (every chunk with `-no-borrow`) in sequence order as
+ingest does. Each batch must return exactly one result for every requested chunk ID.
 Missing, duplicate or unrequested IDs fail the batch, which is retried one
 chunk at a time. Predictions for chunks with zero extracted relations are
 `empty`. Each relation occurrence
@@ -692,10 +692,12 @@ gkg eval -replay sample.jsonl -predictions predictions.jsonl -labels general \
 Split a graph sample by its stored `labels` and replay one preset per file.
 `-judge-inputs` requires `-pins`. You can also use `-pins` with predictions alone.
 Pinned replay uses the pinned write mode and confidence floors. It checks the
-graph schema, stoplist, selected preset and configured sidecar model. If the
-configured sidecar image includes a digest, replay checks it against the pin.
-The predictions header records `backup_tar_sha256` and the pinned
-`sidecar_image_digest`.
+graph schema, stoplist and selected preset. The pin binds the configured
+sidecar model label. When the configured image includes a digest, replay checks
+it against the pin. The predictions header records the model reported by
+`/healthz` as `sidecar_model`, along with the pinned `source`,
+`backup_tar_sha256` and `sidecar_image_digest`. A health check error or a missing
+reported model exits 2 before writing any replay artifact.
 
 The pins object requires `source`, `backup_tar_sha256`, `schema_version`,
 `write_mode` (`hygiene`, `domains`, `facts_as_candidates`), `store_floor`,
@@ -794,14 +796,15 @@ This command reads local configuration and prints one JSON object without
 opening Memgraph or calling a provider. Load it with the arm's production
 environment, including its production judge mode. `projection` contains the
 judge and agent request settings and prompt hashes, plus GCP, embedder and read
-limits. `hash` is the lowercase SHA-256 of the projection's compact JSON with
-sorted keys and HTML escaping disabled. `asserted` records the loaded
-production values for judge mode and sampling, fact visibility, ingest floors
-and whether the agent is enabled. Eval commands run without judge workers, so
-`overrides.judge.mode` is always `off`. The rest of `overrides` records the
-configured graph URI and server settings. Both blocks are excluded from the
-hash. The server API key and endpoint credentials use literal `<set>` or
-`<unset>` markers.
+limits. The judge model and base URL use the same defaults and URL
+normalization as the judge client. `hash` is the lowercase SHA-256 of the
+projection's compact JSON with sorted keys and HTML escaping disabled.
+`asserted` records the loaded production values for judge mode and sampling,
+fact visibility, ingest floors and whether the agent is enabled. Eval commands
+run without judge workers, so `overrides.judge.mode` is always `off`.
+The rest of `overrides` records the configured graph URI and server settings.
+Both blocks are excluded from the hash. The server API key and endpoint
+credentials use literal `<set>` or `<unset>` markers.
 
 Exit codes are 0 for success, 1 for a configuration or output error, and 2
 for incorrect usage. `gkg eval-settings -h` prints usage to stdout and exits 0.
@@ -943,7 +946,9 @@ gkg judge eval run --in frozen.jsonl --out verdicts-DS.jsonl \
 - `--family J|S` defaults to `J` for judge runs. Use `S` for smoke, probe or
   warm-up runs.
 - `--manifest` identifies the frozen set. Resume with the same manifest, arm
-  and model to skip items already final in `--out`.
+  and model to skip items already final in `--out`. Resume drops a final
+  line missing its newline, reports the discarded byte count to stderr and
+  retries that item. A malformed line that ends in a newline exits 2.
 - `--run-id` and `--allotment` select the run's budget in USD.
 
 The eval kit's `run.sh init-ledger` writes one header JSON line per provider

@@ -22,6 +22,21 @@ import (
 // defaultModel is used when Embedder.Model is empty for the OpenAI provider.
 const defaultModel = "text-embedding-3-small"
 
+// ResolveModel returns the configured model or the selected provider's default.
+func ResolveModel(provider, model string) string {
+	if model != "" {
+		return model
+	}
+	switch provider {
+	case "", "openai":
+		return defaultModel
+	case "furls":
+		return furlsDefaultModel
+	default:
+		return model
+	}
+}
+
 // Provider embeds texts; implementations are safe for concurrent use.
 // Documents (ingest) and queries (search) go through separate methods: the
 // furls service packs a different prompt prefix per side, so the two must
@@ -45,15 +60,11 @@ type OpenAI struct {
 // NewOpenAI builds the client from Embedder config; an empty model falls
 // back to defaultModel. Dim > 0 is validated against every response.
 func NewOpenAI(cfg config.Config) *OpenAI {
-	model := cfg.Embedder.Model
-	if model == "" {
-		model = defaultModel
-	}
 	return &OpenAI{
 		client:  &http.Client{Timeout: 30 * time.Second},
 		baseURL: strings.TrimRight(cfg.Embedder.BaseURL, "/"),
 		apiKey:  cfg.Embedder.APIKey,
-		model:   model,
+		model:   ResolveModel("openai", cfg.Embedder.Model),
 		dim:     cfg.Embedder.Dim,
 	}
 }

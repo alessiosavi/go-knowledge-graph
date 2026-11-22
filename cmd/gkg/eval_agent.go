@@ -293,7 +293,7 @@ func readEvalAgentQuestions(opt evalAgentOptions, cfg config.AgentConfig) ([]eva
 		ids[row.ID] = true
 		questions = append(questions, evalAgentQuestion{id: row.ID, ask: req, sse: *row.SSE})
 		return nil
-	})
+	}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +350,7 @@ func openEvalAgentResume(opt evalAgentOptions, model string, ledgerInfo os.FileI
 		}
 		done[row.ID] = true
 		return nil
-	})
+	}, nil)
 	if err != nil {
 		_ = f.Close()
 		return nil, nil, err

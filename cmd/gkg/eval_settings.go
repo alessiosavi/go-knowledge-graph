@@ -15,6 +15,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/agent"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/embed"
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
 )
 
@@ -78,14 +79,17 @@ func runEvalSettings(args []string, stdout, stderr io.Writer) int {
 }
 
 func evalSettingsProjection(cfg config.Config) map[string]any {
+	judgeBase, judgeModel := judge.ResolveEndpoint(cfg.Judge)
+	agentBase, agentModel := agent.ResolveEndpoint(cfg.Agent)
+	embedderModel := embed.ResolveModel(cfg.Embedder.Provider, cfg.Embedder.Model)
 	return map[string]any{
 		"judge": map[string]any{
-			"auth": cfg.Judge.Auth, "base_url": redactSettingsURL(cfg.Judge.BaseURL), "model": cfg.Judge.Model,
+			"auth": cfg.Judge.Auth, "base_url": redactSettingsURL(judgeBase), "model": judgeModel,
 			"temperature": cfg.Judge.Temperature, "max_tokens": cfg.Judge.MaxTokens, "reasoning_effort": cfg.Judge.ReasoningEffort,
 			"prompt_version": judge.PromptVersion, "prompt_sha256": settingsSHA256([]byte(judge.Prompt())),
 		},
 		"agent": map[string]any{
-			"auth": cfg.Agent.Auth, "base_url": redactSettingsURL(cfg.Agent.BaseURL), "model": cfg.Agent.Model,
+			"auth": cfg.Agent.Auth, "base_url": redactSettingsURL(agentBase), "model": agentModel,
 			"temperature": cfg.Agent.Temperature, "max_tokens": cfg.Agent.MaxTokens, "reasoning_efforts": cfg.Agent.ReasoningEfforts,
 			"stream": cfg.Agent.Stream, "max_steps": cfg.Agent.MaxSteps, "timeout_s": cfg.Agent.TimeoutS,
 			"context_budget_kb": cfg.Agent.ContextBudgetKB, "top_k_enabled": cfg.Agent.TopKEnabled,
@@ -97,7 +101,7 @@ func evalSettingsProjection(cfg config.Config) map[string]any {
 		},
 		"embedder": map[string]any{
 			"enabled": cfg.Embedder.Enabled, "provider": cfg.Embedder.Provider,
-			"base_url": redactSettingsURL(cfg.Embedder.BaseURL), "model": cfg.Embedder.Model, "dim": cfg.Embedder.Dim,
+			"base_url": redactSettingsURL(cfg.Embedder.BaseURL), "model": embedderModel, "dim": cfg.Embedder.Dim,
 			"query_furl": redactSettingsURL(cfg.Embedder.QueryFURL), "product_furl": redactSettingsURL(cfg.Embedder.ProductFURL),
 			"batch_size": cfg.Embedder.BatchSize,
 		},

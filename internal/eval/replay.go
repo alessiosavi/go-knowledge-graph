@@ -36,6 +36,7 @@ type replayHeader struct {
 	GKGVersion         string                `json:"gkg_version"`
 	AttemptID          string                `json:"attempt_id,omitempty"`
 	NoBorrow           bool                  `json:"no_borrow,omitempty"`
+	Source             string                `json:"source,omitempty"`            // present in every pinned replay
 	BackupSHA256       *string               `json:"backup_tar_sha256,omitempty"` // present in every pinned replay
 }
 
@@ -207,13 +208,11 @@ func replay(ctx context.Context, cfg config.Config, input, presetName, gkgVersio
 			mismatches = append(mismatches, replayLabelMismatch{DocID: d.DocID, Labels: *d.Labels})
 		}
 	}
-	var backupSHA256 *string
 	if pins != nil {
 		if err := pins.checkPreset(presetName, preset); err != nil {
 			return ReplayCounts{}, err
 		}
 		cfg.Ingest.StoreFloor, cfg.Ingest.AssertFloor = pins.StoreFloor, pins.AssertFloor
-		backupSHA256 = &pins.BackupSHA256
 	}
 	if digest == "unknown" {
 		fmt.Fprintln(stderr, "gkg eval: warning: sidecar image digest is unknown")
@@ -226,10 +225,12 @@ func replay(ctx context.Context, cfg config.Config, input, presetName, gkgVersio
 	counts := ReplayCounts{Chunks: frozen.Header.Counts.Chunks}
 	model := ""
 	var healthErr error
-	if counts.Chunks > 0 {
+	if counts.Chunks > 0 || pins != nil {
 		model, healthErr = provider.HealthModel(ctx)
-		if pins != nil && healthErr != nil {
-			return counts, healthErr
+	}
+	if pins != nil {
+		if err := checkSidecarHealth(model, healthErr); err != nil {
+			return counts, err
 		}
 	}
 	header := replayHeader{
@@ -238,7 +239,10 @@ func replay(ctx context.Context, cfg config.Config, input, presetName, gkgVersio
 		WriteMode:       replayWriteMode{Hygiene: mode.Hygiene, Domains: mode.Domains, FactsAsCandidates: mode.RequireConfirmation},
 		Hygiene:         preset.Hygiene, StoreFloor: cfg.Ingest.StoreFloor, AssertFloor: cfg.Ingest.AssertFloor,
 		SidecarModel: model, SidecarImage: image, SidecarImageDigest: digest,
-		ExtractorVersion: extractorVersion, GKGVersion: gkgVersion, NoBorrow: noBorrow, BackupSHA256: backupSHA256,
+		ExtractorVersion: extractorVersion, GKGVersion: gkgVersion, NoBorrow: noBorrow,
+	}
+	if pins != nil {
+		header.Source, header.BackupSHA256 = pins.Source, &pins.BackupSHA256
 	}
 	if mentions != nil {
 		mentions.counts.ChunksRequested = counts.Chunks

@@ -68,6 +68,9 @@ type OpenAIConfig struct {
 	Model   string `yaml:"model"`
 }
 
+// DefaultSidecarModel is the model used when no sidecar model is specified.
+const DefaultSidecarModel = "glinerel-314m"
+
 // SidecarConfig configures the local GLiNEREL sidecar.
 type SidecarConfig struct {
 	URL      string `yaml:"url"`
@@ -131,6 +134,13 @@ type DomainConfig struct {
 	TauOverride float64 `yaml:"tau_override"`
 	SeedFile    string  `yaml:"seed_file"`
 }
+
+const (
+	// DefaultAgentBaseURL is the base URL used when no agent endpoint is specified.
+	DefaultAgentBaseURL = "https://api.openai.com/v1"
+	// DefaultAgentModel is the model used when no agent model is specified.
+	DefaultAgentModel = "deepseek-v4.1-flash"
+)
 
 // AgentConfig configures the optional "Ask the graph" LLM agent served at
 // POST /v1/agent/ask. Disabled by default; the endpoint answers 501 while
@@ -200,7 +210,7 @@ func defaults() Config {
 		Extractor: ExtractorConfig{
 			Mode:    "sidecar",
 			OpenAI:  OpenAIConfig{BaseURL: "https://api.openai.com/v1", Model: "deepseek-v4.1-flash"},
-			Sidecar: SidecarConfig{URL: "http://localhost:8090", Model: "glinerel-314m", TimeoutS: 300},
+			Sidecar: SidecarConfig{URL: "http://localhost:8090", Model: DefaultSidecarModel, TimeoutS: 300},
 		},
 		Embedder: EmbedderConfig{
 			Enabled: false,
@@ -230,8 +240,8 @@ func defaults() Config {
 			Auth:            AuthStatic,
 			Enabled:         false,
 			Stream:          true,
-			BaseURL:         "https://api.openai.com/v1",
-			Model:           "deepseek-v4.1-flash",
+			BaseURL:         DefaultAgentBaseURL,
+			Model:           DefaultAgentModel,
 			MaxSteps:        6,
 			TimeoutS:        60,
 			ContextBudgetKB: 256,

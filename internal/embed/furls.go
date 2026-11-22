@@ -64,17 +64,13 @@ type Furls struct {
 // positive BatchSize caps the entries per request (0 = one request per
 // call, up to whatever the caller passes).
 func NewFurls(cfg config.Config) *Furls {
-	model := cfg.Embedder.Model
-	if model == "" {
-		model = furlsDefaultModel
-	}
 	return &Furls{
 		productClient: &http.Client{Timeout: furlsProductTimeout},
 		queryClient:   &http.Client{Timeout: furlsQueryTimeout},
 		productURL:    cfg.Embedder.ProductFURL,
 		queryURL:      cfg.Embedder.QueryFURL,
 		apiKey:        cfg.Embedder.APIKey,
-		model:         model,
+		model:         ResolveModel("furls", cfg.Embedder.Model),
 		dim:           cfg.Embedder.Dim,
 		batchSize:     cfg.Embedder.BatchSize,
 	}
