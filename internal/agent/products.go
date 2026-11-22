@@ -47,15 +47,18 @@ func (s *Server) toolGetProduct(ctx context.Context, raw json.RawMessage) (any, 
 	if err := decodeArgs(raw, &args); err != nil {
 		return nil, err
 	}
+	if scope := requestDomain(ctx); scope != "" {
+		if args.Domain != "" && args.Domain != scope {
+			return nil, argerr.New("domain outside the request scope")
+		}
+		args.Domain, args.SeedDomain = scope, scope
+	}
 	detail, err := s.store.GetProduct(ctx, args)
 	if errors.Is(err, graph.ErrProductReadInput) {
 		return nil, argerr.Wrap(err)
 	}
 	if err != nil {
 		return nil, err
-	}
-	if scope := requestDomain(ctx); scope != "" && detail.Domain != scope {
-		return nil, graph.ErrNotFound
 	}
 	return fitProductResult(len(detail.Features), func(n int) productDetailOut {
 		out := productDetailOut{ProductDetail: detail, FeaturesOmitted: len(detail.Features) - n}

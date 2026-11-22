@@ -3,9 +3,11 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	mcpgo "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
@@ -14,6 +16,9 @@ func (s *Server) handleGetProduct(ctx context.Context, _ *mcpgo.CallToolRequest,
 		return nil, graph.ProductDetail{}, errNoStore
 	}
 	out, err := s.store.GetProduct(ctx, args)
+	if errors.Is(err, graph.ErrProductReadInput) {
+		return nil, out, argerr.Wrap(err)
+	}
 	return nil, out, err
 }
 

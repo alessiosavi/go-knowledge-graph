@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,8 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 func TestProductToolSchemas(t *testing.T) {
@@ -24,7 +27,7 @@ func TestProductToolSchemas(t *testing.T) {
 		fields   map[string]string
 		required []string
 	}{
-		{"get_product", map[string]string{"id": "string", "store": "string", "product_id": "string"}, nil},
+		{"get_product", map[string]string{"id": "string", "store": "string", "product_id": "string", "domain": "string"}, nil},
 		{"find_products", map[string]string{"domain": "string", "feature": "string", "value": "string", "min": "string", "max": "string", "limit": "integer", "cursor": "string"}, []string{"feature"}},
 		{"list_features", map[string]string{"query": "string"}, nil},
 	} {
@@ -61,6 +64,7 @@ func TestProductToolArgumentErrors(t *testing.T) {
 		{"find_products", `{"feature":"color","value":"red","min":"1"}`, ""},
 		{"find_products", `{"domain":"other","feature":"color","value":"red"}`, "domain outside the request scope"},
 		{"get_product", `{"store":"example.test"}`, ""},
+		{"get_product", `{"id":"product","domain":"other"}`, "domain outside the request scope"},
 		{"list_features", `{"query":false}`, ""},
 	} {
 		_, err := s.execTool(ctx, tc.tool, json.RawMessage(tc.args))
@@ -68,6 +72,73 @@ func TestProductToolArgumentErrors(t *testing.T) {
 		if !errors.As(err, &invalid) || (tc.message != "" && err.Error() != tc.message) {
 			t.Errorf("%s %s = %v, want argument error %q", tc.tool, tc.args, err, tc.message)
 		}
+	}
+}
+
+func TestGetProductRejectsInvalidDomain(t *testing.T) {
+	s := NewServer(config.Config{}, &graph.Store{}, nil)
+	_, err := s.execTool(t.Context(), "get_product", json.RawMessage(`{"id":"product","domain":"Bad!"}`))
+	var invalid argerr.Error
+	if !errors.As(err, &invalid) || !strings.Contains(err.Error(), "invalid domain slug") {
+		t.Errorf("get_product error = %v, want invalid domain argument error", err)
+	}
+}
+
+func TestGetProductUsesAgentRequestScope(t *testing.T) {
+	st := graphtest.Store(t)
+	ctx := context.Background()
+	drv, err := neo4j.NewDriver(os.Getenv(graphtest.URIEnv), neo4j.NoAuth())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer drv.Close(ctx)
+	session := drv.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+	defer session.Close(ctx)
+	write := func(query string) error {
+		rows, err := session.Run(ctx, query, nil)
+		if err == nil {
+			_, err = rows.Consume(ctx)
+		}
+		return err
+	}
+	if err := write(`
+CREATE (:Product {id:'agent-ref-product', domain:'agent-catalog'}),
+       (a:ProductRef {id:'agent-ref-product'}),
+       (:Document {id:'agent-local-page', domain:'agent-catalog', status:'done', source:'local', source_kind:'text'})-[:REFS]->(a),
+       (:Document {id:'agent-remote-page', domain:'agent-other', status:'done', source:'remote', source_kind:'text'})-[:REFS]->(a)`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := write(`MATCH (n) WHERE n.id IN ['agent-ref-product','agent-local-page','agent-remote-page'] DETACH DELETE n`); err != nil {
+			t.Error(err)
+		}
+	}()
+	s := NewServer(config.Config{}, st, nil)
+	const args = `{"id":"agent-ref-product"}`
+	for _, tc := range []struct {
+		scope, args string
+		pages       []string
+	}{
+		{"", args, []string{"agent-local-page", "agent-remote-page"}},
+		{"agent-catalog", args, []string{"agent-local-page"}},
+		{"", `{"id":"agent-ref-product","domain":"agent-other"}`, []string{"agent-remote-page"}},
+	} {
+		res, err := s.execTool(withDomain(ctx, tc.scope), "get_product", json.RawMessage(tc.args))
+		if err != nil {
+			t.Errorf("scope %q, args %s: %v", tc.scope, tc.args, err)
+			continue
+		}
+		out := unmarshalResult[productDetailOut](t, res)
+		var pages []string
+		for _, page := range out.Pages {
+			pages = append(pages, page.ID)
+		}
+		if !slices.Equal(pages, tc.pages) || out.PagesMissing {
+			t.Errorf("scope %q, args %s: pages %v, pages_missing %v, want %v", tc.scope, tc.args, pages, out.PagesMissing, tc.pages)
+		}
+	}
+	if _, err := s.execTool(withDomain(ctx, "agent-other"), "get_product", json.RawMessage(args)); !errors.Is(err, graph.ErrNotFound) {
+		t.Errorf("out-of-scope seed: %v, want not found", err)
 	}
 }
 

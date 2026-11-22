@@ -837,6 +837,37 @@ func TestSpoolConcurrentAdmissionCap(t *testing.T) {
 	}
 }
 
+func TestSpoolCapsCountBackups(t *testing.T) {
+	for _, limit := range []string{"count", "bytes"} {
+		t.Run(limit, func(t *testing.T) {
+			p, st := spoolPipeline(t)
+			first := submitSpool(t, p, Input{Text: "First."})
+			path := spoolPath(p, first.DocumentID)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backup := path + spoolBackupSuffix
+			if err := os.WriteFile(backup, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if limit == "count" {
+				p.spool.maxCount = 2
+			} else {
+				p.spool.maxBytes = 2 * int64(len(data))
+			}
+			in := Input{Text: "Other."}
+			if _, err := p.Submit(t.Context(), in); !errors.Is(err, ErrSpoolFull) || len(st.docs) != 1 || len(p.jobs) != 1 {
+				t.Fatalf("cap with backup: %v, docs %d jobs %d", err, len(st.docs), len(p.jobs))
+			}
+			if err := os.Remove(backup); err != nil {
+				t.Fatal(err)
+			}
+			submitSpool(t, p, in)
+		})
+	}
+}
+
 func TestTransientGraphFailurePreservesPayload(t *testing.T) {
 	p, st := spoolPipeline(t)
 	res := submitSpool(t, p, Input{Text: "Keep this text."})

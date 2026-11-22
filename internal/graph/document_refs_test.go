@@ -197,6 +197,23 @@ func TestDocumentProductRefAnchorSurvivesProductWrites(t *testing.T) {
 			}
 		}
 	})
+	if err := f.store.SetStatus(ctx, res.ID, StatusDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	assertPages := func(title string, want ...string) {
+		t.Helper()
+		out, err := f.store.GetProduct(ctx, ProductLookup{ID: params["id"].(string)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, page := range out.Pages {
+			ids = append(ids, page.ID)
+		}
+		if out.Title != title || !slices.Equal(ids, want) || out.PagesMissing != (len(want) == 0) {
+			t.Errorf("product %q = title %q, pages %v, pages_missing %v, want pages %v", title, out.Title, ids, out.PagesMissing, want)
+		}
+	}
 	const anchorQuery = `
 MATCH (:Document {id:$doc})-[:REFS]->(a:ProductRef)
 WHERE a.id = $id RETURN id(a), a.store, a.product_id`
@@ -208,8 +225,11 @@ WHERE a.id = $id RETURN id(a), a.store, a.product_id`
 	b := pushRecord(pushOne, "B", "null", `{"scalar":"A2"}`)
 	c := pushRecord(pushOne, "C", "null", `{"scalar":"A3"}`)
 	f.snapshot(pushA, 1, "imported", a)
+	assertPages("A", res.ID)
 	f.snapshot(pushA, 2, "imported", b)
+	assertPages("B", res.ID)
 	f.put(3, c, "updated")
+	assertPages("C", res.ID)
 	if after := f.query(anchorQuery, params); !reflect.DeepEqual(after, before) {
 		t.Errorf("anchor after re-import and push = %v, want %v", after, before)
 	}
@@ -219,6 +239,7 @@ WHERE a.id = $id RETURN id(a), a.store, a.product_id`
 	if err := f.store.DeleteDocument(ctx, res.ID); err != nil {
 		t.Fatal(err)
 	}
+	assertPages("C")
 	if got := f.query(`
 MATCH (a:ProductRef {id:$id}) OPTIONAL MATCH (:Document)-[r:REFS]->(a)
 RETURN id(a), count(r)`, params); !reflect.DeepEqual(got, [][]any{{before[0][0], int64(0)}}) {

@@ -156,6 +156,7 @@ type documentOut struct {
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	Supersedes string    `json:"supersedes,omitempty"`
+	Products   []string  `json:"products,omitempty" jsonschema:"Canonical list of store-prefixed product IDs referenced by this document"`
 }
 
 type statusOut struct {
@@ -637,6 +638,7 @@ func toDocumentOut(d graph.Document) documentOut {
 		CreatedAt:  d.CreatedAt,
 		UpdatedAt:  d.UpdatedAt,
 		Supersedes: d.Supersedes,
+		Products:   d.ProductRefs,
 	}
 }
 

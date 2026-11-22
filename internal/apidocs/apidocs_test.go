@@ -2,14 +2,47 @@ package apidocs
 
 import (
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
 	"testing"
 
+	"go.yaml.in/yaml/v4"
 	"golang.org/x/net/html"
 )
+
+func TestDocumentProductsOpenAPI(t *testing.T) {
+	w := httptest.NewRecorder()
+	Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("OpenAPI response status = %d", w.Code)
+	}
+	type property struct {
+		Type  string
+		Items struct{ Type string }
+	}
+	var spec struct {
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]property
+				Required   []string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(w.Body.Bytes(), &spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Document", "Status"} {
+		schema := spec.Components.Schemas[name]
+		products := schema.Properties["products"]
+		if products.Type != "array" || products.Items.Type != "string" || slices.Contains(schema.Required, "products") {
+			t.Errorf("%s.products = %+v, want an optional string array", name, products)
+		}
+	}
+}
 
 // These are the complete publicly served files; adding one requires updating
 // the exact bearer exemptions and their API-level tests.

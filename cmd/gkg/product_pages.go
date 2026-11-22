@@ -35,8 +35,8 @@ func runProductPagesReport(args []string, stdout, stderr io.Writer) int {
 			return err
 		}
 		for _, r := range reports {
-			if _, err := fmt.Fprintf(stdout, "store=%s domain=%s zero=%d one=%d multiple=%d missing_product_ids=%v\n",
-				r.Store, r.Domain, r.Zero, r.One, r.Multiple, r.MissingProductIDs); err != nil {
+			if _, err := fmt.Fprintf(stdout, "store=%s domain=%s zero=%d one=%d multiple=%d missing_product_ids=%v total=%d refs=%d url=%d\n",
+				r.Store, r.Domain, r.Zero, r.One, r.Multiple, r.MissingProductIDs, r.Total, r.Refs, r.URL); err != nil {
 				return err
 			}
 		}

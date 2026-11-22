@@ -21,10 +21,13 @@ type ProductLookup struct {
 	ID        string `json:"id,omitempty" jsonschema:"Graph product ID"`
 	Store     string `json:"store,omitempty" jsonschema:"Store for an exact lookup by product_id"`
 	ProductID string `json:"product_id,omitempty" jsonschema:"Full source product ID including its store prefix"`
+	Domain    string `json:"domain,omitempty" jsonschema:"Optional domain slug for associated pages; empty includes all domains"`
+	// SeedDomain enforces a server-side request scope on the product itself.
+	SeedDomain string `json:"-"`
 }
 
 const ProductLookupDescription = "Get a product with its active feature observations and up to three associated pages (pages_missing when none). " +
-	"Provide id, or both store and the full source product_id."
+	"Provide id, or both store and the full source product_id. The optional domain filters associated pages."
 
 type Product struct {
 	ID          string  `json:"id"`
@@ -79,7 +82,8 @@ type ProductDetail struct {
 // yields a null page_domain.
 const getProductQuery = `
 MATCH (p:Product {id:$id})
-WHERE $store = '' OR (p.store = $store AND p.product_id = $product)
+WHERE ($store = '' OR (p.store = $store AND p.product_id = $product))
+  AND ($seed_domain = '' OR p.domain = $seed_domain)
 OPTIONAL MATCH (s:ProductStore {store:p.store})
 OPTIONAL MATCH (m:GkgMeta {id:'product_release'})
 OPTIONAL MATCH (p)-[e:HAS_FEATURE]->(f:FeatureRev)
@@ -89,7 +93,6 @@ RETURN properties(p) AS product, CASE WHEN s.domain IS NOT NULL THEN s.domain EL
 ORDER BY f.id, e.source_key`
 
 // GetProduct reads the product, active observations, and pages in one snapshot.
-// The page statement uses URL candidates derived from the product link in Go.
 func (s *Store) GetProduct(ctx context.Context, lookup ProductLookup) (ProductDetail, error) {
 	id := lookup.ID
 	switch {
@@ -99,9 +102,14 @@ func (s *Store) GetProduct(ctx context.Context, lookup ProductLookup) (ProductDe
 	default:
 		return ProductDetail{}, fmt.Errorf("%w: provide id or both store and product_id", ErrProductReadInput)
 	}
+	if lookup.Domain != "" && !ValidDomain(lookup.Domain) {
+		return ProductDetail{}, fmt.Errorf("%w: invalid domain slug", ErrProductReadInput)
+	}
 	var out ProductDetail
 	err := s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
-		rows, err := txRows(ctx, tx, getProductQuery, map[string]any{"id": id, "store": lookup.Store, "product": lookup.ProductID})
+		rows, err := txRows(ctx, tx, getProductQuery, map[string]any{
+			"id": id, "store": lookup.Store, "product": lookup.ProductID, "seed_domain": lookup.SeedDomain,
+		})
 		if err != nil {
 			return err
 		}
@@ -109,7 +117,7 @@ func (s *Store) GetProduct(ctx context.Context, lookup ProductLookup) (ProductDe
 		if err != nil {
 			return err
 		}
-		out.Pages, err = txProductPages(ctx, tx, getString(rows[0], "page_domain"), out.Link)
+		out.Pages, err = txProductPages(ctx, tx, out.ID, getString(rows[0], "page_domain"), out.Link, lookup.Domain)
 		out.PagesMissing = len(out.Pages) == 0
 		return err
 	})

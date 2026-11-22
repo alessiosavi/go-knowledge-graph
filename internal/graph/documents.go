@@ -717,6 +717,7 @@ func (s *Store) DocumentsIn(ctx context.Context, status Status, slug string, lim
  coalesce(d.title, '') AS title, coalesce(d.title_source, '') AS title_source,
  d.hash AS hash, d.status AS status, d.error AS error,
  coalesce(d.labels, '') AS labels, d.domain AS domain,
+ d.product_refs_raw AS product_refs_raw,
  d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
  ORDER BY d.updated_at DESC`
 	params := map[string]any{"status": string(status), "domain": slug}

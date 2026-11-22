@@ -9,9 +9,9 @@ import (
 
 func (s *Server) handleProduct(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	lookup := graph.ProductLookup{ID: id}
+	params := r.URL.Query()
+	lookup := graph.ProductLookup{ID: id, Domain: params.Get("domain")}
 	if id == "" {
-		params := r.URL.Query()
 		lookup.Store, lookup.ProductID = params.Get("store"), params.Get("product_id")
 	}
 	if !s.storeOr503(w) {

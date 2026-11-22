@@ -50,6 +50,22 @@ func TestMCPReadToolPreservesClientErrorsAfterDeadline(t *testing.T) {
 	}
 }
 
+func TestMCPGetProductRejectsInvalidDomain(t *testing.T) {
+	m := obs.New()
+	s := NewServer(config.Config{}, &graph.Store{}, nil)
+	s.SetMetrics(m)
+	got := callTool(t, connectServer(t, s), "get_product", map[string]any{"id": "product", "domain": "Bad!"})
+	if !got.IsError || !strings.Contains(toolErrorText(got), "invalid domain slug") {
+		t.Fatalf("get_product returned %+v, want invalid domain tool error", got)
+	}
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	const want = `gkg_request_duration_seconds_count{op="get_product",outcome="client_error",surface="mcp"} 1`
+	if !strings.Contains(rec.Body.String(), want+"\n") {
+		t.Errorf("invalid domain was not classified as a client error: missing %s", want)
+	}
+}
+
 func TestMCPToolRequestMetrics(t *testing.T) {
 	m := obs.New()
 	s := NewServer(config.Config{}, nil, &fakeSubmitter{})

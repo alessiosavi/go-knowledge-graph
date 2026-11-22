@@ -173,7 +173,7 @@ func (s *submissionSpool) putLocked(id string, sub submission, priorDigest strin
 	count := 1
 	totalBytes := int64(len(data))
 	for _, e := range entries {
-		if e.Name() == name || !spoolNameRE.MatchString(e.Name()) {
+		if e.Name() == name || !spoolNameRE.MatchString(strings.TrimSuffix(e.Name(), spoolBackupSuffix)) {
 			continue
 		}
 		info, err := e.Info()

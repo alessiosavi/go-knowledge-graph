@@ -602,9 +602,12 @@ paths:
           in: path
           required: true
           schema: { type: string, pattern: "^[0-9a-f]{32}$" }
+        - $ref: "#/components/parameters/ProductPageDomain"
       responses:
         "200":
           $ref: "#/components/responses/ProductDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -631,6 +634,7 @@ paths:
           required: true
           description: Full source product ID, including its store prefix.
           schema: { type: string }
+        - $ref: "#/components/parameters/ProductPageDomain"
       responses:
         "200":
           $ref: "#/components/responses/ProductDetail"
@@ -1220,6 +1224,11 @@ components:
           schema:
             $ref: "#/components/schemas/AgentQuestion"
   parameters:
+    ProductPageDomain:
+      name: domain
+      in: query
+      description: Optional domain slug for associated pages. Empty includes all domains.
+      schema: { type: string, pattern: "^([a-z0-9-]{1,40})?$" }
     DocumentID:
       name: id
       in: path
@@ -1400,7 +1409,10 @@ components:
             pages:
               type: array
               maxItems: 3
-              description: Live, done documents in the bound domain with a canonical source or final URL matching the product link, newest update first.
+              description: >-
+                Live, done documents explicitly referencing the product in any domain or matching the product link in its bound domain.
+                An optional domain filters pages before the limit. Explicit references come first, then URL matches.
+                Each group sorts by newest update, then ascending document ID. Pages with the same source kind and canonical source count once.
               items:
                 $ref: "#/components/schemas/ProductPage"
             pages_missing: { type: boolean, description: True when the pages array is empty. }
@@ -1647,6 +1659,10 @@ components:
             ]
         error: { type: string }
         labels: { type: string }
+        products:
+          type: array
+          description: Canonical list of store-prefixed product IDs recorded on this document version.
+          items: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         supersedes: { type: string }
@@ -1679,6 +1695,10 @@ components:
             ]
         error: { type: string }
         updated_at: { type: string, format: date-time }
+        products:
+          type: array
+          description: Canonical list of store-prefixed product IDs recorded on this document version.
+          items: { type: string }
     SearchRequest:
       type: object
       required: [query]
