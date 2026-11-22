@@ -115,7 +115,7 @@ func (c *Cached) VerifyPayload(ctx context.Context, p ingest.JudgePayload, docID
 }
 
 func (c *Cached) verifyPayload(ctx context.Context, p ingest.JudgePayload, docID string, policy verdictCachePolicy) (ingest.Verdict, error) {
-	if err := validatePayload(p); err != nil {
+	if err := ValidatePayload(p); err != nil {
 		return ingest.Verdict{}, err
 	}
 	return c.verify(ctx, v1RequestKey(p.Bytes, c.model, c.namespace), PromptVersion, docID, policy, func() (ingest.Verdict, error) {
