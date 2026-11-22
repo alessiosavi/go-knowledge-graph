@@ -135,6 +135,9 @@ func EvalErrorClass(err error) (class string, permanent bool) {
 	switch {
 	case provider.status == 0:
 		return "unreachable", false
+	case provider.status == http.StatusUnauthorized || provider.status == http.StatusForbidden:
+		// A rejected static credential invalidates the arm instead of scoring as model failures.
+		return "auth", true
 	case provider.status == http.StatusTooManyRequests:
 		return "rate_limited", false
 	case provider.status >= 500 && provider.status < 600:

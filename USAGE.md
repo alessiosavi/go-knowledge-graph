@@ -1342,8 +1342,9 @@ the arm and configured agent model. Its genesis is the SHA-256 of the header
 line including the newline. `--family A` is the default. Use `--family S`
 for smoke, probe or warm-up runs.
 
-Each question can set a `domain`, request SSE with `sse: true`, or override
-`reasoning_effort` with a value supported by the configured agent. Use
+Each question must set a boolean `sse`; `true` requests the SSE endpoint. It
+can also set a `domain` and override `reasoning_effort` with a value the
+configured agent supports. Use
 `--only id1,id2` to select questions. Omit it to select every question.
 A successful invocation closes its ledger run once every selected ID has
 an answer row. Resume an interrupted invocation with the same `--run-id`,
@@ -1352,7 +1353,8 @@ same arm, model and manifest.
 
 Answer rows include model-visible tool evidence, per-call usage and SSE event
 counts. Exit `0` means all selected asks were recorded, including model
-failures. Exit `2` means a refusal or permanent auth failure. Exit `4` means
+failures. Exit `2` means a refusal or permanent auth failure, including a
+provider 401 or 403 on the static arm. Exit `4` means
 the ledger stopped the run before an answer row could be recorded for that ask.
 
 ## Product feature observations

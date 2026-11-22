@@ -19,6 +19,8 @@ func TestEvalAgentErrorClasses(t *testing.T) {
 		{name: "permanent auth", want: "auth", err: &llmauth.AuthPermanent{}, permanent: true},
 		{name: "transient auth", want: "auth", err: &llmauth.AuthTransient{}},
 		{name: "deadline", want: "timeout", err: fmt.Errorf("wrapped: %w", context.DeadlineExceeded)},
+		{name: "static 401", want: "auth", err: &providerError{status: 401}, permanent: true},
+		{name: "static 403", want: "auth", err: &providerError{status: 403}, permanent: true},
 		{name: "429", want: "rate_limited", err: &providerError{status: 429}},
 		{name: "5xx", want: "provider_5xx", err: &providerError{status: 503}},
 		{name: "4xx", want: "provider_4xx", err: &providerError{status: 404}},
