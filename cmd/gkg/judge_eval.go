@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -106,14 +105,7 @@ func runJudgeEvalRun(ctx context.Context, opt judgeEvalOptions, cfg config.Confi
 	if (opt.arm != "DS" || cfg.Judge.Auth != config.AuthStatic) && (opt.arm != "GM" || cfg.Judge.Auth != config.AuthGCP) {
 		return fail(errors.New("arm must match the configured judge auth (DS=static, GM=gcp)"))
 	}
-	model := cfg.Judge.Model
-	if model == "" {
-		model = judge.DefaultModel
-	}
-	base := strings.TrimRight(cfg.Judge.BaseURL, "/")
-	if base == "" {
-		base = judge.DefaultBaseURL
-	}
+	base, model := judge.ResolveEndpoint(cfg.Judge)
 	u, err := url.Parse(base)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil ||
 		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
@@ -123,27 +115,17 @@ func runJudgeEvalRun(ctx context.Context, opt judgeEvalOptions, cfg config.Confi
 	if err != nil {
 		return fail(fmt.Errorf("read frozen input: %w", err))
 	}
-	out, done, err := openJudgeEvalResume(opt, model, ids)
+	out, done, err := openJudgeEvalResume(opt, model, ids, stderr)
 	if err != nil {
 		return fail(fmt.Errorf("resume verdicts: %w", err))
 	}
 	if out == nil {
-		out, err = createJudgeEvalOutput(opt.out)
+		out, err = createJudgeEvalOutput(opt.out, opt.ledger)
 		if err != nil {
 			return fail(fmt.Errorf("create verdicts: %w", err))
 		}
 	}
 	defer out.Close()
-	// Opening a ledger that aliases out would wait on our own output lock.
-	if ledgerInfo, err := os.Stat(opt.ledger); err == nil {
-		outInfo, err := out.Stat()
-		if err != nil {
-			return fail(fmt.Errorf("stat verdicts: %w", err))
-		}
-		if os.SameFile(outInfo, ledgerInfo) {
-			return fail(errors.New("verdict output and ledger must be different files"))
-		}
-	}
 	ledger, err := llmusage.Open(llmusage.Run{
 		Path: opt.ledger, Genesis: opt.genesis, Provider: opt.arm, Model: model,
 		RunID: opt.runID, Family: opt.family, Manifest: opt.manifest, AllotmentUSD: opt.allotment,
@@ -265,11 +247,11 @@ func readJudgeEvalInput(path string) ([]judgeEvalItem, map[string]bool, error) {
 		ids[row.ID] = true
 		items = append(items, judgeEvalItem{id: row.ID, payload: p})
 		return nil
-	})
+	}, nil)
 	return items, ids, err
 }
 
-func openJudgeEvalResume(opt judgeEvalOptions, model string, ids map[string]bool) (*os.File, map[string]bool, error) {
+func openJudgeEvalResume(opt judgeEvalOptions, model string, ids map[string]bool, stderr io.Writer) (*os.File, map[string]bool, error) {
 	f, err := os.OpenFile(opt.out, os.O_RDWR|os.O_APPEND, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil, nil
@@ -277,9 +259,9 @@ func openJudgeEvalResume(opt judgeEvalOptions, model string, ids map[string]bool
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := llmusage.LockOutput(f); err != nil {
+	if err := lockJudgeEvalOutput(f, opt.ledger); err != nil {
 		_ = f.Close()
-		return nil, nil, fmt.Errorf("lock verdict file: %w", err)
+		return nil, nil, err
 	}
 	done := make(map[string]bool)
 	err = scanJudgeEvalJSONL(f, func(raw []byte) error {
@@ -300,6 +282,15 @@ func openJudgeEvalResume(opt judgeEvalOptions, model string, ids map[string]bool
 			return errors.New("verdict has no final status")
 		}
 		return nil
+	}, func(offset int64, dropped int) error {
+		if err := f.Truncate(offset); err != nil {
+			return fmt.Errorf("truncate partial verdict: %w", err)
+		}
+		if err := f.Sync(); err != nil {
+			return fmt.Errorf("sync truncated verdicts: %w", err)
+		}
+		fmt.Fprintf(stderr, "gkg judge eval run: dropped %d bytes from partial verdict line\n", dropped)
+		return nil
 	})
 	if err != nil {
 		_ = f.Close()
@@ -308,12 +299,12 @@ func openJudgeEvalResume(opt judgeEvalOptions, model string, ids map[string]bool
 	return f, done, nil
 }
 
-func createJudgeEvalOutput(path string) (*os.File, error) {
+func createJudgeEvalOutput(path, ledgerPath string) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	err = llmusage.LockOutput(f)
+	err = lockJudgeEvalOutput(f, ledgerPath)
 	if err == nil {
 		var dir *os.File
 		dir, err = os.Open(filepath.Dir(path))
@@ -328,12 +319,35 @@ func createJudgeEvalOutput(path string) (*os.File, error) {
 	return f, nil
 }
 
-func scanJudgeEvalJSONL(r io.Reader, visit func([]byte) error) error {
+func lockJudgeEvalOutput(f *os.File, ledgerPath string) error {
+	if err := llmusage.LockOutput(f); err != nil {
+		return fmt.Errorf("lock verdict file: %w", err)
+	}
+	// Reject aliases before repairing verdicts or opening the ledger under this lock.
+	if ledgerInfo, err := os.Stat(ledgerPath); err == nil {
+		outInfo, err := f.Stat()
+		if err != nil {
+			return fmt.Errorf("stat verdicts: %w", err)
+		}
+		if os.SameFile(outInfo, ledgerInfo) {
+			return errors.New("verdict output and ledger must be different files")
+		}
+	}
+	return nil
+}
+
+func scanJudgeEvalJSONL(r io.Reader, visit func([]byte) error, recoverTail func(offset int64, dropped int) error) error {
 	reader := bufio.NewReader(r)
+	var offset int64
 	for n := 1; ; n++ {
 		raw, err := reader.ReadBytes('\n')
-		if err == io.EOF && len(raw) == 0 {
-			return nil
+		if err == io.EOF {
+			if len(raw) == 0 {
+				return nil
+			}
+			if recoverTail != nil {
+				return recoverTail(offset, len(raw))
+			}
 		}
 		if err == nil {
 			err = visit(raw)
@@ -341,5 +355,6 @@ func scanJudgeEvalJSONL(r io.Reader, visit func([]byte) error) error {
 		if err != nil {
 			return fmt.Errorf("line %d: %w", n, err)
 		}
+		offset += int64(len(raw))
 	}
 }

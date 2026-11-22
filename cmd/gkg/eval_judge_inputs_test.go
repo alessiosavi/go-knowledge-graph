@@ -105,7 +105,8 @@ func TestEvalReplayJudgeInputsMatchStoredWinners(t *testing.T) {
 				t.Fatalf("replay exit %d, stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 			}
 			predictionRows, _ := readEvalArtifact(t, predictions)
-			if header := predictionRows[0]; header["backup_tar_sha256"] != pins["backup_tar_sha256"] ||
+			if header := predictionRows[0]; header["source"] != pins["source"] ||
+				header["backup_tar_sha256"] != pins["backup_tar_sha256"] ||
 				header["sidecar_image_digest"] != pins["sidecar"].(map[string]any)["digest"] {
 				t.Fatalf("predictions provenance: %+v", header)
 			}
@@ -211,7 +212,8 @@ func TestEvalReplayJudgeInputsUsePinnedWriteModeAndFloors(t *testing.T) {
 	assertEvalCLI(t, pinsOnlyArgs, 0, summary, "sidecar image digest is unknown")
 	pinsOnly, _ := readEvalArtifact(t, "predictions-only.jsonl")
 	onlyHeader := pinsOnly[0]
-	if onlyHeader["sidecar_image_digest"] != "" || onlyHeader["backup_tar_sha256"] != pins["backup_tar_sha256"] ||
+	if onlyHeader["sidecar_image_digest"] != "" || onlyHeader["source"] != pins["source"] ||
+		onlyHeader["backup_tar_sha256"] != pins["backup_tar_sha256"] ||
 		!reflect.DeepEqual(onlyHeader["write_mode"], pins["write_mode"]) ||
 		onlyHeader["store_floor"] != .7 || onlyHeader["assert_floor"] != .8 ||
 		!reflect.DeepEqual(pinsOnly[2:4], rows[2:4]) {
@@ -343,6 +345,70 @@ func TestEvalReplayJudgeInputsLeaveNoArtifactsOnExtractionError(t *testing.T) {
 	failChunk.Store(true)
 	assertEvalCLI(t, judgeReplayArgs(), 1, "", "synthetic extraction error")
 	assertNoJudgeArtifacts(t)
+}
+
+func TestEvalReplayJudgeInputsRefuseSidecarHealth(t *testing.T) {
+	_, pins, _ := judgeExportFixture(t)
+	t.Setenv("GKG_EXTRACTOR_SIDECAR_IMAGE", "fixture:tag")
+	pins["sidecar"].(map[string]any)["digest"] = ""
+	writeJudgePins(t, pins)
+	for _, tc := range []struct {
+		name, body, wantError string
+		status                int
+		emptySample           bool
+	}{
+		{"model mismatch", `{"model":"other-model"}`, `health reports "other-model"`, http.StatusOK, false},
+		{"model missing", `{}`, `health reports ""`, http.StatusOK, false},
+		{"health error", "synthetic health failure", "synthetic health failure", http.StatusServiceUnavailable, false},
+		{"empty sample", `{"model":"other-model"}`, `health reports "other-model"`, http.StatusOK, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.emptySample {
+				writeJudgeSample(t, "sample.jsonl", nil, 0, 0)
+			} else {
+				writeSingleJudgeSample(t, "alpha")
+			}
+			sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/healthz" {
+					t.Errorf("unexpected sidecar request: %s %s", r.Method, r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer sidecar.Close()
+			t.Setenv("GKG_EXTRACTOR_SIDECAR_URL", sidecar.URL)
+			assertEvalCLI(t, append(judgeReplayArgs(), "-mentions", "mentions.jsonl"), 2, "", tc.wantError)
+			assertNoJudgeArtifacts(t)
+			assertMissingEvalFile(t, "mentions.jsonl")
+		})
+	}
+}
+
+func TestEvalReplayJudgeInputsAcceptDefaultSidecarModel(t *testing.T) {
+	_, pins, _ := judgeExportFixture(t)
+	const model = "glinerel-314m"
+	pins["sidecar"].(map[string]any)["model"] = model
+	writeJudgePins(t, pins)
+	writeJudgeSample(t, "sample.jsonl", nil, 0, 0)
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/healthz" {
+			t.Errorf("unexpected sidecar request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprintf(w, `{"model":%q}`, model)
+	}))
+	defer sidecar.Close()
+	t.Setenv("GKG_EXTRACTOR_SIDECAR_URL", sidecar.URL)
+	t.Setenv("GKG_EXTRACTOR_SIDECAR_MODEL", "")
+	assertEvalCLI(t, judgeReplayArgs(), 0,
+		"chunks=0 ok=0 empty=0 errors=0 occurrences=0 stored_winners=0 duplicate_roots_outside_sample=0 duplicate_root_cycles=0\n", "")
+	rows, _ := readEvalArtifact(t, "predictions.jsonl")
+	if header := rows[0]; header["sidecar_model"] != model || header["extractor_version"] != "sidecar:"+model {
+		t.Fatalf("predictions sidecar provenance: %v", header)
+	}
 }
 
 func judgeReplayArgs() []string {

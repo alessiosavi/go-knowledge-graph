@@ -29,15 +29,19 @@ type Sidecar struct {
 	client  *http.Client
 }
 
+// ResolveSidecarModel returns the effective model for sidecar requests.
+func ResolveSidecarModel(model string) string {
+	if model == "" {
+		return config.DefaultSidecarModel
+	}
+	return model
+}
+
 // NewSidecar builds the provider from the Extractor.Sidecar configuration.
 func NewSidecar(cfg config.Config) *Sidecar {
 	base := strings.TrimRight(cfg.Extractor.Sidecar.URL, "/")
 	if base == "" {
 		base = "http://localhost:8090"
-	}
-	model := cfg.Extractor.Sidecar.Model
-	if model == "" {
-		model = "glinerel-314m"
 	}
 	timeout := cfg.Extractor.Sidecar.TimeoutS
 	if timeout <= 0 {
@@ -45,7 +49,7 @@ func NewSidecar(cfg config.Config) *Sidecar {
 	}
 	return &Sidecar{
 		baseURL: base,
-		model:   model,
+		model:   ResolveSidecarModel(cfg.Extractor.Sidecar.Model),
 		client:  &http.Client{Timeout: time.Duration(timeout) * time.Second},
 	}
 }

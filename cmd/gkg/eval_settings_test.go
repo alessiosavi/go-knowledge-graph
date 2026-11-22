@@ -55,6 +55,37 @@ func TestEvalSettingsOutputKeysAndCanonicalHash(t *testing.T) {
 	}
 }
 
+func TestEvalSettingsHashUsesEffectiveDefaults(t *testing.T) {
+	settingsFixture(t)
+	for _, tc := range []struct {
+		name, env, value string
+		embedderProvider string
+		variants         []string
+	}{
+		{"judge base URL", "GKG_JUDGE_BASE_URL", judge.DefaultBaseURL, "openai", []string{"", judge.DefaultBaseURL + "///"}},
+		{"judge model", "GKG_JUDGE_MODEL", judge.DefaultModel, "openai", []string{""}},
+		{"agent default base URL", "GKG_AGENT_BASE_URL", "https://api.openai.com/v1", "openai", []string{"", "///"}},
+		{"agent custom base URL", "GKG_AGENT_BASE_URL", "https://agent.invalid/v1", "openai", []string{"https://agent.invalid/v1/"}},
+		{"agent model", "GKG_AGENT_MODEL", "deepseek-v4.1-flash", "openai", []string{""}},
+		{"furls embedder model", "GKG_EMBEDDER_MODEL", "gemini-embedding-2", "furls", []string{""}},
+		{"openai embedder model", "GKG_EMBEDDER_MODEL", "text-embedding-3-small", "openai", []string{""}},
+		{"implicit openai embedder model", "GKG_EMBEDDER_MODEL", "text-embedding-3-small", "", []string{""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GKG_EMBEDDER_PROVIDER", tc.embedderProvider)
+			t.Setenv(tc.env, tc.value)
+			explicit, _ := readEvalSettings(t)
+			for _, variant := range tc.variants {
+				t.Setenv(tc.env, variant)
+				got, _ := readEvalSettings(t)
+				if got["hash"] != explicit["hash"] || !reflect.DeepEqual(got["projection"], explicit["projection"]) {
+					t.Errorf("%s=%q gave hash %v, want %v from %q", tc.env, variant, got["hash"], explicit["hash"], tc.value)
+				}
+			}
+		})
+	}
+}
+
 func TestEvalSettingsHashIgnoresOverridesAndAsserted(t *testing.T) {
 	settingsFixture(t)
 	before, _ := readEvalSettings(t)

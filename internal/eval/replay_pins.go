@@ -11,6 +11,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 )
 
@@ -135,8 +136,8 @@ func (p *replayPins) checkConfig(cfg config.Config, presetName, imageDigest stri
 	if _, ok := p.Presets[presetName]; !ok {
 		return argerr.Errorf("pins: preset %q is missing from presets", presetName)
 	}
-	if p.SidecarModel != cfg.Extractor.Sidecar.Model {
-		return argerr.Errorf("pins: sidecar.model is %q, configured model is %q", p.SidecarModel, cfg.Extractor.Sidecar.Model)
+	if model := extract.ResolveSidecarModel(cfg.Extractor.Sidecar.Model); p.SidecarModel != model {
+		return argerr.Errorf("pins: sidecar.model is %q, configured model is %q", p.SidecarModel, model)
 	}
 	if imageDigest != "unknown" && p.SidecarDigest != imageDigest {
 		return argerr.Errorf("pins: sidecar.digest is %q, configured image digest is %q", p.SidecarDigest, imageDigest)
@@ -150,6 +151,16 @@ func (p *replayPins) checkPreset(name string, preset ingest.CheckedPreset) error
 	}
 	if p.StoplistSHA256 != preset.StoplistSHA256 {
 		return argerr.New("pins: stoplist_sha256 does not match the loaded stoplist")
+	}
+	return nil
+}
+
+func (p *replayPins) checkSidecarHealth(model string, healthErr error) error {
+	if healthErr != nil {
+		return argerr.Errorf("pins: sidecar health check failed: %w", healthErr)
+	}
+	if model != p.SidecarModel {
+		return argerr.Errorf("pins: sidecar.model is %q, health reports %q", p.SidecarModel, model)
 	}
 	return nil
 }

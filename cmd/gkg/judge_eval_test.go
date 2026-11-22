@@ -22,6 +22,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmusage"
 )
 
 const evalTestModel = "deepseek-v4.1-flash"
@@ -327,6 +328,65 @@ func TestJudgeEvalResumeSkipsFinalAndRefusesForeignOutput(t *testing.T) {
 			rows := readJudgeEvalRows(t, opt.out)
 			if sends.Load() != wantSends || len(rows) != 1+int(wantSends) || (wantExit == 0 && rows[1]["item_id"] != "two") {
 				t.Fatalf("sends = %d, rows = %v", sends.Load(), rows)
+			}
+		})
+	}
+}
+
+func TestJudgeEvalResumePartialVerdict(t *testing.T) {
+	const partial = `{"item_id":"two","arm":"DS"`
+	for _, tc := range []struct {
+		name, tail, wantError string
+		locked, ledgerAlias   bool
+	}{
+		{name: "partial", tail: partial},
+		{name: "malformed complete", tail: partial + "\n", wantError: "line 2: invalid verdict JSON"},
+		{name: "locked partial", tail: partial, locked: true, wantError: "lock verdict file"},
+		{name: "aliased ledger", tail: partial, ledgerAlias: true, wantError: "verdict output and ledger must be different files"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opt := newJudgeEvalFixture(t, "DS")
+			var sends atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				sends.Add(1)
+				fmt.Fprint(w, evalConfirmed)
+			}))
+			defer srv.Close()
+			judgeEvalTestConfig(t, srv)
+			first := fmt.Sprintf("{\"item_id\":\"one\",\"arm\":\"DS\",\"model\":%q,\"manifest\":%q,\"status\":\"confirmed\"}\n", evalTestModel, opt.manifest)
+			writeEvalFile(t, opt.out, []byte(first+tc.tail))
+			if tc.ledgerAlias {
+				opt.ledger = opt.out
+			}
+			if tc.locked {
+				f, err := os.OpenFile(opt.out, os.O_RDWR, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer f.Close()
+				if err := llmusage.LockOutput(f); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var stderr bytes.Buffer
+			code := runJudge(judgeEvalArgs(opt), io.Discard, &stderr)
+			data, err := os.ReadFile(opt.out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantError != "" {
+				if code != 2 || !strings.Contains(stderr.String(), tc.wantError) || sends.Load() != 0 || string(data) != first+tc.tail {
+					t.Fatalf("exit=%d stderr=%q sends=%d verdicts=%q", code, &stderr, sends.Load(), data)
+				}
+				return
+			}
+			wantStderr := fmt.Sprintf("gkg judge eval run: dropped %d bytes from partial verdict line\n", len(tc.tail))
+			if code != 0 || stderr.String() != wantStderr || sends.Load() != 1 || !bytes.HasPrefix(data, []byte(first)) {
+				t.Fatalf("exit=%d stderr=%q sends=%d verdicts=%q", code, &stderr, sends.Load(), data)
+			}
+			rows := readJudgeEvalRows(t, opt.out)
+			if len(rows) != 2 || rows[1]["item_id"] != "two" || rows[1]["status"] != "confirmed" {
+				t.Fatalf("want the recovered verdict for item two, got %v", rows)
 			}
 		})
 	}

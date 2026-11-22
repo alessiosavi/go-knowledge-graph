@@ -72,16 +72,22 @@ type Client struct {
 	cacheNamespace   string
 }
 
-// NewClient builds the judge client from the Judge configuration.
-func NewClient(cfg config.Config) *Client {
-	base := strings.TrimRight(cfg.Judge.BaseURL, "/")
+// ResolveEndpoint returns the effective base URL and model for judge requests.
+func ResolveEndpoint(cfg config.JudgeConfig) (base, model string) {
+	base = strings.TrimRight(cfg.BaseURL, "/")
 	if base == "" {
 		base = DefaultBaseURL
 	}
-	model := cfg.Judge.Model
+	model = cfg.Model
 	if model == "" {
 		model = DefaultModel
 	}
+	return base, model
+}
+
+// NewClient builds the judge client from the Judge configuration.
+func NewClient(cfg config.Config) *Client {
+	base, model := ResolveEndpoint(cfg.Judge)
 	c := &Client{
 		baseURL:          base,
 		apiKey:           cfg.Judge.APIKey,
