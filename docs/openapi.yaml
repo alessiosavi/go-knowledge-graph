@@ -996,14 +996,19 @@ paths:
         entities and products are reported as not found. Out-of-scope chunks
         are reported missing. find_products and get_product inherit the ask
         domain and reject a different domain argument. get_product also filters
-        its associated pages to the ask domain. list_features uses keys from
-        stores bound to the ask domain and omits features with no key in those
-        stores.
+        its associated pages and catalogue passages to the ask domain.
+        list_features uses keys from stores bound to the ask domain and omits
+        features with no key in those stores.
         Cypher receives the scope in the system prompt without domain enforcement.
         Product search pages default to 10 hits, cap at 20 and may be shorter
         under the byte budget. Continuation uses the same filters and effective
-        limit. Product details may report features_omitted. Feature listings
-        project released stores and numeric-search support. They accept a
+        limit. Product details may report features_omitted. The agent can pass
+        with_mentions=true to get_product for exact identifier matches in
+        passages from done documents. with_mentions defaults to false.
+        The optional mentions_limit accepts integers from 1 to 20 and defaults
+        to 5. The agent drops passages from the end before dropping features
+        to fit the result budget and reports mentions_omitted_for_budget.
+        Feature listings project released stores and numeric-search support. They accept a
         case-insensitive substring query over feature IDs and names and report
         truncated and omitted when the result exceeds the byte budget.
       requestBody:

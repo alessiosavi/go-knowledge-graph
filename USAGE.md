@@ -345,6 +345,15 @@ numeric-search support without source-key rows. Use its case-insensitive
 The `omitted` count reports how many matching features were dropped. A
 product tool returns an error if its required metadata exceeds the budget.
 
+For questions about what documents say about a product, the agent can call
+`get_product` with `with_mentions=true` (default `false`) to retrieve exact
+identifier matches in passages from done documents. `mentions_limit` accepts
+integers from 1 to 20 and defaults to 5. The ask domain filters passage evidence.
+If the tool result reaches its byte budget, it drops passages from the end
+before dropping features and reports their count in `mentions_omitted_for_budget`.
+See [Catalogue passages for a product](#catalogue-passages-for-a-product) for
+the mention fields and retrieval limits.
+
 Open **Generation settings** before asking a question. Temperature ranges
 from 0 to 2. An ask without a temperature uses the deployment setting, which
 defaults to 0. Top-p ranges from 0 to 1 and uses the provider

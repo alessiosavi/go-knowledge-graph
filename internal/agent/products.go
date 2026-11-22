@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -24,8 +25,9 @@ const (
 )
 
 type productDetailOut struct {
-	graph.ProductDetail
+	graph.ProductDetailWithMentions
 	FeaturesOmitted int `json:"features_omitted,omitempty"`
+	MentionsOmitted int `json:"mentions_omitted_for_budget,omitempty"`
 }
 
 type productFeatureOut struct {
@@ -43,9 +45,25 @@ type productFeaturesOut struct {
 }
 
 func (s *Server) toolGetProduct(ctx context.Context, raw json.RawMessage) (any, error) {
-	var args graph.ProductLookup
+	var args struct {
+		graph.ProductLookup
+		WithMentions  json.RawMessage `json:"with_mentions"`
+		MentionsLimit json.RawMessage `json:"mentions_limit"`
+	}
 	if err := decodeArgs(raw, &args); err != nil {
 		return nil, err
+	}
+	var withMentions *bool
+	if args.WithMentions != nil {
+		if err := json.Unmarshal(args.WithMentions, &withMentions); err != nil || withMentions == nil {
+			return nil, argerr.New("with_mentions must be a boolean")
+		}
+	}
+	var limit *int
+	if args.MentionsLimit != nil {
+		if err := json.Unmarshal(args.MentionsLimit, &limit); err != nil || limit == nil || !graph.ValidMentionsLimit(*limit) {
+			return nil, argerr.New(fmt.Sprintf("mentions_limit must be an integer between 1 and %d", graph.MaxMentionsLimit))
+		}
 	}
 	if scope := requestDomain(ctx); scope != "" {
 		if args.Domain != "" && args.Domain != scope {
@@ -53,16 +71,38 @@ func (s *Server) toolGetProduct(ctx context.Context, raw json.RawMessage) (any, 
 		}
 		args.Domain, args.SeedDomain = scope, scope
 	}
-	detail, err := s.store.GetProduct(ctx, args)
+	var detail graph.ProductDetailWithMentions
+	var err error
+	if withMentions != nil && *withMentions {
+		detail, _, err = s.store.GetProductWithMentions(ctx, args.ProductLookup)
+	} else {
+		detail.ProductDetail, err = s.store.GetProduct(ctx, args.ProductLookup)
+	}
 	if errors.Is(err, graph.ErrProductReadInput) {
 		return nil, argerr.Wrap(err)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return fitProductResult(len(detail.Features), func(n int) productDetailOut {
-		out := productDetailOut{ProductDetail: detail, FeaturesOmitted: len(detail.Features) - n}
-		out.Features = detail.Features[:n]
+	displayLimit := 0 // The shared read uses zero for its default display limit.
+	if limit != nil {
+		displayLimit = *limit
+	}
+	detail.LimitMentions(displayLimit)
+	featureCount, mentionCount := len(detail.Features), 0
+	if detail.ProductMentionFields != nil {
+		mentionCount = len(detail.Mentions)
+	}
+	// Features come first in the fitted prefix, so mentions are dropped first.
+	return fitProductResult(featureCount+mentionCount, func(n int) productDetailOut {
+		features, mentions := min(n, featureCount), max(0, n-featureCount)
+		out := productDetailOut{ProductDetailWithMentions: detail, FeaturesOmitted: featureCount - features, MentionsOmitted: mentionCount - mentions}
+		out.Features = detail.Features[:features]
+		if detail.ProductMentionFields != nil {
+			fields := *detail.ProductMentionFields
+			fields.Mentions = fields.Mentions[:mentions]
+			out.ProductMentionFields = &fields
+		}
 		return out
 	})
 }

@@ -893,3 +893,14 @@ func TestSystemPromptProductCodeLookup(t *testing.T) {
 		t.Error("plan prompt must extend the system prompt")
 	}
 }
+
+func TestProductMentionsPromptRouting(t *testing.T) {
+	const routing = "For what documents or catalogues say about a product, call get_product with with_mentions=true; for the products a passage cites, call get_chunks with with_products=true."
+	if strings.Count(systemPrompt, routing) != 1 || strings.Count(planSystemPrompt, routing) != 1 {
+		t.Error("the system and plan prompts must each include the routing line once")
+	}
+	_, hint, _ := strings.Cut(planSystemPrompt, "For product questions,")
+	if !strings.Contains(hint, "with_mentions") || !strings.Contains(hint, "mentions_limit") {
+		t.Error("plan prompt product hint is missing the get_product mentions arguments")
+	}
+}

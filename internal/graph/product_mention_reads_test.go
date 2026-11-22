@@ -14,6 +14,13 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
+func TestProductMentionCandidateLimitWiring(t *testing.T) {
+	if !strings.Contains(mentionCandidateQuery, fmt.Sprintf("{limit: %d}", mentionRawLimit)) ||
+		!strings.Contains(mentionCandidateQuery, fmt.Sprintf("\nLIMIT %d\n", mentionEligibleLimit+1)) {
+		t.Fatalf("candidate query must use the raw cap and fetch one extra eligible row: %s", mentionCandidateQuery)
+	}
+}
+
 func TestProductMentionQueryBuilder(t *testing.T) {
 	for _, tc := range []struct {
 		name, key, value, domain, want string
