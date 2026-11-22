@@ -1383,6 +1383,8 @@ Each question must set a boolean `sse`; `true` requests the SSE endpoint. It
 can also set a `domain` and override `reasoning_effort` with a value the
 configured agent supports. Use
 `--only id1,id2` to select questions. Omit it to select every question.
+The command checks JSON, unique nonempty IDs and boolean `sse` fields for every
+row and validates only the selected asks against the configured agent.
 A successful invocation closes its ledger run once every selected ID has
 an answer row. Resume an interrupted invocation with the same `--run-id`,
 `--out` and `--only` selection. Resume skips IDs already recorded for the

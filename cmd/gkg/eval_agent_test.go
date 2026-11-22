@@ -426,7 +426,10 @@ func TestEvalAgentBlocks(t *testing.T) {
 	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
 		agentEvalReply(w, "answer")
 	})
-	first := newAgentEvalFixture(t, srv, agentEvalQuestion("a", false), agentEvalQuestion("b", false))
+	effort := agentEvalQuestion("E-minimal", true)
+	effort["stratum"], effort["reasoning_effort"] = "E", "minimal"
+	first := newAgentEvalFixture(t, srv, agentEvalQuestion("a", false), effort, agentEvalQuestion("b", false))
+	t.Setenv("GKG_AGENT_REASONING_EFFORTS", "")
 	first.runID = "R1"
 	second := first
 	second.runID, second.out = "R2", filepath.Join(t.TempDir(), "answers.jsonl")
@@ -451,8 +454,14 @@ func TestEvalAgentBlocks(t *testing.T) {
 		}
 		before = after
 	}
-	if len(script.sent()) != 2 {
-		t.Fatalf("block flow sent %d requests, want 2", len(script.sent()))
+	sent := script.sent()
+	if len(sent) != 2 {
+		t.Fatalf("block flow sent %d requests, want 2", len(sent))
+	}
+	for i, id := range []string{"a", "b"} {
+		if len(sent[i].Messages) < 2 || sent[i].Messages[1].Content != "Question "+id {
+			t.Fatalf("request %d did not ask question %q", i, id)
+		}
 	}
 }
 
@@ -545,15 +554,30 @@ func TestEvalAgentRefusals(t *testing.T) {
 		f.dispatch(t, 2, "--only", "absent")
 	})
 	t.Run("unsupported-effort", func(t *testing.T) {
-		q := agentEvalQuestion("bad-effort", true)
-		q["reasoning_effort"] = "max"
+		t.Setenv("GKG_AGENT_REASONING_EFFORTS", "")
+		q := agentEvalQuestion("E-minimal", true)
+		q["stratum"], q["reasoning_effort"] = "E", "minimal"
 		bad := f
 		bad.out, bad.questions = filepath.Join(t.TempDir(), "answers.jsonl"), filepath.Join(t.TempDir(), "questions.jsonl")
 		writeJudgeEvalInput(t, bad.questions, first, q)
-		if stderr := bad.dispatch(t, 2); !strings.Contains(stderr, "reasoning_effort") {
-			t.Fatalf("wrong refusal: %s", stderr)
+		before := readJudgeEvalRows(t, bad.ledger)
+		for _, tc := range []struct {
+			name  string
+			flags []string
+		}{
+			{"with-only", []string{"--only", "warmup-first,E-minimal"}},
+			{"without-only", nil},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if stderr := bad.dispatch(t, 2, tc.flags...); !strings.Contains(stderr, `line 2: ask "E-minimal": unsupported reasoning_effort`) {
+					t.Fatalf("wrong refusal: %s", stderr)
+				}
+				agentEvalRows(t, bad, 0)
+				if after := readJudgeEvalRows(t, bad.ledger); !reflect.DeepEqual(after, before) {
+					t.Fatalf("question refusal changed the ledger: %v", after)
+				}
+			})
 		}
-		agentEvalRows(t, bad, 0)
 	})
 	for _, field := range []string{"arm", "model", "manifest"} {
 		t.Run("foreign-"+field, func(t *testing.T) {
