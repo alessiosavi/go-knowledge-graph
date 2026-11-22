@@ -163,7 +163,7 @@ func (s *Store) traverseHop(ctx context.Context, frontier []EntityRef, rel, dire
 			"ids": ids, "share": share, "include": opt.IncludeLowConfidence,
 			"confirmed_only": opt.ConfirmedOnly, "excluded": excluded,
 		}
-		if err := s.readTraverseRows(ctx, typed, rel, b.incoming, false, params); err != nil {
+		if err := s.readTraverseRows(ctx, typed, rel, b.incoming, false, params, opt.DateWindow); err != nil {
 			return nil, fmt.Errorf("graph: traverse hop: %w", err)
 		}
 		for _, id := range ids {
@@ -213,7 +213,7 @@ func (s *Store) traverseHop(ctx context.Context, frontier []EntityRef, rel, dire
 			"include": opt.IncludeLowConfidence, "confirmed_only": opt.ConfirmedOnly,
 			"excluded": b.excluded, "filled": slices.Collect(maps.Keys(seenEdges)),
 		}
-		if err := s.readTraverseRows(ctx, topUp, rel, b.incoming, false, params); err != nil {
+		if err := s.readTraverseRows(ctx, topUp, rel, b.incoming, false, params, opt.DateWindow); err != nil {
 			return nil, fmt.Errorf("graph: traverse top-up: %w", err)
 		}
 	}
@@ -237,7 +237,8 @@ func (s *Store) traverseHop(ctx context.Context, frontier []EntityRef, rel, dire
 			}
 			b.excluded = excluded
 			batchCandidates := make(map[string][]traverseRow)
-			if err := s.readTraverseRows(ctx, batchCandidates, rel, b.incoming, true, map[string]any{"anchors": anchors, "excluded": b.excluded}); err != nil {
+			params := map[string]any{"anchors": anchors, "excluded": b.excluded}
+			if err := s.readTraverseRows(ctx, batchCandidates, rel, b.incoming, true, params, opt.DateWindow); err != nil {
 				return nil, fmt.Errorf("graph: traverse candidates: %w", err)
 			}
 			for _, node := range frontier {
@@ -270,7 +271,7 @@ func (s *Store) traverseHop(ctx context.Context, frontier []EntityRef, rel, dire
 				anchor["share"] = remaining - len(kept)
 			}
 			params := map[string]any{"anchors": b.cappedCandidates, "excluded": b.excluded, "filled": filled}
-			if err := s.readTraverseRows(ctx, candidateTopUp, rel, b.incoming, true, params); err != nil {
+			if err := s.readTraverseRows(ctx, candidateTopUp, rel, b.incoming, true, params, opt.DateWindow); err != nil {
 				return nil, fmt.Errorf("graph: traverse candidates top-up: %w", err)
 			}
 		}
@@ -279,7 +280,7 @@ func (s *Store) traverseHop(ctx context.Context, frontier []EntityRef, rel, dire
 	return kept, nil
 }
 
-func (s *Store) readTraverseRows(ctx context.Context, rows map[string][]traverseRow, rel string, incoming, unverified bool, params map[string]any) error {
+func (s *Store) readTraverseRows(ctx context.Context, rows map[string][]traverseRow, rel string, incoming, unverified bool, params map[string]any, window DateWindow) error {
 	_, topUp := params["filled"]
 	offset := "0"
 	if topUp {
@@ -330,7 +331,7 @@ WHERE size(kept) > 0`
 	}
 	// Keep the ordered prefix per source before joining chunks and documents.
 	// Carry its rank through UNWIND and the joins so the result order is explicit.
-	query := pattern + "\nWHERE " + visibility + `
+	query := pattern + "\nWHERE " + visibility + window.evidenceJoin("r", params) + `
 WITH id, share, row_offset, expanded, other, r, ` + relation + ` AS rel, ` + edgeKey + ` AS edge_key
 WHERE NOT edge_key IN $excluded
 WITH id, share, row_offset, expanded, other, r, rel, edge_key
@@ -481,6 +482,12 @@ func (s *Store) ChunkTextSearch(ctx context.Context, q string, limit int) ([]Chu
 }
 
 func (s *Store) ChunkTextSearchIn(ctx context.Context, q, slug string, limit int) ([]ChunkSearchRow, error) {
+	return s.ChunkTextSearchInWindow(ctx, q, slug, limit, DateWindow{})
+}
+
+// ChunkTextSearchInWindow applies eligibility before the Cypher limit. The
+// window is exact within Tantivy's first 1,000 matches for the text query.
+func (s *Store) ChunkTextSearchInWindow(ctx context.Context, q, slug string, limit int, w DateWindow) ([]ChunkSearchRow, error) {
 	call, q, err := scopedTextQuery("chunk_text_v2", "text", q, slug)
 	if err != nil {
 		return nil, err
@@ -489,16 +496,17 @@ func (s *Store) ChunkTextSearchIn(ctx context.Context, q, slug string, limit int
 	if !ok {
 		return nil, nil
 	}
+	params := map[string]any{"q": q, "limit": limit, "domain": slug}
+	windowJoin := w.evidenceJoin("node", params)
 	recs, err := s.runRead(ctx, `
-`+call+`
+`+call+windowJoin+`
 WITH node, score
 ORDER BY score DESC
 LIMIT $limit
 OPTIONAL MATCH (d:Document {id: node.doc_id})
 RETURN node.id AS id, node.doc_id AS doc_id, node.text AS text, node.domain AS domain, coalesce(d.title, '') AS title, score,
        `+documentDateColumns("d")+`
-ORDER BY score DESC`,
-		map[string]any{"q": q, "limit": limit, "domain": slug})
+ORDER BY score DESC`, params)
 	if err != nil {
 		return nil, fmt.Errorf("graph: chunk text search: %w", err)
 	}

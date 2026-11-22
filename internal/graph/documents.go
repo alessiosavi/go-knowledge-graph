@@ -711,6 +711,11 @@ func (s *Store) DocumentsWithStatus(ctx context.Context, status Status, limit in
 
 // DocumentsIn applies both filters before the limit; empty values select all.
 func (s *Store) DocumentsIn(ctx context.Context, status Status, slug string, limit int) ([]Document, error) {
+	return s.DocumentsInWindow(ctx, status, slug, limit, DateWindow{})
+}
+
+// DocumentsInWindow filters by effective document date before ordering and limiting the list.
+func (s *Store) DocumentsInWindow(ctx context.Context, status Status, slug string, limit int, window DateWindow) ([]Document, error) {
 	if slug != "" && !ValidDomain(slug) {
 		return nil, argerr.Errorf("graph: invalid domain slug %q", slug)
 	}
@@ -722,6 +727,8 @@ func (s *Store) DocumentsIn(ctx context.Context, status Status, slug string, lim
 	if slug != "" {
 		filters = append(filters, "d.domain = $domain")
 	}
+	params := map[string]any{"status": string(status), "domain": slug}
+	filters = append(filters, window.dateFilters("d", params)...)
 	if len(filters) > 0 {
 		q += " WHERE " + strings.Join(filters, " AND ")
 	}
@@ -734,7 +741,6 @@ func (s *Store) DocumentsIn(ctx context.Context, status Status, slug string, lim
  d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes,
  d.document_date AS raw_document_date, ` + documentDateColumns("d") + `
  ORDER BY d.updated_at DESC`
-	params := map[string]any{"status": string(status), "domain": slug}
 	if limit > 0 {
 		q += " LIMIT $limit"
 		params["limit"] = limit

@@ -194,11 +194,13 @@ type CoMention struct {
 // adds all other typed edges. IncludeUnverified adds candidates at any confidence.
 // ConfirmedOnly takes precedence and returns only judge-confirmed typed edges.
 // An empty Domain selects all domains for the start entity.
+// DateWindow restricts fact evidence by effective document date.
 type ViewOptions struct {
 	Domain               string
 	IncludeLowConfidence bool
 	IncludeUnverified    bool
 	ConfirmedOnly        bool
+	DateWindow           DateWindow
 }
 
 // HiddenCounts counts distinct (head_key, rel, tail_key) facts in each state

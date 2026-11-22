@@ -45,6 +45,22 @@ func TestParseDocumentDate(t *testing.T) {
 	}
 }
 
+func TestDateWindowBoundSortsAfterLastStoredDate(t *testing.T) {
+	const last = "9999-12-31T23:59:59.999999999Z"
+	const beyond = "9999-12-31T23:59:59-01:00"
+	w, err := ParseDateWindow(beyond, beyond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := map[string]any{}
+	w.dateFilters("d", params)
+	for _, name := range []string{"since", "until"} {
+		if key, ok := params[name].(string); !ok || key <= last {
+			t.Errorf("%s key %q must sort after all fixed-width UTC timestamps", name, key)
+		}
+	}
+}
+
 func TestRecordDocumentDateOmitsOriginWithoutDate(t *testing.T) {
 	keys := []string{"document_date", "document_date_source"}
 	date, source := recordDocumentDate(&neo4j.Record{Keys: keys, Values: []any{nil, "ingest"}})
