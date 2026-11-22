@@ -329,6 +329,13 @@ func TestStatusToolLists(t *testing.T) {
 		t.Errorf("status = %+v, want the seeded document received", out)
 	}
 
+	wire := structured[struct {
+		Documents []map[string]any `json:"documents"`
+	}](t, res)
+	if len(wire.Documents) != 1 || wire.Documents[0]["document_date"] == nil || wire.Documents[0]["document_date_source"] != "ingest" {
+		t.Errorf("status wire = %+v, want the ingest date and its origin", wire)
+	}
+
 	res = callTool(t, cs, "status", map[string]any{})
 	out = structured[statusOut](t, res)
 	found := false
@@ -782,5 +789,19 @@ func TestIngestToolProductRefsPresence(t *testing.T) {
 		if res.IsError || !reflect.DeepEqual(sub.in.Products, products) {
 			t.Errorf("products input=%#v, forwarded=%#v, error=%q", products, sub.in.Products, toolErrorText(res))
 		}
+	}
+}
+
+func TestIngestDocumentDateMCP(t *testing.T) {
+	sub := &fakeSubmitter{res: ingest.Result{DocumentID: "doc"}}
+	cs := connectInMemory(t, config.Config{}, nil, sub)
+	res := callTool(t, cs, "ingest", map[string]any{"text": "page", "document_date": "2024-03-01T00:30:00+01:00"})
+	if res.IsError || sub.in.DocumentDate != "2024-02-29T23:30:00.000000000Z" {
+		t.Errorf("valid date: forwarded=%q, error=%q", sub.in.DocumentDate, toolErrorText(res))
+	}
+	sub.in = ingest.Input{}
+	res = callTool(t, cs, "ingest", map[string]any{"text": "page", "document_date": "bad-date"})
+	if !res.IsError || !strings.Contains(toolErrorText(res), "document_date") || sub.in.Text != "" {
+		t.Errorf("invalid date: forwarded=%+v, error=%q", sub.in, toolErrorText(res))
 	}
 }

@@ -108,6 +108,9 @@ type documentOut struct {
 	Error      string    `json:"error,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type documentsOut struct {
@@ -632,15 +635,17 @@ func (s *Server) toolCypher(ctx context.Context, raw json.RawMessage) (any, erro
 
 func toDocumentOut(d graph.Document) documentOut {
 	return documentOut{
-		Domain:     d.Domain,
-		ID:         d.ID,
-		SourceKind: d.SourceKind,
-		Source:     d.Source,
-		Title:      d.Title,
-		Status:     string(d.Status),
-		Error:      d.Error,
-		CreatedAt:  d.CreatedAt,
-		UpdatedAt:  d.UpdatedAt,
+		Domain:             d.Domain,
+		ID:                 d.ID,
+		SourceKind:         d.SourceKind,
+		Source:             d.Source,
+		Title:              d.Title,
+		Status:             string(d.Status),
+		Error:              d.Error,
+		CreatedAt:          d.CreatedAt,
+		UpdatedAt:          d.UpdatedAt,
+		DocumentDate:       d.DocumentDate,
+		DocumentDateSource: d.DocumentDateSource,
 	}
 }
 

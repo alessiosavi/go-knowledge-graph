@@ -828,8 +828,12 @@
       });
       head.append(del);
       item.append(head);
-      const meta = el("div", "snippet", (d.source_kind || "?") + " · " + d.id);
-      item.append(meta);
+      let metadata = (d.source_kind || "?") + " · " + d.id;
+      if (d.document_date) {
+        metadata += " · " + d.document_date;
+        if (d.document_date_source) metadata += " (" + d.document_date_source + ")";
+      }
+      item.append(el("div", "snippet", metadata));
       item.classList.add("hit");
       item.addEventListener("click", () => {
         openDocument(d.id).catch(() => {});
@@ -838,7 +842,7 @@
     }
   }
 
-  async function pollStatus(id, statusNode) {
+  async function pollStatus(id, statusNode, message) {
     for (let i = 0; i < STATUS_POLL_MAX; i++) {
       let s;
       try {
@@ -848,7 +852,7 @@
           "status unavailable: " + String(err.message || err);
         return;
       }
-      statusNode.textContent = "document " + id + " · " + s.status;
+      statusNode.textContent = message + " · " + s.status;
       if (
         s.status === "done" ||
         s.status === "failed" ||
@@ -861,7 +865,7 @@
       await new Promise((resolve) => setTimeout(resolve, STATUS_POLL_MS));
     }
     statusNode.textContent =
-      "document " + id + " is still processing; refresh Documents later";
+      message + " is still processing; refresh Documents later";
   }
 
   async function ingest() {
@@ -869,6 +873,7 @@
     const body = $("ingest-body").value.trim();
     const source = $("ingest-source").value.trim();
     const labels = $("ingest-labels").value.trim();
+    const date = $("ingest-date").value.trim();
     const statusNode = $("ingest-status");
     const submit = $("ingest-submit");
     const fileInput = $("ingest-file");
@@ -887,11 +892,13 @@
       form.append("file", file);
       if (source) form.append("source", source);
       if (labels) form.append("labels", labels);
+      if (date) form.append("document_date", date);
       opts.form = form;
     } else {
       const payload = kind === "url" ? { url: body } : { text: body };
       if (source) payload.source = source;
       if (labels) payload.labels = labels;
+      if (date) payload.document_date = date;
       opts.json = payload;
     }
     setBusy(submit, true, "Submitting…");
@@ -899,12 +906,10 @@
     statusNode.textContent = "";
     try {
       const res = await api("/v1/ingest", opts);
-      statusNode.textContent =
-        "document " +
-        res.document_id +
-        (res.noop ? " (unchanged, no-op)" : " queued");
+      const message = "document " + res.document_id + (res.noop ? " (no reprocessing)" : "");
+      statusNode.textContent = message + (res.noop ? "" : " queued");
       if (kind === "file") fileInput.value = "";
-      await pollStatus(res.document_id, statusNode);
+      await pollStatus(res.document_id, statusNode, message);
     } catch (err) {
       statusNode.textContent = String(err.message || err);
       statusNode.className = "muted error";

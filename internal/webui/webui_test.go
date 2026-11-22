@@ -84,6 +84,15 @@ func TestPresetPickerMatchesShippedPresets(t *testing.T) {
 }
 
 func TestUIAuthJS(t *testing.T) {
+	testUIJS(t, "auth.test.mjs")
+}
+
+func TestUIIngestJS(t *testing.T) {
+	testUIJS(t, "ingest.test.mjs")
+}
+
+func testUIJS(t *testing.T, name string) {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		if os.Getenv("GKG_REQUIRE_NODE") == "1" {
@@ -91,10 +100,10 @@ func TestUIAuthJS(t *testing.T) {
 		}
 		t.Skip("node is not installed")
 	}
-	// Go runs package tests from the package directory, alongside jstest/.
-	cmd := exec.Command(node, "--test", "jstest/")
+	// Test files are explicit because passing the directory runs only its package entry point.
+	cmd := exec.Command(node, "--test", filepath.Join("jstest", name))
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("UI auth JavaScript tests: %v\n%s", err, out)
+		t.Fatalf("UI JavaScript tests %s: %v\n%s", name, err, out)
 	}
 }
 

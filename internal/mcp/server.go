@@ -84,6 +84,8 @@ type ingestArgs struct {
 	Labels   string   `json:"labels,omitempty" jsonschema:"label preset name"`
 	Force    bool     `json:"force,omitempty" jsonschema:"re-ingest even when the content is unchanged"`
 	Products []string `json:"products,omitempty" jsonschema:"up to 50 unique store-prefixed product IDs; omit to retain or inherit refs, pass [] to clear"`
+
+	DocumentDate string `json:"document_date,omitempty" jsonschema:"source date as YYYY-MM-DD or RFC 3339 with an offset"`
 }
 
 type statusArgs struct {
@@ -157,6 +159,9 @@ type documentOut struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 	Supersedes string    `json:"supersedes,omitempty"`
 	Products   []string  `json:"products,omitempty" jsonschema:"Canonical list of store-prefixed product IDs referenced by this document"`
+
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type statusOut struct {
@@ -377,7 +382,11 @@ func (s *Server) handleIngest(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	case u == "" && args.Text == "":
 		return nil, ingestOut{}, argerr.New("url or text is required")
 	}
-	in := ingest.Input{Source: args.Source, Labels: args.Labels, Force: args.Force, Products: args.Products}
+	date, err := graph.ParseDocumentDate(args.DocumentDate, time.Now)
+	if err != nil {
+		return nil, ingestOut{}, err
+	}
+	in := ingest.Input{Source: args.Source, Labels: args.Labels, Force: args.Force, Products: args.Products, DocumentDate: date}
 	if u != "" {
 		in.Kind, in.URL = "url", u
 	} else {
@@ -628,18 +637,20 @@ func (s *Server) handleCypher(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 
 func toDocumentOut(d graph.Document) documentOut {
 	return documentOut{
-		Domain:     d.Domain,
-		ID:         d.ID,
-		SourceKind: d.SourceKind,
-		Source:     d.Source,
-		FinalURL:   d.FinalURL,
-		Title:      d.Title,
-		Status:     string(d.Status),
-		Error:      d.Error,
-		CreatedAt:  d.CreatedAt,
-		UpdatedAt:  d.UpdatedAt,
-		Supersedes: d.Supersedes,
-		Products:   d.ProductRefs,
+		Domain:             d.Domain,
+		ID:                 d.ID,
+		SourceKind:         d.SourceKind,
+		Source:             d.Source,
+		FinalURL:           d.FinalURL,
+		Title:              d.Title,
+		Status:             string(d.Status),
+		Error:              d.Error,
+		CreatedAt:          d.CreatedAt,
+		UpdatedAt:          d.UpdatedAt,
+		Supersedes:         d.Supersedes,
+		Products:           d.ProductRefs,
+		DocumentDate:       d.DocumentDate,
+		DocumentDateSource: d.DocumentDateSource,
 	}
 }
 

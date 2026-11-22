@@ -59,6 +59,8 @@ type Input struct {
 	Labels   string
 	Force    bool
 	Products []string // nil means omitted; an empty list clears refs
+
+	DocumentDate string // normalized caller date, empty when omitted
 }
 
 // Result tells the caller what a submission did.
@@ -368,15 +370,23 @@ func (p *Pipeline) drainDeferred(ctx context.Context) {
 	}
 }
 
+func isLiveDuplicate(doc *graph.Document, force bool) bool {
+	return !force && doc != nil && doc.Status != graph.StatusFailed && doc.Status != graph.StatusSuperseded
+}
+
+func canNoopBeforeUpsert(doc *graph.Document, date string, force bool) bool {
+	return isLiveDuplicate(doc, force) && (date == "" || date == doc.RawDocumentDate)
+}
+
 func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submission, force bool) (Result, error) {
 	id := graph.DocumentID(in.Kind, in.Source, in.Hash)
-	// A duplicate is only a read: do not wait on processing or touch the
-	// spool, which may be full or unavailable while this version is live.
+	// A duplicate that keeps the existing date needs only a read. It can
+	// return while the version is processing or the spool is unavailable.
 	doc, err := p.store.Document(ctx, id)
 	if err != nil && !errors.Is(err, graph.ErrNotFound) {
 		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
-	if err == nil && doc.Status != graph.StatusFailed && doc.Status != graph.StatusSuperseded && !force {
+	if err == nil && canNoopBeforeUpsert(doc, in.DocumentDate, force) {
 		if err := graph.CheckProductRefsNoop(in.ProductRefs, doc.ProductRefs); err != nil {
 			return Result{}, err
 		}
@@ -396,13 +406,15 @@ func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submis
 	if err != nil && !errors.Is(err, graph.ErrNotFound) {
 		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
-	if err == nil && doc.Status != graph.StatusFailed && doc.Status != graph.StatusSuperseded && !force {
+	if err == nil && canNoopBeforeUpsert(doc, in.DocumentDate, force) {
 		if err := graph.CheckProductRefsNoop(in.ProductRefs, doc.ProductRefs); err != nil {
 			return Result{}, err
 		}
 		return Result{DocumentID: id, Noop: true}, nil
 	}
-	if len(in.ProductRefs) > 0 {
+	// Live duplicates that update the date check unchanged refs in the
+	// upsert transaction. Binding validation is for admissions that can write refs.
+	if len(in.ProductRefs) > 0 && !isLiveDuplicate(doc, force) {
 		if err := p.store.PrepareDocumentRefs(ctx, &in, doc); err != nil {
 			return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
 		}

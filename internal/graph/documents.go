@@ -27,6 +27,7 @@ func DocumentID(kind, source, hash string) string {
 //
 // Semantics:
 //   - same source + same live content → Noop (zero extractor calls). A
+//     supplied document date can still update the node in place. A
 //     document in status failed does not answer Noop: resubmitting its
 //     content retries it (the node is reused, status resets to received).
 //   - same source + changed content → new document id, PreviousID names the
@@ -68,6 +69,13 @@ func txUpsertDocument(ctx context.Context, tx neo4j.ManagedTransaction, id strin
 	if liveMatch && !in.Force {
 		if err := CheckProductRefsNoop(in.ProductRefs, current.refs); err != nil {
 			return UpsertResult{}, err
+		}
+		if in.DocumentDate != "" && in.DocumentDate != current.documentDate {
+			if err := txRun(ctx, tx, `
+MATCH (d:Document {id:$id}) SET d.document_date = $date`,
+				map[string]any{"id": id, "date": in.DocumentDate}); err != nil {
+				return UpsertResult{}, err
+			}
 		}
 		return UpsertResult{ID: id, Noop: true}, nil
 	}
@@ -117,7 +125,8 @@ func txUpsertDocument(ctx context.Context, tx neo4j.ManagedTransaction, id strin
 		"status": string(StatusReceived), "preserve_version": liveMatch,
 		"domain": domain, "domain_tok": domainTokenOrNil(domain),
 		"now": time.Now().UTC().Format(timeLayout), "text_clean": textCleanProperties(in),
-		"spool_digest": in.SpoolPayloadDigest,
+		"spool_digest":  in.SpoolPayloadDigest,
+		"document_date": in.DocumentDate,
 	}
 	if err := txRun(ctx, tx, `
 MERGE (d:Document {id: $id})
@@ -126,6 +135,7 @@ SET d.source_kind = $kind, d.source = $source, d.final_url = $final, d.title = $
     d.title_source = $title_source, d.hash = $hash, d.labels = $labels,
     d.status = $status, d.error = '', d.updated_at = $now,
     d.version_at = CASE WHEN $preserve_version THEN d.version_at ELSE $now END,
+    d.document_date = CASE WHEN $document_date <> '' THEN $document_date ELSE d.document_date END,
     d.supersedes = coalesce(d.supersedes, ''),
     d.domain = CASE WHEN $domain <> '' THEN $domain ELSE d.domain END,
     d.domain_tok = CASE WHEN $domain <> '' THEN $domain_tok ELSE d.domain_tok END,
@@ -159,9 +169,10 @@ func textCleanProperties(in DocumentInput) map[string]any {
 }
 
 type documentVersion struct {
-	status Status
-	domain string
-	refs   []string
+	status       Status
+	domain       string
+	refs         []string
+	documentDate string
 }
 
 // txDocumentVersions reads the exact version (including superseded history),
@@ -172,7 +183,7 @@ func txDocumentVersions(ctx context.Context, tx neo4j.ManagedTransaction, id, ki
 MATCH (d:Document {source_kind:$kind, source:$source})
 WHERE d.status <> 'superseded' OR d.id = $id
 RETURN d.id AS id, d.status AS status, d.domain AS domain, d.product_refs_raw AS refs,
-       coalesce(d.version_at, d.created_at) AS version_at
+       d.document_date AS document_date, coalesce(d.version_at, d.created_at) AS version_at
 ORDER BY d.created_at DESC, d.id DESC`, map[string]any{"id": id, "kind": kind, "source": source})
 	if err != nil {
 		return nil, "", done, err
@@ -182,7 +193,8 @@ ORDER BY d.created_at DESC, d.id DESC`, map[string]any{"id": id, "kind": kind, "
 		rowID := getString(row, "id")
 		v := documentVersion{
 			status: Status(getString(row, "status")), domain: getString(row, "domain"),
-			refs: getStringSlice(row, "refs"),
+			refs:         getStringSlice(row, "refs"),
+			documentDate: getString(row, "document_date"),
 		}
 		if rowID == id {
 			current = &v
@@ -675,7 +687,8 @@ RETURN d.id AS id, d.source_kind AS source_kind, d.source AS source, d.final_url
        d.hash AS hash, d.status AS status, d.error AS error,
        coalesce(d.labels, '') AS labels, d.domain AS domain,
        d.product_refs_raw AS product_refs_raw, d.spool_payload_digest AS spool_payload_digest,
-       d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes`,
+       d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes,
+       d.document_date AS raw_document_date, `+documentDateColumns("d"),
 		map[string]any{"id": id})
 	if err != nil {
 		return nil, fmt.Errorf("graph: document %s: %w", id, err)
@@ -718,7 +731,8 @@ func (s *Store) DocumentsIn(ctx context.Context, status Status, slug string, lim
  d.hash AS hash, d.status AS status, d.error AS error,
  coalesce(d.labels, '') AS labels, d.domain AS domain,
  d.product_refs_raw AS product_refs_raw,
- d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes
+ d.created_at AS created_at, d.updated_at AS updated_at, d.supersedes AS supersedes,
+ d.document_date AS raw_document_date, ` + documentDateColumns("d") + `
  ORDER BY d.updated_at DESC`
 	params := map[string]any{"status": string(status), "domain": slug}
 	if limit > 0 {
@@ -869,7 +883,7 @@ func (s *Store) OlderLiveVersions(ctx context.Context, docID string) ([]string, 
 }
 
 func recordToDocument(r *neo4j.Record) *Document {
-	return &Document{
+	doc := &Document{
 		ID:                 getString(r, "id"),
 		Domain:             getString(r, "domain"),
 		SourceKind:         getString(r, "source_kind"),
@@ -884,9 +898,17 @@ func recordToDocument(r *neo4j.Record) *Document {
 		CreatedAt:          parseTime(getString(r, "created_at")),
 		UpdatedAt:          parseTime(getString(r, "updated_at")),
 		Supersedes:         getString(r, "supersedes"),
+		RawDocumentDate:    getString(r, "raw_document_date"),
 		ProductRefs:        getStringSlice(r, "product_refs_raw"),
 		SpoolPayloadDigest: getString(r, "spool_payload_digest"),
 	}
+	if date := parseTime(getString(r, "document_date")).UTC(); !date.IsZero() {
+		doc.DocumentDate = &date
+	}
+	if origin := getString(r, "document_date_source"); origin != "" {
+		doc.DocumentDateSource = &origin
+	}
+	return doc
 }
 
 func parseTime(s string) time.Time {

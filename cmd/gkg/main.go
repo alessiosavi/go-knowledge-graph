@@ -641,6 +641,7 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	source := fs.String("source", "", "identity override (default: file basename / URL / content hash)")
+	date := fs.String("date", "", "document date (YYYY-MM-DD or RFC 3339 with an offset)")
 	var products []string
 	fs.Func("product", "product ID (store:suffix); repeat for additional IDs", func(id string) error {
 		products = append(products, id)
@@ -654,6 +655,11 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "gkg ingest: exactly one <file|url|-> argument is required")
 		return 2
 	}
+	documentDate, err := graph.ParseDocumentDate(*date, time.Now)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
+		return 2
+	}
 	if *clearProducts {
 		if len(products) > 0 {
 			fmt.Fprintf(stderr, "gkg ingest: %v\n", &graph.DocumentRefsError{Code: "invalid_products", Detail: "--product and --clear-products cannot be used together"})
@@ -661,7 +667,7 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 		}
 		products = []string{}
 	}
-	products, err := graph.ValidateProductRefs(products)
+	products, err = graph.ValidateProductRefs(products)
 	if err != nil {
 		fmt.Fprintf(stderr, "gkg ingest: %v\n", err)
 		return 2
@@ -704,6 +710,7 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	in.Products = products
+	in.DocumentDate = documentDate
 	res, err := pipe.Submit(ctx, in)
 	if err != nil {
 		var refsErr *graph.DocumentRefsError

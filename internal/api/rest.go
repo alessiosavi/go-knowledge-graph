@@ -60,6 +60,8 @@ type ingestRequest struct {
 	Labels   string          `json:"labels"`
 	Force    bool            `json:"force"`
 	Products json.RawMessage `json:"products"`
+
+	DocumentDate string `json:"document_date"`
 }
 
 type ingestResponse struct {
@@ -82,6 +84,9 @@ type documentDTO struct {
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	Supersedes  string    `json:"supersedes,omitempty"`
+
+	DocumentDate       *time.Time `json:"document_date,omitempty"`
+	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type documentsResponse struct {
@@ -264,6 +269,11 @@ func (s *Server) decodeIngest(w http.ResponseWriter, r *http.Request, maxBytes i
 			}
 			products = []string{}
 		}
+		date, err := graph.ParseDocumentDate(r.PostFormValue("document_date"), time.Now)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return ingest.Input{}, false
+		}
 		file, hdr, err := r.FormFile("file")
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", `multipart field "file" is required`)
@@ -287,12 +297,13 @@ func (s *Server) decodeIngest(w http.ResponseWriter, r *http.Request, maxBytes i
 			}
 		}
 		return ingest.Input{
-			Kind:     "file",
-			Bytes:    data,
-			Source:   source,
-			Labels:   r.FormValue("labels"),
-			Force:    formBool(r.FormValue("force")),
-			Products: products,
+			Kind:         "file",
+			Bytes:        data,
+			Source:       source,
+			Labels:       r.FormValue("labels"),
+			Force:        formBool(r.FormValue("force")),
+			Products:     products,
+			DocumentDate: date,
 		}, true
 	}
 
@@ -307,7 +318,15 @@ func (s *Server) decodeIngest(w http.ResponseWriter, r *http.Request, maxBytes i
 			return ingest.Input{}, false
 		}
 	}
+	date, err := graph.ParseDocumentDate(req.DocumentDate, time.Now)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return ingest.Input{}, false
+	}
 	u := strings.TrimSpace(req.URL)
+	in := ingest.Input{
+		Source: req.Source, Labels: req.Labels, Force: req.Force, Products: products, DocumentDate: date,
+	}
 	switch {
 	case u != "" && req.Text != "":
 		writeError(w, http.StatusBadRequest, "invalid_request", "give either url or text, not both")
@@ -316,10 +335,11 @@ func (s *Server) decodeIngest(w http.ResponseWriter, r *http.Request, maxBytes i
 		writeError(w, http.StatusBadRequest, "invalid_request", "url or text is required")
 		return ingest.Input{}, false
 	case u != "":
-		return ingest.Input{Kind: "url", URL: u, Source: req.Source, Labels: req.Labels, Force: req.Force, Products: products}, true
+		in.Kind, in.URL = "url", u
 	default:
-		return ingest.Input{Kind: "text", Text: req.Text, Source: req.Source, Labels: req.Labels, Force: req.Force, Products: products}, true
+		in.Kind, in.Text = "text", req.Text
 	}
+	return in, true
 }
 
 func formBool(s string) bool { return s == "true" || s == "1" }
@@ -606,20 +626,22 @@ func queryBool(r *http.Request, name string) bool {
 
 func toDocumentDTO(d graph.Document) documentDTO {
 	return documentDTO{
-		Domain:      d.Domain,
-		ID:          d.ID,
-		SourceKind:  d.SourceKind,
-		Source:      d.Source,
-		FinalURL:    d.FinalURL,
-		Title:       d.Title,
-		TitleSource: d.TitleSource,
-		Status:      string(d.Status),
-		Error:       d.Error,
-		Labels:      d.Labels,
-		Products:    d.ProductRefs,
-		CreatedAt:   d.CreatedAt,
-		UpdatedAt:   d.UpdatedAt,
-		Supersedes:  d.Supersedes,
+		Domain:             d.Domain,
+		ID:                 d.ID,
+		SourceKind:         d.SourceKind,
+		Source:             d.Source,
+		FinalURL:           d.FinalURL,
+		Title:              d.Title,
+		TitleSource:        d.TitleSource,
+		Status:             string(d.Status),
+		Error:              d.Error,
+		Labels:             d.Labels,
+		Products:           d.ProductRefs,
+		CreatedAt:          d.CreatedAt,
+		UpdatedAt:          d.UpdatedAt,
+		Supersedes:         d.Supersedes,
+		DocumentDate:       d.DocumentDate,
+		DocumentDateSource: d.DocumentDateSource,
 	}
 }
 
