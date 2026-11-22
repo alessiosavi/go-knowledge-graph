@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 )
 
 // GenerationSettings applies to every provider turn of a single ask.
@@ -34,14 +36,18 @@ type generationCapabilities struct {
 }
 
 func (s *Server) generationCapabilities() generationCapabilities {
-	efforts := s.cfg.Agent.ReasoningEfforts
+	return configuredGeneration(s.cfg.Agent, s.llm.model)
+}
+
+func configuredGeneration(cfg config.AgentConfig, model string) generationCapabilities {
+	efforts := cfg.ReasoningEfforts
 	if efforts == nil {
 		efforts = []string{}
-		if strings.EqualFold(s.llm.model, "DeepSeek-V4.1-Flash-1017") {
+		if strings.EqualFold(model, "DeepSeek-V4.1-Flash-1017") {
 			efforts = []string{"none", "high", "max"}
 		}
 	}
-	return generationCapabilities{TopK: s.cfg.Agent.TopKEnabled, ReasoningEfforts: efforts}
+	return generationCapabilities{TopK: cfg.TopKEnabled, ReasoningEfforts: efforts}
 }
 
 func (g *GenerationSettings) validate(caps generationCapabilities) error {

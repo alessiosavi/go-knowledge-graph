@@ -120,7 +120,12 @@ func runJudgeEvalRun(ctx context.Context, opt judgeEvalOptions, cfg config.Confi
 		return fail(fmt.Errorf("resume verdicts: %w", err))
 	}
 	if out == nil {
-		out, err = createJudgeEvalOutput(opt.out, opt.ledger)
+		out, err = createEvalOutput(opt.out)
+		if err == nil {
+			if err = checkJudgeEvalAlias(out, opt.ledger); err != nil {
+				_ = out.Close()
+			}
+		}
 		if err != nil {
 			return fail(fmt.Errorf("create verdicts: %w", err))
 		}
@@ -227,7 +232,7 @@ func readJudgeEvalInput(path string) ([]judgeEvalItem, map[string]bool, error) {
 	defer f.Close()
 	var items []judgeEvalItem
 	ids := make(map[string]bool)
-	err = scanJudgeEvalJSONL(f, func(raw []byte) error {
+	err = scanEvalJSONL(f, func(raw []byte) error {
 		var row struct {
 			ID   string `json:"item_id"`
 			B64  string `json:"judge_input_b64"`
@@ -264,7 +269,7 @@ func openJudgeEvalResume(opt judgeEvalOptions, model string, ids map[string]bool
 		return nil, nil, err
 	}
 	done := make(map[string]bool)
-	err = scanJudgeEvalJSONL(f, func(raw []byte) error {
+	err = scanEvalJSONL(f, func(raw []byte) error {
 		var row judgeEvalVerdict
 		if err := json.Unmarshal(raw, &row); err != nil {
 			return errors.New("invalid verdict JSON")
@@ -299,12 +304,12 @@ func openJudgeEvalResume(opt judgeEvalOptions, model string, ids map[string]bool
 	return f, done, nil
 }
 
-func createJudgeEvalOutput(path, ledgerPath string) (*os.File, error) {
+func createEvalOutput(path string) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	err = lockJudgeEvalOutput(f, ledgerPath)
+	err = llmusage.LockOutput(f)
 	if err == nil {
 		var dir *os.File
 		dir, err = os.Open(filepath.Dir(path))
@@ -323,7 +328,12 @@ func lockJudgeEvalOutput(f *os.File, ledgerPath string) error {
 	if err := llmusage.LockOutput(f); err != nil {
 		return fmt.Errorf("lock verdict file: %w", err)
 	}
-	// Reject aliases before repairing verdicts or opening the ledger under this lock.
+	return checkJudgeEvalAlias(f, ledgerPath)
+}
+
+// checkJudgeEvalAlias rejects a verdict output that aliases the ledger, before
+// verdicts are repaired or the ledger is opened under the output lock.
+func checkJudgeEvalAlias(f *os.File, ledgerPath string) error {
 	if ledgerInfo, err := os.Stat(ledgerPath); err == nil {
 		outInfo, err := f.Stat()
 		if err != nil {
@@ -336,7 +346,10 @@ func lockJudgeEvalOutput(f *os.File, ledgerPath string) error {
 	return nil
 }
 
-func scanJudgeEvalJSONL(r io.Reader, visit func([]byte) error, recoverTail func(offset int64, dropped int) error) error {
+// scanEvalJSONL visits each newline-terminated row. A final row without its
+// newline is handed to recoverTail (with its byte offset) when one is given,
+// and is an error otherwise.
+func scanEvalJSONL(r io.Reader, visit func([]byte) error, recoverTail func(offset int64, dropped int) error) error {
 	reader := bufio.NewReader(r)
 	var offset int64
 	for n := 1; ; n++ {

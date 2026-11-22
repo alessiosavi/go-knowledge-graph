@@ -211,12 +211,13 @@ var errStreamClosedBeforeEvent = errors.New("agent: stream closed before the fir
 // only on rate limits/5xx/network, classified errors that never echo the
 // endpoint or the key.
 type client struct {
-	baseURL string
-	apiKey  string
-	tokens  llmauth.TokenProvider
-	model   string
-	http    *http.Client
-	backoff []time.Duration
+	baseURL     string
+	apiKey      string
+	tokens      llmauth.TokenProvider
+	model       string
+	http        *http.Client
+	backoff     []time.Duration
+	attemptGate func() error // eval only
 
 	// mu guards the stream-negotiation memos; both are set once and last
 	// for the process lifetime (one client per running server).
@@ -339,6 +340,11 @@ func (c *client) chat(ctx context.Context, req chatRequest) (chatReply, error) {
 			}
 		}
 		reply, err := c.doChat(ctx, body)
+		if c.attemptGate != nil {
+			if stop := c.attemptGate(); stop != nil {
+				return chatReply{}, stop
+			}
+		}
 		if err == nil {
 			return reply, nil
 		}
@@ -444,6 +450,11 @@ func (c *client) chatStream(ctx context.Context, req chatRequest, onDelta func(s
 			}
 		}
 		reply, err := c.doStream(ctx, body, req.keepToolReasoning(), forward)
+		if c.attemptGate != nil {
+			if stop := c.attemptGate(); stop != nil {
+				return chatReply{}, stop
+			}
+		}
 		if err == nil {
 			return reply, nil
 		}
@@ -493,13 +504,13 @@ func (c *client) doStream(ctx context.Context, body []byte, keepReasoning bool, 
 		return chatReply{}, &providerError{status: resp.StatusCode, detail: llmauth.TrimPreview(redact(string(data)), llmauth.PreviewPrefixBytes)}
 	}
 	if c.tokens == nil {
-		return readSSE(resp.Body, keepReasoning, onDelta, redact)
+		return readSSE(resp.Body, keepReasoning, onDelta, redact, evalObservation(ctx))
 	}
 	var forward func(string) error
 	if onDelta != nil {
 		forward = func(delta string) error { return onDelta(redact(delta)) }
 	}
-	reply, err := readSSE(resp.Body, keepReasoning, forward, redact)
+	reply, err := readSSE(resp.Body, keepReasoning, forward, redact, evalObservation(ctx))
 	if err == nil {
 		reply.redact(redact)
 	}
@@ -566,7 +577,7 @@ var streamRawCap = int64(responseCap * 2)
 // errStreamClosedBeforeEvent; a stream cut after events — including a
 // connection that ends mid-line — reports a classified premature-close
 // error instead of blaming the truncated frame.
-func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, redact func(string) string) (chatReply, error) {
+func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, redact func(string) string, observation *EvalObservation) (chatReply, error) {
 	limited := &io.LimitedReader{R: body, N: streamRawCap + 1}
 	reader := bufio.NewReader(limited)
 	var (
@@ -604,6 +615,9 @@ func readSSE(body io.Reader, keepReasoning bool, onDelta func(string) error, red
 					reply.ToolCalls = append(reply.ToolCalls, call)
 				}
 				if invalidExtra {
+					if observation != nil {
+						observation.DiscardedExtraContent++
+					}
 					slog.Warn("agent: discarded invalid extra_content in provider stream")
 				}
 				return reply, nil

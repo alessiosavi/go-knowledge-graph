@@ -252,29 +252,7 @@ func toolDefs() []toolDef {
 // execTool runs one tool call; its result marshals into the evidence array
 // and into the tool message the model receives.
 func (s *Server) execTool(ctx context.Context, name string, args json.RawMessage) (_ any, err error) {
-	var run func(context.Context, json.RawMessage) (any, error)
-	switch name {
-	case "search":
-		run = s.toolSearch
-	case "get_entity":
-		run = s.toolGetEntity
-	case "get_chunks":
-		run = s.toolGetChunks
-	case "traverse":
-		run = s.toolTraverse
-	case "list_documents":
-		run = s.toolListDocuments
-	case "status":
-		run = s.toolStatus
-	case "cypher":
-		run = s.toolCypher
-	case "get_product":
-		run = s.toolGetProduct
-	case "find_products":
-		run = s.toolFindProducts
-	case "list_features":
-		run = s.toolListFeatures
-	}
+	run := s.toolRunner(name)
 	if run != nil && s.metrics != nil {
 		start := time.Now()
 		defer func() {
@@ -298,6 +276,33 @@ func (s *Server) execTool(ctx context.Context, name string, args json.RawMessage
 		return nil, graph.ErrQueryTimeout
 	}
 	return result, err
+}
+
+func (s *Server) toolRunner(name string) func(context.Context, json.RawMessage) (any, error) {
+	switch name {
+	case "search":
+		return s.toolSearch
+	case "get_entity":
+		return s.toolGetEntity
+	case "get_chunks":
+		return s.toolGetChunks
+	case "traverse":
+		return s.toolTraverse
+	case "list_documents":
+		return s.toolListDocuments
+	case "status":
+		return s.toolStatus
+	case "cypher":
+		return s.toolCypher
+	case "get_product":
+		return s.toolGetProduct
+	case "find_products":
+		return s.toolFindProducts
+	case "list_features":
+		return s.toolListFeatures
+	default:
+		return nil
+	}
 }
 
 func (s *Server) toolGetChunks(ctx context.Context, raw json.RawMessage) (any, error) {
