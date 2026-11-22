@@ -825,7 +825,7 @@ commands:
   products unbind S
   eval-retrieval  evaluate retrieval and optional live or replayed agent answers
   domain    list, inspect, evaluate and administer domains through serve
-  judge     backfill candidates or stored typed edges, audit facts, or evaluate judge v2
+  judge     backfill or audit facts, evaluate judge v2, or run the paired judge eval
   quality   report read-only graph quality metrics and optional private hygiene samples
   fold rebuild [-exceptions FILE | -clear-exceptions]  rebuild advisory entity folds
   merge-folds -plan -out FILE [-domain SLUG] [-timeout DURATION]  report proposed entity merges

@@ -25,10 +25,17 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmusage"
 )
 
 // PromptVersion must be bumped whenever judgePrompt changes.
 const PromptVersion = "1"
+
+// DefaultBaseURL is the v1 endpoint used when the config leaves it empty.
+const DefaultBaseURL = "https://api.openai.com/v1"
+
+// DefaultModel is the v1 model used when the config leaves it empty.
+const DefaultModel = "deepseek-v4.1-flash"
 
 const (
 	maxRetries   = 6
@@ -55,6 +62,7 @@ type Client struct {
 	after            func(time.Duration) <-chan time.Time
 	jitter           func(time.Duration) time.Duration
 	attemptGate      func() error
+	gateBeforeAuth   bool
 	providerRedactor *strings.Replacer
 	tokens           llmauth.TokenProvider
 	settings         judgeSettings
@@ -65,11 +73,11 @@ type Client struct {
 func NewClient(cfg config.Config) *Client {
 	base := strings.TrimRight(cfg.Judge.BaseURL, "/")
 	if base == "" {
-		base = "https://api.openai.com/v1"
+		base = DefaultBaseURL
 	}
 	model := cfg.Judge.Model
 	if model == "" {
-		model = "deepseek-v4.1-flash"
+		model = DefaultModel
 	}
 	c := &Client{
 		baseURL:          base,
@@ -88,6 +96,39 @@ func NewClient(cfg config.Config) *Client {
 	}
 	c.cacheNamespace = v1Namespace(base, c.settings, cfg.Judge.Auth)
 	return c
+}
+
+// Option configures a judge before its first verification.
+type Option func(*Client)
+
+// NewClientWithOptions uses the same wire settings as NewClient and opts in to
+// the supplied client configuration.
+func NewClientWithOptions(cfg config.Config, options ...Option) *Client {
+	c := NewClient(cfg)
+	for _, opt := range options {
+		opt(c)
+	}
+	return c
+}
+
+// WithEvalTransport installs the eval transport, disables redirects and runs
+// the eval attempt gate before fetching credentials.
+func WithEvalTransport(transport http.RoundTripper) Option {
+	return func(c *Client) {
+		c.client.Transport = transport
+		c.client.CheckRedirect = llmauth.RejectRedirect
+		c.gateBeforeAuth = true
+	}
+}
+
+// WithTokenProvider installs a non-nil bearer token provider, replacing any
+// configured provider. A nil provider leaves the configuration unchanged.
+func WithTokenProvider(tokens llmauth.TokenProvider) Option {
+	return func(c *Client) {
+		if tokens != nil {
+			c.tokens = tokens
+		}
+	}
 }
 
 // SetBackoff replaces the retry policy with fixed delays (used by tests).
@@ -172,13 +213,14 @@ func (c *Client) VerifyFact(ctx context.Context, in ingest.FactInput) (ingest.Ve
 // VerifyPayload sends the original v1 user message after checking its
 // encoding and stored digest.
 func (c *Client) VerifyPayload(ctx context.Context, p ingest.JudgePayload) (ingest.Verdict, error) {
-	if err := validatePayload(p); err != nil {
+	if err := ValidatePayload(p); err != nil {
 		return ingest.Verdict{}, err
 	}
 	return c.verify(ctx, judgePrompt, p.Bytes, c.settings)
 }
 
-func validatePayload(p ingest.JudgePayload) error {
+// ValidatePayload checks a frozen v1 message without calling the provider.
+func ValidatePayload(p ingest.JudgePayload) error {
 	in, err := ingest.DecodeJudgeInput(p.Bytes)
 	// The encoder always emits every v1 field, so equality also rejects
 	// missing fields, nulls, and alternate representations of valid values.
@@ -229,7 +271,7 @@ func (c *Client) verify(ctx context.Context, prompt string, payload []byte, sett
 		if err := ctx.Err(); err != nil {
 			return ingest.Verdict{}, err
 		}
-		if c.tokens == nil && c.attemptGate != nil {
+		if (c.tokens == nil || c.gateBeforeAuth) && c.attemptGate != nil {
 			if err := c.attemptGate(); err != nil {
 				return ingest.Verdict{}, err
 			}
@@ -304,7 +346,7 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 		if err != nil {
 			return ingest.Verdict{}, llmauth.Class(err) == llmauth.TransientClass, "", providerWideError{err}
 		}
-		if c.attemptGate != nil {
+		if !c.gateBeforeAuth && c.attemptGate != nil {
 			if err := c.attemptGate(); err != nil {
 				return ingest.Verdict{}, false, "", err
 			}
@@ -317,6 +359,9 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
+		if errors.Is(err, llmusage.ErrLedgerStop) || errors.Is(err, llmusage.ErrLedger) {
+			return ingest.Verdict{}, false, "", err
+		}
 		diagnostic := providerIOError("judge: provider request failed", err)
 		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), "", providerWideError{diagnostic}
 	}
@@ -331,6 +376,9 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
 	if err != nil {
+		if errors.Is(err, llmusage.ErrLedger) {
+			return ingest.Verdict{}, false, "", err
+		}
 		diagnostic := providerIOError("judge: read response failed", err)
 		return ingest.Verdict{}, !errors.Is(diagnostic, errInvalidProviderURL), resp.Header.Get("Retry-After"), providerWideError{diagnostic}
 	}

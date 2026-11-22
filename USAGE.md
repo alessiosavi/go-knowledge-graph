@@ -852,6 +852,35 @@ and a Wilson 95% interval; skipped and unlabelled rows do not enter the denomina
 If no rows are scored, the command prints `no scored rows` and exits 2.
 Audit files contain graph-derived text; store them with the source data.
 
+### Run the G1-T2 paired judge eval
+
+Run the same frozen JSONL once per arm. Use a separate verdict file for each
+arm and the existing provider ledger. This command is eval-only and spends
+money through the ledger. It calls the configured v1 judge directly.
+
+```sh
+gkg judge eval run --in frozen.jsonl --out verdicts-DS.jsonl \
+  --arm DS --manifest "$MANIFEST_SHA" --ledger ledger-DS.jsonl \
+  --ledger-genesis "$LEDGER_GENESIS_SHA" --run-id judge-DS --allotment 2.5
+```
+
+- `--arm DS|GM` selects a judge configured with static auth or GCP auth,
+  respectively. The configured model must match the ledger header.
+- `--family J|S` defaults to `J` for judge runs. Use `S` for smoke, probe or
+  warm-up runs.
+- `--manifest` identifies the frozen set. Resume with the same manifest, arm
+  and model to skip items already final in `--out`.
+- `--ledger-genesis` is the SHA-256 of the ledger's header line, including
+  its newline. `--run-id` and `--allotment` select the run's budget in USD.
+
+Each verdict's `attempts`, `statuses`, `usage` and `calls` cover the invocation
+that writes it, and the ledger remains the authoritative record of spend across
+invocations.
+
+Exit codes are `0` when all items are final, `2` for permanent errors or
+refused inputs, flags or ledger files, `3` for a provider stop, and `4` for
+a ledger budget stop. An item stopped by the ledger has no verdict row.
+
 ### Evaluate judge v2
 
 Run each labelled set separately, using one output directory per set. For the
