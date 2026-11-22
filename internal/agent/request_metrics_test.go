@@ -21,7 +21,7 @@ type documentListStore struct {
 	list func(context.Context) ([]graph.Document, error)
 }
 
-func (s documentListStore) DocumentsIn(ctx context.Context, _ graph.Status, _ string, _ int) ([]graph.Document, error) {
+func (s documentListStore) DocumentsInWindow(ctx context.Context, _ graph.Status, _ string, _ int, _ graph.DateWindow) ([]graph.Document, error) {
 	return s.list(ctx)
 }
 

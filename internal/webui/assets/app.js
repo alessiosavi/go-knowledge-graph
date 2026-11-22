@@ -793,6 +793,12 @@
     return span;
   }
 
+  function documentDateSuffix(doc) {
+    if (!doc.document_date) return "";
+    const origin = doc.document_date_source ? " (" + doc.document_date_source + ")" : "";
+    return " · " + doc.document_date + origin;
+  }
+
   async function loadDocuments() {
     const list = $("documents");
     list.replaceChildren(el("li", "muted", "Loading…"));
@@ -828,11 +834,7 @@
       });
       head.append(del);
       item.append(head);
-      let metadata = (d.source_kind || "?") + " · " + d.id;
-      if (d.document_date) {
-        metadata += " · " + d.document_date;
-        if (d.document_date_source) metadata += " (" + d.document_date_source + ")";
-      }
+      const metadata = (d.source_kind || "?") + " · " + d.id + documentDateSuffix(d);
       item.append(el("div", "snippet", metadata));
       item.classList.add("hit");
       item.addEventListener("click", () => {
@@ -993,7 +995,7 @@
     const chunks = (data && data.chunks) || [];
     meta.append(
       document.createTextNode(
-        " · " + chunks.length + (chunks.length === 1 ? " chunk" : " chunks"),
+        " · " + chunks.length + (chunks.length === 1 ? " chunk" : " chunks") + documentDateSuffix(doc),
       ),
     );
     if (doc.status === "superseded") {

@@ -109,23 +109,25 @@ func TestConfirmedOnlyReadsMCP(t *testing.T) {
 }
 
 func TestFactAndEdgeDocumentDateMCP(t *testing.T) {
-	f := graphtest.Visibility(t)
-	cfg := config.Config{}
-	cfg.Facts.AllowUnverifiedReads = true
-	cs := connectInMemory(t, cfg, f.Store, nil)
-	params := map[string]any{"id": f.DocID, "date": storedEvidenceDate, "version": storedEvidenceVersion}
-	writeEvidenceFixture(t, "MATCH (d:Document {id:$id}) SET d.document_date=$date, d.version_at=$version", params)
 	for _, tc := range []struct {
 		name, date, source string
 	}{
-		{"caller", evidenceDate, "caller"},
-		{"ingest", evidenceVersion, "ingest"},
 		{"deleted_document", "", ""},
+		{"ingest", evidenceVersion, "ingest"},
+		{"caller", evidenceDate, "caller"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			f := graphtest.Visibility(t)
+			cfg := config.Config{}
+			cfg.Facts.AllowUnverifiedReads = true
+			cs := connectInMemory(t, cfg, f.Store, nil)
 			switch tc.name {
+			case "caller":
+				writeEvidenceFixture(t, "MATCH (d:Document {id:$id}) SET d.document_date=$date",
+					map[string]any{"id": f.DocID, "date": storedEvidenceDate})
 			case "ingest":
-				writeEvidenceFixture(t, "MATCH (d:Document {id:$id}) REMOVE d.document_date", params)
+				writeEvidenceFixture(t, "MATCH (d:Document {id:$id}) SET d.version_at=$version",
+					map[string]any{"id": f.DocID, "version": storedEvidenceVersion})
 			case "deleted_document":
 				deleteEvidenceDocument(t, f.DocID)
 			}

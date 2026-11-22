@@ -54,6 +54,7 @@ Rules:
 - To resolve a product code, SKU or reference, call find_products with an identifier feature (features of kind code, such as catalogue_code or product_reference; list_features shows them) and the code as value; codes ignore case and spaces. get_product needs the graph product id, or store plus the full product_id (for example dentalica.com:1000), never a bare code.
 - For what documents or catalogues say about a product, call get_product with with_mentions=true; for the products a passage cites, call get_chunks with with_products=true.
 - document_date_source 'caller' is the source's own date; 'ingest' is only when gkg received it and does not show how recent the content is. For a current-state question with conflicting comparable evidence, prefer the newest caller-dated source, cite its date, and mention any undated conflicting source.
+- When the question names a period, pass since/until to search, get_entity, traverse or list_documents.
 
 Graph schema for Cypher queries:
 Document{id, source, title, status, labels, domain, document_date, version_at, created_at}
@@ -91,6 +92,7 @@ type graphStore interface {
 	chunkread.ProductMentionIndexLoader
 	Document(context.Context, string) (*graph.Document, error)
 	DocumentsIn(context.Context, graph.Status, string, int) ([]graph.Document, error)
+	DocumentsInWindow(context.Context, graph.Status, string, int, graph.DateWindow) ([]graph.Document, error)
 	EntityCandidatesByName(context.Context, string, string) ([]graph.EntityCandidate, error)
 	EntityViewOpts(context.Context, string, graph.ViewOptions) (graph.EntityView, error)
 	RunReadQuery(context.Context, string, map[string]any, int) (graph.QueryResult, error)

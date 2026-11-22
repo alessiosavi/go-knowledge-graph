@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setImmediate } from "node:timers/promises";
 
 import { page } from "./page.mjs";
 
@@ -56,4 +57,31 @@ test("ingest displays an invalid document date from REST", async () => {
   dateInput.value = "bad-date";
   await p.fire("ingest-form", "submit");
   assert.equal(p.elements.get("ingest-status").textContent, "invalid document_date");
+});
+
+test("the document reader shows the same date and origin as the list", async () => {
+  const p = await page();
+  const docs = [
+    { id: "caller-dated", status: "done", document_date: "2024-03-01T00:00:00Z", document_date_source: "caller" },
+    { id: "ingest-dated", status: "done", document_date: "2026-03-01T00:00:00Z", document_date_source: "ingest" },
+    { id: "legacy", status: "done" },
+  ];
+  p.replies.set("/v1/documents", { documents: docs });
+  await p.fire("docs-refresh", "click");
+  const rows = p.elements.get("documents").children;
+  for (const [i, doc] of docs.entries()) {
+    p.replies.set(`/v1/documents/${doc.id}/content`, { document: doc, chunks: [] });
+    rows[i].dispatch("click");
+    await setImmediate();
+    const metadata = p.elements.get("reader-meta").children.map((el) => el.textContent).join("");
+    assert.equal(p.elements.get("reader-title").textContent, doc.id);
+    const listMetadata = rows[i].children[1].textContent;
+    if (doc.document_date) {
+      const date = `${doc.document_date} (${doc.document_date_source})`;
+      assert.ok(listMetadata.includes(date), listMetadata);
+      assert.ok(metadata.includes(date), metadata);
+    } else {
+      assert.equal(metadata, "? · legacy · done · 0 chunks");
+    }
+  }
 });
