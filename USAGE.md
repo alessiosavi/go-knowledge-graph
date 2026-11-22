@@ -299,6 +299,31 @@ means the date comes from the document version's ingest time, or its creation
 time for older records. Entity search hits and evidence with no owning document
 omit both fields.
 
+### Filter by document date
+
+`since` and `until` are optional, inclusive bounds on the effective document date.
+Use `YYYY-MM-DD` or an RFC 3339 timestamp with an offset. A date-only `since`
+starts at midnight UTC, and a date-only `until` includes its entire UTC day.
+The UTC year must be 1900 or later. Supply either bound or both.
+
+- REST takes the bounds in the JSON body for `POST /v1/search` and
+  `POST /v1/traverse`, and in the query string for `GET /v1/entities/{id}`
+  and `GET /v1/documents`. Invalid or inverted bounds return HTTP 400
+  (`invalid_request`).
+- MCP and the built-in agent tools accept the same arguments on `search`,
+  `get_entity`, `traverse` and `list_documents`. Invalid or inverted bounds
+  return a tool error.
+
+```sh
+curl -s http://localhost:8080/v1/search -H 'Content-Type: application/json' \
+  -d '{"query":"catalogue","kind":"chunk","since":"2024-01-01","until":"2024-12-31"}'
+```
+
+The window filters chunk hits, fact evidence and its group counts, traverse
+edges, and listed documents. Entity hits, co-mentions and hidden counts
+ignore it. Evidence without an owning document is excluded from windowed
+reads. See [document date limitations](docs/known-limitations.md#document-dates-and-windows).
+
 ## 3. Query from an agent (MCP)
 
 `gkg` is an MCP server (stdio and streamable HTTP) exposing

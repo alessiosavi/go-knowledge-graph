@@ -50,7 +50,7 @@ type graphStore interface {
 	DeleteChain(context.Context, string) (int, error)
 	DeleteDocument(context.Context, string) error
 	Document(context.Context, string) (*graph.Document, error)
-	DocumentsIn(context.Context, graph.Status, string, int) ([]graph.Document, error)
+	DocumentsInWindow(context.Context, graph.Status, string, int, graph.DateWindow) ([]graph.Document, error)
 	EntityViewOpts(context.Context, string, graph.ViewOptions) (graph.EntityView, error)
 	ListDomains(context.Context) ([]graph.DomainCount, error)
 	RenameDomain(context.Context, string, string) (graph.DomainOp, error)

@@ -353,14 +353,24 @@ func (s *Server) decodeIngest(w http.ResponseWriter, r *http.Request, maxBytes i
 
 func formBool(s string) bool { return s == "true" || s == "1" }
 
+func readDateWindow(w http.ResponseWriter, since, until string) (graph.DateWindow, bool) {
+	window, err := graph.ParseDateWindow(since, until)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return graph.DateWindow{}, false
+	}
+	return window, true
+}
+
 // handleDocuments lists documents by status, most recently updated first;
 // the list defaults to 100 rows and is capped at 1000.
 func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 	if !s.storeOr503(w) {
 		return
 	}
+	query := r.URL.Query()
 	limit := 100
-	if raw := r.URL.Query().Get("limit"); raw != "" {
+	if raw := query.Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 {
 			writeError(w, http.StatusBadRequest, "invalid_request", "limit must be a positive integer")
@@ -371,13 +381,17 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 			limit = 1000
 		}
 	}
-	status := r.URL.Query().Get("status")
-	slug := r.URL.Query().Get("domain")
+	status := query.Get("status")
+	slug := query.Get("domain")
 	if slug != "" && !graph.ValidDomain(slug) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid domain slug")
 		return
 	}
-	docs, err := s.store.DocumentsIn(r.Context(), graph.Status(status), slug, limit)
+	window, ok := readDateWindow(w, query.Get("since"), query.Get("until"))
+	if !ok {
+		return
+	}
+	docs, err := s.store.DocumentsInWindow(r.Context(), graph.Status(status), slug, limit, window)
 	if err != nil {
 		writeReadError(w, r.Context(), err, "documents")
 		return
@@ -451,6 +465,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Query  string `json:"query"`
 		Kind   string `json:"kind"`
 		Limit  int    `json:"limit"`
+		Since  string `json:"since"`
+		Until  string `json:"until"`
 	}
 	if !readJSON(w, r, jsonBodyCap, &req) {
 		return
@@ -480,7 +496,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid domain slug")
 		return
 	}
-	hits, err := search.Query(r.Context(), s.store, s.emb, req.Query, kind, limit, search.InDomain(req.Domain))
+	window, ok := readDateWindow(w, req.Since, req.Until)
+	if !ok {
+		return
+	}
+	hits, err := search.Query(r.Context(), s.store, s.emb, req.Query, kind, limit, search.InDomain(req.Domain), search.InDateWindow(window))
 	if err != nil {
 		writeReadError(w, r.Context(), err, "search")
 		return
@@ -495,11 +515,17 @@ func (s *Server) handleEntity(w http.ResponseWriter, r *http.Request) {
 	if !s.storeOr503(w) {
 		return
 	}
+	query := r.URL.Query()
+	window, ok := readDateWindow(w, query.Get("since"), query.Get("until"))
+	if !ok {
+		return
+	}
 	includeUnverified := queryBool(r, "include_unverified")
 	view, err := s.store.EntityViewOpts(r.Context(), r.PathValue("id"), graph.ViewOptions{
 		IncludeLowConfidence: queryBool(r, "include_low_confidence"),
 		IncludeUnverified:    includeUnverified && s.cfg.Facts.AllowUnverifiedReads,
 		ConfirmedOnly:        queryBool(r, "confirmed_only"),
+		DateWindow:           window,
 	})
 	if err != nil {
 		writeReadError(w, r.Context(), err, "entity")
@@ -524,6 +550,8 @@ func (s *Server) handleTraverse(w http.ResponseWriter, r *http.Request) {
 		IncludeLowConfidence bool   `json:"include_low_confidence"`
 		IncludeUnverified    bool   `json:"include_unverified"`
 		ConfirmedOnly        bool   `json:"confirmed_only"`
+		Since                string `json:"since"`
+		Until                string `json:"until"`
 	}
 	if !readJSON(w, r, jsonBodyCap, &req) {
 		return
@@ -558,10 +586,15 @@ func (s *Server) handleTraverse(w http.ResponseWriter, r *http.Request) {
 	if limit > 200 {
 		limit = 200
 	}
+	window, ok := readDateWindow(w, req.Since, req.Until)
+	if !ok {
+		return
+	}
 	sub, err := s.store.TraverseOpts(r.Context(), req.Entity, req.Relation, direction, depth, limit, graph.ViewOptions{
 		IncludeLowConfidence: req.IncludeLowConfidence,
 		IncludeUnverified:    req.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
 		ConfirmedOnly:        req.ConfirmedOnly,
+		DateWindow:           window,
 	})
 	if err != nil {
 		writeReadError(w, r.Context(), err, "traverse")

@@ -93,7 +93,13 @@ type statusArgs struct {
 	DocumentID string `json:"document_id,omitempty" jsonschema:"one document id; omit to list documents"`
 }
 
+type dateWindowArgs struct {
+	Since string `json:"since,omitempty" jsonschema:"inclusive lower bound on the effective document date as YYYY-MM-DD (start of the UTC day) or RFC 3339 with an offset"`
+	Until string `json:"until,omitempty" jsonschema:"inclusive upper bound on the effective document date as YYYY-MM-DD (end of the UTC day) or RFC 3339 with an offset"`
+}
+
 type searchArgs struct {
+	dateWindowArgs
 	Domain               string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	Query                string `json:"query" jsonschema:"full-text query over entity names and chunk text"`
 	Kind                 string `json:"kind,omitempty" jsonschema:"entity | chunk | auto (default auto)"`
@@ -102,6 +108,7 @@ type searchArgs struct {
 }
 
 type getEntityArgs struct {
+	dateWindowArgs
 	Domain               string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	ID                   string `json:"id,omitempty" jsonschema:"live or retired entity id or key"`
 	Name                 string `json:"name,omitempty" jsonschema:"entity name, used when id is omitted"`
@@ -118,6 +125,7 @@ type getChunksArgs struct {
 }
 
 type traverseArgs struct {
+	dateWindowArgs
 	Domain               string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	Entity               string `json:"entity" jsonschema:"start entity id or key"`
 	Relation             string `json:"relation,omitempty" jsonschema:"relation filter (sanitized, e.g. works_at)"`
@@ -130,6 +138,7 @@ type traverseArgs struct {
 }
 
 type listDocumentsArgs struct {
+	dateWindowArgs
 	Domain string `json:"domain,omitempty" jsonschema:"optional domain slug; empty selects all"`
 	Limit  int    `json:"limit,omitempty" jsonschema:"maximum documents (default 100, capped at 1000)"`
 	Status string `json:"status,omitempty" jsonschema:"filter by pipeline status (received|fetched|chunked|extracted|merged|verifying|done|failed|superseded)"`
@@ -310,11 +319,11 @@ func registerTools(s *Server) {
 	}, s.handleStatus)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "search",
-		Description: "Full-text search over entity names and chunk text, with scores and snippets; entity hits fuse embeddings when the embedder is enabled. Start with limit 10.",
+		Description: "Full-text search over entity names and chunk text, with scores and snippets; entity hits fuse embeddings when the embedder is enabled. Since/until filter chunk hits by document date. Start with limit 10.",
 	}, s.handleSearch)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "get_entity",
-		Description: "One entity with aliases, co-mentions and evidenced facts. Low-confidence facts need include_low_confidence unless the judge confirmed them. A merge redirect includes requested and resolved_via=merged. Name lookup tries exact matches first, then verified folds marked match=fold. Unscoped ambiguous names return one candidate per domain.",
+		Description: "One entity with aliases, co-mentions and evidenced facts. Since/until filter fact evidence by document date. Low-confidence facts need include_low_confidence unless the judge confirmed them. A merge redirect includes requested and resolved_via=merged. Name lookup tries exact matches first, then verified folds marked match=fold. Unscoped ambiguous names return one candidate per domain.",
 	}, s.handleGetEntity)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "get_chunks",
@@ -332,11 +341,11 @@ func registerTools(s *Server) {
 	}, s.handleGetChunks)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "traverse",
-		Description: "Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. A merge redirect includes requested and resolved_via=merged. Start with limit 10.",
+		Description: "Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. Since/until filter edges by document date. A merge redirect includes requested and resolved_via=merged. Start with limit 10.",
 	}, s.handleTraverse)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "list_documents",
-		Description: "List documents with metadata, optionally filtered by pipeline status. Start with limit 10.",
+		Description: "List documents with metadata, optionally filtered by pipeline status and document date (since/until). Start with limit 10.",
 	}, s.handleListDocuments)
 	addTool(s, &mcpgo.Tool{
 		Name:        "cypher",
@@ -458,7 +467,11 @@ func (s *Server) handleSearch(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	if limit > searchMaxLimit {
 		limit = searchMaxLimit
 	}
-	hits, err := search.Query(ctx, s.store, s.emb, args.Query, kind, limit, search.InDomain(args.Domain))
+	window, err := graph.ParseDateWindow(args.Since, args.Until)
+	if err != nil {
+		return nil, searchOut{}, err
+	}
+	hits, err := search.Query(ctx, s.store, s.emb, args.Query, kind, limit, search.InDomain(args.Domain), search.InDateWindow(window))
 	if err != nil {
 		return nil, searchOut{}, err
 	}
@@ -475,6 +488,10 @@ func (s *Server) handleSearch(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, args getEntityArgs) (*mcpgo.CallToolResult, any, error) {
 	if s.store == nil {
 		return nil, entityOut{}, errNoStore
+	}
+	window, err := graph.ParseDateWindow(args.Since, args.Until)
+	if err != nil {
+		return nil, entityOut{}, err
 	}
 	id := strings.TrimSpace(args.ID)
 	var match string
@@ -505,6 +522,7 @@ func (s *Server) handleGetEntity(ctx context.Context, _ *mcpgo.CallToolRequest, 
 		Domain: args.Domain, IncludeLowConfidence: args.IncludeLowConfidence,
 		IncludeUnverified: args.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
 		ConfirmedOnly:     args.ConfirmedOnly,
+		DateWindow:        window,
 	})
 	if err != nil {
 		return nil, entityOut{}, fmt.Errorf("entity %s: %w", id, err)
@@ -546,10 +564,15 @@ func (s *Server) handleTraverse(ctx context.Context, _ *mcpgo.CallToolRequest, a
 	if limit > traverseMaxLimit {
 		limit = traverseMaxLimit
 	}
+	window, err := graph.ParseDateWindow(args.Since, args.Until)
+	if err != nil {
+		return nil, traverseOut{}, err
+	}
 	sub, err := s.store.TraverseOpts(ctx, entity, args.Relation, direction, depth, limit, graph.ViewOptions{
 		Domain: args.Domain, IncludeLowConfidence: args.IncludeLowConfidence,
 		IncludeUnverified: args.IncludeUnverified && s.cfg.Facts.AllowUnverifiedReads,
 		ConfirmedOnly:     args.ConfirmedOnly,
+		DateWindow:        window,
 	})
 	if err != nil {
 		return nil, traverseOut{}, err
@@ -603,7 +626,11 @@ func (s *Server) handleListDocuments(ctx context.Context, _ *mcpgo.CallToolReque
 	if limit > docsMaxLimit {
 		limit = docsMaxLimit
 	}
-	docs, err := s.store.DocumentsIn(ctx, graph.Status(args.Status), args.Domain, limit)
+	window, err := graph.ParseDateWindow(args.Since, args.Until)
+	if err != nil {
+		return nil, listDocumentsOut{}, err
+	}
+	docs, err := s.store.DocumentsInWindow(ctx, graph.Status(args.Status), args.Domain, limit, window)
 	if err != nil {
 		return nil, listDocumentsOut{}, fmt.Errorf("list documents: %w", err)
 	}

@@ -1,5 +1,21 @@
 # Known limitations
 
+## Document dates and windows
+
+- Undated documents use their ingest time (`document_date_source=ingest`).
+- Chunk deduplication keeps facts restated verbatim in a later document
+  attributed to the first document and its date. A window that excludes the
+  first document hides those facts. The restating chunk is still searchable.
+- Entity hits, co-mentions and hidden counts ignore the window.
+- Chunk search is exact only within Tantivy's first approximately 1,000 matches.
+- Eligibility is evaluated per read. A document redated during a request can
+  show a date outside the window, or be eligible in one traverse pass and
+  ineligible in the next. A top-up can skip or repeat an edge.
+- Historical `as_of` reads across versions are unavailable.
+- Ranking does not use recency.
+- Eval artifacts omit dates.
+- A dated resubmit of a document that is still processing returns busy.
+
 ## PDF extraction (best-effort, pure Go)
 
 When conversion is off (including light mode), PDF text extraction uses

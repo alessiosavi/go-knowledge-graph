@@ -131,36 +131,47 @@ type cypherOut struct {
 	Rows    []map[string]any `json:"rows"`
 }
 
+type dateWindowArgs struct {
+	Since string `json:"since"`
+	Until string `json:"until"`
+}
+
 const (
-	searchDefaultLimit = 20
-	searchMaxLimit     = 100
-	statusListLimit    = 100
-	docsDefaultLimit   = 100
-	docsMaxLimit       = 1000
-	traverseMaxLimit   = 200
+	searchDefaultLimit   = 20
+	searchMaxLimit       = 100
+	statusListLimit      = 100
+	docsDefaultLimit     = 100
+	docsMaxLimit         = 1000
+	traverseMaxLimit     = 200
+	dateSinceDescription = "Inclusive lower bound on the effective document date. Use YYYY-MM-DD (start of the UTC day) or RFC 3339 with an offset."
+	dateUntilDescription = "Inclusive upper bound on the effective document date. Use YYYY-MM-DD (end of the UTC day) or RFC 3339 with an offset."
 )
 
 // toolDefs returns the read-only graph and product tools exposed to the model.
 func toolDefs() []toolDef {
 	return []toolDef{
 		functionTool("search",
-			"Full-text search over entity names and chunk text; returns scored hits with ids, titles and snippets. Start with limit 10.",
+			"Full-text search over entity names and chunk text. Returns scored hits with ids, titles and snippets. Since/until filter chunk hits by document date. Start with limit 10.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"query": map[string]any{"type": "string", "description": "full-text query over entity names and chunk text"},
 					"kind":  map[string]any{"type": "string", "enum": []string{"entity", "chunk", "auto"}, "description": "hit kind filter (default auto)"},
 					"limit": map[string]any{"type": "integer", "description": "maximum hits (default 20, capped at 100)"},
+					"since": map[string]any{"type": "string", "description": dateSinceDescription},
+					"until": map[string]any{"type": "string", "description": dateUntilDescription},
 				},
 				"required": []string{"query"},
 			}),
 		functionTool("get_entity",
-			"One entity with aliases, co-mentions and evidenced facts. A merge redirect includes requested and resolved_via=merged. Name lookup tries exact matches first, then verified folds marked match=fold. Unscoped ambiguous names return one candidate per domain.",
+			"One entity with aliases, co-mentions and evidenced facts. Since/until filter fact evidence by document date. A merge redirect includes requested and resolved_via=merged. Name lookup tries exact matches first, then verified folds marked match=fold. Unscoped ambiguous names return one candidate per domain.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"id":                     map[string]any{"type": "string", "description": "live or retired entity id or key"},
 					"name":                   map[string]any{"type": "string", "description": "entity name, used when id is omitted"},
+					"since":                  map[string]any{"type": "string", "description": dateSinceDescription},
+					"until":                  map[string]any{"type": "string", "description": dateUntilDescription},
 					"include_low_confidence": map[string]any{"type": "boolean", "description": "include facts below the assert floor. Judge-confirmed facts are always shown"},
 				},
 			}),
@@ -177,7 +188,7 @@ func toolDefs() []toolDef {
 				"required": []string{"ids"},
 			}),
 		functionTool("traverse",
-			"Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. A merge redirect includes requested and resolved_via=merged. Start with limit 10.",
+			"Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. Since/until filter edges by document date. A merge redirect includes requested and resolved_via=merged. Start with limit 10.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -186,17 +197,21 @@ func toolDefs() []toolDef {
 					"direction":              map[string]any{"type": "string", "enum": []string{"out", "in", "both"}, "description": "edge direction (default out)"},
 					"depth":                  map[string]any{"type": "integer", "description": "hops, 1 or 2 (default 1)"},
 					"limit":                  map[string]any{"type": "integer", "description": "maximum edges (default 50, capped at 200)"},
+					"since":                  map[string]any{"type": "string", "description": dateSinceDescription},
+					"until":                  map[string]any{"type": "string", "description": dateUntilDescription},
 					"include_low_confidence": map[string]any{"type": "boolean", "description": "include facts below the assert floor. Judge-confirmed facts are always shown"},
 				},
 				"required": []string{"entity"},
 			}),
 		functionTool("list_documents",
-			"List documents with metadata, optionally filtered by pipeline status. Start with limit 10.",
+			"List documents with metadata, optionally filtered by pipeline status and document date (since/until). Start with limit 10.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"limit":  map[string]any{"type": "integer", "description": "maximum documents (default 100, capped at 1000)"},
 					"status": map[string]any{"type": "string", "description": "filter by pipeline status (received|fetched|chunked|extracted|merged|verifying|done|failed|superseded)"},
+					"since":  map[string]any{"type": "string", "description": dateSinceDescription},
+					"until":  map[string]any{"type": "string", "description": dateUntilDescription},
 				},
 			}),
 		functionTool("status",
@@ -354,6 +369,7 @@ func decodeArgs(raw json.RawMessage, dst any) error {
 
 func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, error) {
 	var args struct {
+		dateWindowArgs
 		Query string `json:"query"`
 		Kind  string `json:"kind"`
 		Limit int    `json:"limit"`
@@ -380,7 +396,11 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 	if limit > searchMaxLimit {
 		limit = searchMaxLimit
 	}
-	hits, err := search.Query(ctx, s.store, s.emb, args.Query, kind, limit, search.InDomain(requestDomain(ctx)))
+	window, err := graph.ParseDateWindow(args.Since, args.Until)
+	if err != nil {
+		return nil, err
+	}
+	hits, err := search.Query(ctx, s.store, s.emb, args.Query, kind, limit, search.InDomain(requestDomain(ctx)), search.InDateWindow(window))
 	if err != nil {
 		return nil, err
 	}
@@ -396,11 +416,16 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 
 func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, error) {
 	var args struct {
+		dateWindowArgs
 		ID                   string `json:"id"`
 		Name                 string `json:"name"`
 		IncludeLowConfidence bool   `json:"include_low_confidence"`
 	}
 	if err := decodeArgs(raw, &args); err != nil {
+		return nil, err
+	}
+	window, err := graph.ParseDateWindow(args.Since, args.Until)
+	if err != nil {
 		return nil, err
 	}
 	id := args.ID
@@ -430,7 +455,9 @@ func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, e
 			match = refs[0].Match
 		}
 	}
-	view, err := s.store.EntityViewOpts(ctx, id, graph.ViewOptions{Domain: requestDomain(ctx), IncludeLowConfidence: args.IncludeLowConfidence, IncludeUnverified: false})
+	view, err := s.store.EntityViewOpts(ctx, id, graph.ViewOptions{
+		Domain: requestDomain(ctx), IncludeLowConfidence: args.IncludeLowConfidence, DateWindow: window,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("entity %s: %w", id, err)
 	}
@@ -495,6 +522,7 @@ func toNameCandidateOut(candidate graph.EntityCandidate) nameCandidateOut {
 
 func (s *Server) toolTraverse(ctx context.Context, raw json.RawMessage) (any, error) {
 	var args struct {
+		dateWindowArgs
 		Entity               string `json:"entity"`
 		Relation             string `json:"relation"`
 		Direction            string `json:"direction"`
@@ -531,7 +559,13 @@ func (s *Server) toolTraverse(ctx context.Context, raw json.RawMessage) (any, er
 	if limit > traverseMaxLimit {
 		limit = traverseMaxLimit
 	}
-	sub, err := s.store.TraverseOpts(ctx, args.Entity, args.Relation, direction, depth, limit, graph.ViewOptions{Domain: requestDomain(ctx), IncludeLowConfidence: args.IncludeLowConfidence, IncludeUnverified: false})
+	window, err := graph.ParseDateWindow(args.Since, args.Until)
+	if err != nil {
+		return nil, err
+	}
+	sub, err := s.store.TraverseOpts(ctx, args.Entity, args.Relation, direction, depth, limit, graph.ViewOptions{
+		Domain: requestDomain(ctx), IncludeLowConfidence: args.IncludeLowConfidence, DateWindow: window,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -565,6 +599,7 @@ func (s *Server) toolTraverse(ctx context.Context, raw json.RawMessage) (any, er
 
 func (s *Server) toolListDocuments(ctx context.Context, raw json.RawMessage) (any, error) {
 	var args struct {
+		dateWindowArgs
 		Limit  int    `json:"limit"`
 		Status string `json:"status"`
 	}
@@ -581,7 +616,11 @@ func (s *Server) toolListDocuments(ctx context.Context, raw json.RawMessage) (an
 	if limit > docsMaxLimit {
 		limit = docsMaxLimit
 	}
-	docs, err := s.store.DocumentsIn(ctx, graph.Status(args.Status), requestDomain(ctx), limit)
+	window, err := graph.ParseDateWindow(args.Since, args.Until)
+	if err != nil {
+		return nil, err
+	}
+	docs, err := s.store.DocumentsInWindow(ctx, graph.Status(args.Status), requestDomain(ctx), limit, window)
 	if err != nil {
 		return nil, fmt.Errorf("list documents: %w", err)
 	}

@@ -459,7 +459,10 @@ paths:
       tags: [documents]
       operationId: listDocuments
       summary: List documents
+      description: Filters by effective document date before applying the limit. Malformed or inverted bounds return 400 invalid_request.
       parameters:
+        - $ref: "#/components/parameters/DocumentDateSince"
+        - $ref: "#/components/parameters/DocumentDateUntil"
         - name: domain
           in: query
           description: Optional domain slug; empty selects all. Applied before the limit.
@@ -838,7 +841,11 @@ paths:
       tags: [graph]
       operationId: search
       summary: Search entities, chunks or both
-      description: Entities and chunks are searched through the Memgraph text indexes; when the embedder is enabled, entity hits fuse the text leg with entity-embedding vector hits (text recall is never dropped). Chunks are text-only in v0. Domain text filtering runs inside Tantivy before its hit cap and before ORDER BY/LIMIT; the scoped vector leg over-fetches 5x and post-filters, so it may return fewer hits. Name lookup in agent/MCP get_entity uses EntityKey folding (possessives and edge punctuation) at schema v4, and legacy case folding below v4. Unscoped ambiguous names return one candidate per domain.
+      description: >-
+        Entities and chunks are searched through the Memgraph text indexes; when the embedder is enabled, entity hits fuse the text leg with entity-embedding vector hits (text recall is never dropped).
+        Chunks are text-only in v0. Domain text filtering runs inside Tantivy before its hit cap and before ORDER BY/LIMIT; the scoped vector leg over-fetches 5x and post-filters, so it may return fewer hits.
+        Name lookup in agent/MCP get_entity uses EntityKey folding (possessives and edge punctuation) at schema v4, and legacy case folding below v4. Unscoped ambiguous names return one candidate per domain.
+        The date window applies to chunk hits within Tantivy's first approximately 1,000 matches. Entity hits ignore it. Malformed or inverted bounds return 400 invalid_request.
       requestBody:
         required: true
         content:
@@ -869,12 +876,15 @@ paths:
       tags: [graph]
       operationId: getEntity
       summary: Get an entity with its aliases and evidenced facts
+      description: The date window filters fact evidence and its group counts. Co-mentions and hidden counts ignore the window. Malformed or inverted bounds return 400 invalid_request.
       parameters:
         - name: id
           in: path
           required: true
           description: entity id or entity key
           schema: { type: string }
+        - $ref: "#/components/parameters/DocumentDateSince"
+        - $ref: "#/components/parameters/DocumentDateUntil"
         - name: include_low_confidence
           in: query
           description: '"true" or "1" includes all typed facts when confirmed_only is false. Other values are false. By default, typed facts are visible if they meet the assert floor or the judge confirmed them.'
@@ -894,6 +904,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Entity"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -909,6 +921,7 @@ paths:
       tags: [graph]
       operationId: traverse
       summary: Walk fact edges from a start entity
+      description: The date window filters edge evidence on every hop. Hidden counts ignore it. Malformed or inverted bounds return 400 invalid_request.
       requestBody:
         required: true
         content:
@@ -1241,6 +1254,20 @@ components:
           schema:
             $ref: "#/components/schemas/AgentQuestion"
   parameters:
+    DocumentDateSince:
+      name: since
+      in: query
+      required: false
+      description: Inclusive lower bound on the effective document date (YYYY-MM-DD from the start of the UTC day, or RFC 3339 with an offset).
+      schema:
+        $ref: "#/components/schemas/DocumentDateSince"
+    DocumentDateUntil:
+      name: until
+      in: query
+      required: false
+      description: Inclusive upper bound on the effective document date (YYYY-MM-DD through the end of the UTC day, or RFC 3339 with an offset).
+      schema:
+        $ref: "#/components/schemas/DocumentDateUntil"
     ProductPageDomain:
       name: domain
       in: query
@@ -1809,6 +1836,14 @@ components:
           type: array
           description: Canonical list of store-prefixed product IDs recorded on this document version.
           items: { type: string }
+    DocumentDateSince:
+      type: string
+      description: Inclusive lower bound on the effective document date. Use YYYY-MM-DD (start of the UTC day) or an RFC 3339 timestamp with an offset. The UTC year must be 1900 or later.
+      example: "2024-01-01"
+    DocumentDateUntil:
+      type: string
+      description: Inclusive upper bound on the effective document date. Use YYYY-MM-DD (through the end of the UTC day) or an RFC 3339 timestamp with an offset. The UTC year must be 1900 or later.
+      example: "2024-12-31"
     SearchRequest:
       type: object
       required: [query]
@@ -1826,6 +1861,10 @@ components:
           type: integer
           default: 20
           description: Non-positive values select the default (20); values above 100 are capped at 100
+        since:
+          $ref: "#/components/schemas/DocumentDateSince"
+        until:
+          $ref: "#/components/schemas/DocumentDateUntil"
     SearchResponse:
       type: object
       required: [hits]
@@ -2013,6 +2052,10 @@ components:
           type: boolean
           default: false
           description: Traverses only judge-confirmed typed edges at any confidence on every hop. This takes precedence over include_low_confidence and include_unverified, so candidates are excluded.
+        since:
+          $ref: "#/components/schemas/DocumentDateSince"
+        until:
+          $ref: "#/components/schemas/DocumentDateUntil"
     Edge:
       type: object
       required:
