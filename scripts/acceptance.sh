@@ -13,8 +13,10 @@
 #   2. MCP smoke over stdio: tools/list = 8 tools, search answers
 #   3. `gkg eval` on the golden sample with the mock provider
 #   4. unchanged re-ingest is a no-op; changed content supersedes cleanly
-#   5. local model offline (EN+IT) — manual SKIP
-#   6. judge verification on real facts — manual SKIP (needs a key)
+#   5. products write path over REST, including document refs and cleanup
+#      (skipped when a non-acceptance product release is active: use a scratch graph)
+#   6. local model offline (EN+IT) — manual SKIP
+#   7. judge verification on real facts — manual SKIP (needs a key)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -59,6 +61,16 @@ req() {
 	fi
 }
 
+expect_http() { # status, method, path, then curl options; sets HTTP_BODY
+	local want="$1" method="$2" path="$3" code
+	shift 3
+	: >"$TMP/response.json"
+	code="$(req -sS -o "$TMP/response.json" -w '%{http_code}' -X "$method" "$BASE_URL$path" "$@")" ||
+		fail "$method $path: curl failed: $(<"$TMP/response.json")"
+	HTTP_BODY="$(<"$TMP/response.json")"
+	[[ "$code" == "$want" ]] || fail "$method $path: HTTP $code, want $want: $HTTP_BODY"
+}
+
 wait_http() { # url, attempts (health probes are auth-exempt)
 	local url="$1" tries="${2:-60}"
 	for _ in $(seq 1 "$tries"); do
@@ -71,14 +83,15 @@ wait_http() { # url, attempts (health probes are auth-exempt)
 wait_status() { # doc id, want
 	local id="$1" want="$2" status=""
 	for _ in $(seq 1 120); do
-		status="$(req -fsS "$BASE_URL/v1/documents/$id/status" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
+		expect_http 200 GET "/v1/documents/$id/status"
+		status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' <<< "$HTTP_BODY")"
 		case "$status" in
 		"$want") return 0 ;;
-		failed) fail "document $id failed: $(req -s "$BASE_URL/v1/documents/$id/status")" ;;
+		failed) fail "document $id failed: $HTTP_BODY" ;;
 		esac
 		sleep 0.5
 	done
-	fail "document $id did not reach $want (last: $status)"
+	fail "document $id did not reach $want: $HTTP_BODY"
 }
 
 ingest_file() { # path
@@ -131,8 +144,9 @@ if [[ "$MODE" == "compose" ]]; then
 	PDF_INPUT_URL="${ACCEPTANCE_PDF_URL:-https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf}"
 	# Host-side commands (eval, MCP over the container) use the same creds.
 	export GKG_MEMGRAPH_URI="bolt://localhost:${MEMGRAPH_PORT}"
-	export GKG_MEMGRAPH_USER="$(env_value MEMGRAPH_USER)"
-	export GKG_MEMGRAPH_PASSWORD="$(env_value MEMGRAPH_PASSWORD)"
+	GKG_MEMGRAPH_USER="$(env_value MEMGRAPH_USER)"
+	GKG_MEMGRAPH_PASSWORD="$(env_value MEMGRAPH_PASSWORD)"
+	export GKG_MEMGRAPH_USER GKG_MEMGRAPH_PASSWORD
 else
 	[[ -n "${GKG_MEMGRAPH_URI:-}" ]] || fail "local mode needs GKG_MEMGRAPH_URI"
 	export GKG_EXTRACTOR_MODE="${GKG_EXTRACTOR_MODE:-mock}"
@@ -169,7 +183,7 @@ The gkg acceptance marker is $TOKEN and it proves end-to-end ingestion.
 EOF
 MD_DOC="$(ingest_file "$TMP/acceptance.md")"
 [[ -n "$MD_DOC" ]] || fail "markdown ingest did not return a document id"
-wait_status "$MD_DOC" done
+wait_status "$MD_DOC" "done"
 ok "markdown ingested ($MD_DOC)"
 
 if [[ -n "$PDF_INPUT_URL" ]]; then
@@ -179,7 +193,7 @@ else
 	PDF_DOC="$(ingest_file internal/ingest/testdata/sample.pdf)"
 fi
 [[ -n "$PDF_DOC" ]] || fail "pdf ingest did not return a document id"
-wait_status "$PDF_DOC" done
+wait_status "$PDF_DOC" "done"
 ok "pdf ingested ($PDF_DOC)"
 
 SEARCH_BODY="$(req -fsS -X POST "$BASE_URL/v1/search" -H 'Content-Type: application/json' \
@@ -211,10 +225,146 @@ ok "unchanged re-ingest is a no-op"
 printf '\nAn added line with fresh marker %s-2.\n' "$TOKEN" >>"$TMP/acceptance.md"
 NEW_DOC="$(ingest_file "$TMP/acceptance.md")"
 [[ "$NEW_DOC" != "$MD_DOC" ]] || fail "changed content kept the old document id"
-wait_status "$NEW_DOC" done
+wait_status "$NEW_DOC" "done"
 OLD_STATUS="$(req -fsS "$BASE_URL/v1/documents/$MD_DOC/status" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
 [[ "$OLD_STATUS" == "superseded" ]] || fail "old version status = $OLD_STATUS, want superseded"
 ok "changed content superseded the old version"
+
+# ---------------------------------------------------------------------------
+step "5. products write path over REST"
+# Activating the acceptance release prunes every other store's feature evidence
+# (USAGE "Product registries and releases"), so the step runs only on a graph
+# with no active release or one a previous acceptance run created.
+products_write_path() {
+	PRODUCT_FIXTURES=scripts/testdata/acceptance-products
+	# Unbinding preserves a store's sequence floor, so each run needs a fresh store.
+	PRODUCT_STORE="$TOKEN.test"
+	PRODUCT_A="$PRODUCT_STORE:a"
+	PRODUCT_B="$PRODUCT_STORE:b"
+
+	product_cli() {
+		"$TMP/gkg" "$@" >"$TMP/product-cli.log" 2>&1 || fail "gkg $*: $(<"$TMP/product-cli.log")"
+	}
+
+	product_pin_sha() {
+		local digest
+		digest="$(openssl dgst -sha256 <"$1")" || return 1
+		printf '%s\n' "${digest##* }"
+	}
+
+	put_product() { # HTTP status, seq, complete record
+		expect_http "$1" PUT /v1/products -H 'Content-Type: application/json' \
+			--data-binary "{\"seq\":$2,\"record\":$3}"
+	}
+
+	check_product_event() { # result status, product id, seen_seq
+		[[ "$HTTP_BODY" == *"\"status\":\"$1\""* && "$HTTP_BODY" == *"\"product_id\":\"$2\""* &&
+			"$HTTP_BODY" == *"\"seen_seq\":$3"[,\}]* ]] || fail "product $2 seq $3: expected $1: $HTTP_BODY"
+		ok "product $2 seq $3 returned $1"
+	}
+
+	expect_http 200 GET "/v1/documents/$NEW_DOC"
+	PRODUCT_DOMAIN="$(sed -n 's/.*"domain":"\([^"]*\)".*/\1/p' <<< "$HTTP_BODY")"
+	[[ -n "$PRODUCT_DOMAIN" ]] || fail "acceptance note has no domain: $HTTP_BODY"
+
+	sed "s/acceptance\.test/$PRODUCT_STORE/g" "$PRODUCT_FIXTURES/R.json" >"$TMP/R.json"
+	sed "s/acceptance\.test/$PRODUCT_STORE/g" "$PRODUCT_FIXTURES/records.jsonl" >"$TMP/records.jsonl"
+	product_cli features import "$TMP/R.json"
+	REGISTRY_SHA="$(sed -n 's/^.* rev=[0-9a-f]* digest=\([0-9a-f]*\)$/\1/p' "$TMP/product-cli.log")"
+	[[ ${#REGISTRY_SHA} == 64 ]] || fail "feature registry import did not return a digest: $(<"$TMP/product-cli.log")"
+
+	printf '{"registry_sha256":"%s","keys":[{"store":"%s","feature":"acceptance_code","source_key":"code"}]}\n' \
+		"$REGISTRY_SHA" "$PRODUCT_STORE" >"$TMP/candidates.json"
+	CANDIDATES_SHA="$(product_pin_sha "$TMP/candidates.json")" || fail "sha256 of $TMP/candidates.json"
+	printf '{"registry_sha256":"%s","release_candidates_sha256":"%s"}\n' \
+		"$REGISTRY_SHA" "$CANDIDATES_SHA" >"$TMP/score.json"
+	printf '{"registry_sha256":"%s","release_candidates_sha256":"%s","release_allowed":true,"owner_decision_required":false}\n' \
+		"$REGISTRY_SHA" "$CANDIDATES_SHA" >"$TMP/report.json"
+	KIT_SHA="$(product_pin_sha "$PRODUCT_FIXTURES/rf_kit.py")" || fail "sha256 of $PRODUCT_FIXTURES/rf_kit.py"
+	E2_SHA="$(product_pin_sha "$PRODUCT_FIXTURES/e2.jsonl")" || fail "sha256 of $PRODUCT_FIXTURES/e2.jsonl"
+	printf '{"sha256":{"R.json":"%s","rf_kit.py":"%s"},"e2_sha256":"%s"}\n' \
+		"$REGISTRY_SHA" "$KIT_SHA" "$E2_SHA" >"$TMP/freeze.json"
+	product_cli products emit -registry "$TMP/R.json" -release "$TMP/candidates.json" \
+		-out "$TMP/record-obs.jsonl" "$TMP/records.jsonl"
+	product_cli products release create -id "$TOKEN" -registry "${REGISTRY_SHA:0:16}" -candidates "$TMP/candidates.json" \
+		-store-domain "$PRODUCT_STORE=$PRODUCT_DOMAIN" -approved-by acceptance \
+		-pin "R.json=$TMP/R.json" -pin "rf_kit.py=$PRODUCT_FIXTURES/rf_kit.py" -pin "E2=$PRODUCT_FIXTURES/e2.jsonl" \
+		-pin "score.json=$TMP/score.json" -pin "report.json=$TMP/report.json" -pin "freeze.json=$TMP/freeze.json" \
+		-pin "record-obs.jsonl=$TMP/record-obs.jsonl"
+	product_cli products release activate "$TOKEN" -materialize "$PRODUCT_STORE=1:$TMP/records.jsonl"
+	ok "product release activated and snapshot imported for $PRODUCT_STORE"
+
+	expect_http 200 GET /v1/products/stores
+	STORE_ROW="$(grep -o '{[^{}]*}' <<< "$HTTP_BODY" | grep -F "\"store\":\"$PRODUCT_STORE\"" || true)"
+	[[ "$STORE_ROW" == *'"seen_seq":1,'* && "$STORE_ROW" == *'"product_count":2,'* ]] ||
+		fail "store $PRODUCT_STORE did not report seen_seq 1 and two products: $HTTP_BODY"
+	ok "store $PRODUCT_STORE has seen_seq 1 and two products"
+
+	ORIGINAL_A="$(sed -n '1p' "$TMP/records.jsonl")"
+	UPDATED_A="${ORIGINAL_A/Widget A/Widget A updated}"
+	put_product 200 2 "$UPDATED_A"
+	check_product_event updated "$PRODUCT_A" 2
+	PRODUCT_A_ID="$(sed -n 's/.*"id":"\([^"]*\)".*/\1/p' <<< "$HTTP_BODY")"
+	[[ -n "$PRODUCT_A_ID" ]] || fail "update did not return a graph product id: $HTTP_BODY"
+	put_product 200 2 "$UPDATED_A"
+	check_product_event duplicate "$PRODUCT_A" 2
+	put_product 409 1 "$ORIGINAL_A"
+	[[ "$HTTP_BODY" == *'"error":"stale"'* && "$HTTP_BODY" == *'"seen_seq":2'[,\}]* ]] ||
+		fail "PUT seq 1 did not return stale with seen_seq 2: $HTTP_BODY"
+	ok "stale PUT returned seen_seq 2"
+
+	expect_http 202 POST /v1/ingest -F "file=@$PRODUCT_FIXTURES/page.md" \
+		-F "source=$TOKEN-products.md" -F "products=$PRODUCT_A"
+	PRODUCT_DOC="$(sed -n 's/.*"document_id":"\([^"]*\)".*/\1/p' <<< "$HTTP_BODY")"
+	[[ -n "$PRODUCT_DOC" ]] || fail "product page ingest did not return a document id: $HTTP_BODY"
+	wait_status "$PRODUCT_DOC" "done"
+	[[ "$HTTP_BODY" == *"\"products\":[\"$PRODUCT_A\"]"* ]] || fail "product page status did not contain its ref: $HTTP_BODY"
+	ok "product page status shows the ref to $PRODUCT_A"
+	expect_http 200 GET "/v1/documents/$PRODUCT_DOC"
+	[[ "$HTTP_BODY" == *"\"domain\":\"$PRODUCT_DOMAIN\""* ]] ||
+		fail "product page is outside bound domain $PRODUCT_DOMAIN: $HTTP_BODY"
+	ok "product page is in bound domain $PRODUCT_DOMAIN"
+	expect_http 200 GET "/v1/products/$PRODUCT_A_ID"
+	[[ "$HTTP_BODY" == *'"title":"Widget A updated"'* && "$HTTP_BODY" == *"\"pages\":[{\"id\":\"$PRODUCT_DOC\""* ]] ||
+		fail "product A did not show the updated record and referenced page: $HTTP_BODY"
+	ok "GET product A lists the referenced page"
+
+	UPDATED_AGAIN_A="${ORIGINAL_A/Widget A/Widget A revised}"
+	put_product 200 3 "$UPDATED_AGAIN_A"
+	check_product_event updated "$PRODUCT_A" 3
+	expect_http 200 GET "/v1/products/$PRODUCT_A_ID"
+	[[ "$HTTP_BODY" == *'"title":"Widget A revised"'* && "$HTTP_BODY" == *"\"pages\":[{\"id\":\"$PRODUCT_DOC\""* ]] ||
+		fail "product A did not retain its referenced page after PUT seq 3: $HTTP_BODY"
+	ok "the referenced page survived PUT seq 3"
+
+	expect_http 200 GET "/v1/products?store=$PRODUCT_STORE&product_id=$PRODUCT_STORE%3Ab"
+	PRODUCT_B_ID="$(sed -n 's/.*"id":"\([^"]*\)".*/\1/p' <<< "${HTTP_BODY%%\"features\":*}")"
+	[[ -n "$PRODUCT_B_ID" ]] || fail "lookup did not return a graph id for $PRODUCT_B: $HTTP_BODY"
+	expect_http 200 DELETE "/v1/products?product_id=$PRODUCT_STORE%3Ab&seq=4"
+	check_product_event deleted "$PRODUCT_B" 4
+	expect_http 200 DELETE "/v1/products?product_id=$PRODUCT_STORE%3Ab&seq=5"
+	check_product_event absent "$PRODUCT_B" 5
+	expect_http 404 GET "/v1/products/$PRODUCT_B_ID"
+	ok "GET product B returned 404 after deletion"
+
+	expect_http 200 DELETE "/v1/documents/$PRODUCT_DOC"
+	[[ "$HTTP_BODY" == '{"deleted":1}' ]] || fail "failed to delete product page: $HTTP_BODY"
+	ok "product page deleted"
+	product_cli products delete-store "$PRODUCT_STORE"
+	product_cli products unbind "$PRODUCT_STORE"
+	expect_http 200 GET /v1/products/stores
+	[[ "$HTTP_BODY" == *'"stores":['* && "$HTTP_BODY" != *"\"store\":\"$PRODUCT_STORE\""* ]] ||
+		fail "store $PRODUCT_STORE still listed after wipe and unbind: $HTTP_BODY"
+	ok "test store no longer listed"
+}
+
+expect_http 200 GET /v1/products/stores
+ACTIVE_RELEASE="$(sed -n 's/.*"active_release_id":"\([^"]*\)".*/\1/p' <<< "$HTTP_BODY")"
+if [[ -n "$ACTIVE_RELEASE" && "$ACTIVE_RELEASE" != acceptance-* ]]; then
+	skip "products write path: active release $ACTIVE_RELEASE is not an acceptance release; activating one would prune its stores (use a scratch database)"
+else
+	products_write_path
+fi
 
 # ---------------------------------------------------------------------------
 step "manual checks (out of this script's scope)"

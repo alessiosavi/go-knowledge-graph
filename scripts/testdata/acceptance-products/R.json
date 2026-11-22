@@ -1,0 +1,23 @@
+{
+  "schema": "gkg-features/v1",
+  "features": [
+    {
+      "id": "acceptance_code",
+      "name": "Acceptance code",
+      "definition": "Synthetic widget model code",
+      "kind": "code",
+      "cardinality": "single",
+      "checkability": "page_checkable",
+      "measure": null
+    }
+  ],
+  "stores": {
+    "acceptance.test": {
+      "keys": {
+        "code": {"feature": "acceptance_code", "separator": null, "source_labels": ["Code"], "dev_evidence": 5, "numeric_search": false}
+      },
+      "ignore": {},
+      "deferred": []
+    }
+  }
+}
