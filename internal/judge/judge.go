@@ -30,6 +30,9 @@ import (
 // PromptVersion must be bumped whenever judgePrompt changes.
 const PromptVersion = "1"
 
+// Prompt returns the system prompt used for v1 verification.
+func Prompt() string { return judgePrompt }
+
 const (
 	maxRetries   = 6
 	maxRetryWait = 180 * time.Second

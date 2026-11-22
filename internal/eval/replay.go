@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/extract"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
@@ -35,6 +36,7 @@ type replayHeader struct {
 	GKGVersion         string                `json:"gkg_version"`
 	AttemptID          string                `json:"attempt_id,omitempty"`
 	NoBorrow           bool                  `json:"no_borrow,omitempty"`
+	BackupSHA256       *string               `json:"backup_tar_sha256,omitempty"` // present in every pinned replay
 }
 
 type replayWriteMode struct {
@@ -68,6 +70,17 @@ type replayOccurrence struct {
 	ingest.OccurrenceDecision
 }
 
+type replayJudgeInput struct {
+	DocID      string  `json:"doc_id"`
+	ChunkID    string  `json:"chunk_id"`
+	HeadKey    string  `json:"head_key"`
+	Rel        string  `json:"rel"`
+	TailKey    string  `json:"tail_key"`
+	Confidence float64 `json:"confidence"`
+	Payload    []byte  `json:"judge_input_b64"`
+	InputHash  string  `json:"input_hash"`
+}
+
 type replayAssessment struct {
 	ingest.ReplayAssessment
 	raw extract.ChunkResult
@@ -91,8 +104,16 @@ const (
 )
 
 type ReplayOptions struct {
-	MentionsPath string
-	NoBorrow     bool
+	MentionsPath    string
+	NoBorrow        bool
+	JudgeInputsPath string
+	PinsPath        string
+}
+
+type replayOutputs struct {
+	predictions *json.Encoder
+	mentions    *replayMentions
+	judgeInputs *json.Encoder
 }
 
 var newReplayAttemptID = func() (string, error) {
@@ -109,63 +130,106 @@ func Replay(ctx context.Context, cfg config.Config, input, output, presetName, g
 	return ReplayWithOptions(ctx, cfg, input, output, presetName, gkgVersion, ReplayOptions{}, stderr)
 }
 
-// ReplayWithOptions can also write validated mentions and extract duplicates locally.
+// ReplayWithOptions can also write validated mentions or pinned judge inputs.
 func ReplayWithOptions(ctx context.Context, cfg config.Config, input, output, presetName, gkgVersion string, opts ReplayOptions, stderr io.Writer) (ReplayCounts, error) {
+	if opts.JudgeInputsPath != "" && opts.PinsPath == "" {
+		return ReplayCounts{}, argerr.New("-judge-inputs requires -pins FILE")
+	}
+	write := writeArtifacts
+	var pins *replayPins
+	if opts.PinsPath != "" {
+		var err error
+		pins, err = readReplayPins(opts.PinsPath)
+		if err != nil {
+			return ReplayCounts{}, err
+		}
+		write = writeStagedArtifacts
+	}
 	paths := []string{output}
 	if opts.MentionsPath != "" {
 		paths = append(paths, opts.MentionsPath)
 	}
+	if opts.JudgeInputsPath != "" {
+		paths = append(paths, opts.JudgeInputsPath)
+	}
 	var counts ReplayCounts
-	err := writeArtifacts(paths, func(encoders []*json.Encoder) ([]any, error) {
-		var mentions *replayMentions
-		if len(encoders) == 2 {
-			mentions = &replayMentions{enc: encoders[1]}
+	err := write(paths, func(encoders []*json.Encoder) ([]any, error) {
+		outputs := replayOutputs{predictions: encoders[0]}
+		if opts.MentionsPath != "" {
+			outputs.mentions = &replayMentions{enc: encoders[1]}
+		}
+		if opts.JudgeInputsPath != "" {
+			outputs.judgeInputs = encoders[len(encoders)-1]
 		}
 		var err error
-		counts, err = replay(ctx, cfg, input, presetName, gkgVersion, opts.NoBorrow, encoders[0], mentions, stderr)
+		counts, err = replay(ctx, cfg, input, presetName, gkgVersion, opts.NoBorrow, pins, outputs, stderr)
 		if err != nil {
 			return nil, err
 		}
-		trailers := []any{counts}
-		if mentions != nil {
-			trailers = append(trailers, mentions.trailerCounts())
+		trailers := make([]any, len(encoders))
+		trailers[0] = counts
+		if outputs.mentions != nil {
+			trailers[1] = outputs.mentions.trailerCounts()
 		}
 		return trailers, nil
 	})
 	return counts, err
 }
 
-func replay(ctx context.Context, cfg config.Config, input, presetName, gkgVersion string, noBorrow bool, enc *json.Encoder, mentions *replayMentions, stderr io.Writer) (ReplayCounts, error) {
+func replay(ctx context.Context, cfg config.Config, input, presetName, gkgVersion string, noBorrow bool, pins *replayPins, outputs replayOutputs, stderr io.Writer) (ReplayCounts, error) {
+	enc, mentions := outputs.predictions, outputs.mentions
 	frozen, err := readSample(input)
 	if err != nil {
 		return ReplayCounts{}, fmt.Errorf("read sample: %w", err)
+	}
+	image := cfg.Extractor.Sidecar.Image
+	digest := replaySidecarImageDigest(image)
+	if pins != nil {
+		if err := pins.checkConfig(cfg, presetName, digest); err != nil {
+			return ReplayCounts{}, err
+		}
 	}
 	preset, err := ingest.LoadCheckedPreset(cfg.Labels.PresetsDir, presetName, cfg.Ingest.StoplistFile)
 	if err != nil {
 		return ReplayCounts{}, err
 	}
-	mode, err := readReplayWriteMode(ctx, cfg)
+	mode, err := readReplayWriteMode(ctx, cfg, pins)
 	if err != nil {
 		return ReplayCounts{}, err
 	}
 
-	provider := extract.NewReplaySidecar(cfg)
-	extractorVersion := provider.Version()
-	counts := ReplayCounts{Chunks: frozen.Header.Counts.Chunks}
-	image := cfg.Extractor.Sidecar.Image
-	digest := replaySidecarImageDigest(image)
+	mismatches := make([]replayLabelMismatch, 0)
+	for _, d := range frozen.Documents {
+		if d.Labels != nil && *d.Labels != presetName {
+			if pins != nil {
+				return ReplayCounts{}, argerr.Errorf("document %q has labels %q; replay uses %q", d.DocID, *d.Labels, presetName)
+			}
+			mismatches = append(mismatches, replayLabelMismatch{DocID: d.DocID, Labels: *d.Labels})
+		}
+	}
+	var backupSHA256 *string
+	if pins != nil {
+		if err := pins.checkPreset(presetName, preset); err != nil {
+			return ReplayCounts{}, err
+		}
+		cfg.Ingest.StoreFloor, cfg.Ingest.AssertFloor = pins.StoreFloor, pins.AssertFloor
+		backupSHA256 = &pins.BackupSHA256
+	}
 	if digest == "unknown" {
 		fmt.Fprintln(stderr, "gkg eval: warning: sidecar image digest is unknown")
 	}
+	if pins != nil {
+		digest = pins.SidecarDigest
+	}
+	provider := extract.NewReplaySidecar(cfg)
+	extractorVersion := provider.Version()
+	counts := ReplayCounts{Chunks: frozen.Header.Counts.Chunks}
 	model := ""
 	var healthErr error
 	if counts.Chunks > 0 {
 		model, healthErr = provider.HealthModel(ctx)
-	}
-	mismatches := make([]replayLabelMismatch, 0)
-	for _, d := range frozen.Documents {
-		if d.Labels != nil && *d.Labels != presetName {
-			mismatches = append(mismatches, replayLabelMismatch{DocID: d.DocID, Labels: *d.Labels})
+		if pins != nil && healthErr != nil {
+			return counts, healthErr
 		}
 	}
 	header := replayHeader{
@@ -174,7 +238,7 @@ func replay(ctx context.Context, cfg config.Config, input, presetName, gkgVersio
 		WriteMode:       replayWriteMode{Hygiene: mode.Hygiene, Domains: mode.Domains, FactsAsCandidates: mode.RequireConfirmation},
 		Hygiene:         preset.Hygiene, StoreFloor: cfg.Ingest.StoreFloor, AssertFloor: cfg.Ingest.AssertFloor,
 		SidecarModel: model, SidecarImage: image, SidecarImageDigest: digest,
-		ExtractorVersion: extractorVersion, GKGVersion: gkgVersion, NoBorrow: noBorrow,
+		ExtractorVersion: extractorVersion, GKGVersion: gkgVersion, NoBorrow: noBorrow, BackupSHA256: backupSHA256,
 	}
 	if mentions != nil {
 		mentions.counts.ChunksRequested = counts.Chunks
@@ -218,9 +282,19 @@ func replay(ctx context.Context, cfg config.Config, input, presetName, gkgVersio
 		for i, raw := range results {
 			c := req.Chunks[i]
 			assessment := replayAssessment{err: raw.Err}
+			if pins != nil && raw.Err != nil {
+				return counts, fmt.Errorf("chunk %s: %w", c.ID, raw.Err)
+			}
 			if raw.Err == nil {
 				chunk := graph.Chunk{ID: c.ID, DocID: d.DocID, Text: c.Text}
-				assessment.ReplayAssessment = ingest.AssessReplay(cfg.Ingest, preset, doc, chunk, raw.ChunkResult, extractorVersion, mode)
+				export := outputs.judgeInputs != nil && duplicateLinks[c.ID] == ""
+				assessment.ReplayAssessment = ingest.AssessReplay(cfg.Ingest, preset, doc, chunk, raw.ChunkResult, extractorVersion, mode, export)
+				if export {
+					if err := writeReplayJudgeInputs(outputs.judgeInputs, &doc, chunk, assessment.Winners); err != nil {
+						return counts, err
+					}
+					assessment.Winners = nil
+				}
 				if mentions != nil {
 					assessment.raw = raw.ChunkResult
 				} else {
@@ -313,6 +387,22 @@ func replay(ctx context.Context, cfg config.Config, input, presetName, gkgVersio
 	return counts, ctx.Err()
 }
 
+func writeReplayJudgeInputs(enc *json.Encoder, doc *graph.Document, chunk graph.Chunk, winners []graph.FactUpsert) error {
+	for _, fact := range winners {
+		payload := ingest.ReplayJudgeInput(doc, chunk, fact)
+		if payload == nil {
+			return fmt.Errorf("chunk %s: could not encode judge input", chunk.ID)
+		}
+		if err := enc.Encode(replayJudgeInput{
+			DocID: doc.ID, ChunkID: chunk.ID, HeadKey: fact.HeadKey, Rel: graph.SanitizeRel(fact.Rel), TailKey: fact.TailKey,
+			Confidence: fact.Confidence, Payload: payload, InputHash: sha256Hex(payload),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func writeReplayHeaders(enc *json.Encoder, mentions *replayMentions, header replayHeader, preset ingest.CheckedPreset) error {
 	if mentions != nil {
 		attemptID, err := newReplayAttemptID()
@@ -358,7 +448,7 @@ func replaySidecarImageDigest(image string) string {
 	return "unknown"
 }
 
-func readReplayWriteMode(ctx context.Context, cfg config.Config) (ingest.WriteMode, error) {
+func readReplayWriteMode(ctx context.Context, cfg config.Config, pins *replayPins) (ingest.WriteMode, error) {
 	st, err := graph.Open(ctx, cfg)
 	if err != nil {
 		return ingest.WriteMode{}, err
@@ -368,11 +458,17 @@ func readReplayWriteMode(ctx context.Context, cfg config.Config) (ingest.WriteMo
 	if err != nil {
 		return ingest.WriteMode{}, err
 	}
+	if pins != nil && schema != pins.SchemaVersion {
+		return ingest.WriteMode{}, argerr.Errorf("pins: schema_version is %d, graph marker is %d", pins.SchemaVersion, schema)
+	}
 	if schema != graph.ExtractionSchemaVersion {
 		return ingest.WriteMode{}, fmt.Errorf(
 			"replay requires extraction schema v%d (graph is v%d); migrate the graph first",
 			graph.ExtractionSchemaVersion, schema,
 		)
+	}
+	if pins != nil {
+		return ingest.WriteMode{Hygiene: pins.WriteMode.Hygiene, Domains: pins.WriteMode.Domains, RequireConfirmation: pins.WriteMode.FactsAsCandidates}, nil
 	}
 	return ingest.WriteModeForSchema(schema, cfg.Facts.RequireConfirmation), nil
 }

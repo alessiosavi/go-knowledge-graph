@@ -655,7 +655,7 @@ summary on standard output and the JSONL trailer count the flagged rows in
 `duplicate_roots_outside_sample` and `duplicate_root_cycles`.
 A kept relation below the assert floor is marked `low_confidence`.
 If any chunk still fails after retry, or the sidecar fails its health check,
-replay preserves the completed predictions with per-chunk error rows
+unpinned replay preserves the completed predictions with per-chunk error rows
 and exits 1.
 
 Both JSONL commands create new files with mode 0600. Each trailer's SHA-256
@@ -663,6 +663,40 @@ covers all preceding lines, including the header and line endings. The replay
 header's input SHA-256 covers the entire sample file, including its trailer.
 Named presets are hashed as file bytes. Built-in labels are hashed as
 serialized defaults and the effective hygiene policy is recorded separately.
+
+#### Export pinned judge inputs
+
+```sh
+gkg eval -replay sample.jsonl -predictions predictions.jsonl -labels general \
+  -judge-inputs judge-inputs.jsonl -pins pins.json
+```
+
+Split a graph sample by its stored `labels` and replay one preset per file.
+`-judge-inputs` requires `-pins`. You can also use `-pins` with predictions alone.
+Pinned replay uses the pinned write mode and confidence floors. It checks the
+graph schema, stoplist, selected preset and configured sidecar model. If the
+configured sidecar image includes a digest, replay checks it against the pin.
+The predictions header records `backup_tar_sha256` and the pinned
+`sidecar_image_digest`.
+
+The pins object requires `source`, `backup_tar_sha256`, `schema_version`,
+`write_mode` (`hygiene`, `domains`, `facts_as_candidates`), `store_floor`,
+`assert_floor`, `stoplist_sha256`, `sidecar` (`model`, `digest`), and an array
+of one or more `presets` (each with `name` and `sha256`). `source` and
+`sidecar.model` must be non-empty. SHA-256 fields take 64 lowercase hexadecimal
+characters. `sidecar.digest` takes an empty string or `sha256:` followed by
+those 64 characters. The floors must satisfy
+`0 <= store_floor <= assert_floor <= 1`. Use the SHA-256 of the empty byte
+stream when there is no stoplist overlay. For built-in labels, use an empty
+preset name and the built-in hash from the predictions header.
+
+The judge inputs file contains one JSONL row per stored winner of a
+nonduplicate chunk. Each row has `doc_id`, `chunk_id`, `head_key`, `rel`,
+`tail_key`, `confidence`, `judge_input_b64` and `input_hash`. The hash is the
+lowercase SHA-256 of the decoded v1 judge user message. Pinned replay publishes
+private output files after the run succeeds. Exit codes are 0 for success,
+1 for runtime errors such as extraction failure, and 2 for usage errors,
+pin refusal, or a recorded preset mismatch. A failed run leaves no new outputs.
 
 #### Validated mentions for scoring
 
@@ -672,7 +706,7 @@ gkg eval -replay sample.jsonl -predictions predictions.jsonl -labels general \
 ```
 
 `-mentions` and `-no-borrow` require `-replay`. Use a distinct path for
-each file. Replay reserves both outputs with mode 0600 before contacting
+each file. Unpinned replay reserves both outputs with mode 0600 before contacting
 the sidecar. An existing output is a usage error (exit 2). A fatal replay
 error removes both outputs. Per-chunk errors leave both files available
 with error rows and exit 1.
@@ -731,6 +765,28 @@ the object with `entities` then `relations`, arrays in preset order
 label text, falling back to `name`. The `scope` field is present even when
 empty. This encoding uses Go's default number and string encoding,
 including escaping `&`, `<`, `>`, U+2028, and U+2029.
+
+### Inspect eval settings
+
+```sh
+gkg eval-settings
+```
+
+This command reads local configuration and prints one JSON object without
+opening Memgraph or calling a provider. Load it with the arm's production
+environment, including its production judge mode. `projection` contains the
+judge and agent request settings and prompt hashes, plus GCP, embedder and read
+limits. `hash` is the lowercase SHA-256 of the projection's compact JSON with
+sorted keys and HTML escaping disabled. `asserted` records the loaded
+production values for judge mode and sampling, fact visibility, ingest floors
+and whether the agent is enabled. Eval commands run without judge workers, so
+`overrides.judge.mode` is always `off`. The rest of `overrides` records the
+configured graph URI and server settings. Both blocks are excluded from the
+hash. The server API key and endpoint credentials use literal `<set>` or
+`<unset>` markers.
+
+Exit codes are 0 for success, 1 for a configuration or output error, and 2
+for incorrect usage. `gkg eval-settings -h` prints usage to stdout and exits 0.
 
 ### Validate a preset
 
