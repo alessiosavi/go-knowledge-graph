@@ -208,8 +208,8 @@ func toolDefs() []toolDef {
 			}),
 		functionTool("get_product", graph.ProductLookupDescription+
 			" Set with_mentions to include passages from done documents with exact matches for the product's catalogue_code or product_reference. Domain also filters passages."+
-			" Retrieval is approximate: spellings that split a stored code (151L-Z for 151LZ, TC 2SL for TC2SL) or use fullwidth characters can be missed, and mentions_partial means search limits or skipped clauses may have left matches unchecked."+
-			" Search can miss splits inside stored runs (151L-Z, A-B12345, TC 2SL), fullwidth forms, case-mapping differences (ß, İ), and tokens of 40 bytes or more."+
+			" Retrieval is approximate: it can miss splits inside stored codes (151L-Z, A-B12345, TC 2SL), fullwidth forms, case-mapping differences (ß, İ) and tokens of 40 bytes or more; mentions_partial means search limits or skipped clauses may have left matches unchecked."+
+			" mentions_error means mentions could not be computed (index_too_large, index_unavailable or search_unavailable); the product itself is still returned."+
 			" Use gkg products mentions-scan for the complete offline scan."+
 			" To fit the result budget, mentions are dropped from the end before features. See mentions_omitted_for_budget and features_omitted for the counts.",
 			map[string]any{

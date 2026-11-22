@@ -179,8 +179,8 @@ Redirect targets can still match through the document's `final_url`.
   tool arguments, and other messages also consume model context. Evidence
   retains complete results and may still be large. The exception is the
   product tools, whose results are trimmed to the agent's 32 KB budget and
-  report what was omitted (`features_omitted`, `truncated`/`omitted`, or a
-  shorter `find_products` page with a cursor).
+  report what was omitted (`features_omitted`, `mentions_omitted_for_budget`,
+  `truncated`/`omitted`, or a shorter `find_products` page with a cursor).
 - Answer HTML uses the reader’s sanitized Markdown pipeline, with all images
   omitted. Raw HTML is omitted and unsafe link destinations become `#`.
   Progressive deltas remain plain text until the done event replaces them.
