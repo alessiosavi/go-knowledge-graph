@@ -128,7 +128,7 @@ func runJudgeEvalRun(ctx context.Context, opt judgeEvalOptions, cfg config.Confi
 		return fail(fmt.Errorf("resume verdicts: %w", err))
 	}
 	if out == nil {
-		out, err = createJudgeEvalOutput(opt.out)
+		out, err = createEvalOutput(opt.out)
 		if err != nil {
 			return fail(fmt.Errorf("create verdicts: %w", err))
 		}
@@ -245,7 +245,7 @@ func readJudgeEvalInput(path string) ([]judgeEvalItem, map[string]bool, error) {
 	defer f.Close()
 	var items []judgeEvalItem
 	ids := make(map[string]bool)
-	err = scanJudgeEvalJSONL(f, func(raw []byte) error {
+	err = scanEvalJSONL(f, func(raw []byte) error {
 		var row struct {
 			ID   string `json:"item_id"`
 			B64  string `json:"judge_input_b64"`
@@ -282,7 +282,7 @@ func openJudgeEvalResume(opt judgeEvalOptions, model string, ids map[string]bool
 		return nil, nil, fmt.Errorf("lock verdict file: %w", err)
 	}
 	done := make(map[string]bool)
-	err = scanJudgeEvalJSONL(f, func(raw []byte) error {
+	err = scanEvalJSONL(f, func(raw []byte) error {
 		var row judgeEvalVerdict
 		if err := json.Unmarshal(raw, &row); err != nil {
 			return errors.New("invalid verdict JSON")
@@ -308,7 +308,7 @@ func openJudgeEvalResume(opt judgeEvalOptions, model string, ids map[string]bool
 	return f, done, nil
 }
 
-func createJudgeEvalOutput(path string) (*os.File, error) {
+func createEvalOutput(path string) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
@@ -328,7 +328,7 @@ func createJudgeEvalOutput(path string) (*os.File, error) {
 	return f, nil
 }
 
-func scanJudgeEvalJSONL(r io.Reader, visit func([]byte) error) error {
+func scanEvalJSONL(r io.Reader, visit func([]byte) error) error {
 	reader := bufio.NewReader(r)
 	for n := 1; ; n++ {
 		raw, err := reader.ReadBytes('\n')

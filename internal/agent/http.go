@@ -40,21 +40,23 @@ func (s *Server) decodeAskQuestion(w http.ResponseWriter, r *http.Request) (AskR
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return AskRequest{}, false
 	}
-	question := strings.TrimSpace(req.Question)
-	if question == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "question is required")
-		return AskRequest{}, false
-	}
-	if req.Domain != "" && !graph.ValidDomain(req.Domain) {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid domain slug")
-		return AskRequest{}, false
-	}
-	if err := req.Generation.validate(s.generationCapabilities()); err != nil {
+	req, err := normalizeAskQuestion(req, s.generationCapabilities())
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return AskRequest{}, false
 	}
-	req.Question = question
 	return req, true
+}
+
+func normalizeAskQuestion(req AskRequest, caps generationCapabilities) (AskRequest, error) {
+	req.Question = strings.TrimSpace(req.Question)
+	if req.Question == "" {
+		return AskRequest{}, errors.New("question is required")
+	}
+	if req.Domain != "" && !graph.ValidDomain(req.Domain) {
+		return AskRequest{}, errors.New("invalid domain slug")
+	}
+	return req, req.Generation.validate(caps)
 }
 
 // AskHandler serves POST /v1/agent/ask: one question, one bounded
