@@ -64,6 +64,9 @@ Chunk search hits carry document_id, the owning Chunk.doc_id; entity hits carry 
 
 Strategy: search with keywords, then read chunks with get_chunks; use cypher last.`
 
+// SystemPrompt returns the base system prompt used for an ask.
+func SystemPrompt() string { return systemPrompt }
+
 const planSystemPrompt = systemPrompt + `
 
 This endpoint does not support tool calls. Reply with ONLY a JSON object of one of these shapes:

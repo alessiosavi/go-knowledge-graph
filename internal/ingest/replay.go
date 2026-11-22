@@ -43,12 +43,21 @@ type MentionDecision struct {
 type ReplayAssessment struct {
 	Mentions    []MentionDecision
 	Occurrences []OccurrenceDecision
+	Winners     []graph.FactUpsert
 }
 
 // AssessReplay uses ingest's extraction builder and the store's fact
 // selection on a frozen chunk. It needs no pipeline or graph connection.
-func AssessReplay(cfg config.IngestConfig, preset CheckedPreset, doc graph.Document, c graph.Chunk, raw extract.ChunkResult, version string, mode WriteMode) ReplayAssessment {
-	cleaned, trace := hygiene.ApplyWithTrace(raw, c.Text, preset.Hygiene)
+func AssessReplay(cfg config.IngestConfig, preset CheckedPreset, doc graph.Document, c graph.Chunk, raw extract.ChunkResult, version string, mode WriteMode, includeWinners bool) ReplayAssessment {
+	var cleaned hygiene.Result
+	var trace hygiene.Trace
+	if mode.Hygiene {
+		cleaned, trace = hygiene.ApplyWithTrace(raw, c.Text, preset.Hygiene)
+	} else {
+		cleaned = rawExtraction(raw)
+		trace.MentionIndices = identityIndices(len(raw.Mentions))
+		trace.CandidateSources = identityIndices(len(raw.Candidates))
+	}
 	var built extractionTrace
 	_, facts, _ := buildExtraction(&doc, c, cleaned, version, documentScopedLabels(preset.Entities), cfg, mode.Domains, &built)
 	mentions := make([]MentionDecision, len(raw.Mentions))
@@ -101,8 +110,25 @@ func AssessReplay(cfg config.IngestConfig, preset CheckedPreset, doc graph.Docum
 		row.Disposition = "kept"
 		row.LowConfidence = facts[i].LowConfidence
 	}
+	assessment := ReplayAssessment{Mentions: mentions, Occurrences: out}
 	for _, i := range graph.FactWinnerIndices(facts) {
 		out[trace.CandidateSources[built.factSources[i]]].StoredWinner = true
+		if includeWinners {
+			assessment.Winners = append(assessment.Winners, facts[i])
+		}
 	}
-	return ReplayAssessment{Mentions: mentions, Occurrences: out}
+	return assessment
+}
+
+func identityIndices(n int) []int {
+	indices := make([]int, n)
+	for i := range indices {
+		indices[i] = i
+	}
+	return indices
+}
+
+// ReplayJudgeInput renders a selected fact using the production judge payload.
+func ReplayJudgeInput(doc *graph.Document, chunk graph.Chunk, fact graph.FactUpsert) []byte {
+	return CanonicalJudgeInput(factInputFor(doc, chunk, fact))
 }
