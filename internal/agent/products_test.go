@@ -176,3 +176,35 @@ func TestProductSearchLimitsWithinGraphRange(t *testing.T) {
 		t.Fatalf("agent max limit %d exceeds graph max %d", productSearchMaxLimit, graph.MaxProductSearchLimit)
 	}
 }
+
+type agentMentionsOffStore struct{ graphStore }
+
+func (agentMentionsOffStore) GetProduct(_ context.Context, args graph.ProductLookup) (graph.ProductDetail, error) {
+	return graph.ProductDetail{
+		Product:      graph.Product{ID: args.ID, Title: "Product"},
+		Features:     []graph.ProductEvidence{},
+		Pages:        []graph.ProductPage{},
+		PagesMissing: true,
+	}, nil
+}
+
+func TestAgentGetProductIgnoresWithMentions(t *testing.T) {
+	s := NewServer(config.Config{}, nil, nil)
+	s.store = agentMentionsOffStore{}
+	read := func(args string) string {
+		t.Helper()
+		out, err := s.execTool(t.Context(), "get_product", json.RawMessage(args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(wire)
+	}
+	before := read(`{"id":"product"}`)
+	if after := read(`{"id":"product","with_mentions":true,"mentions_limit":1}`); after != before {
+		t.Fatal("agent get_product response changed when requested to include mentions")
+	}
+}

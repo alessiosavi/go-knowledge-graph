@@ -603,6 +603,8 @@ paths:
           required: true
           schema: { type: string, pattern: "^[0-9a-f]{32}$" }
         - $ref: "#/components/parameters/ProductPageDomain"
+        - $ref: "#/components/parameters/WithProductMentions"
+        - $ref: "#/components/parameters/ProductMentionsLimit"
       responses:
         "200":
           $ref: "#/components/responses/ProductDetail"
@@ -635,6 +637,8 @@ paths:
           description: Full source product ID, including its store prefix.
           schema: { type: string }
         - $ref: "#/components/parameters/ProductPageDomain"
+        - $ref: "#/components/parameters/WithProductMentions"
+        - $ref: "#/components/parameters/ProductMentionsLimit"
       responses:
         "200":
           $ref: "#/components/responses/ProductDetail"
@@ -1229,8 +1233,18 @@ components:
     ProductPageDomain:
       name: domain
       in: query
-      description: Optional domain slug for associated pages. Empty includes all domains.
+      description: Optional domain slug for associated pages and catalogue passages. Empty includes all domains.
       schema: { type: string, pattern: "^([a-z0-9-]{1,40})?$" }
+    WithProductMentions:
+      name: with_mentions
+      in: query
+      description: Include catalogue passages from done documents with exact identifier matches.
+      schema: { type: boolean, default: false }
+    ProductMentionsLimit:
+      name: mentions_limit
+      in: query
+      description: Maximum returned passages. The server validates this parameter on every request and applies it when with_mentions is true.
+      schema: { type: integer, minimum: 1, maximum: 20, default: 5 }
     DocumentID:
       name: id
       in: path
@@ -1265,11 +1279,14 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     ProductDetail:
-      description: Product metadata, observations carrying the active release ID, and associated pages.
+      description: >-
+        Product metadata, observations carrying the active release ID, and associated pages.
+        With with_mentions=true, a successful enrichment adds mentions, mentions_total, mentions_keys, and mentions_partial.
+        An enrichment failure adds only mentions_error and retains HTTP 200 with the product detail.
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ProductDetail"
+            $ref: "#/components/schemas/ProductDetailWithOptionalMentions"
     ProductMutationApplied:
       description: The event applied or matched the latest applied event.
       content:
@@ -1418,6 +1435,68 @@ components:
               items:
                 $ref: "#/components/schemas/ProductPage"
             pages_missing: { type: boolean, description: True when the pages array is empty. }
+    ProductDetailWithOptionalMentions:
+      allOf:
+        - $ref: "#/components/schemas/ProductDetail"
+        - type: object
+          properties:
+            mentions:
+              type: array
+              maxItems: 20
+              description: >-
+                Matching chunks of done documents ordered by document source, document ID, and chunk sequence.
+                Empty when there are no matches, the product's store is unbound, or there is no active release,
+                subject to the global identifier limit.
+              items:
+                $ref: "#/components/schemas/ProductChunkMention"
+            mentions_total:
+              type: integer
+              minimum: 0
+              description: Matching chunks among checked candidates before the display limit.
+            mentions_keys:
+              type: integer
+              minimum: 0
+              maximum: 64
+              description: Globally unambiguous product keys emitted into the search query.
+            mentions_partial:
+              type: boolean
+              description: >-
+                A candidate, byte, key, term, or query bound was reached, or a clause was dropped for a non-ASCII
+                term or a token of 40 bytes or more. Candidate retrieval can miss a separator inside a stored
+                letter run (151L-Z for 151LZ, A-B12345 for AB12345), whitespace inside a stored run
+                (TC 2SL for TC2SL), NFKC-only forms such as fullwidth characters, case-mapping differences
+                such as ß and İ, and tokens of 40 bytes or more, even when this field is false.
+                Use gkg products mentions-scan for an exact offline scan.
+            mentions_error:
+              type: string
+              enum: [index_too_large, index_unavailable, search_unavailable]
+              description: >-
+                index_too_large means the global index exceeds 200,000 raw identifier values, including when the
+                requested product belongs to an unbound store. index_unavailable means the index load failed or timed out.
+                search_unavailable means candidate search or matching failed or timed out.
+    ProductChunkMention:
+      type: object
+      required: [doc_id, chunk_id, seq, doc_title, doc_source, domain, excerpt, matched]
+      properties:
+        doc_id: { type: string }
+        chunk_id: { type: string }
+        seq: { type: integer }
+        doc_title: { type: string }
+        doc_source: { type: string }
+        domain: { type: string }
+        excerpt:
+          type: string
+          description: A UTF-8 excerpt of at most 300 bytes that contains the start of the first match for this product.
+        matched:
+          type: array
+          maxItems: 8
+          description: Distinct folded identifier values sorted by feature and value.
+          items:
+            type: object
+            required: [feature, value]
+            properties:
+              feature: { type: string, enum: [catalogue_code, product_reference] }
+              value: { type: string }
     ProductPage:
       type: object
       required: [id, title, source, updated_at]

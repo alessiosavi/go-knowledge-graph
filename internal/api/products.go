@@ -1,15 +1,39 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
 
+type productMentionsReader interface {
+	GetProductWithMentions(context.Context, graph.ProductLookup) (graph.ProductDetailWithMentions, graph.ProductMentionRead, error)
+}
+
 func (s *Server) handleProduct(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	params := r.URL.Query()
+	var withMentions bool
+	if params.Has("with_mentions") {
+		enabled, err := strconv.ParseBool(params.Get("with_mentions"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "with_mentions must be a boolean")
+			return
+		}
+		withMentions = enabled
+	}
+	var limit int
+	if params.Has("mentions_limit") {
+		n, err := strconv.Atoi(params.Get("mentions_limit"))
+		if err != nil || !graph.ValidMentionsLimit(n) {
+			writeError(w, http.StatusBadRequest, "invalid_request", "mentions_limit must be an integer between 1 and 20")
+			return
+		}
+		limit = n
+	}
 	lookup := graph.ProductLookup{ID: id, Domain: params.Get("domain")}
 	if id == "" {
 		lookup.Store, lookup.ProductID = params.Get("store"), params.Get("product_id")
@@ -17,9 +41,23 @@ func (s *Server) handleProduct(w http.ResponseWriter, r *http.Request) {
 	if !s.storeOr503(w) {
 		return
 	}
+	if reader, ok := s.store.(productMentionsReader); withMentions && ok {
+		product, _, err := reader.GetProductWithMentions(r.Context(), lookup)
+		if err != nil {
+			writeProductReadError(w, r, err)
+			return
+		}
+		product.LimitMentions(limit)
+		writeJSON(w, http.StatusOK, product)
+		return
+	}
 	product, err := s.store.GetProduct(r.Context(), lookup)
 	if err != nil {
 		writeProductReadError(w, r, err)
+		return
+	}
+	if withMentions {
+		writeJSON(w, http.StatusOK, graph.ProductDetailWithMentions{ProductDetail: product, MentionsError: graph.MentionsIndexUnavailable})
 		return
 	}
 	writeJSON(w, http.StatusOK, product)
