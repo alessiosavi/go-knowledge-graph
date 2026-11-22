@@ -272,3 +272,44 @@ func TestTransportSSECloseWithoutUsageKeepsReservation(t *testing.T) {
 		t.Fatalf("calls = %+v", calls)
 	}
 }
+
+func TestTransportSSECloseWithPartialExtraContent(t *testing.T) {
+	run := testRun(t, 2)
+	run.Family = "A"
+	const frame = `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"extra_content":"{"}]}}]}` + "\n\n"
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, frame)
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+	tr := testTransport(t, openRun(t, run), srv, AskIDKey)
+	resp, err := testSend(t, tr, srv.URL, "ask", `{"stream":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, len(frame))
+	if _, err := io.ReadFull(resp.Body, raw); err != nil || string(raw) != frame {
+		t.Fatalf("stream = %q (%v)", raw, err)
+	}
+	if rows := ledgerRows(t, run.Path, "settle"); len(rows) != 0 {
+		t.Fatalf("settled before close: %v", rows)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rows := ledgerRows(t, run.Path, "settle")
+	if len(rows) != 1 || rows[0]["id"] != "ask" || rows[0]["attempt"] != float64(1) {
+		t.Fatalf("settle = %v", rows)
+	}
+	if usage, ok := rows[0]["settled_usd"]; !ok || usage != nil {
+		t.Fatalf("want explicit null settlement: %v", rows[0])
+	}
+	if calls := tr.TakeCalls("ask"); len(calls) != 1 || calls[0].AskID != "ask" || !calls[0].Stream ||
+		calls[0].Usage != nil || calls[0].ToolCalls != 1 || calls[0].SignatureIn {
+		t.Fatalf("calls = %+v", calls)
+	}
+}

@@ -266,10 +266,31 @@ func (l *Ledger) append(row ledgerRow) error {
 	if err != nil {
 		return err
 	}
-	if _, err := l.file.Write(append(raw, '\n')); err != nil {
+	return appendLedgerLine(l.file, append(raw, '\n'))
+}
+
+type ledgerAppendFile interface {
+	io.Seeker
+	io.Writer
+	Sync() error
+	Truncate(int64) error
+}
+
+func appendLedgerLine(file ledgerAppendFile, line []byte) error {
+	size, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
 		return err
 	}
-	return l.file.Sync()
+	if _, err = file.Write(line); err == nil {
+		err = file.Sync()
+	}
+	if err != nil {
+		// Best effort under the ledger lock. Preserve the original append error.
+		if file.Truncate(size) == nil {
+			_ = file.Sync()
+		}
+	}
+	return err
 }
 
 func (l *Ledger) withLock(fn func() error) error {

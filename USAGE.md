@@ -870,12 +870,27 @@ gkg judge eval run --in frozen.jsonl --out verdicts-DS.jsonl \
   warm-up runs.
 - `--manifest` identifies the frozen set. Resume with the same manifest, arm
   and model to skip items already final in `--out`.
-- `--ledger-genesis` is the SHA-256 of the ledger's header line, including
-  its newline. `--run-id` and `--allotment` select the run's budget in USD.
+- `--run-id` and `--allotment` select the run's budget in USD.
+
+The eval kit's `run.sh init-ledger` writes one header JSON line per provider
+ledger. This example uses illustrative prices and an output ceiling.
+
+```json
+{"ledger":"gkg-g1t2","provider":"DS","model":"model-id","cap_usd":20,"price_in_per_mtok":1,"price_out_per_mtok":2,"output_ceiling_tokens":8192,"ceiling_source":"provider documentation","created":"2026-11-22T00:00:00Z"}
+```
+
+`provider` is `DS` or `GM`, and `created` is an RFC 3339 UTC timestamp.
+Pass the lowercase hex SHA-256 of line 1, including its terminating `\n`,
+as `--ledger-genesis`.
 
 Each verdict's `attempts`, `statuses`, `usage` and `calls` cover the invocation
 that writes it, and the ledger remains the authoritative record of spend across
 invocations.
+
+Invalid items have `error_class` set to `invalid_verdict` or a provider error
+class such as `provider_error_4xx`. The command prints the item ID and redacted
+error to stderr. Provider stops also print a diagnostic and leave the item
+without a final verdict row.
 
 Exit codes are `0` when all items are final, `2` for permanent errors or
 refused inputs, flags or ledger files, `3` for a provider stop, and `4` for
