@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,9 +19,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/agent"
+	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
+	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
 )
 
 const agentEvalTestModel = "DeepSeek-V4.1-Flash-1017"
@@ -116,12 +121,16 @@ func (f *agentEvalFixture) setLedger(t *testing.T, arm, model string) {
 	}
 }
 
-func (f agentEvalFixture) dispatch(t *testing.T, want int, flags ...string) string {
-	t.Helper()
+func (f agentEvalFixture) args(flags ...string) []string {
 	args := []string{"eval-agent", "--questions", f.questions, "--out", f.out, "--arm", "DS", "--manifest", f.manifest,
 		"--ledger", f.ledger, "--ledger-genesis", f.genesis, "--run-id", f.runID, "--allotment", f.allotment}
+	return append(args, flags...)
+}
+
+func (f agentEvalFixture) dispatch(t *testing.T, want int, flags ...string) string {
+	t.Helper()
 	var stderr bytes.Buffer
-	if code := run(append(args, flags...), io.Discard, &stderr); code != want {
+	if code := run(f.args(flags...), io.Discard, &stderr); code != want {
 		t.Fatalf("exit = %d, want %d\n%s", code, want, &stderr)
 	}
 	return stderr.String()
@@ -413,26 +422,125 @@ func TestEvalAgentLedgerStop(t *testing.T) {
 	}
 }
 
-func TestEvalAgentOnlyResumeAndRefusals(t *testing.T) {
+func TestEvalAgentBlocks(t *testing.T) {
 	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
 		agentEvalReply(w, "answer")
 	})
-	first, other := agentEvalQuestion("warmup-first", false), agentEvalQuestion("other", false)
-	f := newAgentEvalFixture(t, srv, first, other)
-	f.dispatch(t, 0, "--only", "warmup-first")
-	if row := agentEvalRows(t, f, 1)[0]; row["id"] != "warmup-first" {
-		t.Fatalf("wrong selected row: %v", row)
+	first := newAgentEvalFixture(t, srv, agentEvalQuestion("a", false), agentEvalQuestion("b", false))
+	first.runID = "R1"
+	second := first
+	second.runID, second.out = "R2", filepath.Join(t.TempDir(), "answers.jsonl")
+
+	before := readJudgeEvalRows(t, first.ledger)
+	for _, block := range []struct {
+		f  agentEvalFixture
+		id string
+	}{{first, "a"}, {second, "b"}} {
+		block.f.dispatch(t, 0, "--only", block.id)
+		if row := agentEvalRows(t, block.f, 1)[0]; row["id"] != block.id {
+			t.Fatalf("wrong selected row: %v", row)
+		}
+		after := readJudgeEvalRows(t, block.f.ledger)
+		if len(after) != len(before)+4 || !reflect.DeepEqual(after[:len(before)], before) {
+			t.Fatalf("block %s did not append four rows to the existing ledger: %v", block.f.runID, after)
+		}
+		for i, kind := range []string{"allot", "reserve", "settle", "close"} {
+			if row := after[len(before)+i]; row["kind"] != kind || row["run_id"] != block.f.runID {
+				t.Fatalf("block %s: want %s row, got %v", block.f.runID, kind, row)
+			}
+		}
+		before = after
 	}
-	f.dispatch(t, 0, "--only", "warmup-first")
-	if len(script.sent()) != 1 {
-		t.Fatal("resume sent an already answered id")
+	if len(script.sent()) != 2 {
+		t.Fatalf("block flow sent %d requests, want 2", len(script.sent()))
 	}
-	f.runID = "agent-block-remainder"
-	f.dispatch(t, 0, "--only", "warmup-first,other")
-	if rows := agentEvalRows(t, f, 2); rows[1]["id"] != "other" {
-		t.Fatalf("wrong resumed rows: %v", rows)
+}
+
+func TestEvalAgentInterruptedBlock(t *testing.T) {
+	const child = "GKG_TB_TEST_INTERRUPTED_BLOCK"
+	if os.Getenv(child) == "1" {
+		var stderr bytes.Buffer
+		if code := run(flag.Args(), io.Discard, &stderr); code != 4 || !strings.Contains(stderr.String(), "eval ledger budget exhausted") {
+			t.Fatalf("exit = %d, want ledger stop (4): %s", code, &stderr)
+		}
+		return
+	}
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, i int, _ agentEvalWireRequest) {
+		if i == 1 {
+			// The follow-up carries this transcript and exceeds the allotment.
+			// The first turn settles cheaply, so a fresh ask for b still fits.
+			args := fmt.Sprintf(`{"payload":%q}`, strings.Repeat("x", 128<<10))
+			agentEvalReply(w, "", agentEvalTool("large", "nonexistent", args))
+			return
+		}
+		agentEvalReply(w, "answer")
+	})
+	f := newAgentEvalFixture(t, srv, agentEvalQuestion("a", false), agentEvalQuestion("b", false), agentEvalQuestion("c", false))
+	f.runID, f.allotment = "R1", "1.1"
+	flags := []string{"--only", "a,b"}
+	// A ledger stop disables metered sends for the rest of the process.
+	args := append([]string{"-test.run=^TestEvalAgentInterruptedBlock$", "--"}, f.args(flags...)...)
+	cmd := exec.CommandContext(t.Context(), os.Args[0], args...)
+	cmd.Env = append(os.Environ(), child+"=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ledger-stop subprocess: %v\n%s", err, out)
+	}
+	first := agentEvalRows(t, f, 1)[0]
+	if first["id"] != "a" || len(script.sent()) != 2 {
+		t.Fatalf("interrupted block left row %v and sent %d requests", first, len(script.sent()))
+	}
+	before := readJudgeEvalRows(t, f.ledger)
+	if len(before) != 6 || before[5]["id"] != "b" {
+		t.Fatalf("wrong ledger after stop: %v", before)
+	}
+	for i, kind := range []string{"allot", "reserve", "settle", "reserve", "settle"} {
+		if row := before[i+1]; row["kind"] != kind || row["run_id"] != f.runID {
+			t.Fatalf("interrupted block: want %s row, got %v", kind, row)
+		}
 	}
 
+	f.dispatch(t, 0, flags...)
+	rows := agentEvalRows(t, f, 2)
+	sent := script.sent()
+	if !reflect.DeepEqual(rows[0], first) || rows[1]["id"] != "b" || len(sent) != 3 ||
+		len(sent[2].Messages) < 2 || sent[2].Messages[1].Content != "Question b" {
+		t.Fatalf("resume wrote %v and sent %d requests", rows, len(sent))
+	}
+	after := readJudgeEvalRows(t, f.ledger)
+	if len(after) != len(before)+3 || !reflect.DeepEqual(after[:len(before)], before) ||
+		after[6]["kind"] != "reserve" || after[6]["id"] != "b" || after[6]["attempt"] != float64(2) ||
+		after[7]["kind"] != "settle" || after[7]["id"] != "b" ||
+		after[8]["kind"] != "close" || after[8]["run_id"] != f.runID {
+		t.Fatalf("wrong ledger after resume: %v", after)
+	}
+}
+
+func TestEvalAgentAlreadyAnsweredBlock(t *testing.T) {
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
+		http.Error(w, "unexpected provider send", http.StatusBadRequest)
+	})
+	f := newAgentEvalFixture(t, srv, agentEvalQuestion("a", false), agentEvalQuestion("b", false))
+	answer := map[string]any{"id": "a", "arm": "DS", "model": agentEvalTestModel, "manifest": f.manifest}
+	writeJudgeEvalInput(t, f.out, answer)
+
+	f.dispatch(t, 0, "--only", "a")
+	before := readJudgeEvalRows(t, f.ledger)
+	if len(before) != 3 || before[1]["kind"] != "allot" || before[2]["kind"] != "close" || before[2]["run_id"] != f.runID {
+		t.Fatalf("already answered block did not close: %v", before)
+	}
+	f.dispatch(t, 0, "--only", "a")
+	if len(script.sent()) != 0 || !reflect.DeepEqual(readJudgeEvalRows(t, f.ledger), before) ||
+		!reflect.DeepEqual(agentEvalRows(t, f, 1)[0], answer) {
+		t.Fatal("already answered block changed the answers or closed ledger, or sent to the provider")
+	}
+}
+
+func TestEvalAgentRefusals(t *testing.T) {
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
+		http.Error(w, "unexpected provider send", http.StatusBadRequest)
+	})
+	first := agentEvalQuestion("warmup-first", false)
+	f := newAgentEvalFixture(t, srv, first)
 	t.Run("unknown-only", func(t *testing.T) {
 		f.dispatch(t, 2, "--only", "absent")
 	})
@@ -451,7 +559,7 @@ func TestEvalAgentOnlyResumeAndRefusals(t *testing.T) {
 		t.Run("foreign-"+field, func(t *testing.T) {
 			bad := f
 			bad.out = filepath.Join(t.TempDir(), "foreign.jsonl")
-			row := agentEvalRows(t, f, 2)[0]
+			row := map[string]any{"id": "warmup-first", "arm": "DS", "model": agentEvalTestModel, "manifest": f.manifest}
 			row[field] = "foreign"
 			writeJudgeEvalInput(t, bad.out, row)
 			if stderr := bad.dispatch(t, 2); !strings.Contains(stderr, "mismatch") {
@@ -460,20 +568,97 @@ func TestEvalAgentOnlyResumeAndRefusals(t *testing.T) {
 			agentEvalRows(t, bad, 1)
 		})
 	}
-	t.Run("ledger-model", func(t *testing.T) {
-		bad := f
-		bad.ledger, bad.out = filepath.Join(t.TempDir(), "ledger.jsonl"), filepath.Join(t.TempDir(), "answers.jsonl")
-		bad.setLedger(t, "DS", "foreign-model")
-		bad.dispatch(t, 2)
-		if _, err := os.Stat(bad.out); !os.IsNotExist(err) {
-			t.Fatalf("refused ledger created output: %v", err)
-		}
-	})
 	t.Run("arm-auth", func(t *testing.T) {
 		f.dispatch(t, 2, "--arm", "GM")
 	})
-	if len(script.sent()) != 2 {
+	if len(script.sent()) != 0 {
 		t.Fatalf("refused invocation sent to the provider: %d total sends", len(script.sent()))
+	}
+}
+
+func TestEvalAgentOutputBeforeLedger(t *testing.T) {
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
+		http.Error(w, "unexpected provider send", http.StatusBadRequest)
+	})
+	t.Run("output-create", func(t *testing.T) {
+		f := newAgentEvalFixture(t, srv, agentEvalQuestion("one", false))
+		f.out = filepath.Join(filepath.Dir(f.out), "missing", "answers.jsonl")
+		before := readJudgeEvalRows(t, f.ledger)
+		if stderr := f.dispatch(t, 2); !strings.Contains(stderr, "create answers") {
+			t.Fatalf("wrong refusal: %s", stderr)
+		}
+		if after := readJudgeEvalRows(t, f.ledger); !reflect.DeepEqual(after, before) {
+			t.Fatalf("output creation failure changed the ledger: %v", after)
+		}
+	})
+	t.Run("ledger-model", func(t *testing.T) {
+		f := newAgentEvalFixture(t, srv, agentEvalQuestion("one", false))
+		f.setLedger(t, "DS", "foreign-model")
+		if stderr := f.dispatch(t, 2); !strings.Contains(stderr, "model mismatch") {
+			t.Fatalf("wrong refusal: %s", stderr)
+		}
+		if info, err := os.Stat(f.out); err != nil || info.Size() != 0 {
+			t.Fatalf("ledger refusal should leave an empty answers file: %v, %v", info, err)
+		}
+		if rows := readJudgeEvalRows(t, f.ledger); len(rows) != 1 {
+			t.Fatalf("ledger refusal wrote rows: %v", rows)
+		}
+	})
+	if len(script.sent()) != 0 {
+		t.Fatal("refused invocation sent to the provider")
+	}
+}
+
+func TestEvalAgentOutputLedgerAlias(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		link func(oldname, newname string) error
+	}{{name: "same-path"}, {"hard-link", os.Link}, {"symlink", os.Symlink}} {
+		t.Run(tc.name, func(t *testing.T) {
+			const child = "GKG_TB_TEST_LEDGER_ALIAS"
+			if os.Getenv(child) != tc.name {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestEvalAgentOutputLedgerAlias$/^"+tc.name+"$", "-test.v")
+				cmd.Env = append(os.Environ(), child+"="+tc.name)
+				out, err := cmd.CombinedOutput()
+				if ctx.Err() != nil {
+					t.Fatalf("alias refusal timed out: %v", ctx.Err())
+				}
+				if err != nil || bytes.Contains(out, []byte("--- SKIP:")) {
+					t.Fatalf("alias subprocess: %v\n%s", err, out)
+				}
+				return
+			}
+			dir := t.TempDir()
+			opt := evalAgentOptions{
+				questions: filepath.Join(dir, "questions.jsonl"), out: filepath.Join(dir, "answers.jsonl"),
+				ledger: filepath.Join(dir, "ledger.jsonl"), arm: "DS", family: "A",
+				manifest: strings.Repeat("a", 64), runID: "alias", allotment: "10",
+			}
+			cfg := config.Config{Agent: config.AgentConfig{
+				Enabled: true, Auth: config.AuthStatic, Model: agentEvalTestModel, BaseURL: "http://127.0.0.1:1",
+			}}
+			writeJudgeEvalInput(t, opt.questions, agentEvalQuestion("one", false))
+			// Empty answers pass resume parsing and reach the conflicting lock.
+			opt.genesis = fmt.Sprintf("%x", sha256.Sum256(nil))
+			if err := os.WriteFile(opt.ledger, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.link == nil {
+				opt.out = opt.ledger
+			} else if err := tc.link(opt.ledger, opt.out); err != nil {
+				t.Fatal(err)
+			}
+			var stderr bytes.Buffer
+			if code := runEvalAgentRun(t.Context(), opt, cfg, &stderr); code != 2 ||
+				!strings.Contains(stderr.String(), "answer output and ledger must be different files") {
+				t.Fatalf("wrong alias refusal: exit %d, %s", code, &stderr)
+			}
+			if len(readJudgeEvalRows(t, opt.ledger)) != 0 {
+				t.Fatal("alias refusal wrote to the ledger")
+			}
+		})
 	}
 }
 
@@ -590,6 +775,42 @@ func TestEvalAgentGCPPermanentAuth(t *testing.T) {
 				t.Fatal("auth refusal closed an incomplete run")
 			}
 		})
+	}
+}
+
+type evalAgentFailingToken struct{}
+
+func (evalAgentFailingToken) Token(context.Context) (string, time.Time, error) {
+	return "", time.Time{}, &llmauth.AuthTransient{Detail: "fixture token unavailable"}
+}
+
+func TestEvalAgentSSEPreflightFailure(t *testing.T) {
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
+		http.Error(w, "unexpected provider send", http.StatusBadRequest)
+	})
+	f := newAgentEvalFixture(t, srv, agentEvalQuestion("preflight", true))
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Agent.Auth, cfg.Agent.APIKey, cfg.Agent.Model = "gcp", "", "google/gemini-3.5-flash-lite"
+	f.setLedger(t, "GM", cfg.Agent.Model)
+	opt := evalAgentOptions{
+		questions: f.questions, out: f.out, arm: "GM", family: "A", manifest: f.manifest,
+		ledger: f.ledger, genesis: f.genesis, runID: f.runID, allotment: f.allotment,
+	}
+	var stderr bytes.Buffer
+	if code := runEvalAgentRun(t.Context(), opt, cfg, &stderr, agent.WithEvalTokenProvider(evalAgentFailingToken{})); code != 0 {
+		t.Fatalf("exit = %d, want 0 (%s)", code, &stderr)
+	}
+	row := agentEvalRows(t, f, 1)[0]
+	wantSSE := map[string]any{"tool": float64(0), "delta": float64(0), "done": float64(0), "error": float64(1), "last": "error"}
+	if row["error_class"] != "auth" || row["answer"] != "" || !reflect.DeepEqual(row["sse"], wantSSE) {
+		t.Fatalf("unexpected SSE preflight failure: %v", row)
+	}
+	agentEvalCalls(t, row, 0)
+	if len(script.sent()) != 0 {
+		t.Fatal("preflight failure sent to the provider")
 	}
 }
 

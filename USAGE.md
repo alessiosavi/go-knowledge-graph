@@ -1272,10 +1272,11 @@ scope to all questions, including gold resolution and null checks. Without
 
 Run against the configured, restored graph and the enabled ask agent. The
 command opens Memgraph for reads and meters provider calls on the existing
-arm ledger. Use a separate answer file for each arm.
+arm ledger. The eval kit runs one invocation per A block, with its own run ID,
+allotment and answer file.
 
 ```sh
-gkg eval-agent --questions A.jsonl --out answers-DS.jsonl \
+gkg eval-agent --questions A.jsonl --only id1,id2 --out answers-DS-W-H1.jsonl \
   --arm DS --manifest "$MANIFEST_SHA" --ledger ledger-DS.jsonl \
   --ledger-genesis "$LEDGER_GENESIS_SHA" --run-id agent-DS-W-H1 --allotment 2.5
 ```
@@ -1287,9 +1288,11 @@ for smoke, probe or warm-up runs.
 
 Each question can set a `domain`, request SSE with `sse: true`, or override
 `reasoning_effort` with a value supported by the configured agent. Use
-`--only id1,id2` to select questions. Resume skips IDs already recorded for
-the same arm, model and manifest. A successful invocation closes its ledger
-allotment. Use a new run ID to add questions after that invocation.
+`--only id1,id2` to select questions. Omit it to select every question.
+A successful invocation closes its ledger run once every selected ID has
+an answer row. Resume an interrupted invocation with the same `--run-id`,
+`--out` and `--only` selection. Resume skips IDs already recorded for the
+same arm, model and manifest.
 
 Answer rows include model-visible tool evidence, per-call usage and SSE event
 counts. Exit `0` means all selected asks were recorded, including model

@@ -128,13 +128,23 @@ func runEvalAgentRun(ctx context.Context, opt evalAgentOptions, cfg config.Confi
 		return fail(fmt.Errorf("read frozen questions: %w", err))
 	}
 
-	out, done, err := openEvalAgentResume(opt, model)
+	// Require the ledger to exist before creating an answer file that could
+	// otherwise also create the ledger (for example through a dangling symlink).
+	ledgerInfo, err := os.Stat(opt.ledger)
+	if err != nil {
+		return fail(fmt.Errorf("stat ledger: %w", err))
+	}
+	out, done, err := openEvalAgentResume(opt, model, ledgerInfo)
 	if err != nil {
 		return fail(fmt.Errorf("resume answers: %w", err))
 	}
-	if out != nil {
-		defer out.Close()
+	if out == nil {
+		out, err = createEvalOutput(opt.out)
+		if err != nil {
+			return fail(fmt.Errorf("create answers: %w", err))
+		}
 	}
+	defer out.Close()
 	ledger, err := llmusage.Open(llmusage.Run{
 		Path: opt.ledger, Genesis: opt.genesis, Provider: opt.arm, Model: model, RunID: opt.runID,
 		Family: opt.family, Manifest: opt.manifest, AllotmentUSD: opt.allotment,
@@ -143,13 +153,7 @@ func runEvalAgentRun(ctx context.Context, opt evalAgentOptions, cfg config.Confi
 		return fail(err)
 	}
 	defer ledger.Close()
-	if out == nil {
-		out, err = createEvalOutput(opt.out)
-		if err != nil {
-			return fail(fmt.Errorf("create answers: %w", err))
-		}
-		defer out.Close()
-	}
+	// Close only after every selected ask has a durable answer row.
 	complete := func() int {
 		if err := out.Sync(); err != nil {
 			return fail(fmt.Errorf("sync answers: %w", err))
@@ -213,6 +217,10 @@ func runEvalAgentRun(ctx context.Context, opt evalAgentOptions, cfg config.Confi
 		if q.sse {
 			row.SSE = new(evalAgentSSE)
 			response, observation, askErr = askEvalAgentStream(ctx, server, q, row.SSE)
+			if askErr != nil && row.SSE.Last == "" {
+				// A preflight failure can return HTTP 502 before any event.
+				row.SSE.Error, row.SSE.Last = 1, "error"
+			}
 		} else {
 			askCtx := agent.WithEvalObservation(llmusage.WithID(ctx, q.id), &observation)
 			response, askErr = server.Ask(askCtx, q.ask)
@@ -306,13 +314,23 @@ func readEvalAgentQuestions(opt evalAgentOptions, cfg config.AgentConfig) ([]eva
 	return slices.DeleteFunc(questions, func(q evalAgentQuestion) bool { return !selected[q.id] }), nil
 }
 
-func openEvalAgentResume(opt evalAgentOptions, model string) (*os.File, map[string]bool, error) {
+func openEvalAgentResume(opt evalAgentOptions, model string, ledgerInfo os.FileInfo) (*os.File, map[string]bool, error) {
 	f, err := os.OpenFile(opt.out, os.O_RDWR|os.O_APPEND, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil, nil
 	}
 	if err != nil {
 		return nil, nil, err
+	}
+	outInfo, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("stat answers: %w", err)
+	}
+	// Locking an output that aliases the ledger would deadlock on ledger open.
+	if os.SameFile(outInfo, ledgerInfo) {
+		_ = f.Close()
+		return nil, nil, errors.New("answer output and ledger must be different files")
 	}
 	if err := llmusage.LockOutput(f); err != nil {
 		_ = f.Close()
