@@ -25,7 +25,7 @@ type QueryEmbedder interface {
 // Store provides the text, vector and batched entity lookups used by search.
 type Store interface {
 	EntityTextSearchIn(ctx context.Context, q, slug string, limit int) ([]graph.EntitySearchRow, error)
-	ChunkTextSearchIn(ctx context.Context, q, slug string, limit int) ([]graph.ChunkSearchRow, error)
+	ChunkTextSearchInWindow(ctx context.Context, q, slug string, limit int, window graph.DateWindow) ([]graph.ChunkSearchRow, error)
 	EntityVectorSearch(ctx context.Context, vec []float64, limit int) ([]string, error)
 	EntitySearchRowsByID(ctx context.Context, ids []string) ([]graph.EntitySearchRow, error)
 }
@@ -72,13 +72,19 @@ func FuseRanks(legs [][]string) map[string]float64 {
 	return out
 }
 
-type options struct{ domain string }
+type options struct {
+	domain string
+	window graph.DateWindow
+}
 
 // Option configures a search.
 type Option func(*options)
 
 // InDomain scopes both text and vector hits to a domain; empty selects all.
 func InDomain(d string) Option { return func(o *options) { o.domain = d } }
+
+// InDateWindow restricts chunk hits by effective document date.
+func InDateWindow(w graph.DateWindow) Option { return func(o *options) { o.window = w } }
 
 // Query searches entities, chunks or both. With an embedder, entity search
 // fuses text and vector hits. Chunks use text search.
@@ -109,14 +115,14 @@ func Query(ctx context.Context, st Store, emb QueryEmbedder, q, kind string, lim
 	}
 	switch kind {
 	case "chunk":
-		return chunkHits(ctx, st, q, limit, opt.domain)
+		return chunkHits(ctx, st, q, limit, opt)
 	case "entity", "auto":
 		hits, err := entityCandidates(ctx, st, emb, q, limit, opt.domain)
 		if err != nil {
 			return nil, err
 		}
 		if kind == "auto" {
-			chunks, err := chunkHits(ctx, st, q, limit, opt.domain)
+			chunks, err := chunkHits(ctx, st, q, limit, opt)
 			if err != nil {
 				return nil, err
 			}
@@ -242,8 +248,8 @@ func vectorLeg(ctx context.Context, st Store, emb QueryEmbedder, q string, limit
 	return ids, nil
 }
 
-func chunkHits(ctx context.Context, st Store, q string, limit int, slug string) ([]Hit, error) {
-	recs, err := st.ChunkTextSearchIn(ctx, q, slug, limit)
+func chunkHits(ctx context.Context, st Store, q string, limit int, opt options) ([]Hit, error) {
+	recs, err := st.ChunkTextSearchInWindow(ctx, q, opt.domain, limit, opt.window)
 	if err != nil {
 		return nil, fmt.Errorf("search: chunk text leg: %w", err)
 	}

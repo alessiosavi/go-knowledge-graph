@@ -890,9 +890,11 @@ RETURN coalesce(e.aliases, []) AS aliases, coalesce(e.mention_count, 0) AS menti
 	if err != nil {
 		return EntityView{}, fmt.Errorf("graph: entity view: %w", err)
 	}
+	params := map[string]any{"key": view.Key, "include": opt.IncludeLowConfidence, "confirmed_only": opt.ConfirmedOnly}
+	windowJoin := opt.DateWindow.evidenceJoin("r", params)
 	recs, err := s.runRead(ctx, `
 MATCH (e:Entity {key: $key})-[r]-(o:Entity)
-WHERE `+typedFactVisibility+`
+WHERE `+typedFactVisibility+windowJoin+`
 OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
 OPTIONAL MATCH (d:Document {id: r.doc_id})
 RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type, o.domain AS domain,
@@ -901,12 +903,13 @@ RETURN type(r) AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type,
        coalesce(r.chunk_id, '') AS chunk_id,
        coalesce(r.head_key, '') AS head_key, coalesce(r.tail_key, '') AS tail_key,
        coalesce(r.head_start, -1) AS head_start, coalesce(r.tail_start, -1) AS tail_start,
-       coalesce(c.text, '') AS text, `+documentDateColumns("d"),
-		map[string]any{"key": view.Key, "include": opt.IncludeLowConfidence, "confirmed_only": opt.ConfirmedOnly})
+       coalesce(c.text, '') AS text, `+documentDateColumns("d"), params)
 	if err != nil {
 		return EntityView{}, fmt.Errorf("graph: entity facts: %w", err)
 	}
 	if opt.IncludeUnverified && !opt.ConfirmedOnly {
+		params := map[string]any{"key": view.Key}
+		windowJoin := opt.DateWindow.evidenceJoin("r", params)
 		projection := `
 OPTIONAL MATCH (c:Chunk {id: r.chunk_id})
 OPTIONAL MATCH (d:Document {id: r.doc_id})
@@ -919,12 +922,12 @@ RETURN r.rel AS rel, o.id AS id, o.key AS key, o.name AS name, o.type AS type, o
        coalesce(c.text, '') AS text, ` + documentDateColumns("d")
 		candidates, err := s.runRead(ctx, `
 MATCH (r:FactCandidate {head_key: $key})
-WHERE coalesce(r.judge, '') IN ['', 'unclear']
+WHERE coalesce(r.judge, '') IN ['', 'unclear']`+windowJoin+`
 MATCH (o:Entity {key: r.tail_key})`+projection+`
 UNION ALL
 MATCH (r:FactCandidate {tail_key: $key})
-WHERE r.head_key <> $key AND coalesce(r.judge, '') IN ['', 'unclear']
-MATCH (o:Entity {key: r.head_key})`+projection, map[string]any{"key": view.Key})
+WHERE r.head_key <> $key AND coalesce(r.judge, '') IN ['', 'unclear']`+windowJoin+`
+MATCH (o:Entity {key: r.head_key})`+projection, params)
 		if err != nil {
 			return EntityView{}, fmt.Errorf("graph: entity candidates: %w", err)
 		}
