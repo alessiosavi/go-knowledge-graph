@@ -398,7 +398,7 @@ func (c *Client) doVerify(ctx context.Context, body []byte) (ingest.Verdict, boo
 		return ingest.Verdict{}, false, "", fmt.Errorf("judge: decode chat response: %s", redact(err.Error()))
 	}
 	if wire.Error != nil {
-		return ingest.Verdict{}, false, "", fmt.Errorf("judge: provider error: %s", redact(wire.Error.Message))
+		return ingest.Verdict{}, false, "", classifyProviderStatus(resp.StatusCode, fmt.Errorf("judge: provider error: %s", redact(wire.Error.Message)))
 	}
 	if len(wire.Choices) == 0 {
 		return ingest.Verdict{}, false, "", fmt.Errorf("judge: response without choices")
@@ -433,6 +433,22 @@ func IsProviderStop(err error) bool {
 	return errors.As(err, &stop) && !errors.Is(err, context.Canceled)
 }
 
+type providerResponseError struct {
+	error
+	status int
+}
+
+func (e providerResponseError) Unwrap() error { return e.error }
+
+// ProviderResponseStatus returns the HTTP status of a row-specific provider
+// error, or zero for other failures.
+func ProviderResponseStatus(err error) int {
+	if response, ok := errors.AsType[providerResponseError](err); ok {
+		return response.status
+	}
+	return 0
+}
+
 func classifyProviderStatus(code int, err error) error {
 	switch code {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed,
@@ -442,7 +458,7 @@ func classifyProviderStatus(code int, err error) error {
 	if code >= 500 {
 		return providerWideError{err}
 	}
-	return err
+	return providerResponseError{error: err, status: code}
 }
 
 var errInvalidProviderURL = errors.New("provider URL or redirect target is invalid")

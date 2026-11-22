@@ -184,7 +184,7 @@ func (o *responseObservation) parse(raw []byte, sse bool) {
 func (o *responseObservation) finishStream() {
 	o.toolCalls += len(o.streamTools)
 	for _, extra := range o.streamTools {
-		if nonEmptyExtra(extra) && json.Valid(extra) {
+		if json.Valid(extra) && nonEmptyExtra(extra) {
 			o.signatures = append(o.signatures, extra)
 		}
 	}
@@ -195,6 +195,8 @@ func nonEmptyExtra(raw json.RawMessage) bool {
 	switch {
 	case len(raw) == 0, bytes.Equal(raw, []byte("null")), bytes.Equal(raw, []byte(`""`)):
 		return false
+	case len(raw) < 2:
+		return true
 	case raw[0] == '{' || raw[0] == '[':
 		return len(bytes.TrimSpace(raw[1:len(raw)-1])) != 0
 	default:

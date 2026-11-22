@@ -71,6 +71,53 @@ func appendLedgerFixtureRow(t *testing.T, path, row string) {
 	}
 }
 
+type failingLedgerAppend struct {
+	*os.File
+	writeErr, syncErr error
+}
+
+func (f failingLedgerAppend) Write(p []byte) (int, error) {
+	if f.writeErr == nil {
+		return f.File.Write(p)
+	}
+	n, err := f.File.Write(p[:len(p)/2])
+	return n, errors.Join(f.writeErr, err)
+}
+
+func (f failingLedgerAppend) Sync() error {
+	if f.syncErr != nil {
+		return f.syncErr
+	}
+	return f.File.Sync()
+}
+
+func TestLedgerFailedAppendRestoresFile(t *testing.T) {
+	failure := errors.New("injected append failure")
+	for _, operation := range []string{"write", "sync"} {
+		t.Run(operation, func(t *testing.T) {
+			run := testRun(t, 2)
+			ledger := openRun(t, run)
+			before := ledgerText(t, run.Path)
+			file := failingLedgerAppend{File: ledger.file}
+			if operation == "write" {
+				file.writeErr = failure
+			} else {
+				file.syncErr = failure
+			}
+			err := ledger.withLock(func() error {
+				return appendLedgerLine(file, []byte("{\"kind\":\"close\"}\n"))
+			})
+			if !errors.Is(err, failure) {
+				t.Fatalf("append error = %v, want %v", err, failure)
+			}
+			if after := ledgerText(t, run.Path); after != before {
+				t.Fatalf("failed %s changed ledger: before %q, after %q", operation, before, after)
+			}
+			openRun(t, run)
+		})
+	}
+}
+
 const earmarkRow = `{"ts":"2026-11-22T00:00:00Z","run_id":"earmarked","kind":"allot","family":"J","manifest":"*","allotment_usd":2}`
 
 func TestLedgerEarmarkAllowsRetryAndOtherRuns(t *testing.T) {

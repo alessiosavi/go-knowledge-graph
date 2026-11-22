@@ -261,6 +261,44 @@ func TestJudgeEvalChecksEveryPayloadBeforeSending(t *testing.T) {
 	}
 }
 
+func TestJudgeEvalUnusableOutputDoesNotAllot(t *testing.T) {
+	opt := newJudgeEvalFixture(t, "DS")
+	opt.out = filepath.Join(filepath.Dir(opt.out), "missing-parent", "verdicts.jsonl")
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("sent a request with unusable output")
+	}))
+	defer srv.Close()
+	judgeEvalTestConfig(t, srv)
+	runEvalDispatch(t, opt, 2)
+	if rows := readJudgeEvalRows(t, opt.ledger); len(rows) != 1 {
+		t.Fatalf("unusable output changed the ledger: %v", rows)
+	}
+}
+
+func TestJudgeEvalRefusesOutputAliasingLedger(t *testing.T) {
+	const child = "GKG_TA1_TEST_OUTPUT_ALIAS"
+	if os.Getenv(child) == "" {
+		// A blocking flock on this process's own output lock must fail the test.
+		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestJudgeEvalRefusesOutputAliasingLedger$", "-test.timeout=5s")
+		cmd.Env = append(os.Environ(), child+"=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("child: %v\n%s", err, out)
+		}
+		return
+	}
+	opt := newJudgeEvalFixture(t, "DS")
+	if err := os.Symlink(filepath.Base(opt.out), filepath.Join(filepath.Dir(opt.out), "ledger-link.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	opt.ledger = filepath.Join(filepath.Dir(opt.out), "ledger-link.jsonl")
+	cfg := config.Config{Judge: config.JudgeConfig{Auth: config.AuthStatic, Model: evalTestModel}}
+	var stderr bytes.Buffer
+	if got := runJudgeEvalRun(t.Context(), opt, cfg, &stderr); got != 2 ||
+		!strings.Contains(stderr.String(), "verdict output and ledger must be different files") {
+		t.Fatalf("exit = %d (%s)", got, &stderr)
+	}
+}
+
 func TestJudgeEvalResumeSkipsFinalAndRefusesForeignOutput(t *testing.T) {
 	for _, field := range []string{"", "arm", "model", "manifest"} {
 		name := field
@@ -302,12 +340,12 @@ func (evalJudgeToken) Token(context.Context) (string, time.Time, error) {
 
 func TestJudgeEvalProviderExitCodes(t *testing.T) {
 	for _, tc := range []struct {
-		name, arm, auth        string
+		name, arm, auth, class string
 		status, exit, attempts int
 	}{
-		{"Vertex401", "GM", config.AuthGCP, 401, 2, 1},
-		{"Static401", "DS", config.AuthStatic, 401, 3, 1},
-		{"Static503", "DS", config.AuthStatic, 503, 3, 2},
+		{"Vertex401", "GM", config.AuthGCP, "auth_permanent", 401, 2, 1},
+		{"Static401", "DS", config.AuthStatic, "provider_stop", 401, 3, 1},
+		{"Static503", "DS", config.AuthStatic, "provider_stop", 503, 3, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opt := newJudgeEvalFixture(t, tc.arm)
@@ -318,9 +356,10 @@ func TestJudgeEvalProviderExitCodes(t *testing.T) {
 					t.Error("missing fake Vertex token")
 				}
 				w.WriteHeader(tc.status)
+				fmt.Fprint(w, r.Header.Get("Authorization"))
 			}))
 			defer srv.Close()
-			cfg := config.Config{Judge: config.JudgeConfig{Auth: tc.auth, BaseURL: srv.URL, Model: evalTestModel}}
+			cfg := config.Config{Judge: config.JudgeConfig{Auth: tc.auth, BaseURL: srv.URL, Model: evalTestModel, APIKey: "judge-key"}}
 			options := []judge.Option{func(c *judge.Client) { c.SetBackoff([]time.Duration{0}) }}
 			if tc.arm == "GM" {
 				options = append(options, judge.WithTokenProvider(evalJudgeToken{}))
@@ -331,6 +370,47 @@ func TestJudgeEvalProviderExitCodes(t *testing.T) {
 			}
 			if sends.Load() != int32(tc.attempts) || len(readJudgeEvalRows(t, opt.out)) != 0 {
 				t.Fatalf("sends = %d, output should have no final verdict", sends.Load())
+			}
+			diagnostic := stderr.String()
+			if !strings.Contains(diagnostic, `item "one"`) || !strings.Contains(diagnostic, tc.class) ||
+				!strings.Contains(diagnostic, fmt.Sprintf("HTTP %d", tc.status)) ||
+				strings.Contains(diagnostic, "fixture-token") || strings.Contains(diagnostic, "judge-key") {
+				t.Fatalf("missing or unredacted provider-stop diagnostic: %q", diagnostic)
+			}
+		})
+	}
+}
+
+func TestJudgeEvalInvalidItemReportsClassAndRedactedError(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, class, detail string
+		status                    int
+	}{
+		{"http400", "malformed request: Bearer judge-key", "provider_error_4xx", "HTTP 400: malformed request", 400},
+		{"errorEnvelope", `{"error":{"message":"upstream failed: judge-key"}}`, "provider_error_2xx", "provider error: upstream failed", 200},
+		{"oversized", strings.Repeat("x", (4<<20)+1), "provider_error_2xx", "response exceeds the 4 MiB cap", 200},
+		{"badVerdict", `{"choices":[{"message":{"content":"invalid verdict judge-key"}}]}`, "invalid_verdict", "decode verdict", 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opt := newJudgeEvalFixture(t, "DS")
+			writeJudgeEvalInput(t, opt.in, frozenEvalRow("one"))
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer srv.Close()
+			judgeEvalTestConfig(t, srv)
+			var stderr bytes.Buffer
+			if got := runJudge(judgeEvalArgs(opt), io.Discard, &stderr); got != 0 {
+				t.Fatalf("exit = %d (%s)", got, &stderr)
+			}
+			rows := readJudgeEvalRows(t, opt.out)
+			if len(rows) != 1 || rows[0]["status"] != "invalid" || rows[0]["error_class"] != tc.class {
+				t.Errorf("want an invalid row with class %q, got %v", tc.class, rows)
+			}
+			diagnostic := stderr.String()
+			if !strings.Contains(diagnostic, `item "one"`) || !strings.Contains(diagnostic, tc.detail) || strings.Contains(diagnostic, "judge-key") {
+				t.Errorf("missing or unredacted item diagnostic: %q", diagnostic)
 			}
 		})
 	}
@@ -437,7 +517,7 @@ func TestJudgeEvalRejectsUnmeteredRedirect(t *testing.T) {
 	judgeEvalTestConfig(t, srv)
 	runEvalDispatch(t, opt, 0)
 	rows := readJudgeEvalRows(t, opt.out)
-	if len(rows) != 1 || rows[0]["status"] != "invalid" || rows[0]["error_class"] != "invalid_verdict" ||
+	if len(rows) != 1 || rows[0]["status"] != "invalid" || rows[0]["error_class"] != "provider_error_3xx" ||
 		rows[0]["usage"] != nil || !reflect.DeepEqual(rows[0]["statuses"], []any{float64(307)}) {
 		t.Fatalf("rows = %v", rows)
 	}

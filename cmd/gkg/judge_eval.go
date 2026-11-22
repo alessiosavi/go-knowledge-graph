@@ -127,8 +127,22 @@ func runJudgeEvalRun(ctx context.Context, opt judgeEvalOptions, cfg config.Confi
 	if err != nil {
 		return fail(fmt.Errorf("resume verdicts: %w", err))
 	}
-	if out != nil {
-		defer out.Close()
+	if out == nil {
+		out, err = createEvalOutput(opt.out)
+		if err != nil {
+			return fail(fmt.Errorf("create verdicts: %w", err))
+		}
+	}
+	defer out.Close()
+	// Opening a ledger that aliases out would wait on our own output lock.
+	if ledgerInfo, err := os.Stat(opt.ledger); err == nil {
+		outInfo, err := out.Stat()
+		if err != nil {
+			return fail(fmt.Errorf("stat verdicts: %w", err))
+		}
+		if os.SameFile(outInfo, ledgerInfo) {
+			return fail(errors.New("verdict output and ledger must be different files"))
+		}
 	}
 	ledger, err := llmusage.Open(llmusage.Run{
 		Path: opt.ledger, Genesis: opt.genesis, Provider: opt.arm, Model: model,
@@ -138,13 +152,6 @@ func runJudgeEvalRun(ctx context.Context, opt judgeEvalOptions, cfg config.Confi
 		return fail(err)
 	}
 	defer ledger.Close()
-	if out == nil {
-		out, err = createEvalOutput(opt.out)
-		if err != nil {
-			return fail(fmt.Errorf("create verdicts: %w", err))
-		}
-		defer out.Close()
-	}
 	transport, err := llmusage.NewTransport(ledger, u.Host, llmusage.ItemIDKey)
 	if err != nil {
 		return fail(err)
@@ -194,11 +201,11 @@ func runJudgeEvalRun(ctx context.Context, opt judgeEvalOptions, cfg config.Confi
 			if errors.Is(verifyErr, llmusage.ErrLedgerStop) || errors.Is(verifyErr, llmusage.ErrLedger) {
 				return fail(verifyErr)
 			}
+			class := judgeEvalErrorClass(verifyErr)
+			fmt.Fprintf(stderr, "gkg judge eval run: item %q (%s, HTTP statuses %v): %v\n", item.id, class, row.Statuses, verifyErr)
 			if exit := judgeRunErrorExitCode(verifyErr); exit != 1 {
-				fmt.Fprintf(stderr, "gkg judge eval run: provider stopped (HTTP statuses %v)\n", row.Statuses)
 				return exit
 			}
-			class := "invalid_verdict"
 			row.Status, row.ErrorClass = "invalid", &class
 		}
 		if err := enc.Encode(row); err != nil {
@@ -215,6 +222,19 @@ func runJudgeEvalRun(ctx context.Context, opt judgeEvalOptions, cfg config.Confi
 		return fail(err)
 	}
 	return 0
+}
+
+func judgeEvalErrorClass(err error) string {
+	if class := llmauth.Class(err); class != "" {
+		return class
+	}
+	if judge.IsProviderStop(err) {
+		return "provider_stop"
+	}
+	if code := judge.ProviderResponseStatus(err); code != 0 {
+		return fmt.Sprintf("provider_error_%dxx", code/100)
+	}
+	return "invalid_verdict"
 }
 
 func readJudgeEvalInput(path string) ([]judgeEvalItem, map[string]bool, error) {
