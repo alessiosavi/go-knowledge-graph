@@ -3,6 +3,7 @@ package graph
 import (
 	"cmp"
 	"context"
+	"log/slog"
 	"maps"
 	"slices"
 	"time"
@@ -13,8 +14,9 @@ import (
 )
 
 const (
-	maxProductLinkRows  = 200_000
-	maxProductLinkBytes = 64 << 20
+	maxProductLinkRows   = 200_000
+	maxProductLinkBytes  = 64 << 20
+	maxDocumentURLOwners = 50
 
 	productPageIndexTooLarge = "index_too_large"
 	productPageUnavailable   = "index_unavailable"
@@ -29,14 +31,97 @@ type ProductLinkIndex struct {
 	code    *ProductMentionIndex
 	codeErr error
 
-	urlOwners     map[string]map[string][]string // domain -> canonical URL -> product IDs
-	pageOwners    map[string]map[string]string   // domain -> unambiguous page key -> product ID
+	urlOwners     map[string]map[string][]productURLOwner // domain -> canonical URL -> ordered owners
+	pageOwners    map[string]map[string]string            // domain -> unambiguous page key -> product ID
 	pageAmbiguous int
 	urlOff        bool
 	pageOff       bool
 
-	products    map[string]Product // product metadata for subsequent index legs
+	products    map[string]Product // display metadata shared by the index legs
 	productsOff bool
+}
+
+// MentionIndex returns the code leg independently of the document legs.
+func (index *ProductLinkIndex) MentionIndex() (*ProductMentionIndex, error) {
+	return index.code, index.codeErr
+}
+
+// ProductDisplay returns the snapshot's display row for a product.
+func (index *ProductLinkIndex) ProductDisplay(id string) (Product, bool) {
+	if index == nil {
+		return Product{}, false
+	}
+	p, ok := index.products[id]
+	return p, ok
+}
+
+// ProductDisplaysCapped reports whether callers need a read for display rows.
+func (index *ProductLinkIndex) ProductDisplaysCapped() bool {
+	return index != nil && index.productsOff
+}
+
+// WithProductDisplaysCappedForTest simulates a display cap without changing the
+// cached snapshot or the availability of its other legs.
+func (index *ProductLinkIndex) WithProductDisplaysCappedForTest() *ProductLinkIndex {
+	capped := *index
+	capped.products, capped.productsOff = nil, true
+	return &capped
+}
+
+// InferredDocumentProducts contains owner IDs for the document's source and
+// redirect URL, and its page key.
+type InferredDocumentProducts struct {
+	URL          []string
+	URLTruncated bool
+	Page         string
+}
+
+// ResolveDocumentProducts applies the store binding and source rules to a done
+// document. The status describes an unavailable inferred leg.
+func (index *ProductLinkIndex) ResolveDocumentProducts(doc DocumentProductLinks) (InferredDocumentProducts, string) {
+	var owners InferredDocumentProducts
+	if doc.Status != StatusDone || !allowsInferredProductPages(doc.Domain, "") {
+		return owners, ""
+	}
+	if index == nil {
+		return owners, productPageUnavailable
+	}
+	if !index.urlOff {
+		source, final := canonicalProductPageURL(doc.Source), canonicalProductPageURL(doc.FinalURL)
+		first := index.urlProductOwners(doc.Domain, source)
+		var second []productURLOwner
+		if final != source {
+			second = index.urlProductOwners(doc.Domain, final)
+		}
+		owners.URL, owners.URLTruncated = firstDocumentURLOwners(first, second)
+	}
+	if !index.pageOff {
+		owners.Page = index.pageProductOwner(doc.Domain, doc.Source)
+	}
+	if index.urlOff || index.pageOff {
+		return owners, productPageIndexTooLarge
+	}
+	return owners, ""
+}
+
+// Both URL buckets are ordered by product identity. Each product has one
+// canonical link, so the buckets for distinct URLs have disjoint owners.
+func firstDocumentURLOwners(first, second []productURLOwner) ([]string, bool) {
+	total := len(first) + len(second)
+	if total == 0 {
+		return nil, false
+	}
+	ids := make([]string, min(total, maxDocumentURLOwners))
+	for i := range ids {
+		if len(second) == 0 || (len(first) != 0 && compareProductURLOwners(first[0], second[0]) < 0) {
+			ids[i] = first[0].id
+			first = first[1:]
+		} else {
+			ids[i] = second[0].id
+			second = second[1:]
+		}
+	}
+	return ids, total > maxDocumentURLOwners
 }
 
 type productLinkBudget struct {
@@ -73,8 +158,12 @@ func (p Product) linkRowBytes() int {
 	return len(p.ID) + len(p.Store) + len(p.ProductID) + len(p.Domain) + len(p.Title) + len(p.Brand) + len(p.Link)
 }
 
-type productURLOwnerOrder struct {
-	store, productID string
+type productURLOwner struct {
+	id, store, productID string
+}
+
+func compareProductURLOwners(a, b productURLOwner) int {
+	return cmp.Or(cmp.Compare(a.store, b.store), cmp.Compare(a.productID, b.productID), cmp.Compare(a.id, b.id))
 }
 
 func txLoadProductLinkOwners(ctx context.Context, tx neo4j.ManagedTransaction, stores []ProductMentionStore, index *ProductLinkIndex, maxRows int) error {
@@ -87,10 +176,9 @@ func txLoadProductLinkOwners(ctx context.Context, tx neo4j.ManagedTransaction, s
 	if err != nil {
 		return err
 	}
-	index.urlOwners = make(map[string]map[string][]string)
+	index.urlOwners = make(map[string]map[string][]productURLOwner)
 	index.pageOwners = make(map[string]map[string]string)
 	index.products = make(map[string]Product)
-	urlOrder := make(map[string]productURLOwnerOrder)
 	urlBudget, pageBudget, productsBudget := productLinkBudget{maxRows: maxRows}, productLinkBudget{maxRows: maxRows}, productLinkBudget{maxRows: maxRows}
 	for rows.Next(ctx) {
 		p := readProductLinkRow(rows.Record())
@@ -106,12 +194,12 @@ func txLoadProductLinkOwners(ctx context.Context, tx neo4j.ManagedTransaction, s
 				bytes := len(p.Domain) + len(p.ID) + len(p.Store) + len(p.ProductID) + max(len(p.Link), len(link))
 				if urlBudget.add(bytes) {
 					if index.urlOwners[p.Domain] == nil {
-						index.urlOwners[p.Domain] = make(map[string][]string)
+						index.urlOwners[p.Domain] = make(map[string][]productURLOwner)
 					}
-					index.urlOwners[p.Domain][link] = append(index.urlOwners[p.Domain][link], p.ID)
-					urlOrder[p.ID] = productURLOwnerOrder{p.Store, p.ProductID}
+					owner := productURLOwner{id: p.ID, store: p.Store, productID: p.ProductID}
+					index.urlOwners[p.Domain][link] = append(index.urlOwners[p.Domain][link], owner)
 				} else {
-					index.urlOwners, index.urlOff, urlOrder = nil, true, nil
+					index.urlOwners, index.urlOff = nil, true
 				}
 			}
 		}
@@ -135,10 +223,7 @@ func txLoadProductLinkOwners(ctx context.Context, tx neo4j.ManagedTransaction, s
 	}
 	for _, links := range index.urlOwners {
 		for _, owners := range links {
-			slices.SortFunc(owners, func(a, b string) int {
-				x, y := urlOrder[a], urlOrder[b]
-				return cmp.Or(cmp.Compare(x.store, y.store), cmp.Compare(x.productID, y.productID), cmp.Compare(a, b))
-			})
+			slices.SortFunc(owners, compareProductURLOwners)
 		}
 	}
 	for _, keys := range index.pageOwners {
@@ -168,7 +253,7 @@ func (index *ProductLinkIndex) addPageOwner(domain, key, id string) {
 
 // The domain is the document's domain and the owner maps use the store
 // binding. Callers supply only done documents.
-func (index *ProductLinkIndex) urlProductOwners(domain, canonical string) []string {
+func (index *ProductLinkIndex) urlProductOwners(domain, canonical string) []productURLOwner {
 	return index.urlOwners[domain][canonical]
 }
 
@@ -224,8 +309,9 @@ func (s *Store) resolveProductPageTier(ctx context.Context, selection productPag
 	// detached index build. A subsequent request can reuse the finished index.
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	index, err := s.loadProductLinkIndex(ctx)
+	index, err := s.LoadProductLinkIndex(ctx)
 	if err != nil {
+		slog.WarnContext(ctx, "resolve product page tier", "product", id, "error", err)
 		return selection, productPageUnavailable
 	}
 	if index.pageOff {
@@ -253,6 +339,7 @@ func (s *Store) resolveProductPageTier(ctx context.Context, selection productPag
 		return txAppendProductPages(ctx, tx, productPageDetailsQuery, map[string]any{"ids": ids}, productViaPage, "", &matched)
 	})
 	if err != nil {
+		slog.WarnContext(ctx, "resolve product page tier", "product", id, "error", err)
 		return selection, productPageUnavailable
 	}
 	return matched, ""

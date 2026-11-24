@@ -111,7 +111,7 @@ func TestProductPageArrivalOrderAndDomain(t *testing.T) {
 			t.Fatalf("ambiguous key linked %s: %+v", sourceID, out)
 		}
 	}
-	index, err := f.store.loadProductLinkIndex(t.Context())
+	index, err := f.store.LoadProductLinkIndex(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestProductPagePartialAndIndependentLegs(t *testing.T) {
 	id := productobs.ProductID(pushStore, pushOne)
 	if !errors.Is(index.codeErr, ErrProductMentionIndexTooLarge) ||
 		index.pageProductOwner(pushDomain, "bc-it/implant-kit") != id ||
-		!slices.Equal(index.urlProductOwners(pushDomain, link), []string{id}) ||
+		!slices.Equal(index.urlProductOwners(pushDomain, link), []productURLOwner{{id: id, store: pushStore, productID: pushOne}}) ||
 		index.products[id].Title != "Implant kit" || index.products[id].Brand != "Fixture brand" {
 		t.Fatalf("code cap dropped unrelated data: %+v", index)
 	}
@@ -435,7 +435,7 @@ func TestProductURLIndexIncludesAllOrderedOwners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	index, err := f.store.loadProductLinkIndex(ctx)
+	index, err := f.store.LoadProductLinkIndex(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +444,9 @@ func TestProductURLIndexIncludesAllOrderedOwners(t *testing.T) {
 		t.Fatalf("cached and fresh link key sets differ or missing ambiguities: %v vs %v", index.pageOwners, fresh.index.pageOwners)
 	}
 	for _, fixture := range fixtures {
-		if got := index.urlProductOwners(pushDomain, fixture.link); !slices.Equal(got, fixture.ids) {
+		if got := index.urlProductOwners(pushDomain, fixture.link); !slices.EqualFunc(got, fixture.ids, func(owner productURLOwner, id string) bool {
+			return owner.id == id
+		}) {
 			t.Fatalf("URL owners = %v, want all %d in product order", got, len(fixture.ids))
 		}
 		for _, id := range fixture.ids {

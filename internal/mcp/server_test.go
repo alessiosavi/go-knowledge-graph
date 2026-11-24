@@ -191,11 +191,13 @@ func TestGetChunksTool(t *testing.T) {
 	}
 	args := map[string]any{"ids": []string{doc.ID + "-c0"}, "with_products": true}
 	enriched := structured[struct {
-		Chunks []map[string]json.RawMessage
+		Chunks        []map[string]json.RawMessage
+		ProductsError json.RawMessage `json:"products_error"`
+		LinksPartial  json.RawMessage `json:"links_partial"`
 	}](t, callTool(t, cs, "get_chunks", args))
-	if len(enriched.Chunks) != 1 || string(enriched.Chunks[0]["products"]) != "[]" ||
-		string(enriched.Chunks[0]["products_total"]) != "0" {
-		t.Errorf("get_chunks products = %+v, want an empty array and zero total", enriched.Chunks)
+	if enriched.ProductsError != nil || enriched.LinksPartial != nil || len(enriched.Chunks) != 1 ||
+		string(enriched.Chunks[0]["products"]) != "[]" || string(enriched.Chunks[0]["products_total"]) != "0" {
+		t.Errorf("get_chunks without a bound product store = %+v, want empty products and zero total without error fields", enriched)
 	}
 }
 

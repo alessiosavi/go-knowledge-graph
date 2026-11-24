@@ -87,11 +87,11 @@ var ErrProductMentionIndexTooLarge = errors.New("product mention index exceeds i
 // The returned index, including Stats, is shared and must be treated as read-only.
 // A knowledge-only graph has an empty index.
 func (s *Store) LoadProductMentionIndex(ctx context.Context) (*ProductMentionIndex, error) {
-	index, err := s.loadProductLinkIndex(ctx)
+	index, err := s.LoadProductLinkIndex(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return index.code, index.codeErr
+	return index.MentionIndex()
 }
 
 func (s *Store) readProductLinkToken(ctx context.Context) (productLinkToken, error) {

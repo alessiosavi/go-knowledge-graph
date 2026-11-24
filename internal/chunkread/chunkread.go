@@ -57,11 +57,17 @@ type Result struct {
 	Chunks        []Item `json:"chunks"`
 	Meta          Meta   `json:"meta"`
 	ProductsError string `json:"products_error,omitempty"`
+	LinksPartial  string `json:"links_partial,omitempty"`
 }
 
 type Store interface {
 	// ChunkNeighbourhood returns the center and its neighbours with the owner's date metadata when available.
 	ChunkNeighbourhood(ctx context.Context, id string, n int) (graph.Chunk, []graph.Chunk, error)
+}
+
+// DocumentProductLinker is optional on the chunk Store.
+type DocumentProductLinker interface {
+	DocumentProductLinks(context.Context, []string) (map[string]graph.DocumentProductLinks, error)
 }
 
 func Read(ctx context.Context, st Store, req Request) (Result, error) {

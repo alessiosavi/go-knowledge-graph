@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,9 +28,9 @@ func (s *mentionSnapshotStore) ChunkNeighbourhood(ctx context.Context, id string
 	return center, around, err
 }
 
-func (s *mentionSnapshotStore) LoadProductMentionIndex(ctx context.Context) (*graph.ProductMentionIndex, error) {
+func (s *mentionSnapshotStore) LoadProductLinkIndex(ctx context.Context) (*graph.ProductLinkIndex, error) {
 	s.beforeLoad()
-	index, err := s.Store.LoadProductMentionIndex(ctx)
+	index, err := s.Store.LoadProductLinkIndex(ctx)
 	s.afterLoad()
 	return index, err
 }
@@ -96,7 +97,7 @@ func TestChunkProductsLifecycle(t *testing.T) {
 	read := func(store chunkread.Store) chunkread.Result {
 		t.Helper()
 		got, err := chunkread.Read(ctx, store, req)
-		if err != nil || got.ProductsError != "" {
+		if err != nil || got.ProductsError != "" || got.LinksPartial != "" {
 			t.Fatalf("read: %+v %v", got, err)
 		}
 		return got
@@ -148,7 +149,11 @@ func TestChunkProductsLifecycle(t *testing.T) {
 	require(st.DeleteProductStore(ctx, "mention-life.test"))
 	titles(read(st)) // wipe
 	require(st.UnbindProductStore(ctx, "mention-life.test"))
-	titles(read(st))
+	unbound := read(st)
+	titles(unbound)
+	if item := unbound.Chunks[0]; *item.Products == nil || item.ProductsTotal == nil || *item.ProductsTotal != 0 {
+		t.Fatalf("read after unbinding the last store: %+v, want empty products and zero total", item)
+	}
 	activate(rebound, "mention-life-rebound")
 	titles(read(st))
 	snapshot(rebound, 6, record("b", "Rebound", "BB12345"))
@@ -185,8 +190,9 @@ func TestChunkProductsLifecycle(t *testing.T) {
 		var out chunkread.Result
 		require(json.Unmarshal(wire, &out))
 		titles(out, "Updated after rebind")
-		if got := (*out.Chunks[0].Products)[0].Matched; len(got) != 1 || got[0].Value != "BB12345" {
-			t.Fatalf("MCP evidence = %+v", got)
+		product := (*out.Chunks[0].Products)[0]
+		if got := product.Matched; len(got) != 1 || got[0].Value != "BB12345" || !slices.Equal(product.Via, []string{"code"}) {
+			t.Fatalf("MCP evidence = %+v, via = %v", got, product.Via)
 		}
 	})
 	require(st.DeleteDocument(ctx, newDoc))
