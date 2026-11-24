@@ -413,6 +413,7 @@ Generative Language API, keep it with the other provider keys in the box
 secrets, and take it from a project with billing enabled (paid tier).
 
 ```dotenv
+GKG_AGENT_ENABLED=true
 GKG_AGENT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
 GKG_AGENT_API_KEY=<key>
 GKG_AGENT_MODEL=gemini-3.5-flash-lite
