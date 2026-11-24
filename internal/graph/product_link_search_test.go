@@ -108,6 +108,9 @@ func TestFoldProductSearchTextKeepsNonLatinMarks(t *testing.T) {
 	if a, b := foldProductSearchText("किट"), foldProductSearchText("कट"); a == b {
 		t.Fatalf("Devanagari marks dropped: %q == %q", a, b)
 	}
+	if got := productSearchTokens(foldProductSearchText("किट kit")); !slices.Equal(got, []string{"किट", "kit"}) {
+		t.Fatalf("tokens = %q, want marks kept inside words", got)
+	}
 }
 
 func TestProductLinkSearchUsesPrecomputedFields(t *testing.T) {
