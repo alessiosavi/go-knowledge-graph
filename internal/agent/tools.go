@@ -21,16 +21,16 @@ import (
 // Result shapes mirror the REST/MCP wire vocabulary so the model, the
 // evidence array and the UI share one language.
 type searchHitOut struct {
-	Domain     string  `json:"domain"`
-	Kind       string  `json:"kind"`
-	ID         string  `json:"id"`
-	Title      string  `json:"title"`
-	Score      float64 `json:"score"`
-	Snippet    string  `json:"snippet"`
-	DocumentID string  `json:"document_id,omitempty"`
-	Store      string  `json:"store,omitempty"`
-	ProductID  string  `json:"product_id,omitempty"`
-	Brand      string  `json:"brand,omitempty"`
+	Domain     *string  `json:"domain,omitempty"`
+	Kind       string   `json:"kind"`
+	ID         string   `json:"id"`
+	Title      string   `json:"title"`
+	Score      *float64 `json:"score,omitempty"`
+	Snippet    *string  `json:"snippet,omitempty"`
+	DocumentID string   `json:"document_id,omitempty"`
+	Store      string   `json:"store,omitempty"`
+	ProductID  string   `json:"product_id,omitempty"`
+	Brand      string   `json:"brand,omitempty"`
 
 	DocumentDate       *time.Time `json:"document_date,omitempty"`
 	DocumentDateSource *string    `json:"document_date_source,omitempty"`
@@ -39,6 +39,7 @@ type searchHitOut struct {
 type searchOut struct {
 	Hits          []searchHitOut `json:"hits"`
 	ProductsError string         `json:"products_error,omitempty"`
+	HitsOmitted   int            `json:"hits_omitted,omitempty"`
 }
 
 type entityRefOut struct {
@@ -157,7 +158,7 @@ const (
 func toolDefs() []toolDef {
 	return []toolDef{
 		functionTool("search",
-			"Search entity names, chunk text and product titles. Auto can list products first, with store and product_id for get_product. Use kind=product for products only. Since/until filter chunk hits by document date and do not apply to products. Start with limit 10.",
+			"Search entity names, chunk text and product titles. Auto can list products first. Open a product hit with get_product using its id. Use kind=product for products only. A products_error such as timeout or index_unavailable means product matches are unknown. Since/until filter chunk hits by document date and do not apply to products. Start with limit 10.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -455,7 +456,7 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 	}
 	for _, h := range regular {
 		out.Hits = append(out.Hits, searchHitOut{
-			Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID, Domain: h.Domain,
+			Kind: h.Kind, ID: h.ID, Title: h.Title, Score: &h.Score, Snippet: &h.Snippet, DocumentID: h.DocID, Domain: &h.Domain,
 			DocumentDate: h.DocumentDate, DocumentDateSource: h.DocumentDateSource,
 		})
 	}

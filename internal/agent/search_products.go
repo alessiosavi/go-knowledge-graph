@@ -63,7 +63,7 @@ func (s *Server) searchProductHits(ctx context.Context, hits []searchHitOut, que
 	}
 	for _, p := range found.products[:min(limit, len(found.products))] {
 		hits = append(hits, searchHitOut{
-			Kind: "product", ID: p.ID, Domain: p.Domain, Store: p.Store, ProductID: p.ProductID,
+			Kind: "product", ID: p.ID, Domain: &p.Domain, Store: p.Store, ProductID: p.ProductID,
 			Title: truncateSearchRunes(p.Title, 200), Brand: truncateSearchRunes(p.Brand, 80),
 		})
 	}
@@ -87,55 +87,100 @@ func fitSearchHits(out searchOut) (searchOut, error) {
 	if len(out.Hits) == 0 {
 		return out, nil
 	}
-	frame, err := json.Marshal(searchOut{Hits: []searchHitOut{}, ProductsError: out.ProductsError})
+	frame := searchOut{Hits: []searchHitOut{}, ProductsError: out.ProductsError}
+	raw, err := json.Marshal(frame)
 	if err != nil {
 		return searchOut{}, err
 	}
-	budget := toolResultCap - len(frame) + 1 // the first hit needs no comma
+	budget := toolResultCap - len(raw) + 1 // the first hit needs no comma
+	sizes := make([]int, len(out.Hits))
+	total := 0
+	for i, hit := range out.Hits {
+		sizes[i], err = searchHitSize(hit)
+		if err != nil {
+			return searchOut{}, err
+		}
+		total += sizes[i]
+	}
+	if total <= budget {
+		return out, nil
+	}
+
+	// Reserve enough room for the largest possible omission count before
+	// choosing hits. The field's actual count is set after selection.
+	frame.HitsOmitted = len(out.Hits)
+	raw, err = json.Marshal(frame)
+	if err != nil {
+		return searchOut{}, err
+	}
+	budget = toolResultCap - len(raw) + 1
+
 	passage := -1
 	if out.Hits[0].Kind == "product" {
 		passage = slices.IndexFunc(out.Hits, func(hit searchHitOut) bool { return hit.Kind == "chunk" })
 	}
-	priority := make([]int, 0, len(out.Hits))
-	priority = append(priority, 0)
-	if passage > 0 {
-		priority = append(priority, passage)
-	}
-	for i := 1; i < len(out.Hits); i++ {
-		if i != passage {
-			priority = append(priority, i)
-		}
-	}
-	keep := make([]bool, len(out.Hits))
-	for _, i := range priority {
-		hit := &out.Hits[i]
-		raw, err := json.Marshal(hit)
-		if err != nil {
-			return searchOut{}, err
-		}
-		if len(raw)+1 > budget && (i == 0 || i == passage) {
-			// Regular document titles can be large. Keep the passage text and
-			// identity even when its full title would consume the budget.
+	if passage >= 0 {
+		if sizes[0]+sizes[passage] > budget {
+			hit := &out.Hits[passage]
 			hit.Title = truncateSearchRunes(hit.Title, 200)
-			raw, err = json.Marshal(hit)
+			sizes[passage], err = searchHitSize(*hit)
 			if err != nil {
 				return searchOut{}, err
 			}
-			if len(raw)+1 > budget {
-				return searchOut{}, errors.New("required search hit exceeds the agent result budget")
-			}
 		}
-		if len(raw)+1 <= budget {
-			keep[i] = true
-			budget -= len(raw) + 1
+		budget -= sizes[passage]
+		if budget < 0 {
+			return searchOut{}, errors.New("required search hit exceeds the agent result budget")
 		}
 	}
+	if sizes[0] > budget {
+		hit := &out.Hits[0]
+		if hit.Kind == "product" {
+			*hit, sizes[0], err = compactSearchProduct(*hit, budget)
+		} else {
+			hit.Title = truncateSearchRunes(hit.Title, 200)
+			sizes[0], err = searchHitSize(*hit)
+		}
+		if err != nil {
+			return searchOut{}, err
+		}
+		if hit.Kind != "product" && sizes[0] > budget {
+			return searchOut{}, errors.New("required search hit exceeds the agent result budget")
+		}
+	}
+
 	hits := out.Hits[:0]
 	for i, hit := range out.Hits {
-		if keep[i] {
+		if i == passage {
+			hits = append(hits, hit) // already paid for
+		} else if sizes[i] <= budget {
 			hits = append(hits, hit)
+			budget -= sizes[i]
 		}
 	}
+	out.HitsOmitted = len(out.Hits) - len(hits)
 	out.Hits = hits
 	return out, nil
+}
+
+func searchHitSize(hit searchHitOut) (int, error) {
+	raw, err := json.Marshal(hit)
+	return len(raw) + 1, err // include a separator between hits
+}
+
+func compactSearchProduct(hit searchHitOut, budget int) (searchHitOut, int, error) {
+	compact := searchHitOut{Kind: hit.Kind, ID: hit.ID, Title: hit.Title}
+	size, err := searchHitSize(compact)
+	if err != nil || size <= budget {
+		return compact, size, err
+	}
+	compact.Title = ""
+	emptySize, err := searchHitSize(compact)
+	if err != nil || emptySize >= budget {
+		return compact, emptySize, err
+	}
+	// JSON can use up to six bytes per title rune, including HTML escapes.
+	compact.Title = truncateSearchRunes(hit.Title, (budget-emptySize)/6)
+	size, err = searchHitSize(compact)
+	return compact, size, err
 }

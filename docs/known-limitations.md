@@ -210,16 +210,18 @@ reported total counts the available associations when either status is set.
   budget is reached. A failed or empty budget final turn returns a bounded
   notice with the gathered evidence; cancellation/deadline errors still
   fail the ask.
-- Tool-result transcript copies are capped at 32 KiB each, with truncation
-  guidance. `GKG_AGENT_CONTEXT_BUDGET_KB` (default 256 KiB) stops further
-  tools once cumulative copies reach the budget. The final result may cross
-  the threshold; skipped calls still get paired budget-error results. This
-  is a tool-result byte budget, not a token or total-context limit: questions,
-  tool arguments, and other messages also consume model context. Evidence
-  retains complete results and may still be large. The exception is the
-  product tools, whose results are trimmed to the agent's 32 KB budget and
-  report what was omitted (`features_omitted`, `mentions_omitted_for_budget`,
-  `truncated`/`omitted`, or a shorter `find_products` page with a cursor).
+- Tool-result transcript copies are capped at 32 KiB each. Clipped copies
+  include truncation guidance. `GKG_AGENT_CONTEXT_BUDGET_KB` (default 256 KiB)
+  stops further tools once cumulative copies reach the budget. The final
+  result may cross the threshold. Skipped calls still get paired budget-error
+  results. This budget counts tool-result bytes. Questions, tool arguments,
+  and other messages also consume model context. Evidence may be large when
+  it retains the full tool result. The product tools fit their results to
+  the 32 KiB budget and report omissions using
+  `features_omitted`, `mentions_omitted_for_budget`, `truncated`/`omitted`, or
+  a shorter `find_products` page with a cursor. The agent's `search` tool
+  also fits `auto` and `product` results before recording evidence and
+  reports the number of hits dropped for the budget in `hits_omitted`.
 - Answer HTML uses the reader’s sanitized Markdown pipeline, with all images
   omitted. Raw HTML is omitted and unsafe link destinations become `#`.
   Progressive deltas remain plain text until the done event replaces them.

@@ -221,12 +221,100 @@ func TestAgentProductSearchFitsModelPayload(t *testing.T) {
 	if len(out.Hits) < 2 || out.Hits[0].ID != "best" || out.Hits[0].Kind != "product" {
 		t.Fatalf("want the leading product and some regular hits, got %d hits", len(out.Hits))
 	}
+	if out.HitsOmitted <= 0 || len(out.Hits)+out.HitsOmitted != searchMaxLimit {
+		t.Errorf("kept %d hits and reported %d omitted, want %d total", len(out.Hits), out.HitsOmitted, searchMaxLimit)
+	}
+	wire := unmarshalResult[struct {
+		Hits []map[string]json.RawMessage `json:"hits"`
+	}](t, json.RawMessage(visible))
+	for _, key := range []string{"score", "snippet"} {
+		if _, ok := wire.Hits[0][key]; ok {
+			t.Errorf("product hit includes %s", key)
+		}
+		if _, ok := wire.Hits[1][key]; !ok {
+			t.Errorf("passage hit is missing %s", key)
+		}
+	}
 	product := out.Hits[0]
 	if utf8.RuneCountInString(product.Title) != 200 || utf8.RuneCountInString(product.Brand) != 80 {
 		t.Fatalf("product title/brand lengths = %d/%d, want 200/80 runes",
 			utf8.RuneCountInString(product.Title), utf8.RuneCountInString(product.Brand))
 	}
-	if out.Hits[1].Kind != "chunk" || out.Hits[1].ID != "passage" || !strings.Contains(out.Hits[1].Snippet, "kit passage") {
+	passage := out.Hits[1]
+	if passage.Kind != "chunk" || passage.ID != "passage" || passage.Snippet == nil || !strings.Contains(*passage.Snippet, "kit passage") {
 		t.Errorf("missing the passage text in the model-visible result")
+	}
+}
+
+func TestAgentProductOnlySearchReportsOmittedHits(t *testing.T) {
+	st := &productSearchToolStore{
+		products: func(_ context.Context, _, _ string, limit int) ([]graph.Product, error) {
+			products := make([]graph.Product, limit)
+			for i := range products {
+				products[i] = graph.Product{ID: fmt.Sprintf("product-%03d", i), Store: "example.com",
+					ProductID: fmt.Sprintf("example.com:%d", i), Title: "Implant Kit " + strings.Repeat("<", 188)}
+			}
+			return products, nil
+		},
+	}
+	s := &Server{store: st}
+	result, err := s.execTool(t.Context(), "search", json.RawMessage(`{"query":"implant kit","kind":"product","limit":100}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := unmarshalResult[searchOut](t, json.RawMessage(raw))
+	if len(raw) > toolResultCap || len(out.Hits) == 0 || out.HitsOmitted <= 0 || len(out.Hits)+out.HitsOmitted != searchMaxLimit {
+		t.Errorf("result has %d bytes, %d hits and %d omitted, want a capped result accounting for all %d hits",
+			len(raw), len(out.Hits), out.HitsOmitted, searchMaxLimit)
+	}
+}
+
+func TestCompactSearchProductShortensEscapedTitle(t *testing.T) {
+	want := searchHitOut{Kind: "product", ID: "best", Title: "<&"}
+	budget, err := searchHitSize(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hit := searchHitOut{Kind: "product", ID: "best", Title: "<&\u2028界"}
+	got, size, err := compactSearchProduct(hit, budget)
+	if err != nil || got != want || size != budget {
+		t.Fatalf("hit=%+v size=%d err=%v, want %+v at %d bytes", got, size, err, want, budget)
+	}
+}
+
+func TestAgentProductSearchKeepsPassageWithOversizedProduct(t *testing.T) {
+	st := &productSearchToolStore{
+		chunks: []graph.ChunkSearchRow{{ID: "passage", Text: "Implant kit passage."}},
+		products: func(context.Context, string, string, int) ([]graph.Product, error) {
+			return []graph.Product{{ID: "best", Domain: "dental", Store: strings.Repeat("s", toolResultCap),
+				ProductID: strings.Repeat("p", toolResultCap), Title: "Implant Kit", Brand: "Acme"}}, nil
+		},
+	}
+	s := &Server{store: st}
+	result, err := s.execTool(t.Context(), "search", json.RawMessage(`{"query":"implant kit","limit":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := unmarshalResult[struct {
+		Hits        []map[string]json.RawMessage `json:"hits"`
+		HitsOmitted *int                         `json:"hits_omitted"`
+	}](t, json.RawMessage(raw))
+	if len(raw) > toolResultCap || len(out.Hits) != 2 || out.HitsOmitted != nil {
+		t.Fatalf("result has %d bytes, %d hits and hits_omitted=%v, want both hits within budget", len(raw), len(out.Hits), out.HitsOmitted)
+	}
+	product := out.Hits[0]
+	if len(product) != 3 || string(product["kind"]) != `"product"` || string(product["id"]) != `"best"` || string(product["title"]) != `"Implant Kit"` {
+		t.Errorf("want only the product kind, id and title, got %s", raw)
+	}
+	if passage := out.Hits[1]; string(passage["id"]) != `"passage"` || string(passage["snippet"]) != `"Implant kit passage."` {
+		t.Errorf("want the passage and its text, got %v", passage)
 	}
 }
