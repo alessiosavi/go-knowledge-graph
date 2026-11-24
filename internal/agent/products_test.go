@@ -273,8 +273,27 @@ CREATE (:ProductStore {store:'agent-mention.test', domain:'agent-catalog'}),
 type productMetadataStore struct{ graphStore }
 
 func (productMetadataStore) GetProduct(context.Context, graph.ProductLookup) (graph.ProductDetail, error) {
-	large := strings.Repeat("<", 4<<10)
-	return graph.ProductDetail{Product: graph.Product{Title: large, Brand: large}, Features: []graph.ProductEvidence{}, Pages: []graph.ProductPage{}, PagesMissing: true}, nil
+	// The escaped title and brand fit with either the page or the mention.
+	// The required result overflows when it retains both.
+	large := strings.Repeat("<", 1600)
+	return graph.ProductDetail{
+		Product:  graph.Product{ID: "product", Title: large, Brand: large},
+		Features: []graph.ProductEvidence{{Raw: "trimmable"}},
+		Pages:    []graph.ProductPage{{ID: "page", Title: large, ChunkIDs: []string{"chunk"}, ChunkCount: 1}},
+	}, nil
+}
+
+func (s productMetadataStore) GetProductWithMentions(ctx context.Context, lookup graph.ProductLookup) (graph.ProductDetailWithMentions, graph.ProductMentionRead, error) {
+	detail, err := s.GetProduct(ctx, lookup)
+	page := detail.Pages[0]
+	return graph.ProductDetailWithMentions{
+		ProductDetail: detail,
+		ProductMentionFields: &graph.ProductMentionFields{
+			Mentions:      []graph.ProductChunkMention{{DocID: page.ID, DocTitle: page.Title, ChunkID: page.ChunkIDs[0]}},
+			MentionsTotal: 1,
+			MentionsKeys:  1,
+		},
+	}, graph.ProductMentionRead{}, err
 }
 
 func (productMetadataStore) ListProductFeatures(context.Context) (graph.ProductFeatures, error) {
@@ -283,14 +302,28 @@ func (productMetadataStore) ListProductFeatures(context.Context) (graph.ProductF
 }
 
 func TestProductToolMetadataOverflow(t *testing.T) {
+	store := productMetadataStore{}
+	wire := getProductWire(t, store, `{"id":"product","with_mentions":false}`)
+	if len(wire) > agentResultBudget {
+		t.Fatalf("product without mentions exceeds the result budget: %d bytes", len(wire))
+	}
 	s := NewServer(config.Config{}, nil, nil)
-	s.store = productMetadataStore{}
-	for _, tool := range []string{"get_product", "list_features"} {
-		out, err := s.execTool(t.Context(), tool, json.RawMessage(`{"id":"product","with_mentions":false}`))
-		wire, encErr := json.Marshal(toolPayload(out, err))
-		if err == nil || encErr != nil || len(wire) > agentResultBudget || !json.Valid([]byte(transcriptResult(wire))) {
-			t.Errorf("%s returned an unbounded result: tool error=%v, marshal error=%v, bytes=%d", tool, err, encErr, len(wire))
-		}
+	s.store = store
+	for _, tc := range []struct{ tool, args string }{
+		{"get_product", `{"id":"product"}`},
+		{"list_features", `{}`},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			out, err := s.execTool(t.Context(), tc.tool, json.RawMessage(tc.args))
+			const want = "product tool metadata exceeds the agent result budget"
+			if err == nil || err.Error() != want {
+				t.Fatalf("tool error = %v, want %q", err, want)
+			}
+			wire, err := json.Marshal(toolPayload(out, err))
+			if err != nil || len(wire) > agentResultBudget || !json.Valid([]byte(transcriptResult(wire))) {
+				t.Errorf("tool error payload is unbounded or invalid: marshal error=%v, bytes=%d", err, len(wire))
+			}
+		})
 	}
 }
 

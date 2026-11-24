@@ -184,11 +184,9 @@ func toolDefs() []toolDef {
 			}),
 		functionTool("get_chunks",
 			chunkread.ToolDescription+
-				" Pass a product page's chunk_ids to read its passages. with_products defaults to true and lists document-linked products first, then exact identifier matches from the full chunk text."+
-				" products_total counts both after deduplication, before products_limit and response-budget trimming. Each document contributes up to 50 URL owners."+
-				" via identifies ref, url, page, and code evidence. Only URL and page links require the document and product store to share a domain."+
-				" products_error reports code matching failures and links_partial reports incomplete document links. Retry a single chunk with a higher products_limit for more results."+
-				" Use gkg products mentions-scan for the complete offline code scan. A domain-scoped agent cannot open a cross-domain result with get_product.",
+				" Pass a product page's chunk_ids to read its passages."+
+				chunkread.AgentProductsToolDescription+
+				" A domain-scoped agent cannot open a cross-domain result with get_product.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{

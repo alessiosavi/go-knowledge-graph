@@ -443,7 +443,7 @@ func TestToolGetChunksProductsSchema(t *testing.T) {
 		if with["type"] != "boolean" || with["default"] != true || with["description"] != "Include products linked to the chunk's document and exact identifier matches on its full text (default true)" {
 			t.Errorf("unexpected with_products schema: %v", with)
 		}
-		if !strings.Contains(def.Function.Description, "with_products defaults to true") || strings.Contains(def.Function.Description, "Set with_products") {
+		if !strings.Contains(def.Function.Description, "with_products defaults to true and lists document-linked products first, then exact identifier matches from the full chunk text.") || strings.Contains(def.Function.Description, "Set with_products") {
 			t.Errorf("get_chunks description does not explain the agent default: %q", def.Function.Description)
 		}
 		return

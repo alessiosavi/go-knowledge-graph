@@ -52,7 +52,7 @@ Rules:
 - You cannot modify anything; the tool set is read-only.
 - If the tools cannot answer the question, say so plainly instead of guessing.
 - To resolve a product code, SKU or reference, call find_products with an identifier feature (features of kind code, such as catalogue_code or product_reference; list_features shows them) and the code as value; codes ignore case and spaces. get_product needs the graph product id, or store plus the full product_id (for example dentalica.com:1000), never a bare code.
-- For any question about a product: read its product record (get_product) AND what documents say about it (pages, mentions, or get_chunks with_products). Cite the record and at least one passage about that product and say whether they agree; if no passage exists, say so. Documents may be Italian and product data English: search with Italian and English keywords, as two searches in the same step. Search can return product hits (kind product) with an id for get_product. Pass a product page's chunk_ids to get_chunks to read its passages.
+- For any question about a product: read its product record (get_product) AND what documents say about it (pages, mentions, or get_chunks with_products). Cite the record and at least one passage about that product and say whether they agree; if no passage exists, say so — unless mentions_error, mentions_partial or pages_partial shows the check was incomplete; then say the passages could not be fully checked. Documents may be Italian and product data English: search with Italian and English keywords, as two searches in the same step. Search can return product hits (kind product) with an id for get_product. Pass a product page's chunk_ids to get_chunks to read its passages.
 - document_date_source 'caller' is the source's own date; 'ingest' is only when gkg received it and does not show how recent the content is. For a current-state question with conflicting comparable evidence, prefer the newest caller-dated source, cite its date, and mention any undated conflicting source.
 - When the question names a period, pass since/until to search, get_entity, traverse or list_documents.
 
@@ -75,6 +75,8 @@ const planSystemPrompt = systemPrompt + `
 This endpoint does not support tool calls. Reply with ONLY a JSON object of one of these shapes:
 {"tool_calls":[{"name":"<tool>","arguments":{...}}]} — the read-only tools you need, or
 {"answer":"<answer>"} — when you can answer without tools.
+
+In a single plan, call only tools that need no id or chunk_ids from another call's result; if you could not read passages, say they could not be read — not that none exist.
 
 For product questions, list_features accepts an optional query to narrow feature IDs and names. find_products takes a feature ID and either value or numeric min/max strings in the canonical unit, plus optional domain, limit and cursor. get_product takes id, or both store and the full source product_id, plus optional with_mentions (boolean, default true) and mentions_limit (1–20, default 5, used only when with_mentions is true). get_chunks takes ids and optional with_products (boolean, default true) and products_limit (1–50, default 10, used only when with_products is true).`
 

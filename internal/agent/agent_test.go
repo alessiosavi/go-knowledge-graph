@@ -900,7 +900,7 @@ func TestSystemPromptProductCodeLookup(t *testing.T) {
 
 func TestProductEvidencePromptRouting(t *testing.T) {
 	rules := []string{
-		"For any question about a product: read its product record (get_product) AND what documents say about it (pages, mentions, or get_chunks with_products). Cite the record and at least one passage about that product and say whether they agree; if no passage exists, say so.",
+		"For any question about a product: read its product record (get_product) AND what documents say about it (pages, mentions, or get_chunks with_products). Cite the record and at least one passage about that product and say whether they agree; if no passage exists, say so — unless mentions_error, mentions_partial or pages_partial shows the check was incomplete; then say the passages could not be fully checked.",
 		"Documents may be Italian and product data English: search with Italian and English keywords, as two searches in the same step.",
 		"Search can return product hits (kind product) with an id for get_product.",
 		"Pass a product page's chunk_ids to get_chunks to read its passages.",
@@ -920,5 +920,15 @@ func TestProductEvidencePromptRouting(t *testing.T) {
 		if count := strings.Count(hint, want); count != 1 {
 			t.Errorf("plan prompt tool argument hint includes %q %d times, want once", want, count)
 		}
+	}
+}
+
+func TestPlanPromptIndependentCalls(t *testing.T) {
+	const rule = "In a single plan, call only tools that need no id or chunk_ids from another call's result; if you could not read passages, say they could not be read — not that none exist."
+	if count := strings.Count(planSystemPrompt, rule); count != 1 {
+		t.Errorf("plan prompt includes the independent-calls rule %d times, want once", count)
+	}
+	if strings.Contains(systemPrompt, rule) {
+		t.Error("tool-calling prompt must allow calls that depend on earlier results")
 	}
 }

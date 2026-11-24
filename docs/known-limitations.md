@@ -218,10 +218,11 @@ reported total counts the available associations when either status is set.
   and other messages also consume model context. Evidence may be large when
   it retains the full tool result. The product tools fit their results to
   the 32 KiB budget and report omissions using
-  `features_omitted`, `mentions_omitted_for_budget`, `truncated`/`omitted`, or
-  a shorter `find_products` page with a cursor. The agent's `search` tool
-  also fits `auto` and `product` results before recording evidence and
-  reports the number of hits dropped for the budget in `hits_omitted`.
+  `features_omitted`, `mentions_omitted_for_budget`, `pages_omitted_for_budget`,
+  `truncated`/`omitted`, or a shorter `find_products` page with a cursor.
+  The agent's `search` tool also fits `auto` and `product` results before
+  recording evidence and reports the number of hits dropped for the budget in
+  `hits_omitted`.
 - Answer HTML uses the reader’s sanitized Markdown pipeline, with all images
   omitted. Raw HTML is omitted and unsafe link destinations become `#`.
   Progressive deltas remain plain text until the done event replaces them.

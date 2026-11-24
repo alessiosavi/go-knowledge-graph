@@ -372,8 +372,13 @@ func TestToolResultSizeGuidance(t *testing.T) {
 	}
 	for _, tool := range res.Tools {
 		if desc, ok := want[tool.Name]; ok {
-			if tool.Name == "get_chunks" && !strings.Contains(tool.Description, "document_date and document_date_source") {
-				t.Error("get_chunks description does not explain the document date fields")
+			if tool.Name == "get_chunks" {
+				if !strings.Contains(tool.Description, "document_date and document_date_source") {
+					t.Error("get_chunks description does not explain the document date fields")
+				}
+				if !strings.Contains(tool.Description, "Set with_products to list document-linked products first, then exact identifier matches from the full chunk text.") || strings.Contains(tool.Description, "with_products defaults to true") {
+					t.Errorf("get_chunks description does not explain how to opt in to product results: %q", tool.Description)
+				}
 			}
 			if !strings.Contains(tool.Description, desc) {
 				t.Errorf("%s description=%q, want %q", tool.Name, tool.Description, desc)

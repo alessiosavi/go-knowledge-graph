@@ -1021,10 +1021,9 @@ paths:
         Cypher receives the scope in the system prompt without domain enforcement.
         Product search pages default to 10 hits, cap at 20 and may be shorter
         under the byte budget. Continuation uses the same filters and effective
-        limit. Product details may report features_omitted. The agent can pass
-        with_mentions=true to get_product for exact identifier matches in
-        passages from done documents. with_mentions defaults to false.
-        The agent can pass with_products=true to get_chunks to include
+        limit. The agent's get_product defaults with_mentions to true and
+        returns exact identifier matches in passages from done documents.
+        The agent's get_chunks defaults with_products to true and includes
         products linked to each chunk's done document as well as exact
         identifier matches. Document-linked products appear first. Both
         sources count toward products_total after deduplication and before
@@ -1032,8 +1031,11 @@ paths:
         its source and redirect URLs. links_partial reports incomplete document links,
         and products_error reports code matching failures.
         The optional mentions_limit accepts integers from 1 to 20 and defaults
-        to 5. The agent drops passages from the end before dropping features
-        to fit the result budget and reports mentions_omitted_for_budget.
+        to 5. To fit the result budget, get_product keeps the first page and
+        first mention when available. It drops additional mentions first, then
+        additional pages, then features. The omission counts are
+        mentions_omitted_for_budget, pages_omitted_for_budget and features_omitted.
+        It returns a tool error if the required result exceeds the budget.
         Feature listings project released stores and numeric-search support. They accept a
         case-insensitive substring query over feature IDs and names and report
         truncated and omitted when the result exceeds the byte budget.
