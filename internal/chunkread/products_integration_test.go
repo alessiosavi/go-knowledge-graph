@@ -96,6 +96,8 @@ func TestReadProductsMemgraph(t *testing.T) {
 		(a)-[:HAS_FEATURE {release_id:'chunk-mentions-release',value_fold:'AM12345'}]->(f),
 		(a)-[:HAS_FEATURE {release_id:'old-release',value_fold:'OLD12345'}]->(f),
 		(b)-[:HAS_FEATURE {release_id:'chunk-mentions-release',items_fold:['ZX_98765','ZX_98765','AM-12345']}]->(r)`, nil)
+	// Direct DB edits are outside the token contract. Use a fresh Store.
+	st = graphtest.Store(t)
 	item := read("chunk-mentions-a", "chunk-mentions-b")
 	for i, want := range []chunkread.MatchedIdentifier{{Feature: "catalogue_code", Value: "AB12345"}, {Feature: "product_reference", Value: "ZX_98765"}} {
 		if !slices.Equal((*item.Products)[i].Matched, []chunkread.MatchedIdentifier{want}) {
@@ -106,7 +108,8 @@ func TestReadProductsMemgraph(t *testing.T) {
 	read("chunk-mentions-a", "chunk-mentions-b", "chunk-mentions-u")
 
 	query(`MATCH (:Product {id:'chunk-mentions-u'})-[e:HAS_FEATURE]->() SET e.value_fold=12345`, nil)
-	out, err := chunkread.Read(t.Context(), st, req)
+	// Use a fresh Store after the direct DB edit.
+	out, err := chunkread.Read(t.Context(), graphtest.Store(t), req)
 	if err != nil || len(out.Chunks) != 1 || out.ProductsError != "index_unavailable" ||
 		out.Chunks[0].Products != nil || out.Chunks[0].ProductsTotal != nil {
 		t.Fatalf("invalid index data: %+v, %v", out, err)

@@ -83,28 +83,44 @@ const maxProductMentionValues = 200_000
 
 var ErrProductMentionIndexTooLarge = errors.New("product mention index exceeds its raw identifier limit")
 
-// LoadProductMentionIndex reads the active release, bound stores and
-// identifiers in one snapshot. A knowledge-only graph has an empty index.
+// LoadProductMentionIndex checks the catalogue version before reusing an index.
+// The returned index, including Stats, is shared and must be treated as read-only.
+// A knowledge-only graph has an empty index.
 func (s *Store) LoadProductMentionIndex(ctx context.Context) (*ProductMentionIndex, error) {
-	return s.loadProductMentionIndex(ctx, maxProductMentionValues)
+	return s.productLinks.load(ctx, s.readProductLinkToken, func(ctx context.Context) (productLinkSnapshot, error) {
+		return s.buildProductLinkSnapshot(ctx, maxProductMentionValues)
+	})
+}
+
+func (s *Store) readProductLinkToken(ctx context.Context) (productLinkToken, error) {
+	var token productLinkToken
+	err := s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
+		var err error
+		token, err = txProductLinkToken(ctx, tx)
+		return err
+	})
+	return token, err
 }
 
 func (s *Store) loadProductMentionIndex(ctx context.Context, limit int) (*ProductMentionIndex, error) {
+	snapshot, err := s.buildProductLinkSnapshot(ctx, limit)
+	return snapshot.index, err
+}
+
+func (s *Store) buildProductLinkSnapshot(ctx context.Context, limit int) (productLinkSnapshot, error) {
+	var token productLinkToken
 	var observations []ProductIdentifierObservation
 	err := s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
-		release, _, err := txMentionRelease(ctx, tx)
-		if err != nil || release == "" {
+		var err error
+		token, err = txProductLinkToken(ctx, tx)
+		if err != nil || token.release == "" || len(token.stores) == 0 {
 			return err
 		}
-		stores, err := txMentionStores(ctx, tx)
-		if err != nil || len(stores) == 0 {
-			return err
-		}
-		names := make([]string, 0, len(stores))
-		for _, store := range stores {
+		names := make([]string, 0, len(token.stores))
+		for _, store := range token.stores {
 			names = append(names, store.Store)
 		}
-		params := map[string]any{"stores": names, "release": release}
+		params := map[string]any{"stores": names, "release": token.release}
 		rows, err := txRows(ctx, tx, boundMentionIdentifiers+`
 RETURN sum(CASE WHEN e.value_fold IS NULL THEN 0 ELSE 1 END + coalesce(size(e.items_fold), 0)) AS raw_values`, params)
 		if err != nil {
@@ -121,9 +137,10 @@ RETURN sum(CASE WHEN e.value_fold IS NULL THEN 0 ELSE 1 END + coalesce(size(e.it
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return productLinkSnapshot{}, err
 	}
-	return buildProductMentionIndex(ctx, observations, true)
+	index, err := buildProductMentionIndex(ctx, observations, true)
+	return productLinkSnapshot{token: token, index: index}, err
 }
 
 func txMentionRelease(ctx context.Context, tx neo4j.ManagedTransaction) (string, int64, error) {
@@ -136,29 +153,34 @@ RETURN m.value AS release, coalesce(m.activation_seq, 0) AS activation_seq`, nil
 	return getString(rows[0], "release"), productProp[int64](rows[0].AsMap(), "activation_seq"), nil
 }
 
+const mentionStoreColumns = `s.store AS store, s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
+       coalesce(s.snapshot_seq, 0) AS snapshot_seq, coalesce(s.product_count, 0) AS product_count,
+       coalesce(s.wiped_seq, 0) AS wiped_seq, s.release_id AS release_id,
+       s.materialized_activation_seq AS materialized_activation_seq`
+
 func txMentionStores(ctx context.Context, tx neo4j.ManagedTransaction) ([]ProductMentionStore, error) {
 	rows, err := txRows(ctx, tx, `
 MATCH (s:ProductStore) WHERE s.domain IS NOT NULL
-RETURN s.store AS store, s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
-       coalesce(s.snapshot_seq, 0) AS snapshot_seq, coalesce(s.product_count, 0) AS product_count,
-       coalesce(s.wiped_seq, 0) AS wiped_seq, s.release_id AS release_id,
-       s.materialized_activation_seq AS materialized_activation_seq
-ORDER BY s.store`, nil)
+RETURN `+mentionStoreColumns+` ORDER BY s.store`, nil)
 	if err != nil {
 		return nil, err
 	}
 	stores := make([]ProductMentionStore, 0, len(rows))
 	for _, row := range rows {
-		props := row.AsMap()
-		stores = append(stores, ProductMentionStore{
-			Store: getString(row, "store"), Domain: getString(row, "domain"),
-			SeenSeq: productProp[int64](props, "seen_seq"), SnapshotSeq: productProp[int64](props, "snapshot_seq"),
-			WipedSeq: productProp[int64](props, "wiped_seq"), ReleaseID: productOptional[string](props, "release_id"),
-			MaterializedActivationSeq: productOptional[int64](props, "materialized_activation_seq"),
-			ProductCount:              productProp[int64](props, "product_count"),
-		})
+		stores = append(stores, readMentionStore(row))
 	}
 	return stores, nil
+}
+
+func readMentionStore(row *neo4j.Record) ProductMentionStore {
+	props := row.AsMap()
+	return ProductMentionStore{
+		Store: getString(row, "store"), Domain: getString(row, "domain"),
+		SeenSeq: productProp[int64](props, "seen_seq"), SnapshotSeq: productProp[int64](props, "snapshot_seq"),
+		WipedSeq: productProp[int64](props, "wiped_seq"), ReleaseID: productOptional[string](props, "release_id"),
+		MaterializedActivationSeq: productOptional[int64](props, "materialized_activation_seq"),
+		ProductCount:              productProp[int64](props, "product_count"),
+	}
 }
 
 const mentionFeatureIDs = `['catalogue_code', 'product_reference']`

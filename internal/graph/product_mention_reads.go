@@ -93,13 +93,14 @@ func (out *ProductDetailWithMentions) LimitMentions(limit int) {
 
 // ProductMentionRead records the work performed by the shared read.
 type ProductMentionRead struct {
-	IndexLoad, SearchMatch time.Duration
-	RawSaturated           bool
-	EligibleSaturated      bool
-	DroppedKeys            int
+	IndexLoad         time.Duration // token read and any wait for an index build
+	SearchMatch       time.Duration
+	RawSaturated      bool
+	EligibleSaturated bool
+	DroppedKeys       int
 }
 
-// GetProductWithMentions reads the product, then the global identifier index,
+// GetProductWithMentions reads the product, then checks the global identifier index,
 // then candidate chunks, in separate snapshots. Matches use the full chunk
 // text with the captured index. The caller may cap the displayed mentions.
 func (s *Store) GetProductWithMentions(ctx context.Context, lookup ProductLookup) (out ProductDetailWithMentions, read ProductMentionRead, err error) {
