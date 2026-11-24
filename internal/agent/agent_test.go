@@ -904,6 +904,8 @@ func TestProductEvidencePromptRouting(t *testing.T) {
 		"Documents may be Italian and product data English: search with Italian and English keywords, as two searches in the same step.",
 		"Search can return product hits (kind product) with an id for get_product.",
 		"Pass a product page's chunk_ids to get_chunks to read its passages.",
+		"If the passages you rely on list products and the question is about a product, call get_product on that product before answering, even when search returned no product hits.",
+		"Cite the chunk ids of the passages you used.",
 	}
 	for _, prompt := range []struct{ name, text string }{{"system", systemPrompt}, {"plan", planSystemPrompt}} {
 		for _, rule := range rules {
