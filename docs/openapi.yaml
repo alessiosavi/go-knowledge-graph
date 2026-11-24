@@ -1556,7 +1556,7 @@ components:
           minItems: 1
           maxItems: 3
           uniqueItems: true
-          description: Evidence from the evaluated tiers, in order of precedence.
+          description: Evidence from the evaluated tiers, in order of precedence. URL evidence may be absent when explicit refs fill all three page slots.
           items: { type: string, enum: [ref, url, page] }
         chunk_ids:
           type: array

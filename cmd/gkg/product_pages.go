@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
@@ -35,8 +36,12 @@ func runProductPagesReport(args []string, stdout, stderr io.Writer) int {
 			return err
 		}
 		for _, r := range reports {
-			if _, err := fmt.Fprintf(stdout, "store=%s domain=%s zero=%d one=%d multiple=%d missing_product_ids=%v total=%d refs=%d url=%d page=%d\n",
-				r.Store, r.Domain, r.Zero, r.One, r.Multiple, r.MissingProductIDs, r.Total, r.Refs, r.URL, r.Page); err != nil {
+			page := "unavailable"
+			if r.Page != nil {
+				page = strconv.Itoa(*r.Page)
+			}
+			if _, err := fmt.Fprintf(stdout, "store=%s domain=%s zero=%d one=%d multiple=%d missing_product_ids=%v total=%d refs=%d url=%d page=%s\n",
+				r.Store, r.Domain, r.Zero, r.One, r.Multiple, r.MissingProductIDs, r.Total, r.Refs, r.URL, page); err != nil {
 				return err
 			}
 		}

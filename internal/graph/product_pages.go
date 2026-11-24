@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 
 const (
 	productPageLimit        = 3
+	productPageChunkLimit   = 3
 	productPageMissingLimit = 20
 )
 
@@ -173,10 +175,9 @@ func txAppendProductPages(ctx context.Context, tx neo4j.ManagedTransaction, quer
 const productPageChunksQuery = `
 UNWIND $ids AS id
 MATCH (d:Document {id:id})
-OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
+MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
 WITH DISTINCT id, c
-ORDER BY c.seq, c.id
-RETURN id, count(c) AS chunk_count, collect(c.id)[..3] AS chunk_ids`
+RETURN id, c.id AS chunk_id, c.seq AS seq`
 
 func (s *Store) loadProductPageChunks(ctx context.Context, pages []ProductPage) error {
 	if len(pages) == 0 {
@@ -187,18 +188,43 @@ func (s *Store) loadProductPageChunks(ctx context.Context, pages []ProductPage) 
 		ids[i] = page.ID
 	}
 	return s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
-		rows, err := txRows(ctx, tx, productPageChunksQuery, map[string]any{"ids": ids})
+		rows, err := tx.Run(ctx, productPageChunksQuery, map[string]any{"ids": ids})
 		if err != nil {
 			return err
 		}
-		byID := make(map[string]*neo4j.Record, len(rows))
-		for _, row := range rows {
-			byID[getString(row, "id")] = row
+		type chunkOrder struct {
+			id  string
+			seq int
+		}
+		type pageChunks struct {
+			count int
+			first []chunkOrder
+		}
+		byID := make(map[string]*pageChunks, len(pages))
+		for _, id := range ids {
+			byID[id] = &pageChunks{}
+		}
+		for rows.Next(ctx) {
+			row := rows.Record()
+			chunks := byID[getString(row, "id")]
+			chunks.count++
+			if id := getString(row, "chunk_id"); id != "" {
+				chunks.first = append(chunks.first, chunkOrder{id: id, seq: getInt(row, "seq")})
+				slices.SortFunc(chunks.first, func(a, b chunkOrder) int {
+					return cmp.Or(cmp.Compare(a.seq, b.seq), cmp.Compare(a.id, b.id))
+				})
+				chunks.first = chunks.first[:min(len(chunks.first), productPageChunkLimit)]
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
 		}
 		for i := range pages {
-			if row := byID[pages[i].ID]; row != nil {
-				pages[i].ChunkCount = getInt(row, "chunk_count")
-				pages[i].ChunkIDs = append(pages[i].ChunkIDs, getStringSlice(row, "chunk_ids")...)
+			chunks := byID[pages[i].ID]
+			pages[i].ChunkCount = chunks.count
+			pages[i].ChunkIDs = pages[i].ChunkIDs[:0]
+			for _, chunk := range chunks.first {
+				pages[i].ChunkIDs = append(pages[i].ChunkIDs, chunk.id)
 			}
 		}
 		return nil
@@ -215,12 +241,17 @@ type ProductPagesReport struct {
 	Total             int      `json:"total"`
 	Refs              int      `json:"refs"`
 	URL               int      `json:"url"`
-	Page              int      `json:"page"`
+	Page              *int     `json:"page"`
+	PageStatus        string   `json:"page_status,omitempty"`
 }
 
-// ReportProductPages counts the uncapped union of page associations per
-// product. The report and its inferred owners use the same read snapshot.
+// ReportProductPages counts page associations per product, without the detail
+// read's three-page limit. The report and its inferred owners share a snapshot.
 func (s *Store) ReportProductPages(ctx context.Context, store string) ([]ProductPagesReport, error) {
+	return s.reportProductPages(ctx, store, maxProductLinkRows)
+}
+
+func (s *Store) reportProductPages(ctx context.Context, store string, linkLimit int) ([]ProductPagesReport, error) {
 	reports := []ProductPagesReport{}
 	err := s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
 		stores, err := txMentionStores(ctx, tx)
@@ -246,25 +277,52 @@ func (s *Store) ReportProductPages(ctx context.Context, store string) ([]Product
 		// Include all bound owners when testing uniqueness, even for a
 		// single-store report.
 		index := &ProductLinkIndex{}
-		if err := txLoadProductLinkOwners(ctx, tx, stores, index, maxProductLinkRows); err != nil {
+		if err := txLoadProductLinkOwners(ctx, tx, stores, index, linkLimit); err != nil {
 			return err
 		}
+		var pageStatus string
 		if index.urlOff || index.pageOff {
-			return fmt.Errorf("product pages report: %s (url_off=%t, page_off=%t)", productPageIndexTooLarge, index.urlOff, index.pageOff)
+			pageStatus = productPageIndexTooLarge
+			index.pageOwners = nil
 		}
+		// Collect exact URL keys directly from the selected products so that
+		// even an over-cap inferred URL index leaves exact URL counts intact.
 		urlsByDomain := make(map[string]map[string]productPageSources)
-		pages := make(map[string]productPageSources)
+		productsByStore := make(map[string][]productForPagesReport, len(selected))
 		for _, bound := range selected {
-			domain := bound.Domain
-			urls := urlsByDomain[domain]
-			if urls == nil && (len(index.urlOwners[domain]) != 0 || len(index.pageOwners[domain]) != 0) {
+			urls := urlsByDomain[bound.Domain]
+			if urls == nil {
 				urls = make(map[string]productPageSources)
+				urlsByDomain[bound.Domain] = urls
+			}
+			rows, err := tx.Run(ctx, productsForPagesReportQuery, map[string]any{"store": bound.Store})
+			if err != nil {
+				return err
+			}
+			var products []productForPagesReport
+			for rows.Next(ctx) {
+				row := rows.Record()
+				link := canonicalProductPageURL(getString(row, "link"))
+				products = append(products, productForPagesReport{id: getString(row, "id"), link: link})
+				if link != "" {
+					urls[link] = nil
+				}
+			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			productsByStore[bound.Store] = products
+		}
+		pages := make(map[string]productPageSources)
+		for domain, urls := range urlsByDomain {
+			if domain != "" && (len(urls) != 0 || len(index.pageOwners[domain]) != 0) {
 				if err := txCountProductPages(ctx, tx, domain, index, urls, pages); err != nil {
 					return err
 				}
-				urlsByDomain[domain] = urls
 			}
-			report, err := txProductPagesReport(ctx, tx, bound.Store, domain, urls, pages)
+		}
+		for _, bound := range selected {
+			report, err := txProductPagesReport(ctx, tx, bound, productsByStore[bound.Store], urlsByDomain[bound.Domain], pages, pageStatus)
 			if err != nil {
 				return err
 			}
@@ -283,6 +341,10 @@ MATCH (p:Product {store:$store})
 WHERE p.product_id IS NOT NULL
 RETURN p.id AS id, p.link AS link ORDER BY p.id`
 
+type productForPagesReport struct {
+	id, link string
+}
+
 const productPageRefsReportQuery = `
 UNWIND $ids AS id
 MATCH (a:ProductRef {id:id})` + productPageRefDocuments + `
@@ -297,26 +359,28 @@ func addProductPageSource(sets map[string]productPageSources, id string, key pro
 	sets[id][key] = struct{}{}
 }
 
-func txProductPagesReport(ctx context.Context, tx neo4j.ManagedTransaction, store, domain string, urls, pages map[string]productPageSources) (ProductPagesReport, error) {
-	report := ProductPagesReport{Store: store, Domain: domain, MissingProductIDs: []string{}}
-	products, err := txRows(ctx, tx, productsForPagesReportQuery, map[string]any{"store": store})
-	if err != nil {
-		return report, err
+func txProductPagesReport(ctx context.Context, tx neo4j.ManagedTransaction, bound ProductMentionStore,
+	products []productForPagesReport, urls, pages map[string]productPageSources, pageStatus string,
+) (ProductPagesReport, error) {
+	report := ProductPagesReport{Store: bound.Store, Domain: bound.Domain, MissingProductIDs: []string{}, PageStatus: pageStatus}
+	if pageStatus == "" {
+		report.Page = new(int)
 	}
 	ids := make([]string, len(products))
 	for i, product := range products {
-		ids[i] = getString(product, "id")
+		ids[i] = product.id
 	}
 	refs, err := txProductPageRefs(ctx, tx, ids)
 	if err != nil {
 		return report, err
 	}
-	for i, id := range ids {
-		link := canonicalProductPageURL(getString(products[i], "link"))
-		refPages, urlPages, keyPages := refs[id], urls[link], pages[id]
+	for _, product := range products {
+		refPages, urlPages, keyPages := refs[product.id], urls[product.link], pages[product.id]
 		report.Refs += len(refPages)
 		report.URL += len(urlPages)
-		report.Page += len(keyPages)
+		if report.Page != nil {
+			*report.Page += len(keyPages)
+		}
 		count := len(refPages)
 		for key := range urlPages {
 			if _, ok := refPages[key]; !ok {
@@ -335,7 +399,7 @@ func txProductPagesReport(ctx context.Context, tx neo4j.ManagedTransaction, stor
 		case 0:
 			report.Zero++
 			if len(report.MissingProductIDs) < productPageMissingLimit {
-				report.MissingProductIDs = append(report.MissingProductIDs, id)
+				report.MissingProductIDs = append(report.MissingProductIDs, product.id)
 			}
 		case 1:
 			report.One++
@@ -347,6 +411,7 @@ func txProductPagesReport(ctx context.Context, tx neo4j.ManagedTransaction, stor
 }
 
 func txCountProductPages(ctx context.Context, tx neo4j.ManagedTransaction, domain string, index *ProductLinkIndex, urls, pages map[string]productPageSources) error {
+	hasPageOwners := len(index.pageOwners[domain]) != 0
 	rows, err := tx.Run(ctx, productPagesReportDocumentsQuery, map[string]any{"domain": domain})
 	if err != nil {
 		return err
@@ -358,14 +423,16 @@ func txCountProductPages(ctx context.Context, tx neo4j.ManagedTransaction, domai
 		final := canonicalProductPageURL(getString(r, "final_url"))
 		key := productPageSourceKey(r, source, canonicalSource)
 		for _, link := range [...]string{canonicalSource, final} {
-			if len(index.urlProductOwners(domain, link)) > 0 {
+			if _, wanted := urls[link]; wanted {
 				// Shared URL owners use the same source set without
 				// materializing a copy for every product.
 				addProductPageSource(urls, link, key)
 			}
 		}
-		if id := index.pageProductOwner(domain, source); id != "" {
-			addProductPageSource(pages, id, key)
+		if hasPageOwners {
+			if id := index.pageProductOwner(domain, source); id != "" {
+				addProductPageSource(pages, id, key)
+			}
 		}
 	}
 	return rows.Err()

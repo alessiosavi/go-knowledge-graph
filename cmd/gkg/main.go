@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -562,15 +563,16 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if err := st.WarmProductLinks(ctx); err != nil {
-		slog.WarnContext(ctx, "warm product link index", "error", err)
-	}
-
 	rest := newAPIServer(cfg, st, pipe, emb, metrics)
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
 		Handler:           rest.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		fmt.Fprintf(stderr, "gkg serve: %v\n", err)
+		return 1
 	}
 	errCh := make(chan error, 2)
 	if profiler != nil {
@@ -580,8 +582,15 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		}()
 		fmt.Fprintf(stdout, "gkg: pprof listening on %s\n", profilerListener.Addr())
 	}
-	go func() { errCh <- srv.ListenAndServe() }()
+	go func() { errCh <- srv.Serve(listener) }()
 	fmt.Fprintf(stdout, "gkg: listening on %s\n", cfg.Server.Addr)
+	warmCtx, cancelWarm := context.WithCancel(ctx)
+	defer cancelWarm()
+	go func() {
+		if err := st.WarmProductLinks(warmCtx); err != nil {
+			slog.WarnContext(warmCtx, "warm product link index", "error", err)
+		}
+	}()
 
 	exitCode := 0
 	select {
@@ -789,9 +798,6 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 	if err := pipe.Recover(ctx); err != nil {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1
-	}
-	if err := st.WarmProductLinks(ctx); err != nil {
-		slog.WarnContext(ctx, "warm product link index", "error", err)
 	}
 	srv := mcpserver.NewServer(cfg, st, pipe)
 	srv.SetEmbedder(emb)

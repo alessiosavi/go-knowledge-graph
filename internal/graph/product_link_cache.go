@@ -210,7 +210,7 @@ func (s *Store) loadProductLinkIndex(ctx context.Context) (*ProductLinkIndex, er
 	})
 }
 
-// WarmProductLinks loads the read-time product link index before serving traffic.
+// WarmProductLinks loads the read-time product link index within the build deadline.
 func (s *Store) WarmProductLinks(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, productLinkBuildTimeout)
 	defer cancel()

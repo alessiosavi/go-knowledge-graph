@@ -79,9 +79,9 @@ func (s *Store) ReadProductMentions(ctx context.Context, selection ProductMentio
 	})
 }
 
-const maxProductMentionValues = maxProductLinkRows
+const maxProductMentionValues = 200_000
 
-var ErrProductMentionIndexTooLarge = errors.New("product mention index exceeds its raw identifier or byte limit")
+var ErrProductMentionIndexTooLarge = errors.New("product mention index exceeds its raw identifier limit")
 
 // LoadProductMentionIndex checks the catalogue version before reusing an index.
 // The returned index, including Stats, is shared and must be treated as read-only.
@@ -166,7 +166,6 @@ RETURN p.id AS id, p.store AS store, p.product_id AS product_id, p.domain AS dom
 	if err != nil {
 		return nil, err
 	}
-	budget := productLinkBudget{maxRows: maxProductLinkRows}
 	var observations []ProductIdentifierObservation
 	type productFeature struct{ product, feature string }
 	groups := make(map[productFeature]int)
@@ -184,16 +183,10 @@ RETURN p.id AS id, p.store AS store, p.product_id AS product_id, p.domain AS dom
 			return nil, err
 		}
 		rawValues += len(items)
-		bytes := product.linkRowBytes() + len(feature) + len(value)
 		if !null {
 			rawValues++
 		}
-		for _, item := range items {
-			if text, ok := item.(string); ok {
-				bytes += len(text)
-			}
-		}
-		if rawValues > limit || !budget.add(bytes) {
+		if rawValues > limit {
 			if _, err := result.Consume(ctx); err != nil {
 				return nil, err
 			}

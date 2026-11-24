@@ -161,7 +161,7 @@ func (index *ProductLinkIndex) addPageOwner(domain, key, id string) {
 	case !exists:
 		owners[key] = id
 	case owner != "" && owner != id:
-		owners[key] = "" // keep an ambiguity marker until the build ends
+		owners[key] = "" // retain the marker so each ambiguous key is counted once
 		index.pageAmbiguous++
 	}
 }
@@ -187,7 +187,7 @@ func allowsInferredProductPages(domain, scope string) bool {
 func txResolveDirectProductPages(ctx context.Context, tx neo4j.ManagedTransaction, id, domain, link, scope string, selection *productPageSelection) error {
 	err := txAppendProductPages(ctx, tx, productRefPagesQuery, map[string]any{"id": id, "scope": scope},
 		productViaRef, "", selection)
-	if err != nil || !allowsInferredProductPages(domain, scope) {
+	if err != nil || selection.full() || !allowsInferredProductPages(domain, scope) {
 		return err
 	}
 	canonical := canonicalProductPageURL(link)

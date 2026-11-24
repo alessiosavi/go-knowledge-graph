@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -213,7 +214,7 @@ func TestProductPagePrecedenceChunksAndReportUnion(t *testing.T) {
 		t.Fatalf("reports for one domain used %d document scans", scans)
 	}
 	want := ProductPagesReport{Store: pushStore, Domain: pushDomain, MissingProductIDs: []string{},
-		Refs: 1, URL: 2, Page: 4}
+		Refs: 1, URL: 2, Page: new(4)}
 	for _, sourceID := range []string{pushOne, pushTwo} {
 		detail := getLinkedProduct(t, f.store, sourceID, "")
 		selected := newProductPageSelection(0)
@@ -307,6 +308,95 @@ func TestProductPagePartialAndIndependentLegs(t *testing.T) {
 	}
 }
 
+func TestProductPagePartialOnIndexBuildFailure(t *testing.T) {
+	f := newPushFixture(t)
+	const link = "https://push.test/implant-kit.html"
+	f.snapshot(pushA, 1, "imported", pageLinkRecord(pushOne, link))
+	ref := addProductLinkDocument(t, f.store, DocumentInput{
+		Kind: "file", Domain: pushDomain, Source: "docs/explicit-reference", ProductRefs: []string{pushOne},
+	}, StatusDone)
+	exact := addProductLinkDocument(t, f.store, DocumentInput{
+		Kind: "text", Domain: pushDomain, Source: link,
+	}, StatusDone)
+
+	ctx := t.Context()
+	buildErr := errors.New("fixture index build failed")
+	_, err := f.store.productLinks.load(ctx, f.store.readProductLinkToken, func(context.Context) (productLinkSnapshot, error) {
+		return productLinkSnapshot{}, buildErr
+	})
+	if !errors.Is(err, buildErr) {
+		t.Fatalf("index build error = %v, want %v", err, buildErr)
+	}
+	out := getLinkedProduct(t, f.store, pushOne, "")
+	if out.PagesPartial != "index_unavailable" || out.PagesMissing || len(out.Pages) != 2 ||
+		out.Pages[0].ID != ref || !slices.Equal(out.Pages[0].Via, []string{"ref"}) ||
+		out.Pages[1].ID != exact || !slices.Equal(out.Pages[1].Via, []string{"url"}) {
+		t.Fatalf("pages after build failure = %+v, partial = %q, missing = %t", out.Pages, out.PagesPartial, out.PagesMissing)
+	}
+}
+
+func TestProductPagesReportWithOverCapLegs(t *testing.T) {
+	const link = "https://push.test/implant-kit.html"
+	for _, tc := range []struct {
+		name, secondLink string
+	}{
+		{"url_leg", "https://push.test/x"},
+		{"url_and_page_legs", "https://push.test/other-implant-kit.html"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPushFixture(t)
+			f.snapshot(pushA, 1, "imported", pageLinkRecord(pushOne, link), pageLinkRecord(pushTwo, tc.secondLink))
+			for _, in := range []DocumentInput{
+				{Kind: "file", Domain: pushDomain, Source: "docs/explicit-reference", ProductRefs: []string{pushOne}},
+				{Kind: "text", Domain: pushDomain, Source: link},
+				{Kind: "file", Domain: pushDomain, Source: "docs/implant-kit"},
+			} {
+				addProductLinkDocument(t, f.store, in, StatusDone)
+			}
+			reports, err := f.store.reportProductPages(t.Context(), pushStore, 1)
+			if err != nil || len(reports) != 1 {
+				t.Fatalf("over-cap reports = %+v, err = %v", reports, err)
+			}
+			want := ProductPagesReport{
+				Store: pushStore, Domain: pushDomain, Refs: 1, URL: 1, Total: 2,
+				Zero: 1, Multiple: 1, MissingProductIDs: []string{productobs.ProductID(pushStore, pushTwo)},
+				PageStatus: "index_too_large",
+			}
+			if !reflect.DeepEqual(reports[0], want) {
+				t.Fatalf("over-cap report = %+v, want %+v", reports[0], want)
+			}
+			got, err := json.Marshal(reports[0])
+			if err != nil || !strings.Contains(string(got), `"page":null,"page_status":"index_too_large"`) {
+				t.Fatalf("over-cap report JSON = %s, err = %v", got, err)
+			}
+		})
+	}
+}
+
+func TestProductPageFullRefsSkipExactURL(t *testing.T) {
+	f := newPushFixture(t)
+	const link = "https://push.test/implant-kit.html"
+	f.snapshot(pushA, 1, "imported", pageLinkRecord(pushOne, link))
+	for _, source := range []string{link, "docs/other-reference", "docs/third-reference"} {
+		addProductLinkDocument(t, f.store, DocumentInput{
+			Kind: "text", Domain: pushDomain, Source: source, ProductRefs: []string{pushOne},
+		}, StatusDone)
+	}
+	count := countProductReadStatements(t, f.store)
+	out := getLinkedProduct(t, f.store, pushOne, "")
+	if !slices.Equal(count.statements, []int{2, 1}) || slices.Contains(count.queries, productPagesQuery) {
+		t.Fatalf("full refs read used queries %v, statements %v", count.queries, count.statements)
+	}
+	if len(out.Pages) != 3 || out.PagesPartial != "" {
+		t.Fatalf("full refs read returned %+v, partial = %q", out.Pages, out.PagesPartial)
+	}
+	for _, page := range out.Pages {
+		if !slices.Equal(page.Via, []string{"ref"}) {
+			t.Errorf("page %s evidence = %v, want ref only", page.ID, page.Via)
+		}
+	}
+}
+
 func TestProductURLIndexIncludesAllOrderedOwners(t *testing.T) {
 	f := newPushFixture(t)
 	ctx := t.Context()
@@ -370,7 +460,7 @@ func TestProductURLIndexIncludesAllOrderedOwners(t *testing.T) {
 	}
 	for i, want := range []int{50, 51} {
 		report := reports[i]
-		if report.Total != want || report.URL != want || report.One != want || report.Page != 0 {
+		if report.Total != want || report.URL != want || report.One != want || report.Page == nil || *report.Page != 0 {
 			t.Fatalf("report %+v, want %d URL associations", report, want)
 		}
 	}

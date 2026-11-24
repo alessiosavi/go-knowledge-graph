@@ -1687,6 +1687,8 @@ page per product across tiers.
 
 Each page contains `id`, `title`, the stored `source`, `updated_at`, and
 `via` listing evidence from evaluated tiers in order (`ref`, `url`, `page`).
+When refs fill all three page slots, the URL tier is skipped and `via` can
+omit URL evidence for those ref pages.
 `chunk_count` is the total chunks in the selected document. `chunk_ids`
 lists up to the first three, ordered by sequence and then ID.
 `pages_missing: true` means coverage is complete and the array is empty.
@@ -1728,8 +1730,11 @@ from any domain. `url` and `page` count exact URL and page-key matches in the
 store's bound domain. `total` counts the union per product. A page with
 multiple kinds of evidence contributes once to each matching tier and once
 to `total`. Report counts include all matches beyond the three-page read
-limit. The optional `-store` limits the report to one store. The report
-requires both inferred link indexes to fit their budgets.
+limit. The optional `-store` limits the report to one store. If either inferred
+link index exceeds its budget, JSON shows `"page": null` and
+`"page_status": "index_too_large"` for each store. Text output shows
+`page=unavailable`. The totals, coverage buckets and missing IDs then use
+explicit refs and exact URL matches only.
 
 ```sh
 gkg products pages-report
