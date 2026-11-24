@@ -39,6 +39,9 @@ type ProductLinkIndex struct {
 
 	products    map[string]Product // display metadata shared by the index legs
 	productsOff bool
+
+	searchRows []searchableProduct
+	searchOff  bool
 }
 
 // MentionIndex returns the code leg independently of the document legs.
@@ -180,6 +183,7 @@ func txLoadProductLinkOwners(ctx context.Context, tx neo4j.ManagedTransaction, s
 	index.pageOwners = make(map[string]map[string]string)
 	index.products = make(map[string]Product)
 	urlBudget, pageBudget, productsBudget := productLinkBudget{maxRows: maxRows}, productLinkBudget{maxRows: maxRows}, productLinkBudget{maxRows: maxRows}
+	searchBudget := productLinkBudget{maxRows: maxRows}
 	for rows.Next(ctx) {
 		p := readProductLinkRow(rows.Record())
 		if !index.productsOff {
@@ -188,6 +192,9 @@ func txLoadProductLinkOwners(ctx context.Context, tx neo4j.ManagedTransaction, s
 			} else {
 				index.products, index.productsOff = nil, true
 			}
+		}
+		if !index.searchOff {
+			index.addProductSearchRow(p, &searchBudget)
 		}
 		if !index.urlOff {
 			if link := canonicalProductPageURL(p.Link); link != "" {
@@ -213,7 +220,7 @@ func txLoadProductLinkOwners(ctx context.Context, tx neo4j.ManagedTransaction, s
 				}
 			}
 		}
-		if index.urlOff && index.pageOff && index.productsOff {
+		if index.urlOff && index.pageOff && index.productsOff && index.searchOff {
 			_, err := rows.Consume(ctx)
 			return err
 		}

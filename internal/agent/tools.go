@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
@@ -26,13 +28,17 @@ type searchHitOut struct {
 	Score      float64 `json:"score"`
 	Snippet    string  `json:"snippet"`
 	DocumentID string  `json:"document_id,omitempty"`
+	Store      string  `json:"store,omitempty"`
+	ProductID  string  `json:"product_id,omitempty"`
+	Brand      string  `json:"brand,omitempty"`
 
 	DocumentDate       *time.Time `json:"document_date,omitempty"`
 	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type searchOut struct {
-	Hits []searchHitOut `json:"hits"`
+	Hits          []searchHitOut `json:"hits"`
+	ProductsError string         `json:"products_error,omitempty"`
 }
 
 type entityRefOut struct {
@@ -151,12 +157,12 @@ const (
 func toolDefs() []toolDef {
 	return []toolDef{
 		functionTool("search",
-			"Full-text search over entity names and chunk text. Returns scored hits with ids, titles and snippets. Since/until filter chunk hits by document date. Start with limit 10.",
+			"Search entity names, chunk text and product titles. Auto can list products first, with store and product_id for get_product. Use kind=product for products only. Since/until filter chunk hits by document date and do not apply to products. Start with limit 10.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"query": map[string]any{"type": "string", "description": "full-text query over entity names and chunk text"},
-					"kind":  map[string]any{"type": "string", "enum": []string{"entity", "chunk", "auto"}, "description": "hit kind filter (default auto)"},
+					"query": map[string]any{"type": "string", "description": "keywords for entity names, chunk text or product titles"},
+					"kind":  map[string]any{"type": "string", "enum": []string{"entity", "chunk", "auto", "product"}, "description": "hit kind filter (default auto)"},
 					"limit": map[string]any{"type": "integer", "description": "maximum hits (default 20, capped at 100)"},
 					"since": map[string]any{"type": "string", "description": dateSinceDescription},
 					"until": map[string]any{"type": "string", "description": dateUntilDescription},
@@ -387,9 +393,9 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 		kind = "auto"
 	}
 	switch kind {
-	case "entity", "chunk", "auto":
+	case "entity", "chunk", "auto", "product":
 	default:
-		return nil, argerr.Errorf("kind %q not in entity|chunk|auto", kind)
+		return nil, argerr.Errorf("kind %q not in entity|chunk|auto|product", kind)
 	}
 	limit := args.Limit
 	if limit <= 0 {
@@ -402,18 +408,61 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	hits, err := search.Query(ctx, s.store, s.emb, args.Query, kind, limit, search.InDomain(requestDomain(ctx)), search.InDateWindow(window))
-	if err != nil {
-		return nil, err
+	domain := requestDomain(ctx)
+	var regular []search.Hit
+	var regularStore search.Store = s.store
+	withPassages := passageSearchStore{Store: s.store}
+	if kind == "auto" && limit > 1 {
+		regularStore = &withPassages
 	}
-	out := make([]searchHitOut, 0, len(hits))
-	for _, h := range hits {
-		out = append(out, searchHitOut{
+	if kind == "product" {
+		if strings.TrimSpace(args.Query) == "" {
+			return nil, argerr.New("search: empty query")
+		}
+		if domain != "" && !graph.ValidDomain(domain) {
+			return nil, argerr.Errorf("search: invalid domain slug %q", domain)
+		}
+	} else {
+		regular, err = search.Query(ctx, regularStore, s.emb, args.Query, kind, limit, search.InDomain(domain), search.InDateWindow(window))
+		if err != nil {
+			return nil, err
+		}
+	}
+	out := searchOut{Hits: make([]searchHitOut, 0, limit)}
+	switch {
+	case kind == "product":
+		out.Hits, out.ProductsError = s.searchProductHits(ctx, out.Hits, args.Query, domain, limit)
+	case kind == "auto" && limit > 1:
+		out.Hits, out.ProductsError = s.searchProductHits(ctx, out.Hits, args.Query, domain, min(3, limit/2))
+	}
+	if len(out.Hits) != 0 && kind == "auto" {
+		slots := limit - len(out.Hits)
+		passage := slices.IndexFunc(regular, func(h search.Hit) bool { return h.Kind == "chunk" })
+		if passage == -1 && len(withPassages.passages) != 0 {
+			// Entity rank fusion can put every passage below auto's cutoff.
+			// Reuse its chunk rows to recover the best passage.
+			chunks, err := search.Query(ctx, regularStore, nil, args.Query, "chunk", 1, search.InDomain(domain), search.InDateWindow(window))
+			if err != nil {
+				return nil, err
+			}
+			passage = len(regular)
+			regular = append(regular, chunks[0])
+		}
+		if passage >= slots {
+			regular[slots-1] = regular[passage]
+		}
+		regular = regular[:min(slots, len(regular))]
+	}
+	for _, h := range regular {
+		out.Hits = append(out.Hits, searchHitOut{
 			Kind: h.Kind, ID: h.ID, Title: h.Title, Score: h.Score, Snippet: h.Snippet, DocumentID: h.DocID, Domain: h.Domain,
 			DocumentDate: h.DocumentDate, DocumentDateSource: h.DocumentDateSource,
 		})
 	}
-	return searchOut{Hits: out}, nil
+	if kind == "auto" || kind == "product" {
+		return fitSearchHits(out)
+	}
+	return out, nil
 }
 
 func (s *Server) toolGetEntity(ctx context.Context, raw json.RawMessage) (any, error) {

@@ -97,6 +97,7 @@ type graphStore interface {
 	EntityViewOpts(context.Context, string, graph.ViewOptions) (graph.EntityView, error)
 	RunReadQuery(context.Context, string, map[string]any, int) (graph.QueryResult, error)
 	TraverseOpts(context.Context, string, string, string, int, int, graph.ViewOptions) (graph.Subgraph, error)
+	SearchProductLinks(context.Context, string, string, int) ([]graph.Product, error)
 	GetProduct(context.Context, graph.ProductLookup) (graph.ProductDetail, error)
 	GetProductWithMentions(context.Context, graph.ProductLookup) (graph.ProductDetailWithMentions, graph.ProductMentionRead, error)
 	FindProductsBudget(context.Context, graph.ProductSearchRequest, int) (graph.ProductSearchResult, error)
