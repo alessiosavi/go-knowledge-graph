@@ -34,7 +34,7 @@ func TestProductLinkSearchRanking(t *testing.T) {
 		{"brand before overlap", "Acme Labs kit / versus implant", 8, []string{"reversed", "partial", "exact", "second-id", "second-store", "lower-share"}},
 		{"share before length", "kit / versus implant", 8, []string{"reversed", "exact", "second-id", "second-store", "lower-share", "partial"}},
 		{"brand alone", "Acme Labs", 8, nil},
-		{"repeated title token needs another occurrence", "implant", 8, []string{"reversed", "exact", "second-id", "second-store", "partial"}},
+		{"single-token title on exact query only", "implant", 8, []string{"one", "reversed", "exact", "second-id", "second-store", "partial"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			words := productSearchTokens(foldProductSearchText(tc.query))
@@ -99,6 +99,15 @@ func TestProductLinkSearchQueryCoverage(t *testing.T) {
 		}
 		assertHits(t, "Reflexx L600 XL", 3, "exact", "contained", "reordered")
 	})
+}
+
+func TestFoldProductSearchTextKeepsNonLatinMarks(t *testing.T) {
+	if got := foldProductSearchText("Caffè Crème"); got != "caffe creme" {
+		t.Fatalf("Latin fold = %q, want %q", got, "caffe creme")
+	}
+	if a, b := foldProductSearchText("किट"), foldProductSearchText("कट"); a == b {
+		t.Fatalf("Devanagari marks dropped: %q == %q", a, b)
+	}
 }
 
 func TestProductLinkSearchUsesPrecomputedFields(t *testing.T) {

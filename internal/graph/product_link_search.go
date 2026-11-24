@@ -25,13 +25,8 @@ type searchableProduct struct {
 
 func foldProductSearchText(text string) string {
 	lower := strings.ToLower(norm.NFKC.String(text))
-	withoutAccents := strings.Map(func(r rune) rune {
-		if unicode.IsMark(r) {
-			return -1
-		}
-		return r
-	}, norm.NFD.String(lower))
-	return norm.NFC.String(withoutAccents)
+	// Same mark rule as fold keys: Latin diacritics go, marks of other scripts stay.
+	return norm.NFC.String(string(stripFoldKeyLatinMarks([]rune(norm.NFD.String(lower)))))
 }
 
 func productSearchTokens(folded string) []string {
@@ -51,7 +46,7 @@ func productSearchPhrase(tokens []string) string {
 func (index *ProductLinkIndex) addProductSearchRow(p Product, budget *productLinkBudget) {
 	foldedTitle := foldProductSearchText(p.Title)
 	title := productSearchTokens(foldedTitle)
-	if len(title) < 2 {
+	if len(title) == 0 {
 		return
 	}
 	titlePhrase := productSearchPhrase(title)
@@ -145,6 +140,9 @@ func (index *ProductLinkIndex) searchProducts(ctx context.Context, words []strin
 		switch {
 		case phrase == row.titlePhrase:
 			match.group = 1
+		case len(row.title) < 2:
+			// A one-word title would match too many queries; it matches only exactly.
+			continue
 		case strings.Contains(phrase, row.titlePhrase):
 			match.group = 2
 		default:
