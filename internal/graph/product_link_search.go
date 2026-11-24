@@ -31,7 +31,8 @@ func foldProductSearchText(text string) string {
 
 func productSearchTokens(folded string) []string {
 	return strings.FieldsFunc(folded, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+		// Marks left by the fold (non-Latin scripts) belong to their word.
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r)
 	})
 }
 
