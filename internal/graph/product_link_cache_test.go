@@ -96,7 +96,7 @@ func TestProductLinkCacheNewerTokenDuringBuild(t *testing.T) {
 			readCount++
 			return token, nil
 		}
-		firstIndex, secondIndex := BuildProductMentionIndex(nil), BuildProductMentionIndex(nil)
+		firstIndex, secondIndex := &ProductLinkIndex{}, &ProductLinkIndex{}
 		resume := make(chan struct{})
 		finish := sync.OnceFunc(func() { close(resume) })
 		defer finish()
@@ -110,7 +110,7 @@ func TestProductLinkCacheNewerTokenDuringBuild(t *testing.T) {
 			return productLinkSnapshot{token: captured, index: secondIndex}, nil
 		}
 		var waiters sync.WaitGroup
-		load := func(want *ProductMentionIndex) {
+		load := func(want *ProductLinkIndex) {
 			waiters.Go(func() {
 				if got, err := cache.load(t.Context(), readToken, build); err != nil || got != want {
 					t.Errorf("index = %p, err = %v, want %p", got, err, want)
@@ -156,7 +156,7 @@ func TestProductLinkCachePushBetweenTokenAndBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if matches := index.Match("AA12345, BB12345"); len(matches) != 2 || matches[1].Product.Title != "Added" {
+	if matches := index.code.Match("AA12345, BB12345"); len(matches) != 2 || matches[1].Product.Title != "Added" {
 		t.Fatalf("matches = %+v, want both products", matches)
 	}
 	if warm, err := f.store.productLinks.load(ctx, readToken, build); err != nil || warm != index {
@@ -196,7 +196,7 @@ func TestProductLinkCachePushDuringBuild(t *testing.T) {
 			t.Errorf("load for %s: %v", want, err)
 			return
 		}
-		if matches := index.Match("AA12345 BB12345"); len(matches) != 1 || matches[0].Key != want {
+		if matches := index.code.Match("AA12345 BB12345"); len(matches) != 1 || matches[0].Key != want {
 			t.Errorf("matches = %+v, want %s", matches, want)
 		}
 	}
@@ -251,7 +251,7 @@ func TestProductLinkCacheRebindDuringBuild(t *testing.T) {
 		return f.store.buildProductLinkSnapshot(ctx, maxProductMentionValues)
 	}
 	type loadResult struct {
-		index *ProductMentionIndex
+		index *ProductLinkIndex
 		err   error
 	}
 	done := make(chan loadResult, 1)
@@ -284,7 +284,7 @@ func TestProductLinkCacheRebindDuringBuild(t *testing.T) {
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if matches := result.index.Match("AA12345"); len(matches) != 0 {
+	if matches := result.index.code.Match("AA12345"); len(matches) != 0 {
 		t.Fatalf("matches = %+v, want an empty index after wipe and rebind", matches)
 	}
 	if reads != 2 || builds != 1 {
@@ -301,7 +301,7 @@ func TestProductLinkCacheRereadsIncomparableTokenOnce(t *testing.T) {
 	}
 	build := func(context.Context) (productLinkSnapshot, error) {
 		builds++
-		return productLinkSnapshot{token: productLinkToken{release: pushB}, index: BuildProductMentionIndex(nil)}, nil
+		return productLinkSnapshot{token: productLinkToken{release: pushB}, index: &ProductLinkIndex{}}, nil
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
@@ -315,7 +315,7 @@ func TestProductLinkCacheLoadAtLeastCapsStaleBuilds(t *testing.T) {
 	var cache productLinkCache
 	token := productLinkToken{release: pushA, activationSeq: 1}
 	stale := productLinkToken{release: pushA}
-	index := BuildProductMentionIndex(nil)
+	index := &ProductLinkIndex{}
 	builds := 0
 	build := func(context.Context) (productLinkSnapshot, error) {
 		builds++
@@ -402,7 +402,7 @@ func TestProductLinkCacheDetachesBuildAndCoalescesWaiters(t *testing.T) {
 		ready := make(chan struct{})
 		release := sync.OnceFunc(func() { close(ready) })
 		defer release()
-		index := BuildProductMentionIndex(nil)
+		index := &ProductLinkIndex{}
 		builds := 0
 		build := func(ctx context.Context) (productLinkSnapshot, error) {
 			builds++
@@ -450,7 +450,7 @@ func TestProductLinkCacheFailureBackoff(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var cache productLinkCache
 		token := productLinkToken{release: pushA, activationSeq: 1}
-		index := BuildProductMentionIndex(nil)
+		index := &ProductLinkIndex{}
 		retryStarted, retryReady := make(chan struct{}), make(chan struct{})
 		resume := sync.OnceFunc(func() { close(retryReady) })
 		defer resume()

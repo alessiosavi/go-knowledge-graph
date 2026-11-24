@@ -562,6 +562,10 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	if err := st.WarmProductLinks(ctx); err != nil {
+		slog.WarnContext(ctx, "warm product link index", "error", err)
+	}
+
 	rest := newAPIServer(cfg, st, pipe, emb, metrics)
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
@@ -785,6 +789,9 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 	if err := pipe.Recover(ctx); err != nil {
 		fmt.Fprintf(stderr, "gkg mcp: %v\n", err)
 		return 1
+	}
+	if err := st.WarmProductLinks(ctx); err != nil {
+		slog.WarnContext(ctx, "warm product link index", "error", err)
 	}
 	srv := mcpserver.NewServer(cfg, st, pipe)
 	srv.SetEmbedder(emb)

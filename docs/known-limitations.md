@@ -147,11 +147,21 @@ is benign: the newer version completes normally.
 
 ## Product page association
 
-Page matching lowercases the scheme and host, removes the fragment and
+Exact URL matching lowercases the scheme and host, removes the fragment and
 strips trailing path slashes. HTTP and HTTPS, `www` and apex hosts, Unicode
 IDNs and punycode, percent-encoding case in paths and queries, dot segments
 and explicit default ports are compared as-is and identify different pages.
 Redirect targets can still match through the document's `final_url`.
+
+Page-key inference scans done documents in the product's bound domain and
+matches eligible opaque sources by their last segment. A namespaced source
+can match an unrelated product when it shares that product's unique page key.
+When multiple products in the domain share a key, page-key inference drops
+that key. The URL and page-key index legs each have a 200,000-row and 64 MiB
+input budget. When page-key coverage is unavailable, product detail reports
+`pages_partial`, retains direct pages and sets `pages_missing` to false.
+Page-key matches can reflect a later snapshot than the record and direct
+pages.
 
 ## Read-only Cypher surface
 
