@@ -28,6 +28,7 @@ type Store struct {
 	// process owns the store).
 	mu            sync.Mutex
 	writeLockWait func(time.Duration)
+	productLinks  productLinkCache
 }
 
 // SetWriteLockWaitObserver registers the optional lock wait observer.
@@ -59,7 +60,10 @@ func Open(ctx context.Context, cfg config.Config) (*Store, error) {
 }
 
 // Close releases the driver's resources.
-func (s *Store) Close(ctx context.Context) error { return s.driver.Close(ctx) }
+func (s *Store) Close(ctx context.Context) error {
+	s.productLinks.stop(ctx)
+	return s.driver.Close(ctx)
+}
 
 // Ping verifies the database connection; the readiness probe uses it.
 func (s *Store) Ping(ctx context.Context) error {

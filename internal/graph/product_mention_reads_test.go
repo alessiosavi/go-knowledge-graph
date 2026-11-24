@@ -162,9 +162,10 @@ func TestProductMentionCandidateMemgraph(t *testing.T) {
 		(b:Product {id:'mr-b',store:'mr-other'}),
 		(a)-[:HAS_FEATURE {release_id:$rel,items_fold:['AB12345','ZX_98765','TC2SL','151LZ','AM12345']}]->(f),
 		(b)-[:HAS_FEATURE {release_id:$rel,value_fold:'AM12345'}]->(f)`, map[string]any{"store": pushStore, "rel": pushA})
+	readStore := f.store
 	read := func(domain string) ProductDetailWithMentions {
 		t.Helper()
-		out, _, err := f.store.GetProductWithMentions(t.Context(), ProductLookup{ID: "mr-a", Domain: domain})
+		out, _, err := readStore.GetProductWithMentions(t.Context(), ProductLookup{ID: "mr-a", Domain: domain})
 		if err != nil || out.ProductMentionFields == nil || out.MentionsError != "" {
 			t.Fatalf("read=%+v err=%v", out, err)
 		}
@@ -184,6 +185,8 @@ func TestProductMentionCandidateMemgraph(t *testing.T) {
 		(a)-[:HAS_FEATURE {release_id:$rel,value_fold:'RAW12345'}]->(f),
 		(a)-[:HAS_FEATURE {release_id:$rel,value_fold:'ELIG12345'}]->(f),
 		(a)-[:HAS_FEATURE {release_id:$rel,value_fold:'BIG12345'}]->(f)`, map[string]any{"rel": pushA})
+	// The edge fixture bypasses catalogue writes, so use a fresh cache.
+	readStore = f.other
 	fill := func(n int, text string) []string {
 		out := make([]string, n)
 		for i := range out {
@@ -384,11 +387,11 @@ func TestProductMentionReadLifecycle(t *testing.T) {
 		}
 	}
 	read("Original", "AA12345", old)
-	if !slices.Equal(count.statements, []int{3, 4, 2}) {
-		t.Fatalf("T0 includes optional URL page lookup: statements=%v", count.statements)
+	if !slices.Equal(count.statements, []int{3, 1, 3, 2}) {
+		t.Fatalf("cold read (product, token, build, candidates): statements=%v", count.statements)
 	}
-	if count.deadlines[1].IsZero() || !count.deadlines[1].Equal(count.deadlines[2]) {
-		t.Fatalf("T1 and T2 must share a deadline: %v", count.deadlines)
+	if count.deadlines[1].IsZero() || !count.deadlines[1].Equal(count.deadlines[3]) || !count.deadlines[2].After(count.deadlines[1]) {
+		t.Fatalf("the token and candidates share the request deadline; the build has its own: %v", count.deadlines)
 	}
 	count.afterTx = func(n int) {
 		if n == 0 {
@@ -399,6 +402,9 @@ func TestProductMentionReadLifecycle(t *testing.T) {
 	read("Original", "BB12345", old)
 	count.afterTx = nil
 	read("Pushed", "BB12345", old)
+	if !slices.Equal(count.statements, []int{3, 1, 2}) {
+		t.Fatalf("warm read (product, token, candidates): statements=%v", count.statements)
+	}
 	newID := doc("new", "BB12345", false)
 	count.afterTx = func(n int) {
 		if n == 1 {

@@ -13,6 +13,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/mcp"
 	"github.com/alessiosavi/go-knowledge-graph/internal/productobs"
 	mcpgo "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -59,7 +60,25 @@ func TestProductMentionsWires(t *testing.T) {
 	seed("z-mention-wire", scope, text, 1)
 	first := seed("a-mention-wire", scope, text, 5)
 	seed("0-mention-wire", "mention-wire-other", text, 1)
-	router := api.NewServer(config.Config{}, st, nil).Handler()
+	var router http.Handler
+	var client *mcpgo.ClientSession
+	useStore := func(store *graph.Store) {
+		t.Helper()
+		router = api.NewServer(config.Config{}, store, nil).Handler()
+		serverTransport, clientTransport := mcpgo.NewInMemoryTransports()
+		server, err := mcp.NewServer(config.Config{}, store, nil).MCP().Connect(ctx, serverTransport, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = server.Close() })
+		nextClient, err := mcpgo.NewClient(&mcpgo.Implementation{Name: "mention-wire-tests"}, nil).Connect(ctx, clientTransport, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = nextClient.Close() })
+		client = nextClient
+	}
+	useStore(st)
 	rest := func(path string, status int) []byte {
 		t.Helper()
 		r := httptest.NewRecorder()
@@ -70,17 +89,6 @@ func TestProductMentionsWires(t *testing.T) {
 		return r.Body.Bytes()
 	}
 	paths := []string{"/v1/products/" + id + "?domain=" + scope, "/v1/products?store=" + store + "&product_id=" + sourceID + "&domain=" + scope}
-	serverTransport, clientTransport := mcpgo.NewInMemoryTransports()
-	server, err := mcp.NewServer(config.Config{}, st, nil).MCP().Connect(ctx, serverTransport, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = server.Close() })
-	client, err := mcpgo.NewClient(&mcpgo.Implementation{Name: "mention-wire-tests"}, nil).Connect(ctx, clientTransport, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
 	tool := func(args string, failure string) []byte {
 		t.Helper()
 		got, err := client.CallTool(ctx, &mcpgo.CallToolParams{Name: "get_product", Arguments: json.RawMessage(args)})
@@ -196,11 +204,15 @@ func TestProductMentionsWires(t *testing.T) {
 	query(setStoreDomain, map[string]any{"store": store, "domain": scope})
 	query(`MATCH (p:Product {id:$id})-[e:HAS_FEATURE]->()
 		SET e.items_fold=['ABCDEé12345']`, map[string]any{"id": id})
+	// Direct DB edits are outside the token contract. Use a fresh Store.
+	useStore(graphtest.Store(t))
 	readBoth("", 0, 0, 0, "", true)
 	query(`MATCH (p:Product {id:$id})-[e:HAS_FEATURE]->()
 		SET e.items_fold=[i IN range(1,9) | 'CODE0000'+toString(i)]`, map[string]any{"id": id})
 	query(`MATCH (p:Product {id:'mention-wire-extra'}),(f:FeatureRev {key:'mention-wire-code'})
 		CREATE (p)-[:HAS_FEATURE {release_id:'mention-wire-release',value_fold:12345}]->(f)`, nil)
+	// Use a fresh Store for each raw edit so failure backoff cannot mask the next wire shape.
+	useStore(graphtest.Store(t))
 	readBoth("", 0, 0, 0, "index_unavailable", false)
 	rest("/v1/products/mention-wire-missing?with_mentions=true", 404)
 	rest("/v1/products?store="+store+"&product_id=missing&with_mentions=true", 404)
@@ -210,9 +222,11 @@ func TestProductMentionsWires(t *testing.T) {
 		WITH s CREATE (s2:ProductStore {store:'mention-wire-bound.test',domain:'mention-wire-other'}), (b:Product {id:'mention-wire-gate',store:s2.store})
 		WITH b MATCH (p:Product {id:'mention-wire-extra'}) SET p.store=b.store`, map[string]any{"store": store})
 	t.Cleanup(func() { query(`MATCH (n) WHERE n.store='mention-wire-bound.test' DETACH DELETE n`, nil) })
+	useStore(graphtest.Store(t))
 	readBoth("", 0, 0, 0, "index_too_large", false)
 	query(`MATCH (:Product {id:'mention-wire-extra'})-[e:HAS_FEATURE]->() DELETE e WITH count(*) AS ignored
 		MATCH (s:ProductStore {store:$store}) SET s.domain=$domain`, map[string]any{"store": store, "domain": scope})
+	useStore(graphtest.Store(t))
 	session := driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer session.Close(ctx)
 	result, err := session.Run(ctx, "DROP TEXT INDEX chunk_text_v2", nil)

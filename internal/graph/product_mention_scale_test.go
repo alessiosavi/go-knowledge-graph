@@ -110,7 +110,9 @@ func TestProductMentionReadScale(t *testing.T) {
 				map[string]any{"key": code, "start": start, "end": start + 999, "store": store, "j": storeIdx, "release": pushA})
 		}
 	}
+	startCold := time.Now()
 	index, err := f.store.LoadProductMentionIndex(ctx)
+	coldLoad := time.Since(startCold)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +205,7 @@ func TestProductMentionReadScale(t *testing.T) {
 		if err != nil || out.ProductMentionFields == nil || out.MentionsError != "" || out.MentionsTotal == 0 {
 			t.Fatalf("%+v: unsuccessful enrichment (%s): %v, %q", lookup, elapsed, err, out.MentionsError)
 		}
-		if !slices.Equal(counter.statements, []int{2, 4, 2}) {
+		if !slices.Equal(counter.statements, []int{2, 1, 2}) {
 			t.Fatalf("statements per transaction = %v", counter.statements)
 		}
 		return out, read, elapsed
@@ -211,19 +213,15 @@ func TestProductMentionReadScale(t *testing.T) {
 	for i := range 5 {
 		measureRead(lookupFor(sample{i % 2, i + 20, i%2 == 0}))
 	}
-	var endToEnd, indexLoad, indexTx, indexBuild, searchMatch, baseline []time.Duration
-	var indexStatements [4][]time.Duration
+	var endToEnd, indexLoad, tokenTx, tokenStatement, searchMatch, baseline []time.Duration
 	var partial, raw, eligible int
 	var sawLarge bool
 	for _, sample := range samples {
 		out, read, elapsed := measureRead(lookupFor(sample))
 		endToEnd = append(endToEnd, elapsed)
 		indexLoad = append(indexLoad, read.IndexLoad)
-		indexTx = append(indexTx, counter.durations[1])
-		indexBuild = append(indexBuild, read.IndexLoad-counter.durations[1])
-		for i, duration := range counter.statementsDone[1] {
-			indexStatements[i] = append(indexStatements[i], duration)
-		}
+		tokenTx = append(tokenTx, counter.durations[1])
+		tokenStatement = append(tokenStatement, counter.statementsDone[1][0])
 		searchMatch = append(searchMatch, read.SearchMatch)
 		if out.MentionsPartial {
 			partial++
@@ -258,8 +256,9 @@ func TestProductMentionReadScale(t *testing.T) {
 		slices.Sort(values)
 		return float64(values[(95*len(values)+99)/100-1]) / float64(time.Millisecond)
 	}
-	t.Logf("index tx p95 %.3fms, post-tx build p95 %.3fms, index statements p95 [%.3f, %.3f, %.3f, %.3f] ms",
-		p95(indexTx), p95(indexBuild), p95(indexStatements[0]), p95(indexStatements[1]), p95(indexStatements[2]), p95(indexStatements[3]))
+	// Both read paths reuse the warmed index. Report the cold load separately.
+	t.Logf("cold index load %s, warm token tx p95 %.3fms, token statement p95 %.3fms",
+		coldLoad, p95(tokenTx), p95(tokenStatement))
 	measurement := struct {
 		Samples            int     `json:"samples"`
 		EndToEndMS         float64 `json:"end_to_end_p95_ms"`
