@@ -35,8 +35,60 @@ type ProductLinkIndex struct {
 	urlOff        bool
 	pageOff       bool
 
-	products    map[string]Product // product metadata for subsequent index legs
+	products    map[string]Product // display metadata shared by the index legs
 	productsOff bool
+}
+
+// MentionIndex returns the code leg independently of the document legs.
+func (index *ProductLinkIndex) MentionIndex() (*ProductMentionIndex, error) {
+	return index.code, index.codeErr
+}
+
+// ProductDisplay returns the snapshot's display row for a product.
+func (index *ProductLinkIndex) ProductDisplay(id string) (Product, bool) {
+	if index == nil {
+		return Product{}, false
+	}
+	p, ok := index.products[id]
+	return p, ok
+}
+
+// ProductDisplaysCapped reports whether callers need a read for display rows.
+func (index *ProductLinkIndex) ProductDisplaysCapped() bool {
+	return index != nil && index.productsOff
+}
+
+// InferredDocumentProducts contains owner IDs for the document's source and
+// redirect URL, and its page key. URL slices are shared and read-only.
+type InferredDocumentProducts struct {
+	URL  [2][]string
+	Page string
+}
+
+// ResolveDocumentProducts applies the store binding and source rules to a done
+// document. The status describes an unavailable inferred leg.
+func (index *ProductLinkIndex) ResolveDocumentProducts(doc DocumentProductLinks) (InferredDocumentProducts, string) {
+	var owners InferredDocumentProducts
+	if doc.Status != StatusDone || !allowsInferredProductPages(doc.Domain, "") {
+		return owners, ""
+	}
+	if index == nil {
+		return owners, productPageUnavailable
+	}
+	if !index.urlOff {
+		source, final := canonicalProductPageURL(doc.Source), canonicalProductPageURL(doc.FinalURL)
+		owners.URL[0] = index.urlProductOwners(doc.Domain, source)
+		if final != source {
+			owners.URL[1] = index.urlProductOwners(doc.Domain, final)
+		}
+	}
+	if !index.pageOff {
+		owners.Page = index.pageProductOwner(doc.Domain, doc.Source)
+	}
+	if index.urlOff || index.pageOff {
+		return owners, productPageIndexTooLarge
+	}
+	return owners, ""
 }
 
 type productLinkBudget struct {
@@ -224,7 +276,7 @@ func (s *Store) resolveProductPageTier(ctx context.Context, selection productPag
 	// detached index build. A subsequent request can reuse the finished index.
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	index, err := s.loadProductLinkIndex(ctx)
+	index, err := s.LoadProductLinkIndex(ctx)
 	if err != nil {
 		return selection, productPageUnavailable
 	}

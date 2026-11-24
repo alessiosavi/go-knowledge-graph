@@ -111,7 +111,7 @@ func TestProductPageArrivalOrderAndDomain(t *testing.T) {
 			t.Fatalf("ambiguous key linked %s: %+v", sourceID, out)
 		}
 	}
-	index, err := f.store.loadProductLinkIndex(t.Context())
+	index, err := f.store.LoadProductLinkIndex(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +435,7 @@ func TestProductURLIndexIncludesAllOrderedOwners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	index, err := f.store.loadProductLinkIndex(ctx)
+	index, err := f.store.LoadProductLinkIndex(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

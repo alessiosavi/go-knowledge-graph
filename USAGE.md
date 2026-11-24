@@ -353,23 +353,32 @@ reads. It returns up to 4 KiB of text per chunk. The 24 KiB response budget may
 omit chunks, including neighbours, whose IDs are listed in
 `meta.omitted_for_budget`.
 
-`get_chunks` accepts `with_products: true` to list exact product identifier
-matches on the full stored text. Chunk scope follows the requested domain.
-Products can come from any bound store, and identifiers shared by multiple
-products are excluded. Each chunk reports `products_total` before
-`products_limit` (1–50, default 10), with up to eight unique evidence entries
-per product. `outside_returned_text` means every matching span extends beyond
-the displayed text. `products_omitted_for_budget` counts additional products
-trimmed to fit the JSON response. Retry a single chunk with a higher
-`products_limit` for more results, or use `gkg products mentions-scan` for
-the complete offline scan of done documents.
+`get_chunks` accepts `with_products: true` to list products linked to each
+chunk's done document and exact product identifier matches on the full stored
+text. Document links appear first. They come from explicit refs, exact source
+or redirect URLs, and unambiguous page keys. URL and page-key links require
+the product store to be bound to the document's domain. Refs and code matches
+can span domains. Identifiers shared by multiple products are excluded from
+code matching.
 
-`get_chunks` reads the product index after reading the chunks and reports
-the product metadata from that index snapshot. If enrichment is unavailable,
-the chunk response still includes the text and reports `products_error` as
-`index_too_large`, `index_unavailable`, or `match_budget`. A domain-scoped
-agent can list cross-domain products but can only open products in its own
-domain with `get_product`.
+`products_total` now counts unique products from both sources, before
+`products_limit` (1–50, default 10). Both sources count toward the limit.
+Each entry includes `brand` and lists its evidence in `via` in the order
+`ref`, `url`, `page`, `code`. `matched` contains up to eight unique code
+evidence entries and is empty for document-only products.
+`outside_returned_text` means every matching code span extends beyond the
+displayed text. `products_omitted_for_budget` counts additional products
+trimmed to fit the JSON response. Retry a single chunk with a higher
+`products_limit` for more results, or use `gkg products mentions-scan` for the
+complete offline code scan of done documents.
+
+The tool reads document metadata and live refs after reading the chunks, then
+uses a catalogue snapshot for inferred links and code matching. A code-leg
+failure reports `products_error` as `index_too_large`, `index_unavailable`,
+or `match_budget`, while available document links are still returned.
+`links_partial` reports incomplete document links as `index_too_large` or
+`index_unavailable`. A domain-scoped agent can list cross-domain products
+and can open products in its own domain with `get_product`.
 
 Example prompts:
 

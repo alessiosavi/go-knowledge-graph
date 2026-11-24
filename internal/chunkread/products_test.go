@@ -23,6 +23,15 @@ func (s mentionTestStore) LoadProductMentionIndex(ctx context.Context) (*graph.P
 	return s.load(ctx)
 }
 
+type documentTestStore struct {
+	mentionTestStore
+	documents func([]string) (map[string]graph.DocumentProductLinks, error)
+}
+
+func (s documentTestStore) DocumentProductLinks(_ context.Context, ids []string) (map[string]graph.DocumentProductLinks, error) {
+	return s.documents(ids)
+}
+
 func mentionObservation(id, code string) graph.ProductIdentifierObservation {
 	return graph.ProductIdentifierObservation{
 		Product: graph.Product{ID: id, Store: "products.test", ProductID: "products.test:" + id, Title: id},
@@ -53,11 +62,11 @@ func TestReadProductSpans(t *testing.T) {
 		t.Fatalf("Read = %+v, %v", out.Meta, err)
 	}
 	for i, want := range []string{
-		`[{"id":"actual","store":"products.test","product_id":"products.test:actual","title":"actual","matched":[{"feature":"catalogue_code","value":"AB界12345"}],"outside_returned_text":true}]`,
+		`[{"id":"actual","store":"products.test","product_id":"products.test:actual","title":"actual","brand":"","via":["code"],"matched":[{"feature":"catalogue_code","value":"AB界12345"}],"outside_returned_text":true}]`,
 		`[]`,
-		`[{"id":"actual","store":"products.test","product_id":"products.test:actual","title":"actual","matched":[{"feature":"catalogue_code","value":"AB界12345"}]}]`,
-		`[{"id":"apparent","store":"products.test","product_id":"products.test:apparent","title":"apparent","matched":[{"feature":"catalogue_code","value":"AB12345"}],"outside_returned_text":true}]`,
-		`[{"id":"apparent","store":"products.test","product_id":"products.test:apparent","title":"apparent","matched":[{"feature":"catalogue_code","value":"AB12345"}]}]`,
+		`[{"id":"actual","store":"products.test","product_id":"products.test:actual","title":"actual","brand":"","via":["code"],"matched":[{"feature":"catalogue_code","value":"AB界12345"}]}]`,
+		`[{"id":"apparent","store":"products.test","product_id":"products.test:apparent","title":"apparent","brand":"","via":["code"],"matched":[{"feature":"catalogue_code","value":"AB12345"}],"outside_returned_text":true}]`,
+		`[{"id":"apparent","store":"products.test","product_id":"products.test:apparent","title":"apparent","brand":"","via":["code"],"matched":[{"feature":"catalogue_code","value":"AB12345"}]}]`,
 	} {
 		t.Run(out.Chunks[i].ID, func(t *testing.T) {
 			var item map[string]json.RawMessage
@@ -291,5 +300,86 @@ func TestReadProductEncodedBudget(t *testing.T) {
 		!slices.Equal(got.Meta.OmittedForBudget, []string{"last"}) ||
 		!slices.Equal(got.Meta.Truncated, []string{"first"}) || len(resultJSON(t, got)) > ResponseBudget {
 		t.Fatalf("expected products trimmed before a chunk is dropped: %+v", got.Meta)
+	}
+}
+
+func TestReadDocumentProductEncodedBudget(t *testing.T) {
+	linked := graph.Product{ID: "linked", Title: "Ref title", Brand: strings.Repeat("<", 3000)}
+	st := documentTestStore{
+		mentionTestStore: indexedChunks([]graph.Chunk{
+			{ID: "first", DocID: "doc", Text: "AB12345"},
+			{ID: "last", DocID: "doc", Text: "AB12345"},
+		}, []graph.ProductIdentifierObservation{mentionObservation("linked", "AB12345")}),
+		documents: func(ids []string) (map[string]graph.DocumentProductLinks, error) {
+			if !slices.Equal(ids, []string{"doc"}) {
+				t.Fatalf("loaded documents %v, want one distinct ID", ids)
+			}
+			return map[string]graph.DocumentProductLinks{"doc": {Status: graph.StatusDone, Refs: []graph.Product{linked}}}, nil
+		},
+	}
+	read := func() Result {
+		t.Helper()
+		out, err := Read(t.Context(), st, Request{IDs: []string{"first", "last"}, WithProducts: true})
+		if err != nil || len(out.Chunks) != 2 {
+			t.Fatalf("read: %+v, %v", out.Meta, err)
+		}
+		return out
+	}
+	out := read()
+	first, last := out.Chunks[0], out.Chunks[1]
+	if first.Products == nil || len(*first.Products) != 1 ||
+		!slices.Equal((*first.Products)[0].Via, []string{"ref", "code"}) ||
+		last.Products == nil || len(*last.Products) != 0 ||
+		last.ProductsOmittedForBudget != 1 || last.ProductsTotal == nil || *last.ProductsTotal != 1 {
+		t.Fatalf("encoded budget trimmed the wrong products or totals: %+v", out.Chunks)
+	}
+	// Adjust escaped bytes in the brand and ordinary bytes in the text
+	// so this reaches the boundary without causing chunk text truncation.
+	spare := ResponseBudget - len(resultJSON(t, out))
+	if spare <= 0 {
+		t.Fatalf("expected spare wire bytes, got %d", spare)
+	}
+	linked.Brand += strings.Repeat("<", spare/6)
+	st.chunks[0].Text += strings.Repeat(" ", spare%6)
+	if size := len(resultJSON(t, read())); size != ResponseBudget {
+		t.Fatalf("encoded boundary = %d, want %d", size, ResponseBudget)
+	}
+	st.chunks[0].Text += " "
+	out = read()
+	if first := out.Chunks[0]; len(*first.Products) != 0 || first.ProductsOmittedForBudget != 1 {
+		t.Fatalf("expected one additional trim at the boundary: %+v", first)
+	}
+}
+
+func TestReadDocumentProductsWhenCodeUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name, text, productsError string
+	}{
+		{"timeout", "AB12345", "index_unavailable"},
+		{"match budget", strings.Repeat(" ", maxMatchBytes+1), "match_budget"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := documentTestStore{
+				mentionTestStore: mentionTestStore{&fakeStore{chunks: []graph.Chunk{{ID: "c0", DocID: "doc", Text: tc.text}}},
+					func(context.Context) (*graph.ProductMentionIndex, error) {
+						if tc.productsError == "match_budget" {
+							t.Error("loaded code index after exceeding the match budget")
+						}
+						return nil, graph.ErrQueryTimeout
+					}},
+				documents: func([]string) (map[string]graph.DocumentProductLinks, error) {
+					return map[string]graph.DocumentProductLinks{"doc": {
+						Status: graph.StatusDone, Domain: "catalogue", Refs: []graph.Product{{ID: "linked"}},
+					}}, nil
+				},
+			}
+			out, err := Read(t.Context(), st, Request{IDs: []string{"c0"}, WithProducts: true})
+			if err != nil || len(out.Chunks) != 1 || out.ProductsError != tc.productsError || out.LinksPartial != "index_unavailable" {
+				t.Fatalf("read: %+v, %v", out, err)
+			}
+			if p := out.Chunks[0].Products; p == nil || len(*p) != 1 || !slices.Equal((*p)[0].Via, []string{"ref"}) {
+				t.Fatalf("read lost an available ref: %v", p)
+			}
+		})
 	}
 }

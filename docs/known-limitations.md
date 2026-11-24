@@ -163,6 +163,13 @@ input budget. When page-key coverage is unavailable, product detail reports
 Page-key matches can reflect a later snapshot than the record and direct
 pages.
 
+Chunk product enrichment reads documents and live refs in one batch, then
+resolves inferred links against the catalogue snapshot. The two reads can
+reflect different instants. If either inferred leg is capped or unavailable,
+`get_chunks` reports `links_partial` and keeps available document links.
+The code-matching leg reports its own status in `products_error`. The
+reported total counts the available associations when either status is set.
+
 ## Read-only Cypher surface
 
 - `POST /v1/cypher` (and the future MCP `cypher` tool) accepts one

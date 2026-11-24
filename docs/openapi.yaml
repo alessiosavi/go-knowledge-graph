@@ -1024,6 +1024,12 @@ paths:
         limit. Product details may report features_omitted. The agent can pass
         with_mentions=true to get_product for exact identifier matches in
         passages from done documents. with_mentions defaults to false.
+        The agent can pass with_products=true to get_chunks to include
+        products linked to each chunk's done document as well as exact
+        identifier matches. Document-linked products appear first. Both
+        sources count toward products_total after deduplication and before
+        products_limit. links_partial reports incomplete document links,
+        and products_error reports code matching failures.
         The optional mentions_limit accepts integers from 1 to 20 and defaults
         to 5. The agent drops passages from the end before dropping features
         to fit the result budget and reports mentions_omitted_for_budget.

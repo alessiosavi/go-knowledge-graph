@@ -204,7 +204,9 @@ func (c *productLinkCache) stop(ctx context.Context) {
 	}
 }
 
-func (s *Store) loadProductLinkIndex(ctx context.Context) (*ProductLinkIndex, error) {
+// LoadProductLinkIndex checks the catalogue version before reusing the shared
+// immutable snapshot. An unavailable leg does not prevent loading other legs.
+func (s *Store) LoadProductLinkIndex(ctx context.Context) (*ProductLinkIndex, error) {
 	return s.productLinks.load(ctx, s.readProductLinkToken, func(ctx context.Context) (productLinkSnapshot, error) {
 		return s.buildProductLinkSnapshot(ctx, maxProductMentionValues)
 	})
@@ -214,7 +216,7 @@ func (s *Store) loadProductLinkIndex(ctx context.Context) (*ProductLinkIndex, er
 func (s *Store) WarmProductLinks(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, productLinkBuildTimeout)
 	defer cancel()
-	_, err := s.loadProductLinkIndex(ctx)
+	_, err := s.LoadProductLinkIndex(ctx)
 	return err
 }
 
