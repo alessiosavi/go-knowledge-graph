@@ -50,6 +50,57 @@ func TestProductLinkSearchRanking(t *testing.T) {
 	}
 }
 
+func TestProductLinkSearchQueryCoverage(t *testing.T) {
+	var index ProductLinkIndex
+	budget := productLinkBudget{maxRows: maxProductLinkRows}
+	for _, p := range []Product{
+		{ID: "long", Title: "Reflexx L600 XL Powder Free Nitrile Examination Gloves Pack of 100", Brand: "Reflexx"},
+		{ID: "brand-field", Title: "L600 XL Powder Free Nitrile Examination Gloves Pack of 100", Brand: "Reflexx"},
+		{ID: "brand-only", Title: "Acme Medical Disposable Powder Free Nitrile Examination Gloves", Brand: "Acme Medical"},
+	} {
+		index.addProductSearchRow(p, &budget)
+	}
+	assertHits := func(t *testing.T, query string, limit int, want ...string) {
+		t.Helper()
+		words := productSearchTokens(foldProductSearchText(query))
+		found, err := index.searchProducts(t.Context(), words, "", limit)
+		var ids []string
+		for _, p := range found {
+			ids = append(ids, p.ID)
+		}
+		if err != nil || !slices.Equal(ids, want) {
+			t.Fatalf("search %q returned ids=%v err=%v, want %v", query, ids, err, want)
+		}
+	}
+	t.Run("short model query and title share tie-break", func(t *testing.T) {
+		assertHits(t, "Reflexx L600 XL", 3, "long", "brand-field")
+	})
+	t.Run("folded tokens and stopwords", func(t *testing.T) {
+		assertHits(t, "RÉFLEXX di L600 with XL ø", 3, "long", "brand-field")
+	})
+	t.Run("incomplete query coverage", func(t *testing.T) {
+		assertHits(t, "Reflexx L600 XXL", 3)
+	})
+	t.Run("brand tokens in the title are insufficient", func(t *testing.T) {
+		assertHits(t, "Acme Medical", 3)
+	})
+	t.Run("one unique token is insufficient", func(t *testing.T) {
+		assertHits(t, "L600", 3)
+		assertHits(t, "L600 L600", 3)
+		assertHits(t, "L600 of", 3)
+	})
+	t.Run("top three are reserved for higher groups", func(t *testing.T) {
+		for _, p := range []Product{
+			{ID: "reordered", Title: "XL Reflexx"},
+			{ID: "contained", Title: "L600 XL"},
+			{ID: "exact", Title: "Reflexx L600 XL"},
+		} {
+			index.addProductSearchRow(p, &budget)
+		}
+		assertHits(t, "Reflexx L600 XL", 3, "exact", "contained", "reordered")
+	})
+}
+
 func TestProductLinkSearchUsesPrecomputedFields(t *testing.T) {
 	var index ProductLinkIndex
 	budget := productLinkBudget{maxRows: 2}

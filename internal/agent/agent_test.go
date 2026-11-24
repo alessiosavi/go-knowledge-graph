@@ -902,6 +902,7 @@ func TestProductEvidencePromptRouting(t *testing.T) {
 	rules := []string{
 		"For any question about a product: read its product record (get_product) AND what documents say about it (pages, mentions, or get_chunks with_products). Cite the record and at least one passage about that product and say whether they agree; if no passage exists, say so — unless mentions_error, mentions_partial or pages_partial shows the check was incomplete; then say the passages could not be fully checked.",
 		"Documents may be Italian and product data English: search with Italian and English keywords, as two searches in the same step.",
+		"For product names and attributes, also search in English (product data is English), e.g. 'adesivo universale' → 'universal adhesive'.",
 		"Search can return product hits (kind product) with an id for get_product.",
 		"Pass a product page's chunk_ids to get_chunks to read its passages.",
 		"If the passages you rely on list products and the question is about a product, call get_product on that product before answering, even when search returned no product hits.",

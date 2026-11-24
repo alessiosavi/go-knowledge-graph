@@ -89,13 +89,46 @@ type productSearchMatch struct {
 	brand   bool
 }
 
+type productSearchCoverageToken struct {
+	word   string
+	phrase string
+}
+
+func isProductSearchStopword(word string) bool {
+	switch word {
+	case "di", "da", "del", "della", "per", "con", "il", "la", "le", "lo", "gli", "un", "una", "e", "ed", "in",
+		"the", "of", "for", "and", "with", "a", "an":
+		return true
+	default:
+		return false
+	}
+}
+
+func coversProductSearchQuery(tokens []productSearchCoverageToken, titleMatches map[string]int, brandPhrase string) bool {
+	matchedNonBrand := false
+	for _, token := range tokens {
+		if strings.Contains(brandPhrase, token.phrase) {
+			continue
+		}
+		if titleMatches[token.word] == 0 {
+			return false
+		}
+		matchedNonBrand = true
+	}
+	return matchedNonBrand
+}
+
 func (index *ProductLinkIndex) searchProducts(ctx context.Context, words []string, domain string, limit int) ([]Product, error) {
 	if index.searchOff {
 		return nil, ErrProductLinkSearchTooLarge
 	}
 	phrase := productSearchPhrase(words)
 	counts := make(map[string]int, len(words))
+	var distinctive []productSearchCoverageToken
 	for _, word := range words {
+		if counts[word] == 0 && utf8.RuneCountInString(word) >= 2 && !isProductSearchStopword(word) {
+			distinctive = append(distinctive, productSearchCoverageToken{word: word, phrase: " " + word + " "})
+		}
 		counts[word]++
 	}
 	used := make(map[string]int)
@@ -123,10 +156,13 @@ func (index *ProductLinkIndex) searchProducts(ctx context.Context, words []strin
 					match.matched++
 				}
 			}
-			if match.matched*2 < len(row.title) {
+			if match.matched*2 >= len(row.title) {
+				match.group = 3
+			} else if match.matched > 0 && len(distinctive) >= 2 && coversProductSearchQuery(distinctive, used, row.brandPhrase) {
+				match.group = 4
+			} else {
 				continue
 			}
-			match.group = 3
 		}
 		match.brand = row.brandPhrase != "" && strings.Contains(phrase, row.brandPhrase)
 		rank, _ := slices.BinarySearchFunc(best, match, compareProductSearchMatches)
