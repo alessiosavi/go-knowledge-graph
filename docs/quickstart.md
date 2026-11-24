@@ -399,9 +399,31 @@ agent:
   reasoning_efforts: [minimal, low, high]
 ```
 
-The example leaves the Gemini agent disabled until its tool turns can pass
-through Vertex thought signatures. See [provider configuration](../USAGE.md#judge-and-agent-provider-configuration)
+The example leaves the agent disabled; set `enabled: true` to serve asks.
+Tool turns pass Gemini thought signatures (`extra_content`) through unchanged.
+See [provider configuration](../USAGE.md#judge-and-agent-provider-configuration)
 for environment overrides and failure classes.
+
+### Gemini API key (any host)
+
+The agent can also reach Gemini through Google's OpenAI-compatible endpoint
+with an API key. This route needs no Google identity on the host, so it works
+on AWS and other machines with the default static auth. Restrict the key to the
+Generative Language API, keep it with the other provider keys in the box
+secrets, and take it from a project with billing enabled (paid tier).
+
+```dotenv
+GKG_AGENT_ENABLED=true
+GKG_AGENT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+GKG_AGENT_API_KEY=<key>
+GKG_AGENT_MODEL=gemini-3.5-flash-lite
+GKG_AGENT_MAX_TOKENS=2048
+GKG_AGENT_REASONING_EFFORTS=minimal,low,high
+```
+
+The judge keeps its own `GKG_JUDGE_*` settings, so the agent and the judge
+can use different providers. `gkg eval-agent --arm GM` still requires
+`agent.auth: gcp`, so paired agent evaluations use the Vertex route.
 
 ### Deferred judging of typed edges
 
