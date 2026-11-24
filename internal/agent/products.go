@@ -28,6 +28,7 @@ type productDetailOut struct {
 	graph.ProductDetailWithMentions
 	FeaturesOmitted int `json:"features_omitted,omitempty"`
 	MentionsOmitted int `json:"mentions_omitted_for_budget,omitempty"`
+	PagesOmitted    int `json:"pages_omitted_for_budget,omitempty"`
 }
 
 type productFeatureOut struct {
@@ -73,7 +74,7 @@ func (s *Server) toolGetProduct(ctx context.Context, raw json.RawMessage) (any, 
 	}
 	var detail graph.ProductDetailWithMentions
 	var err error
-	if withMentions != nil && *withMentions {
+	if withMentions == nil || *withMentions {
 		detail, _, err = s.store.GetProductWithMentions(ctx, args.ProductLookup)
 	} else {
 		detail.ProductDetail, err = s.store.GetProduct(ctx, args.ProductLookup)
@@ -89,15 +90,27 @@ func (s *Server) toolGetProduct(ctx context.Context, raw json.RawMessage) (any, 
 		displayLimit = *limit
 	}
 	detail.LimitMentions(displayLimit)
-	featureCount, mentionCount := len(detail.Features), 0
+	featureCount, pageCount, mentionCount := len(detail.Features), len(detail.Pages), 0
 	if detail.ProductMentionFields != nil {
 		mentionCount = len(detail.Mentions)
 	}
-	// Features come first in the fitted prefix, so mentions are dropped first.
-	return fitProductResult(featureCount+mentionCount, func(n int) productDetailOut {
-		features, mentions := min(n, featureCount), max(0, n-featureCount)
-		out := productDetailOut{ProductDetailWithMentions: detail, FeaturesOmitted: featureCount - features, MentionsOmitted: mentionCount - mentions}
+	// Reserve the first page and mention when present. Fit features before
+	// additional pages and mentions, preserving the order within each list.
+	firstPage, firstMention := min(1, pageCount), min(1, mentionCount)
+	extraPages, extraMentions := pageCount-firstPage, mentionCount-firstMention
+	return fitProductResult(featureCount+extraPages+extraMentions, func(n int) productDetailOut {
+		features := min(n, featureCount)
+		remaining := n - features
+		pages := firstPage + min(remaining, extraPages)
+		mentions := firstMention + max(0, remaining-extraPages)
+		out := productDetailOut{
+			ProductDetailWithMentions: detail,
+			FeaturesOmitted:           featureCount - features,
+			MentionsOmitted:           mentionCount - mentions,
+			PagesOmitted:              pageCount - pages,
+		}
 		out.Features = detail.Features[:features]
+		out.Pages = detail.Pages[:pages]
 		if detail.ProductMentionFields != nil {
 			fields := *detail.ProductMentionFields
 			fields.Mentions = fields.Mentions[:mentions]

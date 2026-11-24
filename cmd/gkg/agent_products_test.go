@@ -222,8 +222,11 @@ func TestAgentProductReadPaths(t *testing.T) {
 		if len(wantIDs) != 4 || !slices.Equal(ids, wantIDs) {
 			t.Fatalf("page IDs=%v, want %v", ids, wantIDs)
 		}
-		full := mcpTool(t, "get_product", detail)
+		full := mcpTool(t, "get_product", productReadJSON{"id": largeID, "with_mentions": true})
 		got := results[2]
+		if got["mentions_total"] != float64(0) {
+			t.Fatalf("agent detail did not include the default mention fields: mentions_total=%v", got["mentions_total"])
+		}
 		n := len(got["features"].([]any))
 		if n == 0 || n >= 5 || got["features_omitted"] != float64(5-n) || full["pages_missing"] != false || len(full["pages"].([]any)) != 1 {
 			t.Fatalf("detail features=%d omitted=%v pages=%v", n, got["features_omitted"], got["pages"])
@@ -258,7 +261,8 @@ func TestAgentProductReadPaths(t *testing.T) {
 		}
 		searchArgs := productReadJSON{"feature": "length", "value": "20 mm", "limit": 4}
 		getArgs := productReadJSON{"id": otherID}
-		unscoped := askProductCalls(t, st, "", agentProductCall{"find_products", searchArgs}, agentProductCall{"get_product", getArgs})
+		unscoped := askProductCalls(t, st, "", agentProductCall{"find_products", searchArgs},
+			agentProductCall{"get_product", productReadJSON{"id": otherID, "with_mentions": false}})
 		if !reflect.DeepEqual(unscoped[0], mcpTool(t, "find_products", searchArgs)) || !reflect.DeepEqual(unscoped[1], mcpTool(t, "get_product", getArgs)) {
 			t.Fatal("small unscoped search or detail differs from MCP")
 		}

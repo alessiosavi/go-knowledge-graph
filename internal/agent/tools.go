@@ -183,13 +183,18 @@ func toolDefs() []toolDef {
 				},
 			}),
 		functionTool("get_chunks",
-			chunkread.ToolDescription+chunkread.ProductsToolDescription+" A domain-scoped agent cannot open a cross-domain result with get_product.",
+			chunkread.ToolDescription+
+				" Pass a product page's chunk_ids to read its passages. with_products defaults to true and lists document-linked products first, then exact identifier matches from the full chunk text."+
+				" products_total counts both after deduplication, before products_limit and response-budget trimming. Each document contributes up to 50 URL owners."+
+				" via identifies ref, url, page, and code evidence. Only URL and page links require the document and product store to share a domain."+
+				" products_error reports code matching failures and links_partial reports incomplete document links. Retry a single chunk with a higher products_limit for more results."+
+				" Use gkg products mentions-scan for the complete offline code scan. A domain-scoped agent cannot open a cross-domain result with get_product.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"ids":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": chunkread.MaxIDs, "description": "1–20 chunk ids from search hits"},
+					"ids":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": chunkread.MaxIDs, "description": "1–20 chunk ids from search hits or a product page's chunk_ids"},
 					"neighbours":     map[string]any{"type": "integer", "minimum": 0, "maximum": chunkread.MaxNeighbours, "description": "chunks before and after each requested chunk (default 0, maximum 2)"},
-					"with_products":  map[string]any{"type": "boolean", "default": false, "description": chunkread.WithProductsDescription},
+					"with_products":  map[string]any{"type": "boolean", "default": true, "description": "Include products linked to the chunk's document and exact identifier matches on its full text (default true)"},
 					"products_limit": map[string]any{"type": "integer", "minimum": 1, "maximum": chunkread.MaxProductsLimit, "default": chunkread.DefaultProductsLimit, "description": chunkread.ProductsLimitDescription},
 				},
 				"required": []string{"ids"},
@@ -242,11 +247,11 @@ func toolDefs() []toolDef {
 		functionTool("get_product", graph.ProductLookupDescription+
 			" Pages include via (ref, url, page in precedence order), chunk_ids (up to three passage IDs in sequence order), and chunk_count."+
 			" pages_missing means no associated pages were found. pages_partial means page-key coverage is unknown and pages_missing is false."+
-			" Set with_mentions to include passages from done documents with exact matches for the product's catalogue_code or product_reference. Domain also filters passages."+
+			" with_mentions defaults to true and includes passages from done documents with exact matches for the product's catalogue_code or product_reference. Domain also filters passages."+
 			" Retrieval is approximate: it can miss splits inside stored codes (151L-Z, A-B12345, TC 2SL), fullwidth forms, case-mapping differences (ß, İ) and tokens of 40 bytes or more; mentions_partial means search limits or skipped clauses may have left matches unchecked."+
 			" mentions_error means mentions could not be computed (index_too_large, index_unavailable or search_unavailable); the product itself is still returned."+
 			" Use gkg products mentions-scan for the complete offline scan."+
-			" To fit the result budget, mentions are dropped from the end before features. See mentions_omitted_for_budget and features_omitted for the counts.",
+			" Within the result budget, the tool retains the first page and mention when present. It drops additional mentions and pages before trimming features. See mentions_omitted_for_budget, pages_omitted_for_budget and features_omitted for the counts.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -254,7 +259,7 @@ func toolDefs() []toolDef {
 					"store":          map[string]any{"type": "string", "description": "Store for an exact lookup by product_id"},
 					"product_id":     map[string]any{"type": "string", "description": "Full source product ID including its store prefix"},
 					"domain":         map[string]any{"type": "string", "description": "Optional domain slug for associated pages and passages within the request scope. A domain outside the request scope is rejected."},
-					"with_mentions":  map[string]any{"type": "boolean", "default": false, "description": "Include passages with exact identifier matches"},
+					"with_mentions":  map[string]any{"type": "boolean", "default": true, "description": "Include passages with exact identifier matches (default true)"},
 					"mentions_limit": map[string]any{"type": "integer", "minimum": 1, "maximum": graph.MaxMentionsLimit, "default": graph.DefaultMentionsLimit, "description": "Maximum passages returned when with_mentions is true"},
 				},
 			}),
@@ -350,7 +355,7 @@ func (s *Server) toolGetChunks(ctx context.Context, raw json.RawMessage) (any, e
 	if err := decodeArgs(raw, &args); err != nil {
 		return nil, err
 	}
-	req := chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours, Domain: requestDomain(ctx)}
+	req := chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours, Domain: requestDomain(ctx), WithProducts: true}
 	if args.WithProducts != nil {
 		var value *bool
 		if err := json.Unmarshal(args.WithProducts, &value); err != nil || value == nil {

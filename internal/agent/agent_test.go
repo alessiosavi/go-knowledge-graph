@@ -898,13 +898,27 @@ func TestSystemPromptProductCodeLookup(t *testing.T) {
 	}
 }
 
-func TestProductMentionsPromptRouting(t *testing.T) {
-	const routing = "For what documents or catalogues say about a product, call get_product with with_mentions=true; for the products a passage cites, call get_chunks with with_products=true."
-	if strings.Count(systemPrompt, routing) != 1 || strings.Count(planSystemPrompt, routing) != 1 {
-		t.Error("the system and plan prompts must each include the routing line once")
+func TestProductEvidencePromptRouting(t *testing.T) {
+	rules := []string{
+		"For any question about a product: read its product record (get_product) AND what documents say about it (pages, mentions, or get_chunks with_products). Cite the record and at least one passage about that product and say whether they agree; if no passage exists, say so.",
+		"Documents may be Italian and product data English: search with Italian and English keywords, as two searches in the same step.",
+		"Search can return product hits (kind product) with an id for get_product.",
+		"Pass a product page's chunk_ids to get_chunks to read its passages.",
+	}
+	for _, prompt := range []struct{ name, text string }{{"system", systemPrompt}, {"plan", planSystemPrompt}} {
+		for _, rule := range rules {
+			if count := strings.Count(prompt.text, rule); count != 1 {
+				t.Errorf("%s prompt includes %q %d times, want once", prompt.name, rule, count)
+			}
+		}
+		if !strings.Contains(prompt.text, "- "+strings.Join(rules, " ")+"\n") {
+			t.Errorf("%s prompt must include the product evidence rules on one routing line", prompt.name)
+		}
 	}
 	_, hint, _ := strings.Cut(planSystemPrompt, "For product questions,")
-	if !strings.Contains(hint, "with_mentions") || !strings.Contains(hint, "mentions_limit") {
-		t.Error("plan prompt product hint is missing the get_product mentions arguments")
+	for _, want := range []string{"with_mentions (boolean, default true)", "mentions_limit (1–20, default 5", "with_products (boolean, default true)"} {
+		if count := strings.Count(hint, want); count != 1 {
+			t.Errorf("plan prompt tool argument hint includes %q %d times, want once", want, count)
+		}
 	}
 }

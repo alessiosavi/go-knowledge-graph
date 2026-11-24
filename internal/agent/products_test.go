@@ -62,10 +62,11 @@ func TestGetProductMentionsSchema(t *testing.T) {
 		}
 		schema := unmarshalResult[struct{ Properties map[string]map[string]any }](t, def.Function.Parameters)
 		with, limit := schema.Properties["with_mentions"], schema.Properties["mentions_limit"]
-		if with["default"] != false || limit["default"] != float64(5) || limit["minimum"] != float64(1) || limit["maximum"] != float64(20) {
+		if with["default"] != true || with["description"] != "Include passages with exact identifier matches (default true)" ||
+			limit["default"] != float64(5) || limit["minimum"] != float64(1) || limit["maximum"] != float64(20) {
 			t.Errorf("unexpected mention options: with_mentions=%v mentions_limit=%v", with, limit)
 		}
-		for _, phrase := range []string{"done documents", "exact", "catalogue_code", "product_reference", "mentions_partial", "TC 2SL", "gkg products mentions-scan"} {
+		for _, phrase := range []string{"with_mentions defaults to true", "done documents", "exact", "catalogue_code", "product_reference", "mentions_partial", "TC 2SL", "gkg products mentions-scan", "pages_omitted_for_budget"} {
 			if !strings.Contains(def.Function.Description, phrase) {
 				t.Errorf("get_product description missing %q", phrase)
 			}
@@ -78,10 +79,10 @@ func TestGetProductMentionsSchema(t *testing.T) {
 func TestGetProductMentionsArgumentErrors(t *testing.T) {
 	s := NewServer(config.Config{}, nil, nil)
 	s.store = agentMentionStore{}
-	for _, tc := range []struct{ args, field string }{
-		{`{"id":"p","with_mentions":"true"}`, "with_mentions"},
-		{`{"id":"p","with_mentions":1}`, "with_mentions"},
-		{`{"id":"p","with_mentions":null}`, "with_mentions"},
+	for _, tc := range []struct{ args, message string }{
+		{`{"id":"p","with_mentions":"true"}`, "with_mentions must be a boolean"},
+		{`{"id":"p","with_mentions":1}`, "with_mentions must be a boolean"},
+		{`{"id":"p","with_mentions":null}`, "with_mentions must be a boolean"},
 		{`{"id":"p","mentions_limit":0}`, "mentions_limit"},
 		{`{"id":"p","with_mentions":false,"mentions_limit":21}`, "mentions_limit"},
 		{`{"id":"p","with_mentions":true,"mentions_limit":-1}`, "mentions_limit"},
@@ -92,8 +93,8 @@ func TestGetProductMentionsArgumentErrors(t *testing.T) {
 	} {
 		_, err := s.execTool(t.Context(), "get_product", json.RawMessage(tc.args))
 		var invalid argerr.Error
-		if !errors.As(err, &invalid) || !strings.Contains(err.Error(), tc.field) {
-			t.Errorf("get_product %s: got %v, want %s argument error", tc.args, err, tc.field)
+		if !errors.As(err, &invalid) || !strings.Contains(err.Error(), tc.message) {
+			t.Errorf("get_product %s: got %v, want argument error containing %q", tc.args, err, tc.message)
 		}
 	}
 }
@@ -242,7 +243,7 @@ CREATE (:ProductStore {store:'agent-mention.test', domain:'agent-catalog'}),
 		scope, args string
 		want        []string
 	}{
-		{"", args, ids},
+		{"", `{"id":"agent-mention-product"}`, ids},
 		{"agent-catalog", args, ids[:1]},
 		{"", `{"id":"agent-mention-product","with_mentions":true,"domain":"agent-other"}`, ids[1:]},
 	} {
@@ -285,7 +286,7 @@ func TestProductToolMetadataOverflow(t *testing.T) {
 	s := NewServer(config.Config{}, nil, nil)
 	s.store = productMetadataStore{}
 	for _, tool := range []string{"get_product", "list_features"} {
-		out, err := s.execTool(t.Context(), tool, json.RawMessage(`{"id":"product"}`))
+		out, err := s.execTool(t.Context(), tool, json.RawMessage(`{"id":"product","with_mentions":false}`))
 		wire, encErr := json.Marshal(toolPayload(out, err))
 		if err == nil || encErr != nil || len(wire) > agentResultBudget || !json.Valid([]byte(transcriptResult(wire))) {
 			t.Errorf("%s returned an unbounded result: tool error=%v, marshal error=%v, bytes=%d", tool, err, encErr, len(wire))
@@ -343,10 +344,9 @@ func TestGetProductMentionsOffWire(t *testing.T) {
 		MentionsError: graph.MentionsIndexUnavailable,
 	}}
 	const before = `{"id":"product","store":"","product_id":"","domain":"","title":"Product","brand":"","category":"","subcategory":"","link":"","features":[],"pages":[],"pages_missing":true}`
-	for _, args := range []string{`{"id":"product"}`, `{"id":"product","with_mentions":false,"mentions_limit":1}`} {
-		if got := string(getProductWire(t, store, args)); got != before {
-			t.Errorf("%s: got %s, want %s", args, got, before)
-		}
+	const args = `{"id":"product","with_mentions":false,"mentions_limit":1}`
+	if got := string(getProductWire(t, store, args)); got != before {
+		t.Errorf("%s: got %s, want %s", args, got, before)
 	}
 }
 
@@ -356,6 +356,8 @@ func TestGetProductMentionsDisplayLimit(t *testing.T) {
 		returned int
 		matches  int
 	}{
+		{`{"id":"p"}`, 5, 22},
+		{`{"id":"p","mentions_limit":1}`, 1, 22},
 		{`{"id":"p","with_mentions":true}`, 5, 22},
 		{`{"id":"p","with_mentions":true,"mentions_limit":1}`, 1, 22},
 		{`{"id":"p","with_mentions":true,"mentions_limit":20}`, 20, 22},
@@ -389,7 +391,7 @@ func TestGetProductMentionsErrorPassthrough(t *testing.T) {
 				t.Errorf("mentions_error: got %s, want %s", out["mentions_error"], code)
 			}
 			delete(out, "mentions_error")
-			before := getProductWire(t, store, `{"id":"p"}`)
+			before := getProductWire(t, store, `{"id":"p","with_mentions":false}`)
 			if want := unmarshalResult[map[string]json.RawMessage](t, json.RawMessage(before)); !maps.EqualFunc(out, want, slices.Equal) {
 				t.Errorf("mentions error changed the ordinary product detail: %s vs %s", wire, before)
 			}
@@ -401,7 +403,7 @@ func TestGetProductMentionsEncodedBudget(t *testing.T) {
 	store := agentMentionStore{detail: graph.ProductDetailWithMentions{
 		ProductDetail: graph.ProductDetail{
 			Features: []graph.ProductEvidence{{Raw: "first"}, {Raw: "last"}},
-			Pages:    []graph.ProductPage{{ID: "page"}},
+			Pages:    []graph.ProductPage{{ID: "first", ChunkIDs: []string{"c1"}}, {ID: "last"}},
 		},
 		ProductMentionFields: &graph.ProductMentionFields{
 			Mentions: []graph.ProductChunkMention{
@@ -413,31 +415,35 @@ func TestGetProductMentionsEncodedBudget(t *testing.T) {
 		},
 	}}
 	const args = `{"id":"p","with_mentions":true}`
-	// Measure all fields and escaping in the exact shapes after dropping mentions.
-	size := func(remaining int) int {
+	// Measure the encoded result with the first page and mention reserved.
+	size := func(features int) int {
 		t.Helper()
 		fitted := store.detail
 		fields := *fitted.ProductMentionFields
-		fields.Mentions = fields.Mentions[:remaining]
+		fields.Mentions = fields.Mentions[:1]
 		fitted.ProductMentionFields = &fields
+		fitted.Pages = fitted.Pages[:1]
+		fitted.Features = fitted.Features[:features]
 		wire, err := json.Marshal(struct {
 			graph.ProductDetailWithMentions
-			Omitted int `json:"mentions_omitted_for_budget"`
-		}{fitted, 2 - remaining})
+			FeaturesOmitted int `json:"features_omitted,omitempty"`
+			MentionsOmitted int `json:"mentions_omitted_for_budget"`
+			PagesOmitted    int `json:"pages_omitted_for_budget"`
+		}{fitted, 2 - features, 1, 1})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return len(wire)
 	}
 	for _, tc := range []struct {
-		name               string
-		titleBytes         int
-		features, mentions int
-		wantBoundary       bool
+		name         string
+		titleBytes   int
+		features     int
+		wantBoundary bool
 	}{
-		{"at encoded budget", agentResultBudget - size(1), 2, 1, true},
-		{"one byte over", agentResultBudget - size(1) + 1, 2, 0, false},
-		{"features trimmed after mentions", agentResultBudget - size(0) + 1, 1, 0, false},
+		{"at encoded budget", agentResultBudget - size(2), 2, true},
+		{"one byte over", agentResultBudget - size(2) + 1, 1, false},
+		{"all features trimmed", agentResultBudget - size(1) + 1, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := store
@@ -450,15 +456,19 @@ func TestGetProductMentionsEncodedBudget(t *testing.T) {
 				graph.ProductDetailWithMentions
 				MentionsOmitted int `json:"mentions_omitted_for_budget"`
 				FeaturesOmitted int `json:"features_omitted"`
+				PagesOmitted    int `json:"pages_omitted_for_budget"`
 			}](t, json.RawMessage(wire))
-			if out.ProductMentionFields == nil || out.Mentions == nil || len(out.Mentions) != tc.mentions || out.MentionsOmitted != 2-tc.mentions || out.MentionsTotal != 7 || out.MentionsKeys != 1 {
-				t.Errorf("mention trimming changed the wire contract: fields=%+v omitted=%d", out.ProductMentionFields, out.MentionsOmitted)
+			if out.ProductMentionFields == nil || len(out.Mentions) != 1 || out.MentionsOmitted != 1 || out.MentionsTotal != 7 || out.MentionsKeys != 1 {
+				t.Fatalf("want one mention plus original counts: fields=%+v omitted=%d", out.ProductMentionFields, out.MentionsOmitted)
 			}
-			if out.ProductMentionFields != nil && len(out.Mentions) > 0 && out.Mentions[0].ChunkID != "first" {
+			if out.Mentions[0].ChunkID != "first" || out.Mentions[0].Excerpt != store.detail.Mentions[0].Excerpt {
 				t.Errorf("kept the wrong mention: %+v", out.Mentions)
 			}
-			if len(out.Features) != tc.features || out.FeaturesOmitted != 2-tc.features || len(out.Pages) != 1 || out.Features[0].Raw != "first" {
-				t.Errorf("unexpected feature or page trimming: features=%+v omitted=%d pages=%+v", out.Features, out.FeaturesOmitted, out.Pages)
+			if len(out.Pages) != 1 || out.PagesOmitted != 1 || out.PagesMissing || out.Pages[0].ID != "first" || !slices.Equal(out.Pages[0].ChunkIDs, []string{"c1"}) {
+				t.Errorf("want the first page and its chunk ID: pages=%+v omitted=%d missing=%t", out.Pages, out.PagesOmitted, out.PagesMissing)
+			}
+			if !slices.EqualFunc(out.Features, store.detail.Features[:tc.features], func(got, want graph.ProductEvidence) bool { return got.Raw == want.Raw }) || out.FeaturesOmitted != 2-tc.features {
+				t.Errorf("unexpected feature trimming: features=%+v omitted=%d", out.Features, out.FeaturesOmitted)
 			}
 		})
 	}
