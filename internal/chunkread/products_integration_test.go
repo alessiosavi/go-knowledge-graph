@@ -50,7 +50,8 @@ func TestReadProductsMemgraph(t *testing.T) {
 	read := func(want ...string) chunkread.Item {
 		t.Helper()
 		got, err := chunkread.Read(t.Context(), st, req)
-		if err != nil || len(got.Chunks) != 1 || !slices.Equal(got.Meta.Missing, req.IDs[1:]) || got.ProductsError != "" {
+		if err != nil || len(got.Chunks) != 1 || !slices.Equal(got.Meta.Missing, req.IDs[1:]) ||
+			got.ProductsError != "" || got.LinksPartial != "" {
 			t.Fatalf("Read: %+v, %v", got, err)
 		}
 		item := got.Chunks[0]
@@ -66,9 +67,6 @@ func TestReadProductsMemgraph(t *testing.T) {
 		}
 		return item
 	}
-	read() // knowledge-only graph, no active release
-	query(`CREATE (:GkgMeta {id:'product_release', value:'chunk-mentions-release'})`, nil)
-	read() // release pointer with no bound stores
 	checkEmpty := func(fixture string) {
 		t.Helper()
 		index, err := st.LoadProductMentionIndex(t.Context())
@@ -80,6 +78,9 @@ func TestReadProductsMemgraph(t *testing.T) {
 		}
 		read()
 	}
+	checkEmpty("knowledge-only graph with no active release")
+	query(`CREATE (:GkgMeta {id:'product_release', value:'chunk-mentions-release'})`, nil)
+	checkEmpty("release pointer with no bound stores")
 	query(`CREATE (:ProductStore {store:'chunk-mentions-a.test', domain:'product-a'})`, nil)
 	checkEmpty("release and bound store with no identifiers in the graph")
 	query(`CREATE (a:Product {id:'chunk-mentions-a', store:'chunk-mentions-a.test', product_id:'chunk-mentions-a.test:1', domain:'product-a', title:'A'}),

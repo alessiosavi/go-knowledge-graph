@@ -20,11 +20,12 @@ const (
 	maxProductEvidence   = 8
 	maxMatchBytes        = 2 << 20
 	productIndexTimeout  = 5 * time.Second
+	ownersTruncated      = "owners_truncated"
 
 	ProductsLimitError       = "products_limit must be an integer between 1 and 50"
 	WithProductsDescription  = "Include products linked to the chunk's document and exact identifier matches on its full text (default false)"
 	ProductsLimitDescription = "Maximum products per chunk after merging document links and identifier matches (1–50, default 10)"
-	ProductsToolDescription  = " Set with_products to list document-linked products first, then exact identifier matches from the full chunk text. products_total counts both after deduplication, before products_limit and response-budget trimming. via identifies ref, url, page, and code evidence. Only URL and page links require the document and product store to share a domain. products_error reports code matching failures and links_partial reports incomplete document links. Retry a single chunk with a higher products_limit for more results. Use gkg products mentions-scan for the complete offline code scan."
+	ProductsToolDescription  = " Set with_products to list document-linked products first, then exact identifier matches from the full chunk text. products_total counts both after deduplication, before products_limit and response-budget trimming. Each document contributes up to 50 URL owners. via identifies ref, url, page, and code evidence. Only URL and page links require the document and product store to share a domain. products_error reports code matching failures and links_partial reports incomplete document links. Retry a single chunk with a higher products_limit for more results. Use gkg products mentions-scan for the complete offline code scan."
 )
 
 // DecodeProductsLimit accepts an omitted field or a JSON integer in range.
@@ -86,7 +87,7 @@ func enrichProducts(ctx context.Context, store Store, result *Result, fullTexts 
 		result.ProductsError = "match_budget"
 	case errors.Is(codeErr, graph.ErrProductMentionIndexTooLarge):
 		result.ProductsError = "index_too_large"
-	case codeErr != nil:
+	case codeErr != nil || code == nil:
 		result.ProductsError = "index_unavailable"
 	}
 
@@ -94,36 +95,37 @@ func enrichProducts(ctx context.Context, store Store, result *Result, fullTexts 
 	for id, doc := range documents {
 		owners, partial := index.ResolveDocumentProducts(doc)
 		inferred[id] = owners
-		if partial != "" {
+		if partial != "" && result.LinksPartial != "index_unavailable" {
 			result.LinksPartial = partial
+		} else if owners.URLTruncated && result.LinksPartial == "" {
+			result.LinksPartial = ownersTruncated
 		}
 	}
 	var displays map[string]graph.Product
 	if index.ProductDisplaysCapped() {
 		var err error
-		ids := inferredDisplayIDs(inferred, limit)
-		displays, err = loadChunkProductDisplays(loadCtx, store, ids)
-		if err != nil || len(displays) != len(ids) {
-			// An incomplete display read cannot recover the ordered union.
-			// Retain live refs and code matches using their own display rows.
-			inferred = nil
+		displays, err = loadChunkProductDisplays(loadCtx, store, inferredDisplayIDs(inferred))
+		if err != nil {
 			result.LinksPartial = "index_unavailable"
 		}
 	}
 
 	pages := make([][]ChunkProduct, len(fullTexts))
 	for docID, positions := range chunksByDoc {
-		docProducts, linked := collectDocumentProducts(documents[docID], inferred[docID], index, displays, limit)
+		docProducts, docPositions, missingDisplay := collectDocumentProducts(documents[docID], inferred[docID], index, displays)
+		if missingDisplay {
+			result.LinksPartial = "index_unavailable"
+		}
 		for _, i := range positions {
 			item := &result.Chunks[i]
-			if code == nil && len(linked) == 0 {
+			if code == nil && len(docProducts) == 0 {
 				continue
 			}
 			var codeProducts []ChunkProduct
 			if code != nil {
 				codeProducts = collectChunkProducts(code.Match(fullTexts[i]), len(item.Text), index)
 			}
-			products, total := mergeChunkProducts(docProducts, linked, codeProducts, limit)
+			products, total := mergeChunkProducts(docProducts, docPositions, codeProducts, limit)
 			empty := products[:0]
 			item.Products, item.ProductsTotal = &empty, new(total)
 			pages[i] = products
@@ -238,15 +240,11 @@ func loadChunkProductDisplays(ctx context.Context, store Store, ids map[string]s
 	return products, err
 }
 
-func inferredDisplayIDs(inferred map[string]graph.InferredDocumentProducts, limit int) map[string]struct{} {
+func inferredDisplayIDs(inferred map[string]graph.InferredDocumentProducts) map[string]struct{} {
 	ids := make(map[string]struct{})
 	for _, owners := range inferred {
-		// Each URL bucket is already ordered by product identity. At most
-		// its first limit entries can be displayed in the merged list.
-		for _, bucket := range owners.URL {
-			for _, id := range bucket[:min(limit, len(bucket))] {
-				ids[id] = struct{}{}
-			}
+		for _, id := range owners.URL {
+			ids[id] = struct{}{}
 		}
 		if owners.Page != "" {
 			ids[owners.Page] = struct{}{}
@@ -275,22 +273,19 @@ func fillCodeProductBrands(ctx context.Context, store Store, pages [][]ChunkProd
 }
 
 func collectDocumentProducts(doc graph.DocumentProductLinks, owners graph.InferredDocumentProducts,
-	index *graph.ProductLinkIndex, displays map[string]graph.Product, limit int,
-) ([]ChunkProduct, map[string]struct{}) {
+	index *graph.ProductLinkIndex, displays map[string]graph.Product,
+) ([]ChunkProduct, map[string]int, bool) {
 	if doc.Status != graph.StatusDone {
-		return nil, nil
+		return nil, nil, false
 	}
-	linked := make(map[string]struct{})
+	missingDisplay := false
 	positions := make(map[string]int)
 	var products []ChunkProduct
-	addEvidence := func(pos int, via string) {
-		if evidence := products[pos].Via; evidence[len(evidence)-1] != via {
-			products[pos].Via = append(evidence, via)
-		}
-	}
 	add := func(product graph.Product, via string) {
 		if pos, exists := positions[product.ID]; exists {
-			addEvidence(pos, via)
+			if evidence := products[pos].Via; evidence[len(evidence)-1] != via {
+				products[pos].Via = append(evidence, via)
+			}
 			return
 		}
 		positions[product.ID] = len(products)
@@ -299,58 +294,46 @@ func collectDocumentProducts(doc graph.DocumentProductLinks, owners graph.Inferr
 		products = append(products, out)
 	}
 	addOwner := func(id, via string) {
-		if pos, ok := positions[id]; ok {
-			// Keep the live display row and add evidence from the snapshot.
-			addEvidence(pos, via)
-		} else if product, ok := index.ProductDisplay(id); ok {
+		if product, ok := index.ProductDisplay(id); ok {
 			add(product, via)
 		} else if product, ok := displays[id]; ok && product.Domain == doc.Domain {
 			add(product, via)
+		} else {
+			missingDisplay = true
 		}
 	}
 	for _, p := range doc.Refs {
-		linked[p.ID] = struct{}{}
 		add(p, "ref")
 	}
-	for _, ids := range owners.URL {
-		for i, id := range ids {
-			linked[id] = struct{}{}
-			if _, staged := positions[id]; staged || i < limit {
-				addOwner(id, "url")
-			}
-		}
+	for _, id := range owners.URL {
+		addOwner(id, "url")
 	}
 	if owners.Page != "" {
-		// A page owner outside a URL prefix cannot outrank that prefix.
-		// If it was also selected as a ref, the URL evidence is already set.
-		if _, alreadyLinked := linked[owners.Page]; !alreadyLinked {
-			addOwner(owners.Page, "page")
-		} else if _, staged := positions[owners.Page]; staged {
-			addOwner(owners.Page, "page")
-		}
-		linked[owners.Page] = struct{}{}
+		addOwner(owners.Page, "page")
 	}
 	precedence := [...]string{"ref", "url", "page"}
 	slices.SortFunc(products, func(a, b ChunkProduct) int {
 		return cmp.Or(cmp.Compare(slices.Index(precedence[:], a.Via[0]), slices.Index(precedence[:], b.Via[0])),
 			compareChunkProducts(a, b))
 	})
-	return products[:min(limit, len(products))], linked
-}
-
-func mergeChunkProducts(document []ChunkProduct, linked map[string]struct{}, code []ChunkProduct, limit int) ([]ChunkProduct, int) {
-	products := append(make([]ChunkProduct, 0, min(limit, len(document)+len(code))), document...)
-	positions := make(map[string]int, len(document))
-	for i, product := range document {
+	for i, product := range products {
 		positions[product.ID] = i
 	}
-	total := len(linked)
+	return products, positions, missingDisplay
+}
+
+func mergeChunkProducts(document []ChunkProduct, positions map[string]int, code []ChunkProduct, limit int) ([]ChunkProduct, int) {
+	documentCount := min(limit, len(document))
+	products := append(make([]ChunkProduct, 0, min(limit, len(document)+len(code))), document[:documentCount]...)
+	total := len(document)
 	for _, product := range code {
-		if pos, kept := positions[product.ID]; kept {
-			products[pos].Via = append(slices.Clip(products[pos].Via), "code")
-			products[pos].Matched = product.Matched
-			products[pos].OutsideReturnedText = product.OutsideReturnedText
-		} else if _, linked := linked[product.ID]; !linked {
+		if pos, linked := positions[product.ID]; linked {
+			if pos < documentCount {
+				products[pos].Via = append(slices.Clip(products[pos].Via), "code")
+				products[pos].Matched = product.Matched
+				products[pos].OutsideReturnedText = product.OutsideReturnedText
+			}
+		} else {
 			total++
 			if len(products) < limit {
 				products = append(products, product)

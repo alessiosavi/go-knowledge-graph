@@ -57,7 +57,7 @@ func TestResolveDocumentProductsLegStatus(t *testing.T) {
 	const link = "https://push.test/implant-kit"
 	doc := DocumentProductLinks{Status: StatusDone, Domain: pushDomain, Source: "bc-it/implant-kit", FinalURL: link}
 	index := &ProductLinkIndex{
-		urlOwners:  map[string]map[string][]string{pushDomain: {link: {"url-owner"}}},
+		urlOwners:  map[string]map[string][]productURLOwner{pushDomain: {link: {{id: "url-owner"}}}},
 		pageOwners: map[string]map[string]string{pushDomain: {"implant-kit": "page-owner"}},
 	}
 	for _, tc := range []struct {
@@ -66,10 +66,10 @@ func TestResolveDocumentProductsLegStatus(t *testing.T) {
 		want    InferredDocumentProducts
 		partial string
 	}{
-		{"both", index, InferredDocumentProducts{URL: [2][]string{nil, {"url-owner"}}, Page: "page-owner"}, ""},
+		{"both", index, InferredDocumentProducts{URL: []string{"url-owner"}, Page: "page-owner"}, ""},
 		{"url capped", &ProductLinkIndex{urlOff: true, pageOwners: index.pageOwners}, InferredDocumentProducts{Page: "page-owner"}, "index_too_large"},
 		{"page capped", &ProductLinkIndex{pageOff: true, urlOwners: index.urlOwners},
-			InferredDocumentProducts{URL: [2][]string{nil, {"url-owner"}}}, "index_too_large"},
+			InferredDocumentProducts{URL: []string{"url-owner"}}, "index_too_large"},
 		{"index unavailable", nil, InferredDocumentProducts{}, "index_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -363,6 +363,11 @@ code matching.
 
 `products_total` now counts unique products from both sources, before
 `products_limit` (1–50, default 10). Both sources count toward the limit.
+Each document contributes up to 50 distinct URL owners across its source and
+redirect URLs, ordered by store, product ID, and graph ID. Additional owners
+are excluded from the URL count and set `links_partial` to `owners_truncated`
+when the inferred links are otherwise available. Other evidence can still
+include those products.
 Each entry includes `brand` and lists its evidence in `via` in the order
 `ref`, `url`, `page`, `code`. `matched` contains up to eight unique code
 evidence entries and is empty for document-only products.
@@ -376,8 +381,11 @@ The tool reads document metadata and live refs after reading the chunks, then
 uses a catalogue snapshot for inferred links and code matching. A code-leg
 failure reports `products_error` as `index_too_large`, `index_unavailable`,
 or `match_budget`, while available document links are still returned.
-`links_partial` reports incomplete document links as `index_too_large` or
-`index_unavailable`. A domain-scoped agent can list cross-domain products
+On a knowledge-only graph, successful enrichment returns `products: []` and
+`products_total: 0` with both status fields omitted. Incomplete document links can
+also report `links_partial` as `index_too_large` or `index_unavailable`.
+A missing display row removes the affected product's inferred links.
+A domain-scoped agent can list cross-domain products
 and can open products in its own domain with `get_product`.
 
 Example prompts:

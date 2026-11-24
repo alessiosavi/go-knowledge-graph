@@ -1,7 +1,9 @@
 package chunkread_test
 
 import (
+	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -9,6 +11,25 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/chunkread"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 )
+
+type cappedProductDisplayStore struct {
+	*graph.Store
+	missingID string
+}
+
+func (s cappedProductDisplayStore) LoadProductLinkIndex(ctx context.Context) (*graph.ProductLinkIndex, error) {
+	index, err := s.Store.LoadProductLinkIndex(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return index.WithProductDisplaysCappedForTest(), nil
+}
+
+func (s cappedProductDisplayStore) ProductLinkDisplays(ctx context.Context, ids []string) (map[string]graph.Product, error) {
+	rows, err := s.Store.ProductLinkDisplays(ctx, ids)
+	delete(rows, s.missingID)
+	return rows, err
+}
 
 func TestReadDocumentProductsMemgraph(t *testing.T) {
 	const prefix = "chunk-links-"
@@ -43,6 +64,7 @@ CREATE (:GkgMeta {id:'product_release', value:'chunk-links-release'}),
 	add("orphan", "domain", "done", "bc-it/unknown", "", "", prefix+"missing")
 	add("retired", "domain", "superseded", "bc-it/implant-kit", "https://chunk-links.test/guide", "", prefix+"mixed")
 	add("foreign", "outside", "done", "bc-it/implant-kit", "https://chunk-links.test/guide", "", prefix+"cross-ref")
+	add("foreign-inferred", "outside", "done", "bc-it/implant-kit", "https://chunk-links.test/guide", "")
 
 	read := func(doc, domain string, limit *int, total int, wantIDs ...string) []chunkread.ChunkProduct {
 		t.Helper()
@@ -96,6 +118,38 @@ CREATE (:GkgMeta {id:'product_release', value:'chunk-links-release'}),
 	if !slices.Equal(foreign[0].Via, []string{"ref"}) {
 		t.Errorf("cross-domain evidence = %v", foreign[0].Via)
 	}
+	read("foreign-inferred", "outside", nil, 0)
+	for _, id := range []string{prefix + "url", prefix + "mixed"} {
+		detail, err := st.GetProduct(t.Context(), graph.ProductLookup{ID: id})
+		if err != nil || slices.ContainsFunc(detail.Pages, func(p graph.ProductPage) bool {
+			return p.ID == prefix+"foreign-inferred"
+		}) {
+			t.Errorf("get_product %s returned cross-domain inferred pages: %v, %v", id, detail.Pages, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name, missingID, partial string
+		want                     []chunkread.ChunkProduct
+	}{
+		{"complete displays", "", "", all},
+		{"one missing display", prefix + "url", "index_unavailable", slices.Delete(slices.Clone(all), 2, 3)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := chunkread.Read(t.Context(), cappedProductDisplayStore{st, tc.missingID}, chunkread.Request{
+				IDs: []string{prefix + "all-c0", prefix + "page-c0"}, WithProducts: true,
+			})
+			if err != nil || len(out.Chunks) != 2 || out.ProductsError != "" || out.LinksPartial != tc.partial {
+				t.Fatalf("capped displays: %+v, %v", out, err)
+			}
+			for i, want := range [][]chunkread.ChunkProduct{tc.want, page} {
+				item := out.Chunks[i]
+				if item.ProductsTotal == nil || *item.ProductsTotal != len(want) || item.Products == nil || !reflect.DeepEqual(*item.Products, want) {
+					t.Fatalf("chunk %s products and total = %+v, want %v", item.ID, item, want)
+				}
+			}
+		})
+	}
 
 	for _, tc := range []struct{ product, doc, domain, via string }{
 		{"cross-ref", "all", "domain", "ref"},
@@ -129,12 +183,39 @@ CREATE (:GkgMeta {id:'product_release', value:'chunk-links-release'}),
 	read("orphan", "domain", nil, 1, prefix+"missing")
 }
 
+func TestReadDocumentProductsSurviveCodeMatchBudgetMemgraph(t *testing.T) {
+	st, query := mentionDB(t, "chunk-budget-")
+	query(`
+CREATE (:GkgMeta {id:'product_release', value:'chunk-budget-release'}),
+       (:ProductStore {store:'chunk-budget-a.test', domain:'chunk-budget'}),
+       (p:Product {id:'chunk-budget-product', store:'chunk-budget-a.test', product_id:'chunk-budget-a.test:1'}),
+       (a:ProductRef {id:p.id}),
+       (d:Document {id:'chunk-budget-doc', domain:'chunk-budget', status:'done', source:'bc-it/unknown'}),
+       (d)-[:REFS]->(a),
+       (d)-[:HAS_CHUNK]->(:Chunk {id:'chunk-budget-c0', doc_id:d.id, text:$text, seq:0, domain:d.domain}),
+       (f:FeatureRev {id:'catalogue_code', key:'chunk-budget-code'}),
+       (p)-[:HAS_FEATURE {release_id:'chunk-budget-release', value_fold:'AB12345'}]->(f)`,
+		map[string]any{"text": "AB12345 " + strings.Repeat(" ", 2<<20)})
+
+	out, err := chunkread.Read(t.Context(), st, chunkread.Request{IDs: []string{"chunk-budget-c0"}, WithProducts: true})
+	if err != nil || len(out.Chunks) != 1 || out.ProductsError != "match_budget" || out.LinksPartial != "" {
+		t.Fatalf("over-budget code read = %+v, %v", out, err)
+	}
+	item := out.Chunks[0]
+	if item.ProductsTotal == nil || *item.ProductsTotal != 1 || item.Products == nil || len(*item.Products) != 1 {
+		t.Fatalf("over-budget code read lost document product: %+v", item)
+	}
+	if p := (*item.Products)[0]; p.ID != "chunk-budget-product" || !slices.Equal(p.Via, []string{"ref"}) || len(p.Matched) != 0 {
+		t.Errorf("product = %+v, want a ref link", p)
+	}
+}
+
 func TestReadDocumentProductsOverCodeCapMemgraph(t *testing.T) {
 	st, query := mentionDB(t, "chunk-cap-")
 	query(`
 CREATE (:GkgMeta {id:'product_release', value:'chunk-cap-release'}),
-       (:ProductStore {store:'chunk-cap.test', domain:'chunk-cap'}),
-       (p:Product {id:'chunk-cap-product', store:'chunk-cap.test', product_id:'chunk-cap.test:1',
+       (:ProductStore {store:'chunk-cap-a.test', domain:'chunk-cap'}),
+       (p:Product {id:'chunk-cap-product', store:'chunk-cap-a.test', product_id:'chunk-cap-a.test:1',
                    link:'https://chunk-cap.test/catalogue/implant-kit.html'}),
        (a:ProductRef {id:p.id}),
        (d:Document {id:'chunk-cap-doc', domain:'chunk-cap', status:'done', source:'bc-it/implant-kit'}),
@@ -160,37 +241,53 @@ CREATE (p)-[:HAS_FEATURE {release_id:'chunk-cap-release', items_fold:[j IN range
 func TestReadDocumentURLWith50And51OwnersMemgraph(t *testing.T) {
 	st, query := mentionDB(t, "chunk-url-")
 	query(`CREATE (:ProductStore {store:'chunk-url-owners.test', domain:'chunk-url'})`, nil)
-	for _, count := range []int{50, 51} {
-		link := fmt.Sprintf("https://chunk-url.test/shared-%d", count)
-		docID := fmt.Sprintf("chunk-url-doc-%d", count)
+	for i, tc := range []struct {
+		name  string
+		count int
+		split bool
+	}{
+		{"50", 50, false},
+		{"51", 51, false},
+		{"51-across-urls", 51, true},
+	} {
+		link := "https://chunk-url.test/shared-" + tc.name
+		final := link + "#redirect"
+		if tc.split {
+			final = link + "-redirect"
+		}
+		docID := "chunk-url-doc-" + tc.name
 		chunkID := docID + "-c0"
 		query(`
-MATCH (s:ProductStore {store:'chunk-url-owners.test'}) SET s.seen_seq = $count
-CREATE (d:Document {id:$doc, domain:s.domain, status:'done', source_kind:'url', source:$link}),
+MATCH (s:ProductStore {store:'chunk-url-owners.test'}) SET s.seen_seq = $seq
+CREATE (d:Document {id:$doc, domain:s.domain, status:'done', source_kind:'url', source:$link, final_url:$final}),
        (d)-[:HAS_CHUNK]->(:Chunk {id:$chunk, doc_id:$doc, domain:d.domain, seq:0, text:'passage'})
 WITH s UNWIND range(1,$count) AS i
-CREATE (:Product {id:$doc + '-' + toString(i), store:s.store, product_id:'chunk-url-owners.test:' + toString(i), link:$link})`,
-			map[string]any{"count": count, "doc": docID, "chunk": chunkID, "link": link})
+CREATE (:Product {id:$doc + '-' + toString(i), store:s.store, product_id:'chunk-url-owners.test:' + toString(i),
+                 link:CASE WHEN $split AND i % 2 = 0 THEN $final ELSE $link END})`,
+			map[string]any{"count": tc.count, "seq": i + 1, "doc": docID, "chunk": chunkID, "link": link, "final": final, "split": tc.split})
+		var wantPartial string
+		if tc.count > 50 {
+			wantPartial = "owners_truncated"
+		}
+		wantIDs := make([]string, 0, tc.count)
+		for j := 1; j <= tc.count; j++ {
+			wantIDs = append(wantIDs, fmt.Sprintf("%s-%d", docID, j))
+		}
+		slices.Sort(wantIDs)
 		out, err := chunkread.Read(t.Context(), st, chunkread.Request{
 			IDs: []string{chunkID}, WithProducts: true, ProductsLimit: new(50),
 		})
-		if err != nil || out.ProductsError != "" || out.LinksPartial != "" || len(out.Chunks) != 1 {
-			t.Fatalf("read with %d URL owners: %+v, %v", count, out, err)
+		if err != nil || out.ProductsError != "" || out.LinksPartial != wantPartial || len(out.Chunks) != 1 {
+			t.Fatalf("read %s URL owners: %+v, %v", tc.name, out, err)
 		}
 		item := out.Chunks[0]
-		if item.ProductsTotal == nil || *item.ProductsTotal != count || item.Products == nil || len(*item.Products) != 50 {
-			t.Fatalf("%d URL owners: %+v, wanted 50 of %d", count, item, count)
+		if item.ProductsTotal == nil || *item.ProductsTotal != 50 || item.Products == nil || len(*item.Products) != 50 {
+			t.Fatalf("%s URL owners: %+v, wanted 50 of 50", tc.name, item)
 		}
-		products := *item.Products
-		for _, p := range products {
-			if !slices.Equal(p.Via, []string{"url"}) {
-				t.Errorf("URL evidence = %v for %s", p.Via, p.ID)
+		for j, p := range *item.Products {
+			if p.ID != wantIDs[j] || !slices.Equal(p.Via, []string{"url"}) {
+				t.Errorf("%s URL owner %d = %+v, want %s via URL", tc.name, j, p, wantIDs[j])
 			}
-		}
-		if !slices.IsSortedFunc(products, func(a, b chunkread.ChunkProduct) int {
-			return strings.Compare(a.ProductID, b.ProductID)
-		}) {
-			t.Error("URL products are out of order")
 		}
 	}
 }

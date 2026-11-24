@@ -167,6 +167,12 @@ Chunk product enrichment reads documents and live refs in one batch, then
 resolves inferred links against the catalogue snapshot. The two reads can
 reflect different instants. If either inferred leg is capped or unavailable,
 `get_chunks` reports `links_partial` and keeps available document links.
+When a display row is missing, only that product's inferred links are dropped.
+`products_total` includes up to 50 URL owners per document across the source
+and redirect URLs, in store, product ID, and graph ID order. Extra URL owners
+are excluded from the count unless supported by other evidence. When the
+inferred links are otherwise available, truncation reports
+`links_partial: owners_truncated`.
 The code-matching leg reports its own status in `products_error`. The
 reported total counts the available associations when either status is set.
 

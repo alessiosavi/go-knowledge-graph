@@ -149,7 +149,11 @@ func TestChunkProductsLifecycle(t *testing.T) {
 	require(st.DeleteProductStore(ctx, "mention-life.test"))
 	titles(read(st)) // wipe
 	require(st.UnbindProductStore(ctx, "mention-life.test"))
-	titles(read(st))
+	unbound := read(st)
+	titles(unbound)
+	if item := unbound.Chunks[0]; *item.Products == nil || item.ProductsTotal == nil || *item.ProductsTotal != 0 {
+		t.Fatalf("read after unbinding the last store: %+v, want empty products and zero total", item)
+	}
 	activate(rebound, "mention-life-rebound")
 	titles(read(st))
 	snapshot(rebound, 6, record("b", "Rebound", "BB12345"))
