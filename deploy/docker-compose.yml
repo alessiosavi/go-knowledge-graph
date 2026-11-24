@@ -181,7 +181,7 @@ services:
       start_period: 60s
 
   edge-init:
-    image: owasp/modsecurity-crs:4.30.0-nginx-202611090911@sha256:9a386aa4a9eeec9a46c61a1eaba101c846dd83b1ec125e9126e710dd61d84422
+    image: owasp/modsecurity-crs:4.30.0-nginx-202611190211@sha256:697812147e7eada5c668e9728c6439d4663476c69f68635d24fb7878aac0f26a
     user: "0:0"
     entrypoint: ["/bin/sh", "/edge-init.sh"]
     restart: "no"
@@ -202,7 +202,7 @@ services:
           create_host_path: false
 
   edge:
-    image: owasp/modsecurity-crs:4.30.0-nginx-202611090911@sha256:9a386aa4a9eeec9a46c61a1eaba101c846dd83b1ec125e9126e710dd61d84422
+    image: owasp/modsecurity-crs:4.30.0-nginx-202611190211@sha256:697812147e7eada5c668e9728c6439d4663476c69f68635d24fb7878aac0f26a
     restart: unless-stopped
     logging: *logging
     # Measured (2 workers): 4 near-cap JSON + 4 near-20 MiB uploads + 4 streamed
