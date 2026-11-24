@@ -260,9 +260,10 @@ func (s *Store) buildProductLinkSnapshotWithLimit(ctx context.Context, codeLimit
 		}
 	}
 	slog.DebugContext(ctx, "built product link index", "page_ambiguous", index.pageAmbiguous)
-	if index.codeErr != nil || index.urlOff || index.pageOff || index.productsOff {
+	if index.codeErr != nil || index.urlOff || index.pageOff || index.productsOff || index.searchOff {
 		slog.WarnContext(ctx, "product link index cap reached",
-			"code", index.codeErr, "url_off", index.urlOff, "page_off", index.pageOff, "products_off", index.productsOff)
+			"code", index.codeErr, "url_off", index.urlOff, "page_off", index.pageOff,
+			"products_off", index.productsOff, "search_off", index.searchOff)
 	}
 	return productLinkSnapshot{token: token, index: index}, nil
 }
