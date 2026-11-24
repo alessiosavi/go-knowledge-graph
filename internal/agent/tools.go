@@ -233,6 +233,8 @@ func toolDefs() []toolDef {
 				"required": []string{"query"},
 			}),
 		functionTool("get_product", graph.ProductLookupDescription+
+			" Pages include via (ref, url, page in precedence order), chunk_ids (up to three passage IDs in sequence order), and chunk_count."+
+			" pages_missing means no associated pages were found. pages_partial means page-key coverage is unknown and pages_missing is false."+
 			" Set with_mentions to include passages from done documents with exact matches for the product's catalogue_code or product_reference. Domain also filters passages."+
 			" Retrieval is approximate: it can miss splits inside stored codes (151L-Z, A-B12345, TC 2SL), fullwidth forms, case-mapping differences (ß, İ) and tokens of 40 bytes or more; mentions_partial means search limits or skipped clauses may have left matches unchecked."+
 			" mentions_error means mentions could not be computed (index_too_large, index_unavailable or search_unavailable); the product itself is still returned."+

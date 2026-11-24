@@ -369,6 +369,7 @@ func TestProductMentionReadLifecycle(t *testing.T) {
 	read := func(title, match string, docs ...string) {
 		t.Helper()
 		count.statements = nil
+		count.queries = nil
 		count.deadlines = nil
 		out, _, err := f.store.GetProductWithMentions(ctx, lookup)
 		if title == "" {
@@ -387,8 +388,10 @@ func TestProductMentionReadLifecycle(t *testing.T) {
 		}
 	}
 	read("Original", "AA12345", old)
-	if !slices.Equal(count.statements, []int{3, 1, 3, 2}) {
-		t.Fatalf("cold read (product, token, build, candidates): statements=%v", count.statements)
+	// The short link has no page key and the fixture has no associated
+	// pages. The build's third statement now streams product link data.
+	if !slices.Equal(count.statements, []int{3, 1, 3, 2}) || count.queries[6] != allProductLinksQuery {
+		t.Fatalf("cold read (product, token, combined index build, candidates): statements=%v", count.statements)
 	}
 	if count.deadlines[1].IsZero() || !count.deadlines[1].Equal(count.deadlines[3]) || !count.deadlines[2].After(count.deadlines[1]) {
 		t.Fatalf("the token and candidates share the request deadline; the build has its own: %v", count.deadlines)

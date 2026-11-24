@@ -1678,13 +1678,24 @@ can have an empty feature array until its store is imported for that release.
 
 Both REST lookups and MCP and agent `get_product` return `pages` with up to
 three live `done` documents. Explicit product refs associate documents from
-any domain, including for products with no valid link. URL matching adds
-documents from the store's bound domain. Explicit refs come first, followed
-by URL matches. Each group sorts by newest `updated_at`, then ascending
-document ID. A source kind and canonical source identify one page per product
-across both groups. The first match for each identity takes a slot in the limit.
-Each page contains `id`, `title`, the stored `source`, and `updated_at`.
-An empty `pages` array has `pages_missing: true`.
+any domain, including for products with no valid link. Exact URL matches and
+page-key matches use the store's bound domain. Explicit refs come first,
+followed by exact URLs and then page keys. The page-key tier runs while fewer
+than three page identities are selected. Each tier sorts by newest `updated_at`,
+then ascending document ID. A source kind and canonical source identify one
+page per product across tiers.
+
+Each page contains `id`, `title`, the stored `source`, `updated_at`, and
+`via` listing evidence from evaluated tiers in order (`ref`, `url`, `page`).
+When refs fill all three page slots, the URL tier is skipped and `via` can
+omit URL evidence for those ref pages.
+`chunk_count` is the total chunks in the selected document. `chunk_ids`
+lists up to the first three, ordered by sequence and then ID.
+`pages_missing: true` means coverage is complete and the array is empty.
+If the page-key tier is unavailable, `pages_partial` reports
+`index_too_large` or `index_unavailable` and `pages_missing` is false.
+The product record, refs and exact URLs share one snapshot. Derived page-key
+matches can reflect a later snapshot.
 
 Set `domain` on either REST lookup or on `get_product` to limit pages to that
 domain. An empty `domain` includes all eligible pages. An agent request's
@@ -1700,19 +1711,30 @@ paths and queries, dot segments and explicit default ports are compared as-is.
 These variants identify different pages. Redirect targets can still match
 through `final_url`.
 
+A page key matches the normalized final path segment of an HTTP(S) product
+link to the final segment of an opaque document source such as
+`bc-it/implant-kit`. The key needs at least eight runes, a letter, and
+a hyphen or underscore. Common web extensions are stripped. A key shared by
+multiple products in the same bound domain supplies no page-key associations.
+For URL-shaped sources, the inferred match uses exact URL equality.
+
 Explicit refs use the product's stable anchor ID and survive re-imports and
-pushes. The URL candidate scan costs O(done documents in the bound domain)
-per product read. Setting a canonical URL property at ingest is the post-v1 path.
+pushes. The URL and page-key tiers scan candidates in the store's bound
+domain.
 
 Use the read-only pages report to check coverage for imported product
 snapshots before rollout. It counts products with zero, one, or multiple
 matching pages in `zero`, `one`, and `multiple` per bound store, with up to 20
 `missing_product_ids` in ascending graph ID order. `refs` counts ref pages
-from any domain, and `url` counts URL matches in the store's bound domain only.
-`total` counts their union per product, including ref pages from any domain.
-A page found by both branches contributes once to each branch and once to
-`total`. Report counts include all matches beyond the three-page read limit.
-The optional `-store` limits coverage to one store.
+from any domain. `url` and `page` count exact URL and page-key matches in the
+store's bound domain. `total` counts the union per product. A page with
+multiple kinds of evidence contributes once to each matching tier and once
+to `total`. Report counts include all matches beyond the three-page read
+limit. The optional `-store` limits the report to one store. If either inferred
+link index exceeds its budget, JSON shows `"page": null` and
+`"page_status": "index_too_large"` for each store. Text output shows
+`page=unavailable`. The totals, coverage buckets and missing IDs then use
+explicit refs and exact URL matches only.
 
 ```sh
 gkg products pages-report

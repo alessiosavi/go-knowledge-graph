@@ -605,7 +605,7 @@ paths:
       tags: [products]
       operationId: getProduct
       summary: >-
-        Look up a product by graph ID with active feature observations and up to three associated pages (pages_missing when none)
+        Look up a product by graph ID with active feature observations and up to three associated pages
       parameters:
         - name: id
           in: path
@@ -634,7 +634,7 @@ paths:
       tags: [products]
       operationId: lookupProduct
       summary: >-
-        Look up a product by exact store and source ID with active feature observations and up to three associated pages (pages_missing when none)
+        Look up a product by exact store and source ID with active feature observations and up to three associated pages
       parameters:
         - name: store
           in: query
@@ -1467,12 +1467,18 @@ components:
               type: array
               maxItems: 3
               description: >-
-                Live, done documents explicitly referencing the product in any domain or matching the product link in its bound domain.
-                An optional domain filters pages before the limit. Explicit references come first, then URL matches.
-                Each group sorts by newest update, then ascending document ID. Pages with the same source kind and canonical source count once.
+                Live, done documents explicitly referencing the product in any domain or matching its link in the store's bound domain.
+                Matches are grouped by precedence, with explicit references first, exact URL matches next, and opaque source page-key matches last.
+                A page key must have a single product owner in that domain. The page-key tier runs when fewer than three distinct identities are selected.
+                An optional domain filters pages before the limit. Each tier sorts by newest update, then ascending document ID.
+                Pages with the same source kind and canonical source count once. Derived page-key matches use a later snapshot than the product record.
               items:
                 $ref: "#/components/schemas/ProductPage"
-            pages_missing: { type: boolean, description: True when the pages array is empty. }
+            pages_missing: { type: boolean, description: True when the pages array is empty and coverage is complete. }
+            pages_partial:
+              type: string
+              enum: [index_too_large, index_unavailable]
+              description: The page-key tier was unavailable and page-key coverage is unknown. Omitted when coverage is complete. When present, pages_missing is false.
     ProductDetailWithOptionalMentions:
       allOf:
         - $ref: "#/components/schemas/ProductDetail"
@@ -1539,12 +1545,25 @@ components:
               value: { type: string }
     ProductPage:
       type: object
-      required: [id, title, source, updated_at]
+      required: [id, title, source, updated_at, via, chunk_ids, chunk_count]
       properties:
         id: { type: string }
         title: { type: string }
         source: { type: string, description: Stored document source. }
         updated_at: { type: string, format: date-time }
+        via:
+          type: array
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+          description: Evidence from the evaluated tiers, in order of precedence. URL evidence may be absent when explicit refs fill all three page slots.
+          items: { type: string, enum: [ref, url, page] }
+        chunk_ids:
+          type: array
+          maxItems: 3
+          description: First chunk IDs for the selected document, ordered by sequence and then chunk ID.
+          items: { type: string }
+        chunk_count: { type: integer, minimum: 0, description: Total chunks in the selected document. }
     ProductFeature:
       type: object
       required: [id, name, kind, cardinality, canonical_unit]

@@ -18,6 +18,7 @@ import (
 type productReadCounter struct {
 	neo4j.Driver
 	statements     []int
+	queries        []string
 	durations      []time.Duration
 	deadlines      []time.Time
 	statementsDone [][]time.Duration
@@ -66,6 +67,7 @@ func (tx *productReadCounterTx) Run(ctx context.Context, q string, params map[st
 	tx.finishStatement()
 	tx.last = time.Now()
 	tx.counts.statements[tx.n]++
+	tx.counts.queries = append(tx.counts.queries, q)
 	return tx.ExplicitTransaction.Run(ctx, q, params)
 }
 
@@ -196,6 +198,7 @@ func TestProductMentionReadScale(t *testing.T) {
 	measureRead := func(lookup ProductLookup) (ProductDetailWithMentions, ProductMentionRead, time.Duration) {
 		t.Helper()
 		counter.statements = nil
+		counter.queries = nil
 		counter.durations = nil
 		counter.deadlines = nil
 		counter.statementsDone = nil
@@ -205,8 +208,11 @@ func TestProductMentionReadScale(t *testing.T) {
 		if err != nil || out.ProductMentionFields == nil || out.MentionsError != "" || out.MentionsTotal == 0 {
 			t.Fatalf("%+v: unsuccessful enrichment (%s): %v, %q", lookup, elapsed, err, out.MentionsError)
 		}
-		if !slices.Equal(counter.statements, []int{2, 1, 2}) {
-			t.Fatalf("statements per transaction = %v", counter.statements)
+		// Fixture products have no links and need only the direct refs
+		// query before token and candidate reads for mentions.
+		if !slices.Equal(counter.statements, []int{2, 1, 2}) ||
+			!slices.Equal(counter.queries[:2], []string{getProductQuery, productRefPagesQuery}) {
+			t.Fatalf("warm read (product and refs, combined index token, mention candidates): statements=%v", counter.statements)
 		}
 		return out, read, elapsed
 	}

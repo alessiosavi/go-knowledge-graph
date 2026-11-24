@@ -87,9 +87,11 @@ var ErrProductMentionIndexTooLarge = errors.New("product mention index exceeds i
 // The returned index, including Stats, is shared and must be treated as read-only.
 // A knowledge-only graph has an empty index.
 func (s *Store) LoadProductMentionIndex(ctx context.Context) (*ProductMentionIndex, error) {
-	return s.productLinks.load(ctx, s.readProductLinkToken, func(ctx context.Context) (productLinkSnapshot, error) {
-		return s.buildProductLinkSnapshot(ctx, maxProductMentionValues)
-	})
+	index, err := s.loadProductLinkIndex(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return index.code, index.codeErr
 }
 
 func (s *Store) readProductLinkToken(ctx context.Context) (productLinkToken, error) {
@@ -104,43 +106,10 @@ func (s *Store) readProductLinkToken(ctx context.Context) (productLinkToken, err
 
 func (s *Store) loadProductMentionIndex(ctx context.Context, limit int) (*ProductMentionIndex, error) {
 	snapshot, err := s.buildProductLinkSnapshot(ctx, limit)
-	return snapshot.index, err
-}
-
-func (s *Store) buildProductLinkSnapshot(ctx context.Context, limit int) (productLinkSnapshot, error) {
-	var token productLinkToken
-	var observations []ProductIdentifierObservation
-	err := s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
-		var err error
-		token, err = txProductLinkToken(ctx, tx)
-		if err != nil || token.release == "" || len(token.stores) == 0 {
-			return err
-		}
-		names := make([]string, 0, len(token.stores))
-		for _, store := range token.stores {
-			names = append(names, store.Store)
-		}
-		params := map[string]any{"stores": names, "release": token.release}
-		rows, err := txRows(ctx, tx, boundMentionIdentifiers+`
-RETURN sum(CASE WHEN e.value_fold IS NULL THEN 0 ELSE 1 END + coalesce(size(e.items_fold), 0)) AS raw_values`, params)
-		if err != nil {
-			return err
-		}
-		rawValues, _, err := neo4j.GetRecordValue[int64](rows[0], "raw_values")
-		if err != nil {
-			return err
-		}
-		if rawValues > int64(limit) {
-			return ErrProductMentionIndexTooLarge
-		}
-		observations, err = txLoadMentionIdentifiers(ctx, tx, params)
-		return err
-	})
 	if err != nil {
-		return productLinkSnapshot{}, err
+		return nil, err
 	}
-	index, err := buildProductMentionIndex(ctx, observations, true)
-	return productLinkSnapshot{token: token, index: index}, err
+	return snapshot.index.code, snapshot.index.codeErr
 }
 
 func txMentionRelease(ctx context.Context, tx neo4j.ManagedTransaction) (string, int64, error) {
@@ -190,44 +159,57 @@ UNWIND ` + mentionFeatureIDs + ` AS feature
 MATCH (f:FeatureRev {id:feature})<-[e:HAS_FEATURE]-(p:Product)
 WHERE e.release_id=$release AND p.store IN $stores`
 
-func txLoadMentionIdentifiers(ctx context.Context, tx neo4j.ManagedTransaction, params map[string]any) ([]ProductIdentifierObservation, error) {
-	// Group by product and feature to send each title, feature name and
-	// product identity once. The builder treats scalars and list items alike.
+func txLoadMentionIdentifiers(ctx context.Context, tx neo4j.ManagedTransaction, params map[string]any, limit int) ([]ProductIdentifierObservation, error) {
 	result, err := tx.Run(ctx, boundMentionIdentifiers+`
-WITH p, feature, collect(e.value_fold) AS scalars, collect(e.items_fold) AS lists
 RETURN p.id AS id, p.store AS store, p.product_id AS product_id, p.domain AS domain, p.title AS title,
-       feature, scalars, lists`, params)
+       feature, e.value_fold AS value_fold, e.items_fold AS items_fold`, params)
 	if err != nil {
 		return nil, err
 	}
 	var observations []ProductIdentifierObservation
+	type productFeature struct{ product, feature string }
+	groups := make(map[productFeature]int)
+	var rawValues int
 	for result.Next(ctx) {
 		row := result.Record()
-		product := Product{ID: getString(row, "id"), Store: getString(row, "store"),
-			ProductID: getString(row, "product_id"), Domain: getString(row, "domain"), Title: getString(row, "title")}
-		scalars, lists := row.Values[6].([]any), row.Values[7].([]any)
-		values := make([]string, 0, len(scalars)+len(lists))
-		for _, raw := range scalars {
-			value, ok := raw.(string)
-			if !ok {
-				return nil, fmt.Errorf("invalid identifier value_fold for product %q", product.ID)
-			}
-			values = append(values, value)
+		product := readProductLinkRow(row)
+		feature := getString(row, "feature")
+		value, null, err := neo4j.GetRecordValue[string](row, "value_fold")
+		if err != nil {
+			return nil, err
 		}
-		for _, raw := range lists {
-			items, ok := raw.([]any)
-			if !ok {
-				return nil, fmt.Errorf("invalid identifier items_fold for product %q", product.ID)
+		items, _, err := neo4j.GetRecordValue[[]any](row, "items_fold")
+		if err != nil {
+			return nil, err
+		}
+		rawValues += len(items)
+		if !null {
+			rawValues++
+		}
+		if rawValues > limit {
+			if _, err := result.Consume(ctx); err != nil {
+				return nil, err
 			}
-			for _, item := range items {
-				if value, ok := item.(string); ok {
-					values = append(values, value)
-				}
+			return nil, ErrProductMentionIndexTooLarge
+		}
+		// Group only after charging the raw row. This preserves per-feature
+		// dedupe without collecting unbounded lists inside Memgraph.
+		key := productFeature{product.ID, feature}
+		i, exists := groups[key]
+		if !exists {
+			i = len(observations)
+			groups[key] = i
+			observations = append(observations, ProductIdentifierObservation{Product: product, Feature: feature})
+		}
+		observation := &observations[i]
+		if !null {
+			observation.ItemsFold = append(observation.ItemsFold, value)
+		}
+		for _, item := range items {
+			if text, ok := item.(string); ok {
+				observation.ItemsFold = append(observation.ItemsFold, text)
 			}
 		}
-		observations = append(observations, ProductIdentifierObservation{
-			Product: product, Feature: getString(row, "feature"), ItemsFold: values,
-		})
 	}
 	return observations, result.Err()
 }

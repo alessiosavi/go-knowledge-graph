@@ -60,7 +60,7 @@ func sameOptional[T comparable](a, b *T) bool {
 
 type productLinkSnapshot struct {
 	token productLinkToken
-	index *ProductMentionIndex
+	index *ProductLinkIndex
 }
 
 type productLinkBuild struct {
@@ -83,12 +83,12 @@ type productLinkCache struct {
 	lastErr  error
 }
 
-var errProductLinkTokenChanged = errors.New("product mention index version changed during load")
+var errProductLinkTokenChanged = errors.New("product link index version changed during load")
 
 func (c *productLinkCache) load(ctx context.Context,
 	readToken func(context.Context) (productLinkToken, error),
 	build func(context.Context) (productLinkSnapshot, error),
-) (*ProductMentionIndex, error) {
+) (*ProductLinkIndex, error) {
 	for range 2 {
 		token, err := readToken(ctx)
 		if err != nil {
@@ -104,7 +104,7 @@ func (c *productLinkCache) load(ctx context.Context,
 
 func (c *productLinkCache) loadAtLeast(ctx context.Context, token productLinkToken,
 	build func(context.Context) (productLinkSnapshot, error),
-) (*ProductMentionIndex, error) {
+) (*ProductLinkIndex, error) {
 	for range 3 {
 		c.mu.Lock()
 		if err := ctx.Err(); err != nil {
@@ -199,7 +199,68 @@ func (c *productLinkCache) stop(ctx context.Context) {
 		select {
 		case <-flight.done:
 		case <-ctx.Done():
-			slog.Warn("graph: stopped waiting for product mention index build during shutdown", "err", ctx.Err())
+			slog.Warn("graph: stopped waiting for product link index build during shutdown", "err", ctx.Err())
 		}
 	}
+}
+
+func (s *Store) loadProductLinkIndex(ctx context.Context) (*ProductLinkIndex, error) {
+	return s.productLinks.load(ctx, s.readProductLinkToken, func(ctx context.Context) (productLinkSnapshot, error) {
+		return s.buildProductLinkSnapshot(ctx, maxProductMentionValues)
+	})
+}
+
+// WarmProductLinks loads the read-time product link index within the build deadline.
+func (s *Store) WarmProductLinks(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, productLinkBuildTimeout)
+	defer cancel()
+	_, err := s.loadProductLinkIndex(ctx)
+	return err
+}
+
+func (s *Store) buildProductLinkSnapshot(ctx context.Context, limit int) (productLinkSnapshot, error) {
+	return s.buildProductLinkSnapshotWithLimit(ctx, limit, maxProductLinkRows)
+}
+
+func (s *Store) buildProductLinkSnapshotWithLimit(ctx context.Context, codeLimit, linkLimit int) (productLinkSnapshot, error) {
+	var token productLinkToken
+	var observations []ProductIdentifierObservation
+	index := &ProductLinkIndex{}
+	err := s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
+		var err error
+		token, err = txProductLinkToken(ctx, tx)
+		if err != nil || len(token.stores) == 0 {
+			return err
+		}
+		if token.release != "" {
+			names := make([]string, len(token.stores))
+			for i, store := range token.stores {
+				names[i] = store.Store
+			}
+			observations, err = txLoadMentionIdentifiers(ctx, tx, map[string]any{
+				"stores": names, "release": token.release,
+			}, codeLimit)
+			if errors.Is(err, ErrProductMentionIndexTooLarge) {
+				index.codeErr = err
+			} else if err != nil {
+				return err
+			}
+		}
+		return txLoadProductLinkOwners(ctx, tx, token.stores, index, linkLimit)
+	})
+	if err != nil {
+		return productLinkSnapshot{}, err
+	}
+	if index.codeErr == nil {
+		index.code, err = buildProductMentionIndex(ctx, observations, true)
+		if err != nil {
+			return productLinkSnapshot{}, err
+		}
+	}
+	slog.DebugContext(ctx, "built product link index", "page_ambiguous", index.pageAmbiguous)
+	if index.codeErr != nil || index.urlOff || index.pageOff || index.productsOff {
+		slog.WarnContext(ctx, "product link index cap reached",
+			"code", index.codeErr, "url_off", index.urlOff, "page_off", index.pageOff, "products_off", index.productsOff)
+	}
+	return productLinkSnapshot{token: token, index: index}, nil
 }

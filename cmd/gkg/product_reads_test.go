@@ -81,7 +81,7 @@ func TestProductReadPaths(t *testing.T) {
 	const originalLink = "https://example.test/item"
 	const pageLink = "HTTPs://eXample.TEST/Item/?sku=A%2F1&z=2#frag"
 	fixture := strings.Replace(snapshotRecord("example.test:1", "conflict", `{"length":"2 cm","size":"3 cm","codes":" c 1 / B2"}`), originalLink, pageLink, 1) +
-		strings.Replace(snapshotRecord("example.test:2", "unsplit", `{"length":"20 mm","codes":"A/(B"}`), originalLink, "https://example.test/single", 1) +
+		strings.Replace(snapshotRecord("example.test:2", "unsplit", `{"length":"20 mm","codes":"A/(B"}`), originalLink, "https://example.test/single-kit", 1) +
 		strings.Replace(snapshotRecord("example.test:3", "range", `{"length":"10-20 mm"}`), originalLink, "/item", 1) +
 		strings.Replace(snapshotRecord("example.test:4", "no features", "{}"), originalLink, "", 1)
 	importSnapshot := func(t *testing.T, store, release, seq, data, want string) {
@@ -230,7 +230,7 @@ func TestProductReadPaths(t *testing.T) {
 			t.Fatalf("unexpected bound store: %v", list)
 		}
 		out := productCLI(t, 0, "example.test", "products", "pages-report", "-store", "example.test", "-json")
-		const want = `[{"store":"example.test","domain":"product-reads","zero":0,"one":0,"multiple":0,"missing_product_ids":[],"total":0,"refs":0,"url":0}]`
+		const want = `[{"store":"example.test","domain":"product-reads","zero":0,"one":0,"multiple":0,"missing_product_ids":[],"total":0,"refs":0,"url":0,"page":0}]`
 		if strings.TrimSpace(out) != want {
 			t.Fatalf("pages-report for an empty store = %s, want %s", out, want)
 		}
@@ -381,7 +381,7 @@ func TestProductReadPaths(t *testing.T) {
 			competing = append(competing, d.ID)
 		}
 		assertPages(t, get(), min(competing[1], competing[3]), max(competing[1], competing[3]), competing[0])
-		add("url", "https://EXAMPLE.test/single/#page", "https://example.test/single", domain, "single", graph.StatusDone)
+		add("url", "https://EXAMPLE.test/single-kit/#page", "https://example.test/single-kit", domain, "single", graph.StatusDone)
 
 		refsOnly := add("text", "refs-only", "", domain, "refs only", graph.StatusDone, "example.test:99", "example.test:4")
 		for _, status := range []graph.Status{graph.StatusSuperseded, graph.StatusFailed, graph.StatusReceived} {
@@ -443,8 +443,8 @@ func TestProductReadPaths(t *testing.T) {
 		})
 		missing := productobs.ProductID("example.test", "example.test:3")
 		out := productCLI(t, 0, "example.test", "products", "pages-report", "-json")
-		want := fmt.Sprintf(`[{"store":"example.test","domain":"product-reads","zero":1,"one":2,"multiple":1,"missing_product_ids":[%q],"total":7,"refs":3,"url":6},`+
-			`{"store":"z.example.test","domain":"other-product-reads","zero":1,"one":0,"multiple":0,"missing_product_ids":[%q],"total":0,"refs":0,"url":0}]`,
+		want := fmt.Sprintf(`[{"store":"example.test","domain":"product-reads","zero":1,"one":2,"multiple":1,"missing_product_ids":[%q],"total":7,"refs":3,"url":6,"page":0},`+
+			`{"store":"z.example.test","domain":"other-product-reads","zero":1,"one":0,"multiple":0,"missing_product_ids":[%q],"total":0,"refs":0,"url":0,"page":0}]`,
 			missing, productobs.ProductID("z.example.test", "z.example.test:5"))
 		if strings.TrimSpace(out) != want {
 			t.Fatalf("pages-report = %s, want %s", out, want)
@@ -459,6 +459,27 @@ func TestProductReadPaths(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+
+		t.Run("page_key_and_rest_scope", func(t *testing.T) {
+			opaque := add("file", "docs/single-kit", "", domain, "opaque product page", graph.StatusDone)
+			t.Cleanup(func() {
+				if err := st.DeleteDocument(ctx, opaque.ID); err != nil {
+					t.Error(err)
+				}
+			})
+			path := "/v1/products/" + productobs.ProductID("example.test", "example.test:2")
+			got := rest(t, "GET", path, "", 200)
+			pages := got["pages"].([]any)
+			if len(pages) != 2 || got["pages_partial"] != nil {
+				t.Fatalf("pages = %v, partial = %v", pages, got["pages_partial"])
+			}
+			page := pages[1].(productReadJSON)
+			if page["id"] != opaque.ID || !slices.Equal(page["via"].([]any), []any{"page"}) ||
+				page["chunk_count"] != float64(0) || len(page["chunk_ids"].([]any)) != 0 {
+				t.Fatalf("opaque page = %v", page)
+			}
+			assertPages(t, rest(t, "GET", path+"?domain="+other, "", 200))
+		})
 
 		t.Run("bare_host", func(t *testing.T) {
 			setLink := func(link string) {

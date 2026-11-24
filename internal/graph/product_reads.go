@@ -26,7 +26,7 @@ type ProductLookup struct {
 	SeedDomain string `json:"-"`
 }
 
-const ProductLookupDescription = "Get a product with its active feature observations and up to three associated pages (pages_missing when none). " +
+const ProductLookupDescription = "Get a product with its active feature observations and up to three associated pages. " +
 	"Provide id, or both store and the full source product_id. The optional domain filters associated pages."
 
 type Product struct {
@@ -76,6 +76,7 @@ type ProductDetail struct {
 	Features     []ProductEvidence `json:"features"`
 	Pages        []ProductPage     `json:"pages"`
 	PagesMissing bool              `json:"pages_missing"`
+	PagesPartial string            `json:"pages_partial,omitempty"`
 }
 
 // Project the store's domain for page lookup. A missing or unbound store
@@ -92,7 +93,8 @@ RETURN properties(p) AS product, CASE WHEN s.domain IS NOT NULL THEN s.domain EL
        properties(f) AS feature, properties(e) AS edge
 ORDER BY f.id, e.source_key`
 
-// GetProduct reads the product, active observations, and pages in one snapshot.
+// GetProduct reads the product, active observations, and direct pages in one
+// snapshot and resolves derived page-key matches against a subsequent snapshot.
 func (s *Store) GetProduct(ctx context.Context, lookup ProductLookup) (ProductDetail, error) {
 	id := lookup.ID
 	switch {
@@ -106,6 +108,8 @@ func (s *Store) GetProduct(ctx context.Context, lookup ProductLookup) (ProductDe
 		return ProductDetail{}, fmt.Errorf("%w: invalid domain slug", ErrProductReadInput)
 	}
 	var out ProductDetail
+	var domain string
+	pages := newProductPageSelection(productPageLimit)
 	err := s.runReadTx(ctx, func(tx neo4j.ManagedTransaction) error {
 		rows, err := txRows(ctx, tx, getProductQuery, map[string]any{
 			"id": id, "store": lookup.Store, "product": lookup.ProductID, "seed_domain": lookup.SeedDomain,
@@ -117,13 +121,18 @@ func (s *Store) GetProduct(ctx context.Context, lookup ProductLookup) (ProductDe
 		if err != nil {
 			return err
 		}
-		out.Pages, err = txProductPages(ctx, tx, out.ID, getString(rows[0], "page_domain"), out.Link, lookup.Domain)
-		out.PagesMissing = len(out.Pages) == 0
-		return err
+		domain = getString(rows[0], "page_domain")
+		return txResolveDirectProductPages(ctx, tx, out.ID, domain, out.Link, lookup.Domain, &pages)
 	})
 	if err != nil {
 		return ProductDetail{}, err
 	}
+	pages, out.PagesPartial = s.resolveProductPageTier(ctx, pages, out.ID, domain, out.Link, lookup.Domain)
+	out.Pages = pages.pages
+	if err := s.loadProductPageChunks(ctx, out.Pages); err != nil {
+		return ProductDetail{}, err
+	}
+	out.PagesMissing = len(out.Pages) == 0 && out.PagesPartial == ""
 	return out, nil
 }
 

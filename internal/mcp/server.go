@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -57,7 +58,26 @@ func (s *Server) MCP() *mcpgo.Server { return s.sdk }
 // RunStdio serves the tools over stdio until the peer disconnects or ctx is
 // cancelled.
 func (s *Server) RunStdio(ctx context.Context) error {
-	return s.sdk.Run(ctx, &mcpgo.StdioTransport{})
+	session, err := s.sdk.Connect(ctx, &mcpgo.StdioTransport{}, nil)
+	if err != nil {
+		return err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = session.Close() })
+	defer stop()
+	warmCtx, cancelWarm := context.WithCancel(ctx)
+	defer cancelWarm()
+	if s.store != nil {
+		go func() {
+			if err := s.store.WarmProductLinks(warmCtx); err != nil {
+				slog.WarnContext(warmCtx, "warm product link index", "error", err)
+			}
+		}()
+	}
+	err = session.Wait()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 // HTTPHandler returns the streamable-HTTP handler for the /mcp endpoint;
