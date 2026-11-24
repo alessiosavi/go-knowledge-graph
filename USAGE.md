@@ -411,20 +411,27 @@ The browser never sees the provider key.
 
 Product searches default to 10 hits and cap the requested limit at 20. The
 byte budget can shorten a page or omit hit evidence. Pass the returned cursor
-with the same filters and effective limit to continue. Product detail preserves
-the associated pages and reports dropped feature observations in
-`features_omitted`. The feature list shows IDs, names, release status and
-numeric-search support without source-key rows. Use its case-insensitive
-`query` over feature IDs and names to narrow a result marked `truncated`.
+with the same filters and effective limit to continue. The feature list shows
+IDs, names, release status and numeric-search support without source-key rows.
+Use its case-insensitive `query` over feature IDs and names to narrow a result
+marked `truncated`.
 The `omitted` count reports how many matching features were dropped. A
 product tool returns an error if its required metadata exceeds the budget.
 
-For questions about what documents say about a product, the agent can call
-`get_product` with `with_mentions=true` (default `false`) to retrieve exact
-identifier matches in passages from done documents. `mentions_limit` accepts
-integers from 1 to 20 and defaults to 5. The ask domain filters passage evidence.
-If the tool result reaches its byte budget, it drops passages from the end
-before dropping features and reports their count in `mentions_omitted_for_budget`.
+For product questions, the agent is prompted to read the product record and
+linked passages, cite both, and say whether they agree. Agent search can return
+product hits, and product pages expose `chunk_ids` for reading passages with
+`get_chunks`. In the agent, `get_product` defaults `with_mentions` to `true` to
+retrieve exact identifier matches in passages from done documents. `mentions_limit`
+accepts integers from 1 to 20 and defaults to 5. The ask domain filters passage
+evidence. Agent `get_chunks` defaults `with_products` to `true` to show products
+linked to the document or identified in the chunk. Set either flag to `false`
+to skip its enrichment.
+
+To fit the byte budget, `get_product` preserves the first page and first
+mention when available. It drops additional mentions and pages before
+trimming features. The counts appear in `mentions_omitted_for_budget`,
+`pages_omitted_for_budget` and `features_omitted`.
 See [Catalogue passages for a product](#catalogue-passages-for-a-product) for
 the mention fields and retrieval limits.
 

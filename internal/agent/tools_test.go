@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/chunkread"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
@@ -389,6 +390,65 @@ func (s chunkProductsStore) ChunkNeighbourhood(_ context.Context, id string, _ i
 
 func (s chunkProductsStore) LoadProductMentionIndex(context.Context) (*graph.ProductMentionIndex, error) {
 	return s.index, nil
+}
+
+func TestToolGetChunksWithProducts(t *testing.T) {
+	s := NewServer(config.Config{}, nil, nil)
+	s.store = chunkProductsStore{index: graph.BuildProductMentionIndex([]graph.ProductIdentifierObservation{
+		{Product: graph.Product{ID: "a", Store: "products.test", ProductID: "products.test:a"}, Feature: "catalogue_code", ValueFold: new("AB12345")},
+	})}
+	for _, tc := range []struct {
+		name, args string
+		want       bool
+	}{
+		{"omitted", `{"ids":["c1"]}`, true},
+		{"true", `{"ids":["c1"],"with_products":true}`, true},
+		{"false", `{"ids":["c1"],"with_products":false}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := s.execTool(t.Context(), "get_chunks", json.RawMessage(tc.args))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := unmarshalResult[chunkread.Result](t, res)
+			if len(out.Chunks) != 1 || out.ProductsError != "" {
+				t.Fatalf("unexpected get_chunks response: %+v", out)
+			}
+			chunk := out.Chunks[0]
+			if tc.want {
+				if chunk.Products == nil || len(*chunk.Products) != 1 || (*chunk.Products)[0].ID != "a" || chunk.ProductsTotal == nil || *chunk.ProductsTotal != 1 {
+					t.Errorf("expected one linked product: %+v", chunk)
+				}
+			} else if chunk.Products != nil || chunk.ProductsTotal != nil {
+				t.Errorf("expected no product fields: %+v", chunk)
+			}
+		})
+	}
+	for _, value := range []string{`"true"`, "1", "null"} {
+		raw := json.RawMessage(fmt.Sprintf(`{"ids":["c1"],"with_products":%s}`, value))
+		_, err := s.execTool(t.Context(), "get_chunks", raw)
+		if invalid, ok := err.(argerr.Error); !ok || invalid.Error() != "with_products must be a boolean" {
+			t.Errorf("with_products=%s: got %v, want with_products boolean argument error", value, err)
+		}
+	}
+}
+
+func TestToolGetChunksProductsSchema(t *testing.T) {
+	for _, def := range toolDefs() {
+		if def.Function.Name != "get_chunks" {
+			continue
+		}
+		schema := unmarshalResult[struct{ Properties map[string]map[string]any }](t, def.Function.Parameters)
+		with := schema.Properties["with_products"]
+		if with["type"] != "boolean" || with["default"] != true || with["description"] != "Include products linked to the chunk's document and exact identifier matches on its full text (default true)" {
+			t.Errorf("unexpected with_products schema: %v", with)
+		}
+		if !strings.Contains(def.Function.Description, "with_products defaults to true and lists document-linked products first, then exact identifier matches from the full chunk text.") || strings.Contains(def.Function.Description, "Set with_products") {
+			t.Errorf("get_chunks description does not explain the agent default: %q", def.Function.Description)
+		}
+		return
+	}
+	t.Fatal("get_chunks tool missing")
 }
 
 func TestToolGetChunksProductsLimit(t *testing.T) {

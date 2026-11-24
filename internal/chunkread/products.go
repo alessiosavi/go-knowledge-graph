@@ -22,10 +22,16 @@ const (
 	productIndexTimeout  = 5 * time.Second
 	ownersTruncated      = "owners_truncated"
 
-	ProductsLimitError       = "products_limit must be an integer between 1 and 50"
-	WithProductsDescription  = "Include products linked to the chunk's document and exact identifier matches on its full text (default false)"
-	ProductsLimitDescription = "Maximum products per chunk after merging document links and identifier matches (1–50, default 10)"
-	ProductsToolDescription  = " Set with_products to list document-linked products first, then exact identifier matches from the full chunk text. products_total counts both after deduplication, before products_limit and response-budget trimming. Each document contributes up to 50 URL owners. via identifies ref, url, page, and code evidence. Only URL and page links require the document and product store to share a domain. products_error reports code matching failures and links_partial reports incomplete document links. Retry a single chunk with a higher products_limit for more results. Use gkg products mentions-scan for the complete offline code scan."
+	ProductsLimitError           = "products_limit must be an integer between 1 and 50"
+	WithProductsDescription      = "Include products linked to the chunk's document and exact identifier matches on its full text (default false)"
+	ProductsLimitDescription     = "Maximum products per chunk after merging document links and identifier matches (1–50, default 10)"
+	ProductsToolDescription      = " Set with_products to list " + productsToolDetails
+	AgentProductsToolDescription = " with_products defaults to true and lists " + productsToolDetails
+	productsToolDetails          = "document-linked products first, then exact identifier matches from the full chunk text." +
+		" products_total counts both after deduplication, before products_limit and response-budget trimming. Each document contributes up to 50 URL owners." +
+		" via identifies ref, url, page, and code evidence. Only URL and page links require the document and product store to share a domain." +
+		" products_error reports code matching failures and links_partial reports incomplete document links. Retry a single chunk with a higher products_limit for more results." +
+		" Use gkg products mentions-scan for the complete offline code scan."
 )
 
 // DecodeProductsLimit accepts an omitted field or a JSON integer in range.

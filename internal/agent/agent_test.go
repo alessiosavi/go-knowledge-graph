@@ -32,10 +32,14 @@ func TestSystemPromptSchema(t *testing.T) {
 		"Chunk search hits carry document_id, document_date and document_date_source; entity hits carry none.",
 		"document_date_source 'caller' is the source's own date; 'ingest' is only when gkg received it and does not show how recent the content is. For a current-state question with conflicting comparable evidence, prefer the newest caller-dated source, cite its date, and mention any undated conflicting source.",
 		"When the question names a period, pass since/until to search, get_entity, traverse or list_documents.",
+		"Cite a product by its store-prefixed product_id (for example dentalica.com:1000), not by its graph id.",
 	} {
 		if !strings.Contains(systemPrompt, want) {
 			t.Errorf("system prompt missing %q", want)
 		}
+	}
+	if !strings.Contains(planFinalPrompt, "cite a product by its store-prefixed product_id, not by its graph id") {
+		t.Errorf("plan final prompt missing the product citation rule: %q", planFinalPrompt)
 	}
 	_, strategy, ok := strings.Cut(systemPrompt, "Strategy: ")
 	if !ok {
@@ -898,13 +902,40 @@ func TestSystemPromptProductCodeLookup(t *testing.T) {
 	}
 }
 
-func TestProductMentionsPromptRouting(t *testing.T) {
-	const routing = "For what documents or catalogues say about a product, call get_product with with_mentions=true; for the products a passage cites, call get_chunks with with_products=true."
-	if strings.Count(systemPrompt, routing) != 1 || strings.Count(planSystemPrompt, routing) != 1 {
-		t.Error("the system and plan prompts must each include the routing line once")
+func TestProductEvidencePromptRouting(t *testing.T) {
+	rules := []string{
+		"For any question about a product: read its product record (get_product) AND what documents say about it (pages, mentions, or get_chunks with_products). Cite the record and at least one passage about that product and say whether they agree; if no passage exists, say so — unless mentions_error, mentions_partial or pages_partial shows the check was incomplete; then say the passages could not be fully checked.",
+		"Documents may be Italian and product data English: search with Italian and English keywords, as two searches in the same step.",
+		"For product names and attributes, also search in English (product data is English), e.g. 'adesivo universale' → 'universal adhesive'.",
+		"Search can return product hits (kind product) with an id for get_product.",
+		"Pass a product page's chunk_ids to get_chunks to read its passages.",
+		"If the passages you rely on list products and the question is about a product, call get_product on that product before answering, even when search returned no product hits.",
+		"Cite the chunk ids of the passages you used.",
+	}
+	for _, prompt := range []struct{ name, text string }{{"system", systemPrompt}, {"plan", planSystemPrompt}} {
+		for _, rule := range rules {
+			if count := strings.Count(prompt.text, rule); count != 1 {
+				t.Errorf("%s prompt includes %q %d times, want once", prompt.name, rule, count)
+			}
+		}
+		if !strings.Contains(prompt.text, "- "+strings.Join(rules, " ")+"\n") {
+			t.Errorf("%s prompt must include the product evidence rules on one routing line", prompt.name)
+		}
 	}
 	_, hint, _ := strings.Cut(planSystemPrompt, "For product questions,")
-	if !strings.Contains(hint, "with_mentions") || !strings.Contains(hint, "mentions_limit") {
-		t.Error("plan prompt product hint is missing the get_product mentions arguments")
+	for _, want := range []string{"with_mentions (boolean, default true)", "mentions_limit (1–20, default 5", "with_products (boolean, default true)"} {
+		if count := strings.Count(hint, want); count != 1 {
+			t.Errorf("plan prompt tool argument hint includes %q %d times, want once", want, count)
+		}
+	}
+}
+
+func TestPlanPromptIndependentCalls(t *testing.T) {
+	const rule = "In a single plan, call only tools that need no id or chunk_ids from another call's result; if you could not read passages, say they could not be read — not that none exist."
+	if count := strings.Count(planSystemPrompt, rule); count != 1 {
+		t.Errorf("plan prompt includes the independent-calls rule %d times, want once", count)
+	}
+	if strings.Contains(systemPrompt, rule) {
+		t.Error("tool-calling prompt must allow calls that depend on earlier results")
 	}
 }

@@ -175,16 +175,20 @@ plug it in:
   Every login can also `ingest`; leave that tool out if the agent should
   only read.
 
-The built-in ask agent also uses these three product tools. `find_products`
-defaults to 10 hits and caps the requested limit at 20. A byte budget may
-shorten the page. To continue, pass its cursor with the same filters and
-effective limit. `get_product` reports omitted observations in
-`features_omitted`; with `with_mentions` it also returns catalogue passages
-that cite the product and reports trimmed passages in
-`mentions_omitted_for_budget` (passages are dropped before features). `list_features` returns a compact listing and accepts a
+For the built-in ask agent, `find_products` defaults to 10 hits and caps the
+requested limit at 20. A byte budget may shorten the page. To continue, pass
+its cursor with the same filters and effective limit.
+The agent's `get_product` defaults `with_mentions` to
+`true` and returns catalogue passages with exact product identifier matches.
+The agent's `get_chunks` defaults `with_products` to `true` and includes
+document-linked products and exact identifier matches. To fit the byte budget,
+`get_product` keeps the first page and first mention when available. It drops
+additional mentions first, then additional pages, then features. The counts
+appear in `mentions_omitted_for_budget`, `pages_omitted_for_budget` and
+`features_omitted`. `list_features` returns a compact listing and accepts a
 case-insensitive substring `query` over IDs and names. Narrow the query when
 `truncated` is true. The `omitted` field gives the count of dropped features.
-A product tool returns an error if its required metadata exceeds the budget.
+A product tool returns an error if its required result exceeds the budget.
 
 Python, with the official MCP SDK (`mcp` 2.x; on 1.x use
 `streamablehttp_client(url, headers=...)` instead of the httpx2 client):
