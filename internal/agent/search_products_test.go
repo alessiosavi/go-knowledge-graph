@@ -19,14 +19,19 @@ import (
 
 type productSearchToolStore struct {
 	graphStore
-	entities  []graph.EntitySearchRow
-	chunks    []graph.ChunkSearchRow
-	vectorIDs []string
-	products  func(context.Context, string, string, int) ([]graph.Product, error)
-	chunkRead int
+	entities         []graph.EntitySearchRow
+	vectorEntities   []graph.EntitySearchRow
+	chunks           []graph.ChunkSearchRow
+	vectorIDs        []string
+	entityLag        time.Duration
+	products         func(context.Context, string, string, int) ([]graph.Product, error)
+	texts            func(context.Context, []float64, string, int, []string) (graph.ProductTextSearchResult, error)
+	textSearchCalled bool
+	chunkRead        int
 }
 
 func (s *productSearchToolStore) EntityTextSearchIn(_ context.Context, _, _ string, limit int) ([]graph.EntitySearchRow, error) {
+	time.Sleep(s.entityLag)
 	return s.entities[:min(limit, len(s.entities))], nil
 }
 
@@ -41,7 +46,7 @@ func (s *productSearchToolStore) EntityVectorSearch(context.Context, []float64, 
 
 func (s *productSearchToolStore) EntitySearchRowsByID(_ context.Context, ids []string) ([]graph.EntitySearchRow, error) {
 	var rows []graph.EntitySearchRow
-	for _, entity := range s.entities {
+	for _, entity := range slices.Concat(s.entities, s.vectorEntities) {
 		if slices.Contains(ids, entity.ID) {
 			rows = append(rows, entity)
 		}
@@ -51,6 +56,11 @@ func (s *productSearchToolStore) EntitySearchRowsByID(_ context.Context, ids []s
 
 func (s *productSearchToolStore) SearchProductLinks(ctx context.Context, query, domain string, limit int) ([]graph.Product, error) {
 	return s.products(ctx, query, domain, limit)
+}
+
+func (s *productSearchToolStore) SearchProductTexts(ctx context.Context, vec []float64, domain string, limit int, exclude []string) (graph.ProductTextSearchResult, error) {
+	s.textSearchCalled = true
+	return s.texts(ctx, vec, domain, limit, exclude)
 }
 
 type productSearchTestEmbedder struct{}

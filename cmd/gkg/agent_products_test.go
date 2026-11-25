@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,10 +14,12 @@ import (
 	"testing"
 
 	mcpgo "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/agent"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/mcp"
 	"github.com/alessiosavi/go-knowledge-graph/internal/productobs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
@@ -100,6 +103,68 @@ func askProductCallsWithEmbedder(t *testing.T, st *graph.Store, domain string, e
 		results = append(results, readProductJSON(t, ev.Result))
 	}
 	return results
+}
+
+func TestAgentSearchProductMeaningMemgraph(t *testing.T) {
+	st, driver, query := productTestDB(t)
+	const domain, store = "t4-merge", "t4-merge.test"
+	const manifest = `{"store_domains":{"t4-merge.test":"t4-merge"}}`
+	params := map[string]any{
+		"domain": domain, "store": store, "manifest": manifest,
+		"digest": productFixtureDigest(manifest), "space": graph.ProductTextSpace,
+	}
+	pointer := query(`MATCH (m:GkgMeta {id:'product_release'}) RETURN properties(m)`, nil)
+	indexErr := st.CheckProductTextIndex(t.Context())
+	if err := st.EnsureTextVecIndex(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if indexErr != nil {
+		t.Cleanup(func() {
+			ctx := context.Background()
+			session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+			defer session.Close(ctx)
+			result, err := session.Run(ctx, "DROP VECTOR INDEX text_vec", nil)
+			if err == nil {
+				_, err = result.Consume(ctx)
+			}
+			if err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(func() {
+		query(`MATCH (n) WHERE n.store=$store OR (n:TextVec AND n.id STARTS WITH 't4-merge-')
+OR (n.id=$domain AND (n:Domain OR n:ProductRelease)) SET n.embedding=null DETACH DELETE n`, params)
+		if len(pointer) == 0 {
+			query(`MATCH (m:GkgMeta {id:'product_release'}) DELETE m`, nil)
+		} else {
+			query(`MATCH (m:GkgMeta {id:'product_release'}) SET m=$props`, map[string]any{"props": pointer[0].Values[0]})
+		}
+	})
+	query(`
+CREATE (:Domain {id:$domain}), (:ProductRelease {id:$domain, manifest_json:$manifest, manifest_digest:$digest}),
+       (:ProductStore {store:$store, domain:$domain, product_count:2, text_version:1, text_count:2, text_edge_count:2})
+MERGE (m:GkgMeta {id:'product_release'}) SET m.value=$domain
+WITH 1 AS ignored
+UNWIND [{id:'t4-merge-a-title', title:'Ceramic kit'}, {id:'t4-merge-b-meaning', title:'Opaque accessory'}] AS row
+CREATE (:Product {id:row.id, store:$store, product_id:$store+':'+row.id, domain:$domain, title:row.title})-[:HAS_TEXT {key:'material'}]->
+       (:ProductText {id:row.id, store:$store, vec_id:row.id, text:'Material: ceramic'})
+CREATE (v:TextVec {id:row.id, vec_id:row.id, space:$space})
+SET v.embedding=[1.0] + [i IN range(1, 767) | 0.0]`, params)
+
+	results := askProductCallsWithEmbedder(t, st, domain, graphtest.ProductTextEmbedder{},
+		agentProductCall{"search", productReadJSON{"query": "ceramic", "kind": "product", "limit": 2}})
+	hits, _ := results[0]["hits"].([]any)
+	if len(hits) != 2 || results[0]["products_error"] != nil || results[0]["meaning_error"] != nil {
+		t.Fatalf("want a title hit and one meaning hit: %v", results[0])
+	}
+	title := hits[0].(map[string]any)
+	meaning := hits[1].(map[string]any)
+	if title["id"] != "t4-merge-a-title" || title["match"] != "title" ||
+		meaning["id"] != "t4-merge-b-meaning" || meaning["match"] != "meaning" ||
+		meaning["key"] != "material" || meaning["checked"] != false || meaning["excerpt"] != "Material: ceramic" {
+		t.Fatalf("want the duplicate excluded before filling the last slot: %v", hits)
+	}
 }
 
 func TestAgentProductReadPaths(t *testing.T) {

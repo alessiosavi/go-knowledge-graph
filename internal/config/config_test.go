@@ -16,6 +16,7 @@ func TestProductTextConfig(t *testing.T) {
 		"GKG_PRODUCT_TEXT_SEARCH":           "true",
 		"GKG_PRODUCT_TEXT_FLOOR":            "0",
 		"GKG_PRODUCT_TEXT_SEARCH_TIMEOUT":   "750ms",
+		"GKG_PRODUCT_TEXT_AUTO_TIMEOUT":     "125ms",
 		"GKG_PRODUCT_TEXT_EMBED":            "pause",
 		"GKG_PRODUCT_TEXT_EMBED_PAUSE":      "125ms",
 		"GKG_PRODUCT_TEXT_EMBED_MAX_INGEST": "0",
@@ -32,7 +33,8 @@ func TestProductTextConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := cfg.ProductText; got.Search || got.Embed != "run" || got.EmbedPause != 250*time.Millisecond ||
-		got.EmbedMaxIngest != 2 || got.MaxVectors != 65536 || got.SearchTimeout != 1500*time.Millisecond || got.SimilarityFloor() != .72 {
+		got.EmbedMaxIngest != 2 || got.MaxVectors != 65536 || got.SearchTimeout != 1500*time.Millisecond ||
+		got.AutoTimeout != 300*time.Millisecond || got.SimilarityFloor() != .72 {
 		t.Fatalf("defaults = %+v", got)
 	}
 	for key, val := range values {
@@ -43,7 +45,8 @@ func TestProductTextConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := cfg.ProductText; !got.Search || got.Embed != "pause" || got.EmbedPause != 125*time.Millisecond ||
-		got.EmbedMaxIngest != 0 || got.MaxVectors != 123 || got.SearchTimeout != 750*time.Millisecond || got.SimilarityFloor() != 0 {
+		got.EmbedMaxIngest != 0 || got.MaxVectors != 123 || got.SearchTimeout != 750*time.Millisecond ||
+		got.AutoTimeout != 125*time.Millisecond || got.SimilarityFloor() != 0 {
 		t.Fatalf("overrides = %+v", got)
 	}
 	for value, want := range map[string]bool{"on": true, "off": false} {
@@ -57,6 +60,7 @@ func TestProductTextConfig(t *testing.T) {
 		"GKG_PRODUCT_TEXT_EMBED": "stop", "GKG_PRODUCT_TEXT_EMBED_PAUSE": "-1s",
 		"GKG_PRODUCT_TEXT_EMBED_MAX_INGEST": "-1", "GKG_PRODUCT_TEXT_MAX_VECTORS": "-1",
 		"GKG_PRODUCT_TEXT_FLOOR": "NaN", "GKG_PRODUCT_TEXT_SEARCH_TIMEOUT": "0s",
+		"GKG_PRODUCT_TEXT_AUTO_TIMEOUT": "-1s",
 	} {
 		t.Run(key, func(t *testing.T) {
 			t.Setenv(key, value)

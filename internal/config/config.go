@@ -93,10 +93,16 @@ type EmbedderConfig struct {
 	BatchSize   int    `yaml:"batch_size"`   // furls: entries per request (0 = one request)
 }
 
+const (
+	defaultProductTextSearchTimeout = 1500 * time.Millisecond
+	defaultProductTextAutoTimeout   = 300 * time.Millisecond
+)
+
 // ProductTextConfig controls product-value meaning search and its backfill.
 type ProductTextConfig struct {
 	Search         bool          `yaml:"search"`
 	SearchTimeout  time.Duration `yaml:"search_timeout"`
+	AutoTimeout    time.Duration `yaml:"auto_timeout"`
 	Floor          *float64      `yaml:"floor"`
 	Embed          string        `yaml:"embed"` // run | pause
 	EmbedPause     time.Duration `yaml:"embed_pause"`
@@ -230,7 +236,8 @@ func defaults() Config {
 			Dim:     768,
 		},
 		ProductText: ProductTextConfig{
-			SearchTimeout:  1500 * time.Millisecond,
+			SearchTimeout:  defaultProductTextSearchTimeout,
+			AutoTimeout:    defaultProductTextAutoTimeout,
 			Embed:          "run",
 			EmbedPause:     250 * time.Millisecond,
 			EmbedMaxIngest: 2,
@@ -480,6 +487,8 @@ func (c ProductTextConfig) validate() error {
 	switch {
 	case c.SearchTimeout <= 0:
 		return errors.New("config: GKG_PRODUCT_TEXT_SEARCH_TIMEOUT must be positive")
+	case c.AutoTimeout <= 0:
+		return errors.New("config: GKG_PRODUCT_TEXT_AUTO_TIMEOUT must be positive")
 	case c.Floor != nil && (math.IsNaN(*c.Floor) || *c.Floor < -1 || *c.Floor > 1):
 		return errors.New("config: GKG_PRODUCT_TEXT_FLOOR must be a cosine similarity between -1 and 1")
 	case c.Embed != "run" && c.Embed != "pause":
@@ -493,6 +502,22 @@ func (c ProductTextConfig) validate() error {
 	default:
 		return nil
 	}
+}
+
+// SearchBudget is the total meaning search budget for product-only reads.
+func (c ProductTextConfig) SearchBudget() time.Duration {
+	if c.SearchTimeout > 0 {
+		return c.SearchTimeout
+	}
+	return defaultProductTextSearchTimeout
+}
+
+// AutoBudget is the meaning search budget after the other auto search legs.
+func (c ProductTextConfig) AutoBudget() time.Duration {
+	if c.AutoTimeout > 0 {
+		return c.AutoTimeout
+	}
+	return defaultProductTextAutoTimeout
 }
 
 // SimilarityFloor is also used when a store is opened with a literal Config.
