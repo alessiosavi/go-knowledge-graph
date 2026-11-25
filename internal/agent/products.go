@@ -75,11 +75,6 @@ func (s *Server) toolGetProduct(ctx context.Context, raw json.RawMessage) (any, 
 	}
 	var detail graph.ProductDetailWithMentions
 	var err error
-	// The agent can only read the exact keys it asks for.
-	emptyTexts := args.WithTexts && len(args.TextKeys) == 0
-	if emptyTexts {
-		args.WithTexts = false
-	}
 	if withMentions == nil || *withMentions {
 		detail, _, err = s.store.GetProductWithMentions(ctx, args.ProductLookup)
 	} else {
@@ -90,9 +85,6 @@ func (s *Server) toolGetProduct(ctx context.Context, raw json.RawMessage) (any, 
 	}
 	if err != nil {
 		return nil, err
-	}
-	if emptyTexts {
-		detail.ProductTextFields = &graph.ProductTextFields{Texts: []graph.ProductText{}}
 	}
 	displayLimit := 0 // The shared read uses zero for its default display limit.
 	if limit != nil {

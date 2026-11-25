@@ -243,7 +243,7 @@ func toolDefs() []toolDef {
 				"required": []string{"query"},
 			}),
 		functionTool("get_product", graph.ProductLookupDescription+
-			" Supply text_keys with with_texts to read up to eight requested keys. See texts_omitted for values cut to fit."+
+			" The agent returns up to eight texts. See texts_omitted for the number omitted."+
 			" Pages include via (ref, url, page in precedence order), chunk_ids (up to three passage IDs in sequence order), and chunk_count."+
 			" pages_missing means no associated pages were found. pages_partial means page-key coverage is unknown and pages_missing is false."+
 			" with_mentions defaults to true and includes passages from done documents with exact matches for the product's catalogue_code or product_reference. Domain also filters passages."+
@@ -258,8 +258,8 @@ func toolDefs() []toolDef {
 					"store":          map[string]any{"type": "string", "description": "Store for an exact lookup by product_id"},
 					"product_id":     map[string]any{"type": "string", "description": "Full source product ID including its store prefix"},
 					"domain":         map[string]any{"type": "string", "description": "Optional domain slug for associated pages and passages within the request scope. A domain outside the request scope is rejected."},
-					"with_texts":     map[string]any{"type": "boolean", "default": false, "description": "Include stored attribute texts for the given text_keys"},
-					"text_keys":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Exact source keys to read with with_texts"},
+					"with_texts":     map[string]any{"type": "boolean", "default": false, "description": "Include stored attribute texts"},
+					"text_keys":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional exact source keys to read with with_texts"},
 					"with_mentions":  map[string]any{"type": "boolean", "default": true, "description": "Include passages with exact identifier matches (default true)"},
 					"mentions_limit": map[string]any{"type": "integer", "minimum": 1, "maximum": graph.MaxMentionsLimit, "default": graph.DefaultMentionsLimit, "description": "Maximum passages returned when with_mentions is true"},
 				},
