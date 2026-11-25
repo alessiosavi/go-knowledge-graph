@@ -32,14 +32,24 @@ type searchHitOut struct {
 	ProductID  string   `json:"product_id,omitempty"`
 	Brand      string   `json:"brand,omitempty"`
 
+	Match         string  `json:"match,omitempty"`
+	Key           *string `json:"key,omitempty"`
+	Checked       *bool   `json:"checked,omitempty"`
+	Excerpt       *string `json:"excerpt,omitempty"`
+	ExcerptCut    *bool   `json:"excerpt_cut,omitempty"`
+	TextTruncated *bool   `json:"text_truncated,omitempty"`
+
 	DocumentDate       *time.Time `json:"document_date,omitempty"`
 	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type searchOut struct {
-	Hits          []searchHitOut `json:"hits"`
-	ProductsError string         `json:"products_error,omitempty"`
-	HitsOmitted   int            `json:"hits_omitted,omitempty"`
+	Hits             []searchHitOut `json:"hits"`
+	ProductsError    string         `json:"products_error,omitempty"`
+	MeaningError     string         `json:"meaning_error,omitempty"`
+	MeaningPartial   bool           `json:"meaning_partial,omitempty"`
+	MeaningTruncated bool           `json:"meaning_truncated,omitempty"`
+	HitsOmitted      int            `json:"hits_omitted,omitempty"`
 }
 
 type entityRefOut struct {
@@ -158,7 +168,11 @@ const (
 func toolDefs() []toolDef {
 	return []toolDef{
 		functionTool("search",
-			"Search entity names, chunk text and product titles. Auto can list products first. Open a product hit with get_product using its id. Use kind=product for products only. A products_error such as timeout or index_unavailable means product matches are unknown. Since/until filter chunk hits by document date and do not apply to products. Start with limit 10.",
+			"Search entity names, chunk text, product titles and, when enabled, product attribute meaning. Auto can list products first. Open a product hit with get_product using its id. Use kind=product for products only. "+
+				"A products_error such as timeout or index_unavailable means title matches are unknown. "+
+				"Product hits can carry match=title|meaning, with key (matched attribute), checked (whether the store and key belong to the active release) and excerpt (matched text) for meaning hits, and meaning_error=timeout|unavailable means meaning matches are unknown. "+
+				"A true meaning_partial or meaning_truncated means meaning results may be incomplete, so treat a missing product as inconclusive. "+
+				"Since/until filter chunk hits by document date and do not apply to products. Start with limit 10.",
 			map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -416,12 +430,7 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 		return nil, err
 	}
 	domain := requestDomain(ctx)
-	var regular []search.Hit
-	var regularStore search.Store = s.store
-	withPassages := passageSearchStore{Store: s.store}
-	if kind == "auto" && limit > 1 {
-		regularStore = &withPassages
-	}
+	productLimit := 0
 	if kind == "product" {
 		if strings.TrimSpace(args.Query) == "" {
 			return nil, argerr.New("search: empty query")
@@ -429,18 +438,65 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 		if domain != "" && !graph.ValidDomain(domain) {
 			return nil, argerr.Errorf("search: invalid domain slug %q", domain)
 		}
-	} else {
-		regular, err = search.Query(ctx, regularStore, s.emb, args.Query, kind, limit, search.InDomain(domain), search.InDateWindow(window))
+		productLimit = limit
+	} else if kind == "auto" {
+		productLimit = min(3, limit/2)
+	}
+
+	emb := s.emb
+	var future *search.QueryEmbedding
+	meaningCtx := ctx
+	var availability string
+	meaningEnabled := s.cfg.ProductText.Search
+	searchMeaning := meaningEnabled && productLimit > 0 && (domain == "" || graph.ValidDomain(domain)) && len(graph.TextQueryWords(args.Query)) > 0
+	if searchMeaning {
+		availability = search.ProductMeaningAvailability(true, emb)
+		if availability == "" {
+			if kind == "product" {
+				var cancel context.CancelFunc
+				meaningCtx, cancel = context.WithTimeout(ctx, s.cfg.ProductText.SearchBudget())
+				defer cancel()
+			}
+			future = search.StartQueryEmbedding(ctx, emb, args.Query)
+			emb = future
+		}
+	}
+
+	var regular []search.Hit
+	var regularStore search.Store = s.store
+	withPassages := passageSearchStore{Store: s.store}
+	if kind == "auto" && productLimit > 0 {
+		regularStore = &withPassages
+	}
+	if kind != "product" {
+		regular, err = search.Query(ctx, regularStore, emb, args.Query, kind, limit, search.InDomain(domain), search.InDateWindow(window))
 		if err != nil {
 			return nil, err
 		}
 	}
 	out := searchOut{Hits: make([]searchHitOut, 0, limit)}
-	switch {
-	case kind == "product":
-		out.Hits, out.ProductsError = s.searchProductHits(ctx, out.Hits, args.Query, domain, limit)
-	case kind == "auto" && limit > 1:
-		out.Hits, out.ProductsError = s.searchProductHits(ctx, out.Hits, args.Query, domain, min(3, limit/2))
+	if productLimit > 0 {
+		out.Hits, out.ProductsError = s.searchProductHits(ctx, out.Hits, args.Query, domain, productLimit)
+		if meaningEnabled {
+			for i := range out.Hits {
+				out.Hits[i].Match = "title"
+			}
+			if searchMeaning && len(out.Hits) < productLimit {
+				out.MeaningError = availability
+				if future != nil {
+					// Auto starts its allowance after the regular and title legs.
+					if kind == "auto" {
+						var cancel context.CancelFunc
+						meaningCtx, cancel = context.WithTimeout(ctx, s.cfg.ProductText.AutoBudget())
+						defer cancel()
+					}
+					s.searchMeaningHits(meaningCtx, future, &out, domain, productLimit)
+				}
+			}
+			if ctx.Err() == context.Canceled {
+				return nil, ctx.Err()
+			}
+		}
 	}
 	if len(out.Hits) != 0 && kind == "auto" {
 		slots := limit - len(out.Hits)

@@ -33,6 +33,7 @@ func TestSystemPromptSchema(t *testing.T) {
 		"document_date_source 'caller' is the source's own date; 'ingest' is only when gkg received it and does not show how recent the content is. For a current-state question with conflicting comparable evidence, prefer the newest caller-dated source, cite its date, and mention any undated conflicting source.",
 		"When the question names a period, pass since/until to search, get_entity, traverse or list_documents.",
 		"Cite a product by its store-prefixed product_id (for example dentalica.com:1000), not by its graph id.",
+		"A product hit matched by meaning is a candidate: read the product (get_product with_texts and the matched key as text_keys) before saying it has a property, say whether the value is checked, and use find_products with min/max for numeric limits.",
 	} {
 		if !strings.Contains(systemPrompt, want) {
 			t.Errorf("system prompt missing %q", want)

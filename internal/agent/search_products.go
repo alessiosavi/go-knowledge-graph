@@ -70,6 +70,44 @@ func (s *Server) searchProductHits(ctx context.Context, hits []searchHitOut, que
 	return hits, ""
 }
 
+func (s *Server) searchMeaningHits(ctx context.Context, future *search.QueryEmbedding, out *searchOut, domain string, limit int) {
+	remaining := limit - len(out.Hits)
+	excluded := make([]string, 0, len(out.Hits))
+	for _, hit := range out.Hits {
+		excluded = append(excluded, hit.ID)
+	}
+	vec, err := future.Wait(ctx)
+	var result graph.ProductTextSearchResult
+	if err == nil {
+		result, err = search.ReadProductMeaning(ctx, s.store, vec, domain, remaining, excluded)
+	}
+	switch {
+	case graph.IsQueryTimeout(ctx, err):
+		out.MeaningError = "timeout"
+		return
+	case err != nil:
+		slog.WarnContext(ctx, "agent: product meaning search unavailable", "err", err)
+		out.MeaningError = "unavailable"
+		return
+	}
+	out.MeaningPartial = result.Partial
+	out.MeaningTruncated = result.CandidatesTruncated
+	for _, p := range result.Hits[:min(remaining, len(result.Hits))] {
+		if len(p.Matched) == 0 {
+			continue
+		}
+		matched := p.Matched[0] // the graph ranks products by their best matched text
+		excerpt := truncateSearchRunes(matched.Text, 160)
+		excerptCut := matched.ExcerptCut || len(excerpt) < len(matched.Text)
+		out.Hits = append(out.Hits, searchHitOut{
+			Kind: "product", ID: p.ID, Domain: &p.Domain, Store: p.Store, ProductID: p.ProductID,
+			Title: truncateSearchRunes(p.Title, 200), Brand: truncateSearchRunes(p.Brand, 80), Score: &p.Score,
+			Match: "meaning", Key: &matched.Key, Checked: &matched.Checked, Excerpt: &excerpt,
+			ExcerptCut: &excerptCut, TextTruncated: &matched.TextTruncated,
+		})
+	}
+}
+
 func truncateSearchRunes(text string, limit int) string {
 	for offset := range text {
 		if limit == 0 {
@@ -87,7 +125,8 @@ func fitSearchHits(out searchOut) (searchOut, error) {
 	if len(out.Hits) == 0 {
 		return out, nil
 	}
-	frame := searchOut{Hits: []searchHitOut{}, ProductsError: out.ProductsError}
+	frame := out
+	frame.Hits = []searchHitOut{}
 	raw, err := json.Marshal(frame)
 	if err != nil {
 		return searchOut{}, err
@@ -104,6 +143,28 @@ func fitSearchHits(out searchOut) (searchOut, error) {
 	}
 	if total <= budget {
 		return out, nil
+	}
+	matchedProducts := out.Hits[0].Match != ""
+	if matchedProducts {
+		// Keep identifying and matched evidence on every product before
+		// considering dropping any products.
+		for i, hit := range out.Hits {
+			if hit.Kind != "product" {
+				break
+			}
+			hit.Domain, hit.Score = nil, nil
+			hit.Title, hit.Brand, hit.Store = "", "", ""
+			out.Hits[i] = hit
+			total -= sizes[i]
+			sizes[i], err = searchHitSize(hit)
+			if err != nil {
+				return searchOut{}, err
+			}
+			total += sizes[i]
+		}
+		if total <= budget {
+			return out, nil
+		}
 	}
 
 	// Reserve enough room for the largest possible omission count before
@@ -133,7 +194,7 @@ func fitSearchHits(out searchOut) (searchOut, error) {
 			return searchOut{}, errors.New("required search hit exceeds the agent result budget")
 		}
 	}
-	if sizes[0] > budget {
+	if !matchedProducts && sizes[0] > budget {
 		hit := &out.Hits[0]
 		if hit.Kind == "product" {
 			*hit, sizes[0], err = compactSearchProduct(*hit, budget)
@@ -150,10 +211,19 @@ func fitSearchHits(out searchOut) (searchOut, error) {
 	}
 
 	hits := out.Hits[:0]
+	omitProducts := false
 	for i, hit := range out.Hits {
 		if i == passage {
 			hits = append(hits, hit) // already paid for
-		} else if sizes[i] <= budget {
+			continue
+		}
+		if hit.Match != "" && (omitProducts || sizes[i] > budget) {
+			// Keep a prefix of the ranked products even when a later
+			// product would fit in the space left by an omitted one.
+			omitProducts = true
+			continue
+		}
+		if sizes[i] <= budget {
 			hits = append(hits, hit)
 			budget -= sizes[i]
 		}

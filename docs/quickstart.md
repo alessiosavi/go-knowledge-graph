@@ -544,6 +544,9 @@ the `text_vec` index and backfills missing vectors as ingest load allows.
 `GKG_PRODUCT_TEXT_EMBED=pause` pauses the worker. Query mode defaults to a
 1,500 ms budget including embedding (`GKG_PRODUCT_TEXT_SEARCH_TIMEOUT`) and a
 0.72 cosine similarity floor (`GKG_PRODUCT_TEXT_FLOOR`).
+In the ask agent's `search` with `kind=auto`, the meaning search budget
+defaults to 300 ms (`GKG_PRODUCT_TEXT_AUTO_TIMEOUT`), starts after the regular
+and title searches, and includes any remaining embedding wait.
 
 For an existing store, take a backup and materialize texts from the unchanged
 authoritative snapshot. Run the import in the serving environment with a

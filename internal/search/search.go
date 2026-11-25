@@ -22,6 +22,43 @@ type QueryEmbedder interface {
 	EmbedQuery(ctx context.Context, text string) ([]float64, error)
 }
 
+// QueryEmbedding shares one embedding of a fixed query among search legs.
+type QueryEmbedding struct {
+	done chan struct{}
+	vec  []float64
+	err  error
+}
+
+// StartQueryEmbedding starts the provider call under the request context.
+// Each leg can stop waiting independently of the provider and other legs.
+func StartQueryEmbedding(ctx context.Context, emb QueryEmbedder, query string) *QueryEmbedding {
+	future := &QueryEmbedding{done: make(chan struct{})}
+	go func() {
+		future.vec, future.err = emb.EmbedQuery(ctx, query)
+		close(future.done)
+	}()
+	return future
+}
+
+// EmbedQuery lets Query's vector leg wait within its existing embed budget.
+// The query was already supplied to StartQueryEmbedding.
+func (f *QueryEmbedding) EmbedQuery(ctx context.Context, _ string) ([]float64, error) {
+	return f.Wait(ctx)
+}
+
+// Wait returns the shared result if it arrives within the caller's context.
+func (f *QueryEmbedding) Wait(ctx context.Context) ([]float64, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-f.done:
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return f.vec, f.err
+	}
+}
+
 // Store provides the text, vector and batched entity lookups used by search.
 type Store interface {
 	EntityTextSearchIn(ctx context.Context, q, slug string, limit int) ([]graph.EntitySearchRow, error)

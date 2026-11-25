@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
@@ -27,6 +26,35 @@ type ProductQueryResult struct {
 	StoresNotMaterialized []string               `json:"stores_not_materialized"`
 }
 
+// ProductMeaningAvailability returns an inactive status or an empty string
+// when the configured embedder uses the product text index's space.
+func ProductMeaningAvailability(enabled bool, emb QueryEmbedder) string {
+	if !enabled {
+		return "disabled"
+	}
+	spaced, ok := emb.(interface{ Space() string })
+	if !ok || spaced.Space() != graph.ProductTextSpace {
+		return "unavailable"
+	}
+	return ""
+}
+
+// ReadProductMeaning validates the vector and searches within the caller's
+// deadline. Exclusions apply in the store before the limit.
+func ReadProductMeaning(ctx context.Context, st ProductTextStore, vec []float64, domain string, limit int, excludeIDs []string) (graph.ProductTextSearchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return graph.ProductTextSearchResult{}, err
+	}
+	if !validProductQueryVector(vec) {
+		return graph.ProductTextSearchResult{}, errors.New("embedder returned an invalid query vector")
+	}
+	result, err := st.SearchProductTexts(ctx, vec, domain, limit, excludeIDs)
+	if err == nil {
+		err = ctx.Err()
+	}
+	return result, err
+}
+
 // FindProductsQuery is shared by REST, MCP and the agent. The leg's timeout
 // covers checking the index, embedding the query once and reading the graph.
 func FindProductsQuery(ctx context.Context, st ProductTextStore, emb QueryEmbedder, cfg config.ProductTextConfig, req graph.ProductSearchRequest) (ProductQueryResult, error) {
@@ -36,20 +64,11 @@ func FindProductsQuery(ctx context.Context, st ProductTextStore, emb QueryEmbedd
 	if err != nil {
 		return out, err
 	}
-	if !cfg.Search {
-		out.MeaningStatus = "disabled"
+	if status := ProductMeaningAvailability(cfg.Search, emb); status != "" {
+		out.MeaningStatus = status
 		return out, nil
 	}
-	spaced, ok := emb.(interface{ Space() string })
-	if !ok || spaced.Space() != graph.ProductTextSpace {
-		out.MeaningStatus = "unavailable"
-		return out, nil
-	}
-	timeout := cfg.SearchTimeout
-	if timeout <= 0 {
-		timeout = 1500 * time.Millisecond
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, cfg.SearchBudget())
 	defer cancel()
 
 	degrade := func(err error) (ProductQueryResult, error) {
@@ -73,17 +92,8 @@ func FindProductsQuery(ctx context.Context, st ProductTextStore, emb QueryEmbedd
 	if err != nil {
 		return degrade(err)
 	}
-	if err := ctx.Err(); err != nil {
-		return degrade(err)
-	}
-	if !validProductQueryVector(vec) {
-		return degrade(errors.New("embedder returned an invalid query vector"))
-	}
-	result, err := st.SearchProductTexts(ctx, vec, req.Domain, limit, nil)
+	result, err := ReadProductMeaning(ctx, st, vec, req.Domain, limit, nil)
 	if err != nil {
-		return degrade(err)
-	}
-	if err := ctx.Err(); err != nil {
 		return degrade(err)
 	}
 	out.Hits = result.Hits
