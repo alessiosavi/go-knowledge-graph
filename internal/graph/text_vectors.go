@@ -20,6 +20,9 @@ const (
 	textVecGrace     = 7 * 24 * time.Hour
 )
 
+// MaxPendingTextVecs bounds the number of pending texts returned per scan.
+const MaxPendingTextVecs = 4096
+
 // EnsureTextVecIndex runs at serve startup for the supported product text
 // space. Existing vector index settings are never changed.
 func (s *Store) EnsureTextVecIndex(ctx context.Context) error {
@@ -91,8 +94,8 @@ type PendingTextVec struct {
 	Attempts int
 }
 
-// PendingTextVecs selects distinct texts across stores. Retry state for a
-// text suppresses selection only until it becomes due.
+// PendingTextVecs selects up to limit distinct texts across stores, capped at
+// MaxPendingTextVecs. Retry state suppresses selection until it becomes due.
 func (s *Store) PendingTextVecs(ctx context.Context, space string, now time.Time, limit int) ([]PendingTextVec, error) {
 	rows, err := s.runRead(ctx, `
 MATCH (p:ProductText)
@@ -105,7 +108,7 @@ OPTIONAL MATCH (f:TextVecFailure {id: vec_id})
 WITH vec_id, text, f
 WHERE f.next_at IS NULL OR f.next_at <= $now
 RETURN vec_id, text, coalesce(f.attempts, 0) AS attempts
-LIMIT $limit`, map[string]any{"space": space, "now": now.UnixMilli(), "limit": min(256, limit)})
+LIMIT $limit`, map[string]any{"space": space, "now": now.UnixMilli(), "limit": min(MaxPendingTextVecs, limit)})
 	if err != nil {
 		return nil, fmt.Errorf("graph: select pending text vectors: %w", err)
 	}

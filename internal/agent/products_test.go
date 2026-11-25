@@ -585,23 +585,32 @@ func TestGetProductTextsAgent(t *testing.T) {
 	s := NewServer(cfg, st, graphtest.ProductTextEmbedder{})
 	ctx := withDomain(t.Context(), graphtest.TextReadDomain)
 	for _, tc := range []struct {
-		id, args       string
-		texts, omitted int
+		id, args string
+		keys     []string
+		omitted  int
 	}{
-		{graphtest.TextReadManyID, "", 0, 0},
-		{graphtest.TextReadManyID, `,"text_keys":["key-1","key-2","key-3","key-4","key-5","key-6","key-7","key-8","key-9","missing"]`, 8, 1},
-		{graphtest.TextReadLargeID, `,"text_keys":["key-1","key-2","key-3","key-4"]`, 2, 2},
+		{graphtest.TextReadManyID, "", []string{"key-1", "key-10", "key-11", "key-12", "key-13", "key-14", "key-15", "key-16"}, 62},
+		{graphtest.TextReadManyID, `,"text_keys":["key-2","key-3","key-4","key-5","key-6","key-7","key-8","key-9","key-10","missing"]`,
+			[]string{"key-10", "key-2", "key-3", "key-4", "key-5", "key-6", "key-7", "key-8"}, 1},
+		{graphtest.TextReadLargeID, `,"with_mentions":false`, []string{"key-1", "key-10"}, 20},
+		{graphtest.TextReadLargeID, `,"with_mentions":false,"text_keys":["key-1","key-2","key-3","key-4"]`, []string{"key-1", "key-2"}, 2},
 	} {
-		args := fmt.Sprintf(`{"id":%q,"with_texts":true,"with_mentions":false%s}`, tc.id, tc.args)
+		args := fmt.Sprintf(`{"id":%q,"with_texts":true%s}`, tc.id, tc.args)
 		got, err := s.execTool(ctx, "get_product", json.RawMessage(args))
 		if err != nil {
 			t.Fatal(err)
 		}
 		out := unmarshalResult[productDetailOut](t, got)
 		wire, err := json.Marshal(got)
-		if err != nil || len(wire) > agentResultBudget || out.ProductTextFields == nil || out.Texts == nil ||
-			len(out.Texts) != tc.texts || out.TextsOmitted != tc.omitted {
-			t.Fatalf("%s: got %d texts, %d omitted, %d bytes, marshal error %v", args, len(out.Texts), out.TextsOmitted, len(wire), err)
+		if err != nil || len(wire) > agentResultBudget || out.ProductTextFields == nil || out.Texts == nil {
+			t.Fatalf("%s: expected text fields within budget, got %d bytes, marshal error %v", args, len(wire), err)
+		}
+		keys := make([]string, 0, len(out.Texts))
+		for _, entry := range out.Texts {
+			keys = append(keys, entry.Key)
+		}
+		if !slices.Equal(keys, tc.keys) || out.TextsOmitted != tc.omitted {
+			t.Errorf("%s: got keys %v with %d omitted, want %v with %d omitted", args, keys, out.TextsOmitted, tc.keys, tc.omitted)
 		}
 	}
 	raw := json.RawMessage(`{"query":"ceramic"}`)

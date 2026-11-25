@@ -49,7 +49,6 @@ func (f pushFixture) textWriteState() [][][]any {
 }
 
 func TestProductTextSnapshotPushAndWipe(t *testing.T) {
-	t.Setenv("GKG_PRODUCT_TEXT_SEARCH", "off")
 	f := newPushFixtureForStore(t, textTestStore, "code")
 	const firstKey, secondKey = "surface_finish", "surface finish"
 	prefix := secondKey + ": "
@@ -74,7 +73,6 @@ RETURN p.product_id, e.key, e.truncated, properties(n) ORDER BY p.product_id`, m
 		})
 	assertTextRows(t, f.query(`MATCH (n:ProductText {store:$store}) RETURN count(n)`, params), [][]any{{int64(2)}})
 	before := f.textWriteState()
-	t.Setenv("GKG_PRODUCT_TEXT_SEARCH", "on")
 	f.snapshot(pushA, 2, "unchanged", first, second)
 	if got := f.textWriteState()[2:]; !reflect.DeepEqual(got, before[2:]) {
 		t.Fatal("unchanged import replaced products, nodes, or edges")
@@ -90,7 +88,6 @@ RETURN p.product_id, e.key, e.truncated, properties(n) ORDER BY p.product_id`, m
 	if got := f.textWriteState()[4]; !reflect.DeepEqual(got, identical[4]) {
 		t.Fatal("upsert of identical text replaced its node")
 	}
-	t.Setenv("GKG_PRODUCT_TEXT_SEARCH", "off")
 	f.put(5, textTestRecord(textTestTwo, "updated", `{"café":"🪥 fresh","unused":"2 pcs"}`), "updated")
 	f.checkTextLedger(int64(1), 1, 1, len("café: 🪥 fresh")+len("café"))
 	f.remove(6, textTestOne, "absent")

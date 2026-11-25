@@ -79,7 +79,10 @@ This endpoint does not support tool calls. Reply with ONLY a JSON object of one 
 
 In a single plan, call only tools that need no id or chunk_ids from another call's result; if you could not read passages, say they could not be read — not that none exist.
 
-For product questions, list_features accepts an optional query to narrow feature IDs and names. find_products takes a feature ID and either value or numeric min/max strings in the canonical unit, plus optional domain, limit and cursor. get_product takes id, or both store and the full source product_id, plus optional with_mentions (boolean, default true) and mentions_limit (1–20, default 5, used only when with_mentions is true). get_chunks takes ids and optional with_products (boolean, default true) and products_limit (1–50, default 10, used only when with_products is true).`
+For product questions, list_features accepts an optional query to narrow feature IDs and names.
+find_products takes a nonblank query string for query mode over stored attribute texts, with optional domain and limit. Omit feature, value, min, max and cursor in query mode. In feature mode, pass a feature ID and either value or numeric min/max strings in the canonical unit, plus optional domain, limit and cursor.
+get_product takes id, or both store and the full source product_id, plus optional with_mentions (boolean, default true) and mentions_limit (1–20, default 5, used only when with_mentions is true). Set with_texts (boolean, default false) to read up to eight stored texts. Supply text_keys (optional array of exact source keys) to filter them.
+get_chunks takes ids and optional with_products (boolean, default true) and products_limit (1–50, default 10, used only when with_products is true).`
 
 const planFinalPrompt = `Using only the tool results above, answer the question now in GitHub-flavoured Markdown, without raw HTML. Do not request more tools. Cite entity ids, chunk ids, document ids and product ids; cite a product by its store-prefixed product_id, not by its graph id.`
 

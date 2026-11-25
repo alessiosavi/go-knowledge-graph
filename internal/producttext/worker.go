@@ -40,19 +40,20 @@ type Worker struct {
 	provider embed.Provider
 	metrics  *obs.Metrics
 
-	furls        *embed.Furls
-	batchSize    int
-	state        string
-	reason       string
-	nextRequest  time.Time
-	nextGC       time.Time
-	backoff      time.Duration
-	serverErrors int
-	retryBatch   map[string]struct{}
+	furls           *embed.Furls
+	batchSize       int
+	pendingPageSize int
+	state           string
+	reason          string
+	nextRequest     time.Time
+	nextGC          time.Time
+	backoff         time.Duration
+	serverErrors    int
+	retryBatch      map[string]struct{}
 }
 
 func NewWorker(cfg config.ProductTextConfig, store textStore, provider embed.Provider, metrics *obs.Metrics) *Worker {
-	return &Worker{cfg: cfg, store: store, provider: provider, metrics: metrics}
+	return &Worker{cfg: cfg, store: store, provider: provider, metrics: metrics, pendingPageSize: graph.MaxPendingTextVecs}
 }
 
 // Run prepares the index and runs the worker until ctx is canceled.
@@ -133,27 +134,33 @@ func (w *Worker) sweep(ctx context.Context) (time.Duration, error) {
 		return 0, err
 	}
 	room := w.cfg.MaxVectors - n
+	pageSize := max(1, min(w.pendingPageSize, graph.MaxPendingTextVecs))
 	var pending []graph.PendingTextVec
 	if room > 0 {
-		pending, err = w.store.PendingTextVecs(ctx, graph.ProductTextSpace, now, min(256, room))
+		pending, err = w.store.PendingTextVecs(ctx, graph.ProductTextSpace, now, pageSize)
 		if err != nil {
 			return 0, err
 		}
+		w.setState(ctx, "running", "")
+		if err := w.embedBatches(ctx, pending, &room, false); err != nil {
+			return 0, err
+		}
 	}
-	if refresh || len(pending) == 0 {
+	// A short page exhausted the scan's eligible texts. Wait for the next
+	// idle tick instead of issuing another selection just to confirm it.
+	idle := room <= 0 || len(pending) < pageSize
+	if refresh || idle {
 		if err := w.refreshCoverage(ctx); err != nil {
 			return 0, err
 		}
 	}
 	if room <= 0 {
 		w.setState(ctx, "capacity", "")
+	}
+	if idle {
 		return idleInterval, nil
 	}
-	w.setState(ctx, "running", "")
-	if len(pending) == 0 {
-		return idleInterval, nil
-	}
-	return 0, w.embedBatches(ctx, pending, false)
+	return 0, nil
 }
 
 func (w *Worker) refreshCoverage(ctx context.Context) error {
@@ -165,10 +172,10 @@ func (w *Worker) refreshCoverage(ctx context.Context) error {
 	return nil
 }
 
-func (w *Worker) embedBatches(ctx context.Context, pending []graph.PendingTextVec, bisected bool) error {
-	for len(pending) > 0 {
-		n := min(len(pending), w.batchSize)
-		if err := w.embedBatch(ctx, pending[:n], bisected); err != nil {
+func (w *Worker) embedBatches(ctx context.Context, pending []graph.PendingTextVec, room *int, bisected bool) error {
+	for len(pending) > 0 && *room > 0 {
+		n := min(len(pending), w.batchSize, *room)
+		if err := w.embedBatch(ctx, pending[:n], room, bisected); err != nil {
 			return err
 		}
 		pending = pending[n:]
@@ -176,7 +183,7 @@ func (w *Worker) embedBatches(ctx context.Context, pending []graph.PendingTextVe
 	return nil
 }
 
-func (w *Worker) embedBatch(ctx context.Context, batch []graph.PendingTextVec, bisected bool) error {
+func (w *Worker) embedBatch(ctx context.Context, batch []graph.PendingTextVec, room *int, bisected bool) error {
 	if err := w.beforeRequest(ctx); err != nil {
 		return err
 	}
@@ -214,13 +221,13 @@ func (w *Worker) embedBatch(ctx context.Context, batch []graph.PendingTextVec, b
 			w.batchSize = max(1, w.batchSize/2)
 		}
 		if len(batch) == 1 {
-			return w.commit(ctx, batch, []embed.EntryResult{{ErrorCode: fmt.Sprintf("HTTP_%d", status)}})
+			return w.commit(ctx, batch, []embed.EntryResult{{ErrorCode: fmt.Sprintf("HTTP_%d", status)}}, room)
 		}
 		mid := len(batch) / 2
-		if err := w.embedBatches(ctx, batch[:mid], true); err != nil {
+		if err := w.embedBatches(ctx, batch[:mid], room, true); err != nil {
 			return err
 		}
-		return w.embedBatches(ctx, batch[mid:], true)
+		return w.embedBatches(ctx, batch[mid:], room, true)
 	}
 	if err != nil {
 		w.retryBatch = make(map[string]struct{}, len(batch))
@@ -230,7 +237,7 @@ func (w *Worker) embedBatch(ctx context.Context, batch []graph.PendingTextVec, b
 		return err
 	}
 	w.backoff = 0
-	return w.commit(ctx, batch, results)
+	return w.commit(ctx, batch, results, room)
 }
 
 func (w *Worker) beforeRequest(ctx context.Context) error {
@@ -250,7 +257,12 @@ func (w *Worker) beforeRequest(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (w *Worker) commit(ctx context.Context, batch []graph.PendingTextVec, results []embed.EntryResult) error {
+func (w *Worker) commit(ctx context.Context, batch []graph.PendingTextVec, results []embed.EntryResult, room *int) error {
+	type entryError struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	var entryErrors []entryError
 	rows := make([]graph.TextVecResult, len(batch))
 	var failed int
 	for i, entry := range batch {
@@ -258,12 +270,21 @@ func (w *Worker) commit(ctx context.Context, batch []graph.PendingTextVec, resul
 		rows[i] = graph.TextVecResult{PendingTextVec: entry, Embedding: r.Embedding, ErrorCode: r.ErrorCode}
 		if r.ErrorCode != "" {
 			failed++
+			if r.Error != "" && len(entryErrors) < 3 {
+				entryErrors = append(entryErrors, entryError{Code: r.ErrorCode, Message: r.Error})
+			}
 		}
+	}
+	if len(entryErrors) > 0 {
+		slog.WarnContext(ctx, "product text embedding batch had entry errors", "failed", failed, "entry_errors", entryErrors)
 	}
 	if err := w.store.WriteTextVecBatch(ctx, graph.ProductTextSpace, time.Now(), rows); err != nil {
 		return err
 	}
-	w.metrics.ProductTextBatch(len(batch)-failed, failed, time.Now())
+	// Only vectors successfully committed since the scan consume admission room.
+	embedded := len(batch) - failed
+	*room -= embedded
+	w.metrics.ProductTextBatch(embedded, failed, time.Now())
 	return nil
 }
 

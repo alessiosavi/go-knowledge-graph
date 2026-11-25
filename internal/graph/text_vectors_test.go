@@ -12,6 +12,24 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
+func TestTextVecPendingPageLimit(t *testing.T) {
+	st := graphtest.Store(t)
+	uri := os.Getenv(graphtest.URIEnv)
+	rawRun(t, uri, `
+UNWIND range(1, 4097) AS i
+WITH 't2-pending-page-' + toString(i) AS id
+CREATE (:ProductText {id:id, vec_id:id, text:id})`)
+	t.Cleanup(func() {
+		rawRun(t, uri, `MATCH (p:ProductText) WHERE p.id STARTS WITH 't2-pending-page-' DELETE p`)
+	})
+	for _, tc := range []struct{ limit, want int }{{1000, 1000}, {5000, 4096}} {
+		pending, err := st.PendingTextVecs(t.Context(), graph.ProductTextSpace, time.Now(), tc.limit)
+		if err != nil || len(pending) != tc.want {
+			t.Fatalf("requested %d pending texts, got %d, want %d (error: %v)", tc.limit, len(pending), tc.want, err)
+		}
+	}
+}
+
 func TestTextVecGC(t *testing.T) {
 	st := graphtest.Store(t)
 	uri := os.Getenv(graphtest.URIEnv)

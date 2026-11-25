@@ -82,10 +82,8 @@ DETACH DELETE n`, params)
 	const products = `MATCH (p:Product {store:$store}) RETURN id(p), properties(p)`
 	const textEdges = `MATCH (:Product {store:$store})-[e:HAS_TEXT]->(n) RETURN id(e), id(n), properties(e), properties(n)`
 	const storeProperties = `MATCH (s:ProductStore {store:$store}) RETURN properties(s)`
-	t.Setenv("GKG_PRODUCT_TEXT_SEARCH", "off")
 	requireReport(importAt(1, 0, "imported"), "written")
 	originalEdges := readState(textEdges)
-	t.Setenv("GKG_PRODUCT_TEXT_SEARCH", "on")
 	requireReport(importAt(2, 0, "unchanged"), "unchanged")
 	if after := readState(textEdges); !reflect.DeepEqual(after, originalEdges) {
 		t.Fatal("unchanged import rewrote the projection")

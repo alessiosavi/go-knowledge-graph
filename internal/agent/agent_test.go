@@ -924,7 +924,15 @@ func TestProductEvidencePromptRouting(t *testing.T) {
 		}
 	}
 	_, hint, _ := strings.Cut(planSystemPrompt, "For product questions,")
-	for _, want := range []string{"with_mentions (boolean, default true)", "mentions_limit (1–20, default 5", "with_products (boolean, default true)"} {
+	for _, want := range []string{
+		"query string for query mode over stored attribute texts",
+		"Omit feature, value, min, max and cursor in query mode",
+		"with_texts (boolean, default false)",
+		"text_keys (optional array of exact source keys)",
+		"with_mentions (boolean, default true)",
+		"mentions_limit (1–20, default 5",
+		"with_products (boolean, default true)",
+	} {
 		if count := strings.Count(hint, want); count != 1 {
 			t.Errorf("plan prompt tool argument hint includes %q %d times, want once", want, count)
 		}
