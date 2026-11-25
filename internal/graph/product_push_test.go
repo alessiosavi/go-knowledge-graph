@@ -97,6 +97,7 @@ type pushFixture struct {
 	t        *testing.T
 	store    *Store
 	other    *Store
+	storeID  string
 	rev      string
 	registry string
 	feature  string
@@ -109,8 +110,14 @@ func newPushFixture(t *testing.T) pushFixture {
 
 func newPushFixtureWithFeature(t *testing.T, feature string) pushFixture {
 	t.Helper()
+	return newPushFixtureForStore(t, pushStore, feature)
+}
+
+func newPushFixtureForStore(t *testing.T, storeID, feature string) pushFixture {
+	t.Helper()
 	registry := strings.ReplaceAll(pushRegistry, `"id":"code"`, `"id":"`+feature+`"`)
 	registry = strings.ReplaceAll(registry, `"feature":"code"`, `"feature":"`+feature+`"`)
+	registry = strings.ReplaceAll(registry, pushStore, storeID)
 	uri := os.Getenv("GKG_TEST_MEMGRAPH_URI")
 	if uri == "" {
 		t.Skip("requires a disposable Memgraph integration database")
@@ -125,16 +132,17 @@ func newPushFixtureWithFeature(t *testing.T, feature string) pushFixture {
 		t.Cleanup(func() { _ = st.Close(context.Background()) })
 		return st
 	}
-	f := pushFixture{t: t, store: open(), other: open(), registry: registry, feature: feature}
+	f := pushFixture{t: t, store: open(), other: open(), storeID: storeID, registry: registry, feature: feature}
 	if err := f.store.Bootstrap(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		err := f.store.runWrite(context.Background(), `MATCH (n)
 WHERE n:Product OR n:ProductStore OR n:ProductRelease OR n:FeatureRev OR n:FeatureRegistry
+   OR (n:ProductText AND n.store=$store)
    OR (n:GkgMeta AND n.id IN ['product_release','feature_registry_import'])
    OR (n:Domain AND n.id IN ['push-domain','push-rebound'])
-DETACH DELETE n`, nil)
+DETACH DELETE n`, map[string]any{"store": storeID})
 		if err != nil {
 			t.Error(err)
 		}
@@ -144,7 +152,7 @@ DETACH DELETE n`, nil)
 		t.Fatal(err)
 	}
 	f.rev = reg.Rev
-	params := map[string]any{"store": pushStore, "domain": pushDomain}
+	params := map[string]any{"store": storeID, "domain": pushDomain}
 	f.query(`CREATE (:Domain {id:$domain}), (:Domain {id:'push-rebound'}),
 		(:ProductStore {store:$store,domain:$domain,seen_seq:0,snapshot_seq:0,product_count:0,edge_count:0})`, params)
 	f.seedRelease(pushA, pushDomain)
@@ -157,10 +165,10 @@ func (f pushFixture) seedRelease(id, domain string) {
 	f.t.Helper()
 	manifest, err := json.Marshal(productManifest{
 		RegistryRev: f.rev, RegistrySHA256: productDigest([]byte(f.registry)),
-		StoreDomains: map[string]string{pushStore: domain},
+		StoreDomains: map[string]string{f.storeID: domain},
 		Triples: []productobs.ReleaseTriple{
-			{Store: pushStore, Feature: f.feature, SourceKey: "scalar"},
-			{Store: pushStore, Feature: f.feature, SourceKey: "list"},
+			{Store: f.storeID, Feature: f.feature, SourceKey: "scalar"},
+			{Store: f.storeID, Feature: f.feature, SourceKey: "list"},
 		},
 	})
 	if err != nil {
@@ -205,7 +213,7 @@ func pushRecord(id, title, kind, attrs string) string {
 }
 
 func (f pushFixture) importRows(st *Store, release string, seq int64, stage func() error, records ...string) (ProductImportReport, error) {
-	input := ProductSnapshotInput{Store: pushStore, Release: release, Seq: seq, AllowShrink: true}
+	input := ProductSnapshotInput{Store: f.storeID, Release: release, Seq: seq, AllowShrink: true}
 	// Build one JSONL row per input record.
 	var data strings.Builder
 	for _, record := range records {
@@ -230,7 +238,7 @@ func (f pushFixture) put(seq int64, record, status string) ProductMutationResult
 	f.t.Helper()
 	result, err := f.store.PushProduct(f.t.Context(), seq, []byte(record))
 	if err != nil || result.Status != status || result.SeenSeq != seq ||
-		result.ID != productobs.ProductID(pushStore, result.ProductID) {
+		result.ID != productobs.ProductID(f.storeID, result.ProductID) {
 		f.t.Fatalf("push at %d: %+v %v, want %s", seq, result, err, status)
 	}
 	return result
@@ -240,7 +248,7 @@ func (f pushFixture) remove(seq int64, id, status string) {
 	f.t.Helper()
 	got, err := f.store.RemoveProduct(f.t.Context(), id, seq)
 	if err != nil || got.Status != status || got.SeenSeq != seq || got.ProductID != id ||
-		got.ID != productobs.ProductID(pushStore, id) {
+		got.ID != productobs.ProductID(f.storeID, id) {
 		f.t.Fatalf("remove at %d: %+v %v, want %s", seq, got, err, status)
 	}
 }

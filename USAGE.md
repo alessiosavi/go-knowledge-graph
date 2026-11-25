@@ -1531,8 +1531,8 @@ gkg products unbind example.test
 the active release. Memgraph's `--query-execution-timeout-sec` must be 0
 (unlimited) or at least 300 seconds. The pinned Memgraph 3.14.0 image defaults
 to 600 seconds. The CLI checks the input before writing and replaces all
-products, feature edges and the snapshot watermark in one transaction. A
-rejected row refuses the whole snapshot. Limits are
+products, feature edges, the text projection and the snapshot watermark in
+one transaction. A rejected row refuses the whole snapshot. Limits are
 10,000 product rows, 60,000 released edges, 64 KiB per row, 512 attributes per
 row and 64 MiB of replacement properties. Each released observation may have
 up to 64 items, with up to 1 KiB in its raw value and in each item. Unmapped
@@ -1540,16 +1540,35 @@ and unreleased attributes count toward the row and attribute limits.
 The `title`, `brand`, `category`, `subcategory`, `product_type` and `link`
 fields allow up to 4 KiB each. The `product_id` allows up to 1 KiB.
 Property bytes include names and stored values, including folded values.
+The text projection has two separate per-store budgets of 200,000 text edges
+and 64 MiB for distinct texts plus the raw source keys on their edges.
 
 Use a positive sequence strictly above the last admitted sequence and any
 wipe sequence. A byte-identical file for the same release prints `unchanged`
 when that materialization is still intact. Every successful import advances
-`seen_seq`, stamps the current activation and clears the last push or
-delete marker.
+`seen_seq`. Standard imports also stamp the current activation and clear the
+last push or delete marker.
 A drop of more than 10% in the product count requires `-allow-shrink`.
+
+Use `-texts-only` to backfill or repair texts for the live snapshot. The import
+transaction checks that the file digest, release, and product and released
+edge counts match and that the live snapshot is newer than the wipe sequence.
+A mismatch rejects the import. A successful run advances `seen_seq` and
+updates the text projection if needed, preserving products, feature edges
+and all other store metadata.
+
 The private JSON report records the requested and previous counts, digest,
 override, rejection details, unmapped keys, conflicts and parse status counts
 by feature. Rejection and unmapped-key details are each capped at 1,000.
+It also records `text_count` (distinct texts), `text_edge_count` (links from
+products to texts), `text_bytes`, `texts_skipped` (empty or bare numeric or
+measurement values), `texts_skipped_key` (keys over 256 bytes) and
+`texts_truncated` (texts cut to the 2,048-byte limit).
+The `text_action` is `written` for a replacement snapshot, `materialized` for
+a text backfill or repair on an unchanged snapshot, or `unchanged` when the
+text version and ledger already match. The stdout summary includes
+`text_action` and `text_count`.
+
 Exit codes are 0 for success, 1 for runtime failure, 2 for incorrect usage
 and 5 for data rejection, including stale or incomplete snapshots.
 Imports serialize on the active release pointer, including imports for different

@@ -17,7 +17,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/productobs"
 )
 
-const productsImportUsage = "usage: gkg products import -store S -release ID -snapshot-seq N FILE.jsonl -report OUT.json [-allow-shrink]"
+const productsImportUsage = "usage: gkg products import -store S -release ID -snapshot-seq N FILE.jsonl -report OUT.json [-allow-shrink] [-texts-only]"
 
 func printProductsUsage(out io.Writer) {
 	for _, line := range []string{productsEmitUsage, productsImportUsage, releaseUsage,
@@ -32,6 +32,7 @@ func runProductImport(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&input.Store, "store", "", "bound store ID")
 	fs.StringVar(&input.Release, "release", "", "active release ID")
 	fs.BoolVar(&input.AllowShrink, "allow-shrink", false, "approve a drop of more than 10%")
+	fs.BoolVar(&input.TextsOnly, "texts-only", false, "materialize only texts for an unchanged snapshot")
 	seq := fs.String("snapshot-seq", "", "increasing positive sequence")
 	path := fs.String("report", "", "write an import report to this file")
 	if err := parseProductFlags(fs, args); err != nil {
@@ -129,8 +130,9 @@ func importProducts(ctx context.Context, input graph.ProductSnapshotInput, path 
 }
 
 func printProductImportResult(w io.Writer, report graph.ProductImportReport) {
-	fmt.Fprintf(w, "%s store=%s release=%s seq=%d products=%d edges=%d\n",
-		report.Status, report.Store, report.Release, report.SnapshotSeq, report.ProductCount, report.EdgeCount)
+	fmt.Fprintf(w, "%s store=%s release=%s seq=%d products=%d edges=%d text_action=%s text_count=%d\n",
+		report.Status, report.Store, report.Release, report.SnapshotSeq, report.ProductCount, report.EdgeCount,
+		report.TextAction, report.TextCount)
 }
 
 func runProductReleaseActivate(args []string, stdout, stderr io.Writer) int {
