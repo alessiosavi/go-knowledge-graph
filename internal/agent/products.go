@@ -10,6 +10,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
 const (
@@ -74,6 +75,11 @@ func (s *Server) toolGetProduct(ctx context.Context, raw json.RawMessage) (any, 
 	}
 	var detail graph.ProductDetailWithMentions
 	var err error
+	// The agent can only read the exact keys it asks for.
+	emptyTexts := args.WithTexts && len(args.TextKeys) == 0
+	if emptyTexts {
+		args.WithTexts = false
+	}
 	if withMentions == nil || *withMentions {
 		detail, _, err = s.store.GetProductWithMentions(ctx, args.ProductLookup)
 	} else {
@@ -84,6 +90,9 @@ func (s *Server) toolGetProduct(ctx context.Context, raw json.RawMessage) (any, 
 	}
 	if err != nil {
 		return nil, err
+	}
+	if emptyTexts {
+		detail.ProductTextFields = &graph.ProductTextFields{Texts: []graph.ProductText{}}
 	}
 	displayLimit := 0 // The shared read uses zero for its default display limit.
 	if limit != nil {
@@ -98,9 +107,14 @@ func (s *Server) toolGetProduct(ctx context.Context, raw json.RawMessage) (any, 
 	// additional pages and mentions, preserving the order within each list.
 	firstPage, firstMention := min(1, pageCount), min(1, mentionCount)
 	extraPages, extraMentions := pageCount-firstPage, mentionCount-firstMention
-	return fitProductResult(featureCount+extraPages+extraMentions, func(n int) productDetailOut {
-		features := min(n, featureCount)
-		remaining := n - features
+	textCount := 0
+	if detail.ProductTextFields != nil {
+		textCount = min(8, len(detail.Texts))
+	}
+	return fitProductResult(textCount+featureCount+extraPages+extraMentions, func(n int) productDetailOut {
+		texts := min(n, textCount)
+		features := min(n-texts, featureCount)
+		remaining := n - texts - features
 		pages := firstPage + min(remaining, extraPages)
 		mentions := firstMention + max(0, remaining-extraPages)
 		out := productDetailOut{
@@ -111,6 +125,11 @@ func (s *Server) toolGetProduct(ctx context.Context, raw json.RawMessage) (any, 
 		}
 		out.Features = detail.Features[:features]
 		out.Pages = detail.Pages[:pages]
+		if detail.ProductTextFields != nil {
+			out.ProductTextFields = &graph.ProductTextFields{
+				Texts: detail.Texts[:texts], TextsOmitted: detail.TextsOmitted + len(detail.Texts) - texts,
+			}
+		}
 		if detail.ProductMentionFields != nil {
 			fields := *detail.ProductMentionFields
 			fields.Mentions = fields.Mentions[:mentions]
@@ -131,6 +150,16 @@ func (s *Server) toolFindProducts(ctx context.Context, raw json.RawMessage) (any
 		}
 		args.Domain = scope
 	}
+	if args.MeaningQuery() != "" {
+		out, err := search.FindProductsQuery(ctx, s.store, s.emb, s.cfg.ProductText, args)
+		if errors.Is(err, graph.ErrProductReadInput) {
+			err = argerr.Wrap(err)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return fitProductQueryResult(out)
+	}
 	limit := productSearchDefaultLimit
 	if args.Limit != nil && *args.Limit > 0 {
 		limit = min(*args.Limit, productSearchMaxLimit)
@@ -141,6 +170,36 @@ func (s *Server) toolFindProducts(ctx context.Context, raw json.RawMessage) (any
 		return nil, argerr.Wrap(err)
 	}
 	return out, err
+}
+
+func fitProductQueryResult(out search.ProductQueryResult) (search.ProductQueryResult, error) {
+	out.Hits = slices.Clone(out.Hits)
+	for i := range out.Hits {
+		hit := &out.Hits[i]
+		hit.Matched = slices.Clone(hit.Matched[:min(1, len(hit.Matched))])
+		if len(hit.Matched) == 0 {
+			continue
+		}
+		match := &hit.Matched[0]
+		runes := []rune(match.Text)
+		if len(runes) > 160 {
+			match.Text = string(runes[:160])
+			match.ExcerptCut = true
+		}
+	}
+	wire, err := json.Marshal(out)
+	if err != nil || len(wire) <= agentResultBudget {
+		return out, err
+	}
+	for i := range out.Hits {
+		out.Hits[i].Title = ""
+		out.Hits[i].Brand = ""
+	}
+	return fitProductResult(len(out.Hits), func(n int) search.ProductQueryResult {
+		page := out
+		page.Hits = out.Hits[:n]
+		return page
+	})
 }
 
 func (s *Server) toolListFeatures(ctx context.Context, raw json.RawMessage) (any, error) {

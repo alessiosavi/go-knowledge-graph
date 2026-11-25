@@ -14,10 +14,12 @@ import (
 	"time"
 
 	mcpgo "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/api"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/mcp"
 	"github.com/alessiosavi/go-knowledge-graph/internal/productobs"
 )
@@ -31,6 +33,106 @@ func readProductJSON(t *testing.T, data []byte) productReadJSON {
 		t.Fatalf("decode product response: %v, body prefix %q", err, data[:min(200, len(data))])
 	}
 	return out
+}
+
+func TestProductTextFullCoverageAcrossSurfaces(t *testing.T) {
+	st, driver, query := productTestDB(t)
+	const domain, store, wiped = "t3-complete", "t3-complete.test", "t3-complete-wiped.test"
+	const manifest = `{"store_domains":{"t3-complete.test":"t3-complete","t3-complete-wiped.test":"t3-complete"}}`
+	params := map[string]any{
+		"domain": domain, "stores": []string{store, wiped}, "manifest": manifest,
+		"digest": productFixtureDigest(manifest), "space": graph.ProductTextSpace,
+	}
+	pointer := query(`MATCH (m:GkgMeta {id:'product_release'}) RETURN properties(m)`, nil)
+	if err := st.EnsureTextVecIndex(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+		defer session.Close(ctx)
+		result, err := session.Run(ctx, "DROP VECTOR INDEX text_vec", nil)
+		if err == nil {
+			_, err = result.Consume(ctx)
+		}
+		if err != nil {
+			t.Error(err)
+		}
+	})
+	t.Cleanup(func() {
+		query(`MATCH (n) WHERE n.store IN $stores OR (n:TextVec AND n.id IN $stores)
+OR (n.id=$domain AND (n:Domain OR n:ProductRelease)) SET n.embedding=null DETACH DELETE n`, params)
+		if len(pointer) == 0 {
+			query(`MATCH (m:GkgMeta {id:'product_release'}) DELETE m`, nil)
+		} else {
+			query(`MATCH (m:GkgMeta {id:'product_release'}) SET m=$props`, map[string]any{"props": pointer[0].Values[0]})
+		}
+	})
+	query(`
+CREATE (:Domain {id:$domain}), (:ProductRelease {id:$domain, manifest_json:$manifest, manifest_digest:$digest})
+MERGE (m:GkgMeta {id:'product_release'}) SET m.value=$domain
+WITH 1 AS ignored
+UNWIND $stores AS store
+CREATE (:ProductStore {store:store, domain:$domain, product_count:1, text_version:1, text_count:1, text_edge_count:1})
+CREATE (:Product {id:store, store:store, product_id:'1', domain:$domain, title:'Ceramic kit'})-[:HAS_TEXT {key:'material'}]->
+       (:ProductText {id:store, store:store, vec_id:store, text:'Material: ceramic'})
+CREATE (v:TextVec {id:store, vec_id:store, space:$space})
+SET v.embedding=[1.0] + [i IN range(1, 767) | 0.0]`, params)
+	emb := graphtest.ProductTextEmbedder{}
+	cfg := config.Config{ProductText: config.ProductTextConfig{Search: true}}
+	rest := api.NewServer(cfg, st, nil)
+	rest.SetEmbedder(emb)
+	handler := rest.Handler()
+	restSearch := func() productReadJSON {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/products/search",
+			strings.NewReader(`{"query":"ceramic","domain":"t3-complete"}`)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("REST query: HTTP %d %s", w.Code, w.Body)
+		}
+		return readProductJSON(t, w.Body.Bytes())
+	}
+	check := func(surface string, out productReadJSON, want ...string) {
+		t.Helper()
+		hits, _ := out["hits"].([]any)
+		if out["meaning_status"] != "ok" || len(hits) != len(want) {
+			t.Errorf("%s: want meaning_status=ok and %v, got %v", surface, want, out)
+			return
+		}
+		for i, hit := range hits {
+			if id := hit.(map[string]any)["id"]; id != want[i] {
+				t.Errorf("%s: hit %d = %v, want %s", surface, i, id, want[i])
+			}
+		}
+	}
+	check("REST before wipe", restSearch(), wiped, store)
+	if err := st.DeleteProductStore(t.Context(), wiped); err != nil {
+		t.Fatal(err)
+	}
+	check("REST after wipe", restSearch(), store)
+
+	ctx := t.Context()
+	serverTransport, clientTransport := mcpgo.NewInMemoryTransports()
+	mcpServer := mcp.NewServer(cfg, st, nil)
+	mcpServer.SetEmbedder(emb)
+	ms, err := mcpServer.MCP().Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ms.Close() })
+	cs, err := mcpgo.NewClient(&mcpgo.Implementation{Name: "product-text-test", Version: "v1"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	result, err := cs.CallTool(ctx, &mcpgo.CallToolParams{Name: "find_products", Arguments: productReadJSON{"query": "ceramic", "domain": domain}})
+	if err != nil || result.IsError {
+		t.Fatalf("MCP query: %+v, %v", result, err)
+	}
+	check("MCP after wipe", result.StructuredContent.(productReadJSON), store)
+	results := askProductCallsWithEmbedder(t, st, domain, emb, agentProductCall{"find_products", productReadJSON{"query": "ceramic"}})
+	check("agent after wipe", results[0], store)
 }
 
 func TestProductReadPaths(t *testing.T) {

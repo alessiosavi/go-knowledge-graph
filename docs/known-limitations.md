@@ -348,3 +348,16 @@ the container.
 Audit rows written before relation-ID sanitation retain their unsanitized
 relations and IDs; judging the same fact again can create a second audit row.
 The v4 rebuild resets these audits.
+
+## Product attribute meaning search
+
+- Version 1 uses one embedding space, FURLs Gemini Embedding 2 at 768 dimensions.
+- The evaluation gates use cross-vertical negatives. Same-store “no such
+  product” queries are reported separately.
+- A small store can be missed when more than 16,384 closer vectors belong to
+  other stores. `candidates_truncated` reports the candidate cap.
+- Stored attribute texts retain at most the first 2,048 UTF-8 bytes.
+- `checked` means the store and source key belong to the active release.
+  A key can be checked before the product has a released observation for it.
+- The FURLs embedding service retains its own copy of the document-side
+  texts it embeds, including product attribute texts.

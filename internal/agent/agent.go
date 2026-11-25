@@ -89,6 +89,7 @@ const NoAnswerText = "I could not reach a final answer within the step budget; t
 const responseBodyCap = 1 << 20
 
 type graphStore interface {
+	search.ProductTextStore
 	search.Store
 	chunkread.Store
 	chunkread.ProductMentionIndexLoader

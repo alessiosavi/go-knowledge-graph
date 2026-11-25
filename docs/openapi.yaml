@@ -614,6 +614,8 @@ paths:
         - $ref: "#/components/parameters/ProductPageDomain"
         - $ref: "#/components/parameters/WithProductMentions"
         - $ref: "#/components/parameters/ProductMentionsLimit"
+        - $ref: "#/components/parameters/WithProductTexts"
+        - $ref: "#/components/parameters/ProductTextKeys"
       responses:
         "200":
           $ref: "#/components/responses/ProductDetail"
@@ -648,6 +650,8 @@ paths:
         - $ref: "#/components/parameters/ProductPageDomain"
         - $ref: "#/components/parameters/WithProductMentions"
         - $ref: "#/components/parameters/ProductMentionsLimit"
+        - $ref: "#/components/parameters/WithProductTexts"
+        - $ref: "#/components/parameters/ProductTextKeys"
       responses:
         "200":
           $ref: "#/components/responses/ProductDetail"
@@ -769,15 +773,21 @@ paths:
     post:
       tags: [products]
       operationId: findProducts
-      summary: Find products by feature value or numeric bounds
+      summary: Find products by attribute meaning, feature value, or numeric bounds
       description: |
-        Searches only observations carrying the active release ID. A value matches the
+        With a non-blank query, ranks products by the cosine similarity of their best matching
+        stored attribute text. Hits are candidates. Use the product lookup with with_texts
+        to read the value, and feature mode for exact and numeric constraints.
+        Disabled, unavailable and timed-out meaning search return HTTP 200 with empty hits.
+        Partial results include hits from ready vectors and report stores awaiting materialization.
+
+        In feature mode, searches observations carrying the active release ID. A value matches the
         feature kind's fold for a scalar or unsplit value, or the fold of a split item.
         Conflicting observations match independently. Numeric bounds use the feature's
         canonical unit and apply inclusively to exact observations from keys enabled
         for numeric search. A global numeric search reports stores excluded by this
         policy in `numeric_excluded_stores`. An unknown feature ID returns empty hits
-        for either search mode. Results are ordered by graph product ID.
+        for either feature filter. Feature results are ordered by graph product ID.
       requestBody:
         required: true
         content:
@@ -786,7 +796,7 @@ paths:
               $ref: "#/components/schemas/ProductSearchRequest"
       responses:
         "200":
-          description: One hit per product, at most five matching edges per hit, and at most 1 MiB of JSON.
+          description: Feature pages contain up to five matching edges per hit and 1 MiB of JSON. Query results contain up to three matching texts per hit and no cursor.
           content:
             application/json:
               schema:
@@ -812,6 +822,13 @@ paths:
           $ref: "#/components/responses/BodyTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
+        "502":
+          description: The embedder or graph failed during meaning search.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example: { error: meaning_unavailable, detail: product meaning search failed }
         "503":
           $ref: "#/components/responses/Unavailable"
         "504":
@@ -1292,6 +1309,18 @@ components:
       in: query
       description: Maximum returned passages. The server validates this parameter on every request and applies it when with_mentions is true.
       schema: { type: integer, minimum: 1, maximum: 20, default: 5 }
+    WithProductTexts:
+      name: with_texts
+      in: query
+      description: Include stored product attribute texts.
+      schema: { type: boolean, default: false }
+    ProductTextKeys:
+      name: text_keys
+      in: query
+      style: form
+      explode: true
+      description: Repeat this parameter to select exact source keys when with_texts is true.
+      schema: { type: array, items: { type: string } }
     DocumentID:
       name: id
       in: path
@@ -1488,6 +1517,24 @@ components:
               type: string
               enum: [index_too_large, index_unavailable]
               description: The page-key tier was unavailable and page-key coverage is unknown. Omitted when coverage is complete. When present, pages_missing is false.
+            texts:
+              type: array
+              maxItems: 64
+              description: Present with with_texts. At most 64 texts are returned. The encoded object containing texts and texts_omitted is capped at 32 KiB.
+              items:
+                $ref: "#/components/schemas/ProductText"
+            texts_omitted:
+              type: integer
+              minimum: 1
+              description: Number of matching texts excluded by the count or size limit. Omitted when all fit.
+    ProductText:
+      type: object
+      required: [key, text, text_truncated, checked]
+      properties:
+        key: { type: string, description: Exact source attribute key. }
+        text: { type: string, description: Stored attribute text limited to 2048 UTF-8 bytes. }
+        text_truncated: { type: boolean, description: The original text exceeded the storage limit. }
+        checked: { type: boolean, description: The store and source key are in the active release. }
     ProductDetailWithOptionalMentions:
       allOf:
         - $ref: "#/components/schemas/ProductDetail"
@@ -1675,10 +1722,15 @@ components:
         numeric_search: { type: boolean }
         released: { type: boolean }
     ProductSearchRequest:
+      oneOf:
+        - $ref: "#/components/schemas/ProductFeatureSearchRequest"
+        - $ref: "#/components/schemas/ProductQuerySearchRequest"
+    ProductFeatureSearchRequest:
       type: object
       required: [feature]
       properties:
         domain: { type: string, description: Optional exact domain ID. }
+        query: { type: string, nullable: true, pattern: '^\s*$', description: Omit or leave blank to select feature mode. }
         feature: { type: string, minLength: 1, description: Feature ID from GET /v1/features. }
         value: { type: string, description: Value for exact fold matching. }
         min: { type: string, description: Inclusive non-negative decimal lower bound with up to six fractional digits. }
@@ -1698,9 +1750,26 @@ components:
             - required: [max]
           not:
             required: [value]
+    ProductQuerySearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string, pattern: '\S', description: Query with 1–500 Unicode characters after trimming whitespace. }
+        domain: { type: string, description: Optional exact domain ID. }
+        limit: { type: integer, minimum: 1, maximum: 20, default: 10, nullable: true }
+        feature: { type: string, nullable: true, pattern: '^\s*$' }
+        value: { type: string, nullable: true, pattern: '^\s*$' }
+        min: { type: string, nullable: true, pattern: '^\s*$' }
+        max: { type: string, nullable: true, pattern: '^\s*$' }
+        cursor: { type: string, nullable: true, pattern: '^\s*$' }
     ProductSearchResponse:
+      oneOf:
+        - $ref: "#/components/schemas/ProductFeatureSearchResponse"
+        - $ref: "#/components/schemas/ProductQuerySearchResponse"
+    ProductFeatureSearchResponse:
       type: object
       required: [hits]
+      not: { required: [mode] }
       properties:
         hits:
           type: array
@@ -1714,6 +1783,53 @@ components:
           type: array
           items: { type: string }
           description: Stores with released keys for the feature and no numeric-enabled released key, in store order. Present for global numeric searches with at least one excluded store.
+    ProductQuerySearchResponse:
+      type: object
+      required: [mode, hits, exhausted, candidates_truncated, meaning_status, stores_not_materialized]
+      properties:
+        mode: { type: string, enum: [query] }
+        hits:
+          type: array
+          maxItems: 20
+          description: Descending score, then ascending graph product ID for ties.
+          items:
+            $ref: "#/components/schemas/ProductQueryHit"
+        exhausted: { type: boolean, description: The candidate count reached the vector index size. }
+        candidates_truncated: { type: boolean, description: Candidate search stopped at the 16384-vector cap before exhausting the index. }
+        meaning_status:
+          type: string
+          enum: [disabled, unavailable, timeout, partial, ok]
+          description: Unavailable covers unsupported embedding spaces and absent or incompatible indexes. Partial covers missing vectors or stores awaiting materialization.
+        stores_not_materialized:
+          type: array
+          items: { type: string }
+          description: Bound stores in scope whose product texts have yet to be materialized.
+    ProductQueryHit:
+      type: object
+      required: [id, store, product_id, domain, title, brand, score, matched]
+      properties:
+        id: { type: string }
+        store: { type: string }
+        product_id: { type: string }
+        domain: { type: string }
+        title: { type: string }
+        brand: { type: string }
+        score: { type: number, description: Best cosine similarity among the product's matching texts. }
+        matched:
+          type: array
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/MatchedProductText"
+    MatchedProductText:
+      allOf:
+        - $ref: "#/components/schemas/ProductText"
+        - type: object
+          required: [excerpt_cut, similarity, text_id]
+          properties:
+            text: { type: string, maxLength: 200, description: Excerpt of the stored attribute text. }
+            excerpt_cut: { type: boolean, description: The excerpt is shorter than the stored text. }
+            similarity: { type: number, description: Cosine similarity computed as one minus distance. }
+            text_id: { type: string, description: Vector identifier of the matched text. }
     ProductHit:
       type: object
       required: [product, evidence, evidence_truncated]

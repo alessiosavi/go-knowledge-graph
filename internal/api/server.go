@@ -39,6 +39,7 @@ type Rebuilder interface {
 const jsonBodyCap = 1 << 20
 
 type graphStore interface {
+	search.ProductTextStore
 	GetProduct(context.Context, graph.ProductLookup) (graph.ProductDetail, error)
 	PushProduct(context.Context, int64, []byte) (graph.ProductMutationResult, error)
 	RemoveProduct(context.Context, string, int64) (graph.ProductMutationResult, error)

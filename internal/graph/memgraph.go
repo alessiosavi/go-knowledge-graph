@@ -26,9 +26,11 @@ type Store struct {
 	// unique-constraint violation the driver does not retry. Multiple
 	// processes against one database are out of scope for v0 (one gkg
 	// process owns the store).
-	mu            sync.Mutex
-	writeLockWait func(time.Duration)
-	productLinks  productLinkCache
+	mu                  sync.Mutex
+	writeLockWait       func(time.Duration)
+	productLinks        productLinkCache
+	productTextFloor    float64
+	productTextCoverage productTextCoverageCache
 }
 
 // SetWriteLockWaitObserver registers the optional lock wait observer.
@@ -56,7 +58,7 @@ func Open(ctx context.Context, cfg config.Config) (*Store, error) {
 		_ = drv.Close(ctx)
 		return nil, fmt.Errorf("graph: connect %s: %w", cfg.Memgraph.URI, err)
 	}
-	return &Store{driver: drv}, nil
+	return &Store{driver: drv, productTextFloor: cfg.ProductText.SimilarityFloor()}, nil
 }
 
 // Close releases the driver's resources.

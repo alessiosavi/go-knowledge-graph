@@ -534,6 +534,43 @@ See the [usage guide](../USAGE.md#judge-backfill-and-audit) for recovery and sam
 false the parameter is ignored and the response sets `unverified_ignored`.
 The agent never requests candidates.
 
+### Product attribute meaning search
+
+Product imports maintain stored attribute texts. To enable query-mode
+`find_products`, configure the FURLs Gemini Embedding 2 provider at 768
+dimensions, set `GKG_PRODUCT_TEXT_SEARCH=on`, and redeploy so the serving
+process receives the new environment. The `gkg serve` worker checks or creates
+the `text_vec` index and backfills missing vectors as ingest load allows.
+`GKG_PRODUCT_TEXT_EMBED=pause` pauses the worker. Query mode defaults to a
+1,500 ms budget including embedding (`GKG_PRODUCT_TEXT_SEARCH_TIMEOUT`) and a
+0.72 cosine similarity floor (`GKG_PRODUCT_TEXT_FLOOR`).
+
+For an existing store, take a backup and materialize texts from the unchanged
+authoritative snapshot. Run the import in the serving environment with a
+snapshot sequence above both `snapshot_seq` and `seen_seq`.
+
+```bash
+gkg products import -store "$store" -release "$release" -snapshot-seq "$seq" \
+  -texts-only "$records"
+```
+
+If `-texts-only` refuses, get a fresh authoritative export before continuing.
+Check the import report's `text_action` and `text_count`, then wait for the
+`gkg_product_text_pending` metric to reach zero. Smoke test a query in each
+supported catalogue language and a feature-mode call. To roll back query mode
+and the worker, set `GKG_PRODUCT_TEXT_SEARCH=off` and redeploy.
+
+```bash
+curl -fsS "$BASE/v1/products/search" -H 'Content-Type: application/json' \
+  -d '{"query":"ceramic implant abutment","limit":10}'
+```
+
+MCP and the ask agent accept the same `query` argument on `find_products`.
+Meaning hits are candidates. Use `get_product` with `with_texts: true` and the
+matched `text_keys` to read the stored text. In REST, pass `with_texts=true`
+and repeat `text_keys` for each requested key. Use feature mode for exact
+values and numeric bounds. See the [meaning search limits](known-limitations.md#product-attribute-meaning-search).
+
 ## 7. High-quality document ingestion (docling)
 
 [docling-serve](https://github.com/docling-project/docling-serve) starts

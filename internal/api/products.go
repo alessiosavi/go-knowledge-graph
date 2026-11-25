@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
 type productMentionsReader interface {
@@ -34,7 +35,15 @@ func (s *Server) handleProduct(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	lookup := graph.ProductLookup{ID: id, Domain: params.Get("domain")}
+	lookup := graph.ProductLookup{ID: id, Domain: params.Get("domain"), TextKeys: params["text_keys"]}
+	if params.Has("with_texts") {
+		enabled, err := strconv.ParseBool(params.Get("with_texts"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "with_texts must be a boolean")
+			return
+		}
+		lookup.WithTexts = enabled
+	}
 	if id == "" {
 		lookup.Store, lookup.ProductID = params.Get("store"), params.Get("product_id")
 	}
@@ -83,7 +92,13 @@ func (s *Server) handleProductSearch(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, jsonBodyCap, &req) {
 		return
 	}
-	result, err := s.store.FindProducts(r.Context(), req)
+	var result any
+	var err error
+	if req.MeaningQuery() != "" {
+		result, err = search.FindProductsQuery(r.Context(), s.store, s.emb, s.cfg.ProductText, req)
+	} else {
+		result, err = s.store.FindProducts(r.Context(), req)
+	}
 	if err != nil {
 		writeProductReadError(w, r, err)
 		return
@@ -105,6 +120,8 @@ func (s *Server) handleProductFeatures(w http.ResponseWriter, r *http.Request) {
 
 func writeProductReadError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, search.ErrProductMeaningUnavailable):
+		writeError(w, http.StatusBadGateway, "meaning_unavailable", search.ErrProductMeaningUnavailable.Error())
 	case errors.Is(err, graph.ErrProductReadInput):
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	case errors.Is(err, graph.ErrProductNotNumeric):
