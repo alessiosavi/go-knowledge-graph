@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -30,10 +31,42 @@ type recordedRequest struct {
 
 type furlsFake struct {
 	*embed.Furls
-	mu       sync.Mutex
-	requests []recordedRequest
-	active   atomic.Int32
-	peak     atomic.Int32
+	mu        sync.Mutex
+	requests  []recordedRequest
+	transport *countingTransport
+}
+
+type countingTransport struct {
+	http.RoundTripper
+	active atomic.Int32
+	peak   atomic.Int32
+}
+
+func (t *countingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	active := t.active.Add(1)
+	for peak := t.peak.Load(); active > peak && !t.peak.CompareAndSwap(peak, active); peak = t.peak.Load() {
+	}
+	resp, err := t.RoundTripper.RoundTrip(req)
+	if err != nil {
+		t.active.Add(-1)
+		return nil, err
+	}
+	// RoundTrip can return as soon as headers arrive. Count through Close,
+	// regardless of when the server's handler returns.
+	resp.Body = &countedBody{ReadCloser: resp.Body, transport: t}
+	return resp, nil
+}
+
+type countedBody struct {
+	io.ReadCloser
+	transport *countingTransport
+	once      sync.Once
+}
+
+func (b *countedBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(func() { b.transport.active.Add(-1) })
+	return err
 }
 
 func newFurlsFake(t *testing.T, batchSize, dim int, respond func(*http.Request, []string, int) (int, string)) *furlsFake {
@@ -48,10 +81,6 @@ func newFurlsFake(t *testing.T, batchSize, dim int, respond func(*http.Request, 
 	}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		active := f.active.Add(1)
-		defer f.active.Add(-1)
-		for peak := f.peak.Load(); active > peak && !f.peak.CompareAndSwap(peak, active); peak = f.peak.Load() {
-		}
 		var request struct {
 			Entries []struct{ ID, Text string }
 		}
@@ -91,7 +120,8 @@ func newFurlsFake(t *testing.T, batchSize, dim int, respond func(*http.Request, 
 	}))
 	t.Cleanup(ts.Close)
 	cfg := config.Config{Embedder: config.EmbedderConfig{Dim: dim, ProductFURL: ts.URL, BatchSize: batchSize}}
-	f.Furls = embed.NewFurls(cfg)
+	f.transport = &countingTransport{RoundTripper: ts.Client().Transport}
+	f.Furls = embed.NewFurlsWithProductTransport(cfg, f.transport)
 	return f
 }
 
@@ -102,9 +132,11 @@ func (f *furlsFake) calls() []recordedRequest {
 }
 
 type memoryTextGraph struct {
-	pending []graph.PendingTextVec
-	results []graph.TextVecResult
-	ensures int
+	pending    []graph.PendingTextVec
+	results    []graph.TextVecResult
+	ensures    int
+	selections int
+	counts     int
 }
 
 func newMemoryTextGraph(n int) *memoryTextGraph {
@@ -118,11 +150,21 @@ func newMemoryTextGraph(n int) *memoryTextGraph {
 
 func (g *memoryTextGraph) EnsureTextVecIndex(context.Context) error    { g.ensures++; return nil }
 func (g *memoryTextGraph) GCTextVecs(context.Context, time.Time) error { return nil }
-func (g *memoryTextGraph) CountTextVecs(context.Context) (int, error)  { return len(g.results), nil }
+func (g *memoryTextGraph) CountTextVecs(context.Context) (int, error) {
+	g.counts++
+	var n int
+	for _, result := range g.results {
+		if result.ErrorCode == "" {
+			n++
+		}
+	}
+	return n, nil
+}
 func (g *memoryTextGraph) TextVecStats(context.Context, string) (graph.TextVecStats, error) {
 	return graph.TextVecStats{Referenced: len(g.pending) + len(g.results), Embedded: len(g.results)}, nil
 }
 func (g *memoryTextGraph) PendingTextVecs(_ context.Context, _ string, _ time.Time, limit int) ([]graph.PendingTextVec, error) {
+	g.selections++
 	return slices.Clone(g.pending[:min(limit, len(g.pending))]), nil
 }
 func (g *memoryTextGraph) WriteTextVecBatch(_ context.Context, _ string, _ time.Time, batch []graph.TextVecResult) error {
@@ -158,8 +200,10 @@ func TestWorkerBatchesOneRequestAtATime(t *testing.T) {
 	w := unitWorker(t, g, f, 0)
 	w.poll(t.Context())
 	calls := f.calls()
-	if len(calls) != 16 || f.peak.Load() != 1 || len(g.results) != 256 || len(g.pending) != 0 {
-		t.Fatalf("%d requests, peak %d, %d results, %d pending", len(calls), f.peak.Load(), len(g.results), len(g.pending))
+	peak, active := f.transport.peak.Load(), f.transport.active.Load()
+	if len(calls) != 16 || peak != 1 || active != 0 || len(g.results) != 256 || len(g.pending) != 0 {
+		t.Fatalf("%d requests, peak %d, %d still active, %d results, %d pending",
+			len(calls), peak, active, len(g.results), len(g.pending))
 	}
 	for _, c := range calls {
 		if len(c.texts) != 16 {
@@ -185,6 +229,71 @@ func TestWorkerEntryErrorIsolation(t *testing.T) {
 		} else if e.ErrorCode != "" || len(e.Embedding) != 768 {
 			t.Errorf("entry %s failed along with its neighbor", e.Text)
 		}
+	}
+}
+
+func TestWorkerDrainsBacklogInOneScan(t *testing.T) {
+	g := newMemoryTextGraph(1000)
+	f := newFurlsFake(t, 16, 768, nil)
+	w := unitWorker(t, g, f, 0)
+	delay := w.poll(t.Context())
+	if delay != 30*time.Second || g.selections != 1 || g.counts != 1 ||
+		len(f.calls()) != 63 || len(g.results) != 1000 || len(g.pending) != 0 {
+		t.Fatalf("delay=%s, selections=%d, counts=%d, requests=%d, results=%d, pending=%d",
+			delay, g.selections, g.counts, len(f.calls()), len(g.results), len(g.pending))
+	}
+}
+
+func TestWorkerAdmissionUsesOnlyCommittedVectors(t *testing.T) {
+	g := newMemoryTextGraph(8)
+	g.results = make([]graph.TextVecResult, 1) // Already occupied at scan time.
+	bad := g.pending[0].Text
+	f := newFurlsFake(t, 16, 768, func(*http.Request, []string, int) (int, string) { return 0, bad })
+	w := unitWorker(t, g, f, 0)
+	w.cfg.MaxVectors = 3
+	delay := w.poll(t.Context())
+	calls := f.calls()
+	if delay != 30*time.Second || w.state != "capacity" || g.selections != 1 || g.counts != 1 ||
+		len(calls) != 2 || len(calls[0].texts) != 2 || len(calls[1].texts) != 1 ||
+		len(g.results) != 4 || len(g.pending) != 5 {
+		t.Fatalf("delay=%s, state=%s, selections=%d, counts=%d, requests=%v, results=%d, pending=%d",
+			delay, w.state, g.selections, g.counts, calls, len(g.results), len(g.pending))
+	}
+}
+
+func TestWorkerLogsFirstThreeEntryErrorMessages(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"results":[
+			{"error_code":"CODE_ONLY"},
+			{"error_code":"FIRST","error":"first message"},
+			{"error_code":"SECOND","error":"second message"},
+			{"error_code":"THIRD","error":"third message"},
+			{"error_code":"FOURTH","error":"fourth message"}
+		]}`)
+	}))
+	t.Cleanup(ts.Close)
+	cfg := config.Config{Embedder: config.EmbedderConfig{Dim: 768, ProductFURL: ts.URL, BatchSize: 16}}
+	g := newMemoryTextGraph(5)
+	w := unitWorker(t, g, &furlsFake{Furls: embed.NewFurls(cfg)}, 0)
+	w.poll(t.Context())
+	if len(g.results) != 5 || g.results[4].ErrorCode != "FOURTH" {
+		t.Fatal("bounded logs must still persist all entry failures")
+	}
+	type entryError struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	var record struct {
+		EntryErrors []entryError `json:"entry_errors"`
+	}
+	want := []entryError{{"FIRST", "first message"}, {"SECOND", "second message"}, {"THIRD", "third message"}}
+	if err := json.Unmarshal(logs.Bytes(), &record); err != nil || !slices.Equal(record.EntryErrors, want) {
+		t.Fatalf("expected one log with the first three messages and codes, got %q (decode error: %v)", &logs, err)
 	}
 }
 
@@ -254,7 +363,7 @@ func TestWorkerBreaker(t *testing.T) {
 		return statuses[call-1], ""
 	})
 	w := unitWorker(t, g, f, 0)
-	for i, want := range []time.Duration{30 * time.Second, time.Minute, 10 * time.Minute, 0} {
+	for i, want := range []time.Duration{30 * time.Second, time.Minute, 10 * time.Minute, 30 * time.Second} {
 		if d := w.poll(t.Context()); d != want {
 			t.Fatalf("poll %d backoff = %s, want %s", i, d, want)
 		}

@@ -1582,9 +1582,11 @@ earlier successful imports stay committed. Use standalone `products import`
 for a JSON report or to approve a shrink.
 
 `products delete-store` is an owner-only operation. Run it with graph write
-credentials only when wiping a store is intended. It removes all products
-and edges and retains the binding, setting `wiped_seq` to `seen_seq` and the
-product and edge counts to zero. It clears `snapshot_digest`, `release_id`
+credentials only when wiping a store is intended. It removes all products,
+their edges and the store's attribute texts (`ProductText` nodes) and retains
+the binding, setting `wiped_seq` to `seen_seq`, the product and edge counts
+and the text ledger (`text_count`, `text_edge_count`, `text_bytes`) to zero
+and clearing `text_version`. It clears `snapshot_digest`, `release_id`
 and `imported_at` while retaining `snapshot_seq` and `seen_seq`. The next
 import must use a sequence higher than `wiped_seq`.
 The wipe also clears the materialization stamp and last event marker.
@@ -1605,8 +1607,11 @@ Use the complete A1 record from the normalizer, including the store and its
 full `product_id`. The ID must start with the store and a colon followed by
 a non-empty suffix. The push envelope allows 128 KiB and the embedded
 record uses the same row and projection limits as a snapshot import.
-A push replaces the product properties and released observations for that ID.
-A remove deletes that product and its edges. Remove any legacy `store:` IDs
+A push replaces the product properties, released observations and attribute
+texts (`HAS_TEXT` edges) for that ID and deletes texts no product uses any
+more. A remove deletes that product, its edges and its now-unused texts. A push
+never marks a store's text projection complete (`text_version`); only an import
+does. Remove any legacy `store:` IDs
 by omitting them from a full import.
 
 Use one increasing positive int64 sequence for all imports, pushes and
@@ -1616,14 +1621,16 @@ After any release activation, re-import **every store** at a higher sequence
 before pushing or removing products. The activation sequence is global. A
 wiped store also needs a new import before pushing or removing products.
 Each push recounts the store's products, edges and bytes inside its
-transaction, bounded by the 10,000-product and 60,000-edge caps.
+transaction, bounded by the 10,000-product and 60,000-edge caps, and updates
+the text ledger by delta, bounded by the 200,000 text-edge and 64 MiB text
+budgets.
 
 | Exit | Status | Meaning |
 | --- | --- | --- |
 | 0 | `created`, `updated`, `deleted`, `absent` | The event applied and advanced the store's sequence, including removal of an already absent product. |
 | 0 | `duplicate` | The sequence, operation and product ID match the latest event. The original write stays in place. |
 | 5 | `stale`, `seq_conflict` | The sequence is at or below the wipe floor, below the watermark, or already belongs to a different event. The error includes `seen_seq`. |
-| 5 | `release_changed`, `release_not_materialized`, `store_not_bound`, `store_cap` | Check the active release and binding, materialize the store, or reduce its size as indicated. |
+| 5 | `release_changed`, `release_not_materialized`, `store_not_bound`, `store_cap` | Check the active release and binding, materialize the store, or reduce its size as indicated. `store_cap` also covers the text budgets (200,000 text edges, 64 MiB of text per store). |
 | 5 | `retry` | A concurrent writer held a fence. Retry the same event after that write finishes. |
 | 5 | `reimport_required` | A product is missing its projected byte count. Re-import the store at a sequence above its `seen_seq`. |
 | 1 | `unknown_outcome` | The write timed out or its commit could not be confirmed. |
