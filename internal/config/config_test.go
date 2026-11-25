@@ -11,6 +11,63 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 )
 
+func TestProductTextConfig(t *testing.T) {
+	values := map[string]string{
+		"GKG_PRODUCT_TEXT_SEARCH":           "true",
+		"GKG_PRODUCT_TEXT_EMBED":            "pause",
+		"GKG_PRODUCT_TEXT_EMBED_PAUSE":      "125ms",
+		"GKG_PRODUCT_TEXT_EMBED_MAX_INGEST": "0",
+		"GKG_PRODUCT_TEXT_MAX_VECTORS":      "123",
+	}
+	for key := range values {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ProductText; got.Search || got.Embed != "run" || got.EmbedPause != 250*time.Millisecond ||
+		got.EmbedMaxIngest != 2 || got.MaxVectors != 65536 {
+		t.Fatalf("defaults = %+v", got)
+	}
+	for key, val := range values {
+		t.Setenv(key, val)
+	}
+	cfg, err = config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ProductText; !got.Search || got.Embed != "pause" || got.EmbedPause != 125*time.Millisecond ||
+		got.EmbedMaxIngest != 0 || got.MaxVectors != 123 {
+		t.Fatalf("overrides = %+v", got)
+	}
+	for value, want := range map[string]bool{"on": true, "off": false} {
+		t.Setenv("GKG_PRODUCT_TEXT_SEARCH", value)
+		cfg, err := config.Load("")
+		if err != nil || cfg.ProductText.Search != want {
+			t.Errorf("search=%s: cfg=%+v, err=%v", value, cfg.ProductText, err)
+		}
+	}
+	for key, value := range map[string]string{
+		"GKG_PRODUCT_TEXT_EMBED": "stop", "GKG_PRODUCT_TEXT_EMBED_PAUSE": "-1s",
+		"GKG_PRODUCT_TEXT_EMBED_MAX_INGEST": "-1", "GKG_PRODUCT_TEXT_MAX_VECTORS": "-1",
+	} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, value)
+			if _, err := config.Load(""); err == nil || !strings.Contains(err.Error(), key) {
+				t.Errorf("invalid %s: %v", key, err)
+			}
+		})
+	}
+	t.Setenv("GKG_PRODUCT_TEXT_MAX_VECTORS", "0")
+	if _, err := config.Load(""); err == nil || !strings.Contains(err.Error(), "GKG_PRODUCT_TEXT_MAX_VECTORS") {
+		t.Fatalf("zero admission limit: %v", err)
+	}
+}
+
 func TestWriteGateConfig(t *testing.T) {
 	for _, key := range []string{"GKG_FACTS_REQUIRE_CONFIRMATION", "GKG_FACTS_ALLOW_UNVERIFIED_READS", "GKG_DOMAIN_TAU", "GKG_DOMAIN_DELTA", "GKG_DOMAIN_TAU_OVERRIDE", "GKG_DOMAIN_SEED_FILE"} {
 		t.Setenv(key, "")

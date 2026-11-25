@@ -43,6 +43,7 @@ type Metrics struct {
 	judgeSeconds        prometheus.Histogram
 	requestDuration     *prometheus.HistogramVec
 	writeLockWait       prometheus.Histogram
+	productText         productTextMetrics
 }
 
 // New builds the registry and registers every metric.
@@ -53,7 +54,8 @@ func New() *Metrics { return NewWithJudgeFailureClasses(false) }
 func NewWithJudgeFailureClasses(classify bool) *Metrics {
 	reg := prometheus.NewRegistry()
 	m := &Metrics{
-		reg: reg,
+		reg:         reg,
+		productText: newProductTextMetrics(reg),
 		documents: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "documents_total",
 			Help: "Documents by pipeline status transition.",

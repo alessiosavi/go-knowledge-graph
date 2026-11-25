@@ -34,6 +34,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/judge"
 	mcpserver "github.com/alessiosavi/go-knowledge-graph/internal/mcp"
 	"github.com/alessiosavi/go-knowledge-graph/internal/obs"
+	"github.com/alessiosavi/go-knowledge-graph/internal/producttext"
 	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
@@ -584,6 +585,16 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	}
 	go func() { errCh <- srv.Serve(listener) }()
 	fmt.Fprintf(stdout, "gkg: listening on %s\n", cfg.Server.Addr)
+	textCtx, cancelText := context.WithCancel(ctx)
+	textDone := make(chan struct{})
+	go func() {
+		defer close(textDone)
+		producttext.NewWorker(cfg.ProductText, st, emb, metrics).Run(textCtx)
+	}()
+	defer func() {
+		cancelText()
+		<-textDone
+	}()
 	warmCtx, cancelWarm := context.WithCancel(ctx)
 	defer cancelWarm()
 	go func() {

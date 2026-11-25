@@ -64,8 +64,14 @@ type Furls struct {
 // positive BatchSize caps the entries per request (0 = one request per
 // call, up to whatever the caller passes).
 func NewFurls(cfg config.Config) *Furls {
+	return NewFurlsWithProductTransport(cfg, nil)
+}
+
+// NewFurlsWithProductTransport uses transport for product requests.
+// A nil transport uses http.DefaultTransport.
+func NewFurlsWithProductTransport(cfg config.Config, transport http.RoundTripper) *Furls {
 	return &Furls{
-		productClient: &http.Client{Timeout: furlsProductTimeout},
+		productClient: &http.Client{Timeout: furlsProductTimeout, Transport: transport},
 		queryClient:   &http.Client{Timeout: furlsQueryTimeout},
 		productURL:    cfg.Embedder.ProductFURL,
 		queryURL:      cfg.Embedder.QueryFURL,
@@ -87,6 +93,53 @@ func (f *Furls) Space() string { return "furls|" + f.model + "|" + strconv.Itoa(
 // repeated ingests reuse the persisted row.
 func (f *Furls) EmbedDocuments(ctx context.Context, texts []string) ([][]float64, error) {
 	return f.embed(ctx, f.productClient, f.productURL, texts)
+}
+
+// EntryResult is one embedding or one entry-level failure in input order.
+type EntryResult struct {
+	Embedding []float64
+	ErrorCode string
+	Error     string
+}
+
+// BatchOnceLimit is the maximum accepted by EmbedBatchOnce.
+func (f *Furls) BatchOnceLimit() int {
+	if f.batchSize > 0 {
+		return min(32, f.batchSize)
+	}
+	return 32
+}
+
+// EmbedBatchOnce sends one product-side POST and returns individual outcomes.
+func (f *Furls) EmbedBatchOnce(ctx context.Context, texts []string) ([]EntryResult, error) {
+	if len(texts) == 0 || len(texts) > f.BatchOnceLimit() {
+		return nil, fmt.Errorf("embed: furls: expected 1 to %d texts, got %d", f.BatchOnceLimit(), len(texts))
+	}
+	client := *f.productClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	vecs, failures, err := f.call(ctx, &client, f.productURL, furlsEntries(texts), true)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]EntryResult, len(texts))
+	for i, vec := range vecs {
+		if len(vec) > 0 && f.dim > 0 && len(vec) != f.dim {
+			results[i].ErrorCode = "INVALID_DIMENSION"
+		} else {
+			results[i].Embedding = vec
+		}
+	}
+	for _, fl := range failures {
+		code := fl.errorCode
+		if code == "" {
+			code = "MISSING_EMBEDDING"
+			if fl.message != "" {
+				code = "ENTRY_ERROR"
+			}
+		}
+		results[fl.index] = EntryResult{ErrorCode: code, Error: fl.message}
+	}
+	return results, nil
 }
 
 // EmbedQuery embeds one query text through the query FURL (cache-only
@@ -206,11 +259,8 @@ func (f *Furls) embed(ctx context.Context, client *http.Client, url string, text
 // whose error_code is retryable, then fail on anything still without a
 // vector.
 func (f *Furls) embedChunk(ctx context.Context, client *http.Client, url string, texts []string) ([][]float64, error) {
-	entries := make([]furlsEntry, len(texts))
-	for i, t := range texts {
-		entries[i] = furlsEntry{ID: furlsEntryID(t), Text: t}
-	}
-	vecs, failures, err := f.call(ctx, client, url, entries)
+	entries := furlsEntries(texts)
+	vecs, failures, err := f.call(ctx, client, url, entries, false)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +274,7 @@ func (f *Furls) embedChunk(ctx context.Context, client *http.Client, url string,
 		for i, fl := range failures {
 			failed[i] = entries[fl.index]
 		}
-		vecs2, failures2, err := f.call(ctx, client, url, failed)
+		vecs2, failures2, err := f.call(ctx, client, url, failed, false)
 		if err != nil {
 			return nil, err
 		}
@@ -264,14 +314,22 @@ func (f *Furls) embedChunk(ctx context.Context, client *http.Client, url string,
 	return vecs, nil
 }
 
+func furlsEntries(texts []string) []furlsEntry {
+	entries := make([]furlsEntry, len(texts))
+	for i, text := range texts {
+		entries[i] = furlsEntry{ID: furlsEntryID(text), Text: text}
+	}
+	return entries
+}
+
 // call posts one batch and returns vectors aligned to entries (nil where
 // the entry has no usable vector) plus its failures. Results are mapped by
 // id; a slot without its own id is a positional fallback for lenient
 // servers, while a slot carrying a different entry's id is never shifted
 // (that would attach one entry's vector to another). A present non-empty
-// embedding is usable even when error/error_code accompany it (the service
-// may fail persistence after the vector was computed).
-func (f *Furls) call(ctx context.Context, client *http.Client, url string, entries []furlsEntry) ([][]float64, []furlsFailure, error) {
+// embedding is usable even when error/error_code accompany it for the
+// legacy document/query path (persistence may fail after computation).
+func (f *Furls) call(ctx context.Context, client *http.Client, url string, entries []furlsEntry, once bool) ([][]float64, []furlsFailure, error) {
 	payload := struct {
 		Entries    []furlsEntry `json:"entries"`
 		Dimensions int          `json:"dimensions,omitempty"`
@@ -286,7 +344,14 @@ func (f *Furls) call(ctx context.Context, client *http.Client, url string, entri
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
+		if once {
+			return nil, nil, ErrTransport
+		}
 		return nil, nil, fmt.Errorf("embed: furls: build request: %w", err)
+	}
+	if once {
+		// Prevent the transport from replaying the POST body on retry.
+		req.GetBody = nil
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if f.apiKey != "" {
@@ -296,6 +361,16 @@ func (f *Furls) call(ctx context.Context, client *http.Client, url string, entri
 	if err != nil {
 		// Never echo the endpoint (it is a capability that ends up in logs
 		// and pasted evidence): classify the transport failure instead.
+		if once {
+			switch {
+			case errors.Is(err, context.Canceled):
+				return nil, nil, fmt.Errorf("%w: %w", ErrTransport, context.Canceled)
+			case errors.Is(err, context.DeadlineExceeded):
+				return nil, nil, fmt.Errorf("%w: %w", ErrTransport, context.DeadlineExceeded)
+			default:
+				return nil, nil, ErrTransport
+			}
+		}
 		switch {
 		case errors.Is(err, context.Canceled):
 			return nil, nil, fmt.Errorf("embed: furls: request canceled: %w", context.Canceled)
@@ -307,6 +382,9 @@ func (f *Furls) call(ctx context.Context, client *http.Client, url string, entri
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if once {
+			return nil, nil, HTTPError{Status: resp.StatusCode}
+		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, furlsErrorBodyCap))
 		return nil, nil, fmt.Errorf("embed: furls: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
@@ -314,7 +392,13 @@ func (f *Furls) call(ctx context.Context, client *http.Client, url string, entri
 		Results []furlsResult `json:"results"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, furlsResponseCap)).Decode(&parsed); err != nil {
+		if once {
+			return nil, nil, fmt.Errorf("%w: cannot read furls response", ErrTransport)
+		}
 		return nil, nil, fmt.Errorf("embed: furls: decode response: %w", err)
+	}
+	if once && parsed.Results == nil {
+		return nil, nil, errors.New("embed: furls: response missing results")
 	}
 	byID := make(map[string]furlsResult, len(parsed.Results))
 	for _, r := range parsed.Results {
@@ -328,7 +412,7 @@ func (f *Furls) call(ctx context.Context, client *http.Client, url string, entri
 			// A slot without an id is safe to use positionally.
 			r = parsed.Results[i]
 		}
-		if len(r.Embedding) > 0 {
+		if len(r.Embedding) > 0 && (!once || (r.ErrorCode == "" && r.Error == "")) {
 			vecs[i] = r.Embedding
 			continue
 		}
