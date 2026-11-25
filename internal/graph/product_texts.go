@@ -70,6 +70,23 @@ func (p productTextProjection) counts() productTextCounts {
 	return productTextCounts{count: len(p.idsByText), edges: len(p.edges), bytes: p.bytes}
 }
 
+// The orphan checks start from the ProductText and expand its incoming edges.
+// Writing the pattern from (:Product) lets Memgraph plan a scan of every node
+// per text, which made imports and pushes grow with the whole graph.
+const deleteOrphanedStoreTextsQuery = `
+MATCH (n:ProductText {store:$store})
+WHERE NOT EXISTS { MATCH (n)<-[:HAS_TEXT]-(p) WHERE p:Product }
+DELETE n`
+
+const deleteOrphanedPushedTextsQuery = `
+UNWIND $ids AS id
+WITH DISTINCT id
+MATCH (n:ProductText {id:id})
+WHERE NOT EXISTS { MATCH (n)<-[:HAS_TEXT]-(p) WHERE p:Product }
+WITH n, n.text AS text
+DELETE n
+RETURN text`
+
 const mergeProductTextNodes = `
 UNWIND $rows AS row
 MERGE (n:ProductText {id:row.id})
@@ -123,10 +140,7 @@ func txWriteSnapshotTexts(ctx context.Context, tx neo4j.ManagedTransaction, stor
 	if err := txWriteProductTexts(ctx, tx, store, projection); err != nil {
 		return err
 	}
-	if err := txRun(ctx, tx, `
-MATCH (n:ProductText {store:$store})
-WHERE NOT EXISTS { MATCH (:Product)-[:HAS_TEXT]->(n) }
-DELETE n`, params); err != nil {
+	if err := txRun(ctx, tx, deleteOrphanedStoreTextsQuery, params); err != nil {
 		return fmt.Errorf("delete orphaned snapshot texts: %w", err)
 	}
 	projection.counts().setParams(params)
@@ -188,14 +202,7 @@ RETURN n.text AS text`, map[string]any{"ids": ids})
 	}
 
 	if previous.edgeCount != 0 {
-		removed, err := txRows(ctx, tx, `
-UNWIND $ids AS id
-WITH DISTINCT id
-MATCH (n:ProductText {id:id})
-WHERE NOT EXISTS { MATCH (:Product)-[:HAS_TEXT]->(n) }
-WITH n, n.text AS text
-DELETE n
-RETURN text`, map[string]any{"ids": previous.ids})
+		removed, err := txRows(ctx, tx, deleteOrphanedPushedTextsQuery, map[string]any{"ids": previous.ids})
 		if err != nil {
 			return productTextCounts{}, err
 		}
