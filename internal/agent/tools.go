@@ -243,6 +243,7 @@ func toolDefs() []toolDef {
 				"required": []string{"query"},
 			}),
 		functionTool("get_product", graph.ProductLookupDescription+
+			" The agent returns up to eight texts. See texts_omitted for the number omitted."+
 			" Pages include via (ref, url, page in precedence order), chunk_ids (up to three passage IDs in sequence order), and chunk_count."+
 			" pages_missing means no associated pages were found. pages_partial means page-key coverage is unknown and pages_missing is false."+
 			" with_mentions defaults to true and includes passages from done documents with exact matches for the product's catalogue_code or product_reference. Domain also filters passages."+
@@ -257,6 +258,8 @@ func toolDefs() []toolDef {
 					"store":          map[string]any{"type": "string", "description": "Store for an exact lookup by product_id"},
 					"product_id":     map[string]any{"type": "string", "description": "Full source product ID including its store prefix"},
 					"domain":         map[string]any{"type": "string", "description": "Optional domain slug for associated pages and passages within the request scope. A domain outside the request scope is rejected."},
+					"with_texts":     map[string]any{"type": "boolean", "default": false, "description": "Include stored attribute texts"},
+					"text_keys":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional exact source keys to read with with_texts"},
 					"with_mentions":  map[string]any{"type": "boolean", "default": true, "description": "Include passages with exact identifier matches (default true)"},
 					"mentions_limit": map[string]any{"type": "integer", "minimum": 1, "maximum": graph.MaxMentionsLimit, "default": graph.DefaultMentionsLimit, "description": "Maximum passages returned when with_mentions is true"},
 				},
@@ -267,14 +270,14 @@ func toolDefs() []toolDef {
 				"type": "object",
 				"properties": map[string]any{
 					"domain":  map[string]any{"type": "string", "description": "Restrict matches to this domain ID within the request scope"},
-					"feature": map[string]any{"type": "string", "description": "Feature ID from list_features"},
+					"query":   map[string]any{"type": []string{"string", "null"}, "description": "Search stored attribute texts with 1–500 runes after trimming. Blank or null selects feature mode"},
+					"feature": map[string]any{"type": "string", "description": "Feature ID from list_features, required in feature mode"},
 					"value":   map[string]any{"type": "string", "description": "Exact folded value or item. Use either value or numeric bounds"},
 					"min":     map[string]any{"type": "string", "description": "Inclusive lower bound as a decimal string in the canonical unit"},
 					"max":     map[string]any{"type": "string", "description": "Inclusive upper bound as a decimal string in the canonical unit"},
-					"limit":   map[string]any{"type": "integer", "description": "Maximum hits (default 10, capped at 20)"},
+					"limit":   map[string]any{"type": "integer", "description": "Default 10. Query mode requires 1–20; feature mode is capped at 20"},
 					"cursor":  map[string]any{"type": "string", "description": "Opaque continuation cursor from the previous page with the same filters and limit"},
 				},
-				"required": []string{"feature"},
 			}),
 		functionTool("list_features", graph.ProductFeaturesDescription+
 			", with release status, numeric-search support and stores with released keys in scope. If truncated, narrow with query.",

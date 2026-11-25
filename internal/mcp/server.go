@@ -322,8 +322,10 @@ func registerTools(s *Server) {
 		OutputSchema: getProductOutputSchema(),
 	}, s.handleGetProduct)
 	addReadTool(s, &mcpgo.Tool{
-		Name:        "find_products",
-		Description: graph.ProductSearchDescription + " Pages over 256 KiB are returned only in structuredContent, with empty text content.",
+		Name:         "find_products",
+		Description:  graph.ProductSearchDescription + " Pages over 256 KiB are returned only in structuredContent, with empty text content.",
+		InputSchema:  findProductsInputSchema(),
+		OutputSchema: findProductsOutputSchema(),
 	}, s.handleFindProducts)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "list_features",

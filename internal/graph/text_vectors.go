@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -49,9 +50,17 @@ WITH CONFIG {"dimension": 768, "capacity": 32768, "metric": "cos", "scalar_kind"
 }
 
 func (s *Store) checkTextVecIndex(ctx context.Context) (bool, error) {
+	size, err := s.textVecIndexSize(ctx)
+	return size >= 0, err
+}
+
+var ErrProductTextIndexUnavailable = errors.New("product text vector index unavailable")
+
+// textVecIndexSize returns -1 when the index is absent.
+func (s *Store) textVecIndexSize(ctx context.Context) (int, error) {
 	rows, err := s.runRead(ctx, "SHOW VECTOR INDEX INFO", nil)
 	if err != nil {
-		return false, fmt.Errorf("graph: inspect text_vec: %w", err)
+		return -1, fmt.Errorf("graph: inspect text_vec: %w", err)
 	}
 	for _, row := range rows {
 		if getString(row, "index_name") != textVecIndexName {
@@ -61,12 +70,21 @@ func (s *Store) checkTextVecIndex(ctx context.Context) (bool, error) {
 		dimension := getInt(row, "dimension")
 		metric, scalar := getString(row, "metric"), getString(row, "scalar_kind")
 		if label != ":TextVec" || property != "embedding" || dimension != textVecDimension || metric != "cos" || scalar != "f32" {
-			return false, fmt.Errorf("graph: text_vec mismatch: got %s(%s), dimension=%d metric=%s scalar_kind=%s, want :TextVec(embedding), dimension=768 metric=cos scalar_kind=f32",
-				label, property, dimension, metric, scalar)
+			return -1, fmt.Errorf("%w: text_vec mismatch: got %s(%s), dimension=%d metric=%s scalar_kind=%s, want :TextVec(embedding), dimension=768 metric=cos scalar_kind=f32",
+				ErrProductTextIndexUnavailable, label, property, dimension, metric, scalar)
 		}
-		return true, nil
+		return getInt(row, "size"), nil
 	}
-	return false, nil
+	return -1, nil
+}
+
+// CheckProductTextIndex checks readiness without creating or changing an index.
+func (s *Store) CheckProductTextIndex(ctx context.Context) error {
+	found, err := s.checkTextVecIndex(ctx)
+	if err == nil && !found {
+		return ErrProductTextIndexUnavailable
+	}
+	return err
 }
 
 // PendingTextVec is one unique text eligible for an embedding request.

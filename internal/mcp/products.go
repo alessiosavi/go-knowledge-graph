@@ -13,6 +13,7 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/argerr"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
 type getProductArgs struct {
@@ -31,9 +32,9 @@ func getProductOutputSchema() *jsonschema.Schema {
 	if err != nil {
 		panic(err)
 	}
-	// The four fields are emitted together only when enrichment succeeds.
+	// Mentions and stored texts are optional enrichments.
 	schema.Required = slices.DeleteFunc(schema.Required, func(name string) bool {
-		return name == "mentions" || strings.HasPrefix(name, "mentions_")
+		return name == "mentions" || strings.HasPrefix(name, "mentions_") || name == "texts"
 	})
 	return schema
 }
@@ -76,11 +77,50 @@ func (s *Server) handleGetProduct(ctx context.Context, req *mcpgo.CallToolReques
 	return nil, out, err
 }
 
-func (s *Server) handleFindProducts(ctx context.Context, _ *mcpgo.CallToolRequest, args graph.ProductSearchRequest) (*mcpgo.CallToolResult, graph.ProductSearchResult, error) {
-	if s.store == nil {
-		return nil, graph.ProductSearchResult{}, errNoStore
+func findProductsInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[graph.ProductSearchRequest](nil)
+	if err != nil {
+		panic(err)
 	}
-	out, err := s.store.FindProducts(ctx, args)
+	// These string fields predate query mode. Go decodes null to their empty
+	// string, so accept both representations in the SDK's pre-validation.
+	for _, name := range []string{"feature", "cursor"} {
+		prop := schema.Properties[name]
+		prop.Types, prop.Type = []string{prop.Type, "null"}, ""
+	}
+	return schema
+}
+
+func findProductsOutputSchema() *jsonschema.Schema {
+	feature, err := jsonschema.For[graph.ProductSearchResult](nil)
+	if err != nil {
+		panic(err)
+	}
+	query, err := jsonschema.For[search.ProductQueryResult](nil)
+	if err != nil {
+		panic(err)
+	}
+	return &jsonschema.Schema{Type: "object", OneOf: []*jsonschema.Schema{feature, query}}
+}
+
+func (s *Server) handleFindProducts(ctx context.Context, req *mcpgo.CallToolRequest, args graph.ProductSearchRequest) (*mcpgo.CallToolResult, any, error) {
+	if s.store == nil {
+		return nil, nil, errNoStore
+	}
+	var out any
+	var err error
+	if args.MeaningQuery() != "" {
+		// Validate integers before SDK normalization, as on REST and agent.
+		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+			return nil, nil, argerr.Errorf("bad arguments: %w", err)
+		}
+		out, err = search.FindProductsQuery(ctx, s.store, s.emb, s.cfg.ProductText, args)
+	} else {
+		out, err = s.store.FindProducts(ctx, args)
+	}
+	if errors.Is(err, graph.ErrProductReadInput) {
+		err = argerr.Wrap(err)
+	}
 	if err != nil {
 		return nil, out, err
 	}

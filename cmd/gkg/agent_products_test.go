@@ -19,6 +19,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/mcp"
 	"github.com/alessiosavi/go-knowledge-graph/internal/productobs"
+	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 )
 
 type agentProductCall struct {
@@ -29,6 +30,11 @@ type agentProductCall struct {
 // askProductCalls scripts the local provider, including passing a preceding
 // search's cursor to the next search when its cursor argument is null.
 func askProductCalls(t *testing.T, st *graph.Store, domain string, calls ...agentProductCall) []productReadJSON {
+	t.Helper()
+	return askProductCallsWithEmbedder(t, st, domain, nil, calls...)
+}
+
+func askProductCallsWithEmbedder(t *testing.T, st *graph.Store, domain string, emb search.QueryEmbedder, calls ...agentProductCall) []productReadJSON {
 	t.Helper()
 	var modelResults []json.RawMessage
 	turn := 0
@@ -75,8 +81,9 @@ func askProductCalls(t *testing.T, st *graph.Store, domain string, calls ...agen
 		fmt.Fprintf(w, `{"choices":[{"message":{"tool_calls":[{"id":"call-%d","type":"function","function":{"name":%q,"arguments":%q}}]}}]}`, turn, call.name, args)
 	}))
 	cfg := config.Config{}
+	cfg.ProductText.Search = emb != nil
 	cfg.Agent.Enabled, cfg.Agent.BaseURL, cfg.Agent.Model, cfg.Agent.APIKey = true, stub.URL, "stub", "synthetic-key"
-	response, err := agent.NewServer(cfg, st, nil).Ask(t.Context(), agent.AskRequest{Question: "Find catalog information", Domain: domain})
+	response, err := agent.NewServer(cfg, st, emb).Ask(t.Context(), agent.AskRequest{Question: "Find catalog information", Domain: domain})
 	stub.Close()
 	if err != nil {
 		t.Fatal(err)

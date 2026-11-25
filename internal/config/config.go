@@ -96,6 +96,8 @@ type EmbedderConfig struct {
 // ProductTextConfig controls product-value meaning search and its backfill.
 type ProductTextConfig struct {
 	Search         bool          `yaml:"search"`
+	SearchTimeout  time.Duration `yaml:"search_timeout"`
+	Floor          *float64      `yaml:"floor"`
 	Embed          string        `yaml:"embed"` // run | pause
 	EmbedPause     time.Duration `yaml:"embed_pause"`
 	EmbedMaxIngest int           `yaml:"embed_max_ingest"`
@@ -228,6 +230,7 @@ func defaults() Config {
 			Dim:     768,
 		},
 		ProductText: ProductTextConfig{
+			SearchTimeout:  1500 * time.Millisecond,
 			Embed:          "run",
 			EmbedPause:     250 * time.Millisecond,
 			EmbedMaxIngest: 2,
@@ -475,6 +478,10 @@ func setEnvField(field reflect.Value, val string) error {
 
 func (c ProductTextConfig) validate() error {
 	switch {
+	case c.SearchTimeout <= 0:
+		return errors.New("config: GKG_PRODUCT_TEXT_SEARCH_TIMEOUT must be positive")
+	case c.Floor != nil && (math.IsNaN(*c.Floor) || *c.Floor < -1 || *c.Floor > 1):
+		return errors.New("config: GKG_PRODUCT_TEXT_FLOOR must be a cosine similarity between -1 and 1")
 	case c.Embed != "run" && c.Embed != "pause":
 		return errors.New("config: GKG_PRODUCT_TEXT_EMBED must be run or pause")
 	case c.EmbedPause < 0:
@@ -486,6 +493,14 @@ func (c ProductTextConfig) validate() error {
 	default:
 		return nil
 	}
+}
+
+// SimilarityFloor is also used when a store is opened with a literal Config.
+func (c ProductTextConfig) SimilarityFloor() float64 {
+	if c.Floor != nil {
+		return *c.Floor
+	}
+	return 0.72
 }
 
 // upperSnake converts a Go field name to UPPER_SNAKE_CASE

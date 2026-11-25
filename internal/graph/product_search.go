@@ -27,17 +27,28 @@ const (
 var errProductSearchEnvelopeBudget = errors.New("product search metadata exceeds the search response budget")
 
 type ProductSearchRequest struct {
+	Query   *string `json:"query,omitempty" jsonschema:"Meaning search over product attribute texts. Trimmed to 1–500 runes; blank or null selects feature mode"`
 	Domain  string  `json:"domain,omitempty" jsonschema:"Restrict matches to this domain ID"`
-	Feature string  `json:"feature" jsonschema:"Feature ID from list_features"`
+	Feature string  `json:"feature,omitempty" jsonschema:"Feature ID from list_features, required in feature mode"`
 	Value   *string `json:"value,omitempty" jsonschema:"Exact folded value or item. Use either value or numeric bounds"`
 	Min     *string `json:"min,omitempty" jsonschema:"Inclusive lower bound as a decimal string in the canonical unit"`
 	Max     *string `json:"max,omitempty" jsonschema:"Inclusive upper bound as a decimal string in the canonical unit"`
-	Limit   *int    `json:"limit,omitempty" jsonschema:"Page size from 1 to 50 (default 20)"`
+	Limit   *int    `json:"limit,omitempty" jsonschema:"Feature mode: 1–50 (default 20). Query mode: 1–20 (default 10)"`
 	Cursor  string  `json:"cursor,omitempty" jsonschema:"Opaque continuation cursor from the previous page with the same filters and limit"`
 }
 
-const ProductSearchDescription = "Find products by a feature ID and either an exact folded value or inclusive numeric bounds in the canonical unit. " +
-	"Pass the same filters with the next cursor."
+const ProductSearchDescription = "Find products by query over stored attribute texts, or by a feature ID and either an exact folded value or inclusive numeric bounds in the canonical unit. " +
+	"Query mode accepts domain and limit, and excludes nonempty feature, value, min, max and cursor. " +
+	"Meaning hits are candidates; checked means the key is in the active release. Use get_product with_texts to read stored values. " +
+	"Pass the same feature filters with the next cursor."
+
+// MeaningQuery returns the trimmed query; empty selects feature mode.
+func (r ProductSearchRequest) MeaningQuery() string {
+	if r.Query == nil {
+		return ""
+	}
+	return strings.TrimSpace(*r.Query)
+}
 
 type ProductHit struct {
 	Product           Product           `json:"product"`

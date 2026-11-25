@@ -252,3 +252,47 @@ func TestAgentMountsRemainGuardedWhenDisabled(t *testing.T) {
 		})
 	}
 }
+
+func TestProductTextOpenAPI(t *testing.T) {
+	type ref struct {
+		Ref string `yaml:"$ref"`
+	}
+	var spec struct {
+		Paths map[string]struct {
+			Get  struct{ Parameters []ref }
+			Post struct{ Responses map[string]yaml.Node }
+		}
+		Components struct {
+			Schemas map[string]struct {
+				OneOf    []ref `yaml:"oneOf"`
+				Required []string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatal(err)
+	}
+	for schema, want := range map[string][]ref{
+		"ProductSearchRequest":  {{"#/components/schemas/ProductFeatureSearchRequest"}, {"#/components/schemas/ProductQuerySearchRequest"}},
+		"ProductSearchResponse": {{"#/components/schemas/ProductFeatureSearchResponse"}, {"#/components/schemas/ProductQuerySearchResponse"}},
+	} {
+		if got := spec.Components.Schemas[schema].OneOf; !slices.Equal(got, want) {
+			t.Errorf("%s oneOf = %v, want %v", schema, got, want)
+		}
+	}
+	for _, field := range []string{"mode", "hits", "exhausted", "candidates_truncated", "meaning_status", "stores_not_materialized"} {
+		if !slices.Contains(spec.Components.Schemas["ProductQuerySearchResponse"].Required, field) {
+			t.Errorf("query response omits required field %s", field)
+		}
+	}
+	for _, route := range []string{"/v1/products", "/v1/products/{id}"} {
+		for _, param := range []ref{{"#/components/parameters/WithProductTexts"}, {"#/components/parameters/ProductTextKeys"}} {
+			if !slices.Contains(spec.Paths[route].Get.Parameters, param) {
+				t.Errorf("%s omits %s", route, param.Ref)
+			}
+		}
+	}
+	if _, ok := spec.Paths["/v1/products/search"].Post.Responses["502"]; !ok {
+		t.Error("query search response does not document the 502")
+	}
+}

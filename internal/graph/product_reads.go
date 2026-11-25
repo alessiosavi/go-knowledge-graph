@@ -18,16 +18,19 @@ var (
 )
 
 type ProductLookup struct {
-	ID        string `json:"id,omitempty" jsonschema:"Graph product ID"`
-	Store     string `json:"store,omitempty" jsonschema:"Store for an exact lookup by product_id"`
-	ProductID string `json:"product_id,omitempty" jsonschema:"Full source product ID including its store prefix"`
-	Domain    string `json:"domain,omitempty" jsonschema:"Optional domain slug for associated pages; empty includes all domains"`
+	ID        string   `json:"id,omitempty" jsonschema:"Graph product ID"`
+	Store     string   `json:"store,omitempty" jsonschema:"Store for an exact lookup by product_id"`
+	ProductID string   `json:"product_id,omitempty" jsonschema:"Full source product ID including its store prefix"`
+	Domain    string   `json:"domain,omitempty" jsonschema:"Optional domain slug for associated pages; empty includes all domains"`
+	WithTexts bool     `json:"with_texts,omitempty" jsonschema:"Include stored attribute texts (default false)"`
+	TextKeys  []string `json:"text_keys,omitempty" jsonschema:"Optional exact source keys to select when with_texts is true"`
 	// SeedDomain enforces a server-side request scope on the product itself.
 	SeedDomain string `json:"-"`
 }
 
 const ProductLookupDescription = "Get a product with its active feature observations and up to three associated pages. " +
-	"Provide id, or both store and the full source product_id. The optional domain filters associated pages."
+	"Provide id, or both store and the full source product_id. The optional domain filters associated pages. " +
+	"Set with_texts to read stored attribute texts and text_keys to filter by exact source key. Checked means the key is in the active release."
 
 type Product struct {
 	ID          string  `json:"id"`
@@ -77,6 +80,12 @@ type ProductDetail struct {
 	Pages        []ProductPage     `json:"pages"`
 	PagesMissing bool              `json:"pages_missing"`
 	PagesPartial string            `json:"pages_partial,omitempty"`
+	*ProductTextFields
+}
+
+type ProductTextFields struct {
+	Texts        []ProductText `json:"texts"`
+	TextsOmitted int           `json:"texts_omitted,omitempty"`
 }
 
 // Project the store's domain for page lookup. A missing or unbound store
@@ -122,6 +131,12 @@ func (s *Store) GetProduct(ctx context.Context, lookup ProductLookup) (ProductDe
 			return err
 		}
 		domain = getString(rows[0], "page_domain")
+		if lookup.WithTexts {
+			out.ProductTextFields, err = txReadProductTexts(ctx, tx, out, lookup.TextKeys)
+			if err != nil {
+				return err
+			}
+		}
 		return txResolveDirectProductPages(ctx, tx, out.ID, domain, out.Link, lookup.Domain, &pages)
 	})
 	if err != nil {
@@ -134,6 +149,49 @@ func (s *Store) GetProduct(ctx context.Context, lookup ProductLookup) (ProductDe
 	}
 	out.PagesMissing = len(out.Pages) == 0 && out.PagesPartial == ""
 	return out, nil
+}
+
+const getProductTextsMatch = `
+MATCH (p:Product {id:$id})-[e:HAS_TEXT]->(n:ProductText)
+WHERE n.store = p.store AND ($all OR e.key IN $keys)`
+
+func txReadProductTexts(ctx context.Context, tx neo4j.ManagedTransaction, p ProductDetail, keys []string) (*ProductTextFields, error) {
+	const maxTexts, maxBytes = 64, 32 << 10
+	params := map[string]any{"id": p.ID, "keys": keys, "all": len(keys) == 0, "limit": maxTexts}
+	count, err := txRows(ctx, tx, getProductTextsMatch+` RETURN count(e) AS total`, params)
+	if err != nil {
+		return nil, err
+	}
+	total := getInt(count[0], "total")
+	out := &ProductTextFields{Texts: []ProductText{}}
+	if total == 0 {
+		return out, nil
+	}
+	rows, err := txRows(ctx, tx, getProductTextsMatch+`
+RETURN e.key AS key, n.text AS text, e.truncated AS truncated
+ORDER BY e.key, n.vec_id LIMIT $limit`, params)
+	if err != nil {
+		return nil, err
+	}
+	released, err := txReleasedProductTextKeys(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	out.Texts = make([]ProductText, 0, min(total, maxTexts))
+	for _, row := range rows {
+		out.Texts = append(out.Texts, readProductText(row.AsMap(), released[p.Store]))
+	}
+	for {
+		out.TextsOmitted = total - len(out.Texts)
+		wire, err := json.Marshal(out)
+		if err != nil {
+			return nil, err
+		}
+		if len(wire) <= maxBytes {
+			return out, nil
+		}
+		out.Texts = out.Texts[:len(out.Texts)-1]
+	}
 }
 
 func readProductDetail(rows []*neo4j.Record) (ProductDetail, error) {
