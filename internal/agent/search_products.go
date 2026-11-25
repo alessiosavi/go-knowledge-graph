@@ -70,10 +70,10 @@ func (s *Server) searchProductHits(ctx context.Context, hits []searchHitOut, que
 	return hits, ""
 }
 
-func (s *Server) searchMeaningHits(ctx context.Context, future *search.QueryEmbedding, hits []searchHitOut, domain string, limit int) ([]searchHitOut, string) {
-	remaining := limit - len(hits)
-	excluded := make([]string, 0, len(hits))
-	for _, hit := range hits {
+func (s *Server) searchMeaningHits(ctx context.Context, future *search.QueryEmbedding, out *searchOut, domain string, limit int) {
+	remaining := limit - len(out.Hits)
+	excluded := make([]string, 0, len(out.Hits))
+	for _, hit := range out.Hits {
 		excluded = append(excluded, hit.ID)
 	}
 	vec, err := future.Wait(ctx)
@@ -83,24 +83,29 @@ func (s *Server) searchMeaningHits(ctx context.Context, future *search.QueryEmbe
 	}
 	switch {
 	case graph.IsQueryTimeout(ctx, err):
-		return hits, "timeout"
+		out.MeaningError = "timeout"
+		return
 	case err != nil:
 		slog.WarnContext(ctx, "agent: product meaning search unavailable", "err", err)
-		return hits, "unavailable"
+		out.MeaningError = "unavailable"
+		return
 	}
+	out.MeaningPartial = result.Partial
+	out.MeaningTruncated = result.CandidatesTruncated
 	for _, p := range result.Hits[:min(remaining, len(result.Hits))] {
 		if len(p.Matched) == 0 {
 			continue
 		}
 		matched := p.Matched[0] // the graph ranks products by their best matched text
 		excerpt := truncateSearchRunes(matched.Text, 160)
-		hits = append(hits, searchHitOut{
+		excerptCut := matched.ExcerptCut || len(excerpt) < len(matched.Text)
+		out.Hits = append(out.Hits, searchHitOut{
 			Kind: "product", ID: p.ID, Domain: &p.Domain, Store: p.Store, ProductID: p.ProductID,
 			Title: truncateSearchRunes(p.Title, 200), Brand: truncateSearchRunes(p.Brand, 80), Score: &p.Score,
 			Match: "meaning", Key: &matched.Key, Checked: &matched.Checked, Excerpt: &excerpt,
+			ExcerptCut: &excerptCut, TextTruncated: &matched.TextTruncated,
 		})
 	}
-	return hits, ""
 }
 
 func truncateSearchRunes(text string, limit int) string {
@@ -120,7 +125,8 @@ func fitSearchHits(out searchOut) (searchOut, error) {
 	if len(out.Hits) == 0 {
 		return out, nil
 	}
-	frame := searchOut{Hits: []searchHitOut{}, ProductsError: out.ProductsError, MeaningError: out.MeaningError}
+	frame := out
+	frame.Hits = []searchHitOut{}
 	raw, err := json.Marshal(frame)
 	if err != nil {
 		return searchOut{}, err

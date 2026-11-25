@@ -31,20 +31,25 @@ type searchHitOut struct {
 	Store      string   `json:"store,omitempty"`
 	ProductID  string   `json:"product_id,omitempty"`
 	Brand      string   `json:"brand,omitempty"`
-	Match      string   `json:"match,omitempty"`
-	Key        *string  `json:"key,omitempty"`
-	Checked    *bool    `json:"checked,omitempty"`
-	Excerpt    *string  `json:"excerpt,omitempty"`
+
+	Match         string  `json:"match,omitempty"`
+	Key           *string `json:"key,omitempty"`
+	Checked       *bool   `json:"checked,omitempty"`
+	Excerpt       *string `json:"excerpt,omitempty"`
+	ExcerptCut    *bool   `json:"excerpt_cut,omitempty"`
+	TextTruncated *bool   `json:"text_truncated,omitempty"`
 
 	DocumentDate       *time.Time `json:"document_date,omitempty"`
 	DocumentDateSource *string    `json:"document_date_source,omitempty"`
 }
 
 type searchOut struct {
-	Hits          []searchHitOut `json:"hits"`
-	ProductsError string         `json:"products_error,omitempty"`
-	MeaningError  string         `json:"meaning_error,omitempty"`
-	HitsOmitted   int            `json:"hits_omitted,omitempty"`
+	Hits             []searchHitOut `json:"hits"`
+	ProductsError    string         `json:"products_error,omitempty"`
+	MeaningError     string         `json:"meaning_error,omitempty"`
+	MeaningPartial   bool           `json:"meaning_partial,omitempty"`
+	MeaningTruncated bool           `json:"meaning_truncated,omitempty"`
+	HitsOmitted      int            `json:"hits_omitted,omitempty"`
 }
 
 type entityRefOut struct {
@@ -166,6 +171,7 @@ func toolDefs() []toolDef {
 			"Search entity names, chunk text, product titles and, when enabled, product attribute meaning. Auto can list products first. Open a product hit with get_product using its id. Use kind=product for products only. "+
 				"A products_error such as timeout or index_unavailable means title matches are unknown. "+
 				"Product hits can carry match=title|meaning, with key (matched attribute), checked (whether the store and key belong to the active release) and excerpt (matched text) for meaning hits, and meaning_error=timeout|unavailable means meaning matches are unknown. "+
+				"A true meaning_partial or meaning_truncated means meaning results may be incomplete, so treat a missing product as inconclusive. "+
 				"Since/until filter chunk hits by document date and do not apply to products. Start with limit 10.",
 			map[string]any{
 				"type": "object",
@@ -484,7 +490,7 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 						meaningCtx, cancel = context.WithTimeout(ctx, s.cfg.ProductText.AutoBudget())
 						defer cancel()
 					}
-					out.Hits, out.MeaningError = s.searchMeaningHits(meaningCtx, future, out.Hits, domain, productLimit)
+					s.searchMeaningHits(meaningCtx, future, &out, domain, productLimit)
 				}
 			}
 			if ctx.Err() == context.Canceled {

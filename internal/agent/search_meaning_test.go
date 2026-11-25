@@ -34,21 +34,25 @@ func (e *meaningSearchEmbedder) EmbedQuery(ctx context.Context, q string) ([]flo
 }
 
 type meaningSearchWireHit struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Match     string `json:"match"`
-	ProductID string `json:"product_id"`
-	Key       string `json:"key"`
-	Checked   *bool  `json:"checked"`
-	Excerpt   string `json:"excerpt"`
-	Snippet   string `json:"snippet"`
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	Match         string `json:"match"`
+	ProductID     string `json:"product_id"`
+	Key           string `json:"key"`
+	Checked       *bool  `json:"checked"`
+	Excerpt       string `json:"excerpt"`
+	ExcerptCut    *bool  `json:"excerpt_cut"`
+	TextTruncated *bool  `json:"text_truncated"`
+	Snippet       string `json:"snippet"`
 }
 
 type meaningSearchWire struct {
-	Hits          []meaningSearchWireHit `json:"hits"`
-	ProductsError string                 `json:"products_error"`
-	MeaningError  string                 `json:"meaning_error"`
-	HitsOmitted   int                    `json:"hits_omitted"`
+	Hits             []meaningSearchWireHit `json:"hits"`
+	ProductsError    string                 `json:"products_error"`
+	MeaningError     string                 `json:"meaning_error"`
+	MeaningPartial   bool                   `json:"meaning_partial"`
+	MeaningTruncated bool                   `json:"meaning_truncated"`
+	HitsOmitted      int                    `json:"hits_omitted"`
 }
 
 func meaningSearchHit(id, text string) graph.ProductTextHit {
@@ -110,11 +114,77 @@ func TestAgentSearchMeaningExcludesTitlesAndKeepsPassage(t *testing.T) {
 		h.Key != "material" || h.Checked == nil || *h.Checked || h.Excerpt != strings.Repeat("é", 160) {
 		t.Fatalf("meaning hit lost its evidence: %+v", h)
 	}
+	if h := out.Hits[2]; h.ExcerptCut == nil || !*h.ExcerptCut || h.TextTruncated == nil || *h.TextTruncated {
+		t.Errorf("want excerpt_cut=true and text_truncated=false for the agent's 160-rune cut, got %+v", h)
+	}
 	if h := out.Hits[5]; h.Kind != "chunk" || h.ID != "t4-passage" || st.chunkRead != 1 {
 		t.Fatalf("want one lookup and a reserved passage, got %+v in %d reads", h, st.chunkRead)
 	}
 	if n := emb.calls.Load(); n != 1 {
 		t.Fatalf("EmbedQuery calls = %d, want 1", n)
+	}
+}
+
+func TestAgentSearchMeaningCompletenessWithoutHits(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result graph.ProductTextSearchResult
+		want   string
+	}{
+		{"complete", graph.ProductTextSearchResult{Exhausted: true}, `{"hits":[]}`},
+		{"missing vectors", graph.ProductTextSearchResult{Partial: true, Exhausted: true}, `{"hits":[],"meaning_partial":true}`},
+		{"unmaterialized store", graph.ProductTextSearchResult{
+			Partial: true, StoresNotMaterialized: []string{"t4.test"}, Exhausted: true,
+		}, `{"hits":[],"meaning_partial":true}`},
+		{"candidate cap", graph.ProductTextSearchResult{CandidatesTruncated: true}, `{"hits":[],"meaning_truncated":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &productSearchToolStore{
+				products: func(context.Context, string, string, int) ([]graph.Product, error) { return nil, nil },
+				texts: func(context.Context, []float64, string, int, []string) (graph.ProductTextSearchResult, error) {
+					return tc.result, nil
+				},
+			}
+			s := &Server{store: st, emb: &meaningSearchEmbedder{}, cfg: config.Config{ProductText: config.ProductTextConfig{Search: true}}}
+			_, raw := meaningSearchResult(t, t.Context(), s, `{"query":"ceramic","kind":"product"}`)
+			if string(raw) != tc.want {
+				t.Errorf("search result = %s, want %s", raw, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentSearchMeaningPreservesMatchTruncation(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		excerptCut    bool
+		textTruncated bool
+	}{
+		{"complete match", false, false},
+		{"excerpt already cut", true, false},
+		{"input text truncated", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &productSearchToolStore{
+				products: func(context.Context, string, string, int) ([]graph.Product, error) { return nil, nil },
+				texts: func(context.Context, []float64, string, int, []string) (graph.ProductTextSearchResult, error) {
+					hit := meaningSearchHit("t4-meaning", "Ceramic")
+					hit.Matched[0].ExcerptCut = tc.excerptCut
+					hit.Matched[0].TextTruncated = tc.textTruncated
+					return graph.ProductTextSearchResult{Hits: []graph.ProductTextHit{hit}, Exhausted: true}, nil
+				},
+			}
+			s := &Server{store: st, emb: &meaningSearchEmbedder{}, cfg: config.Config{ProductText: config.ProductTextConfig{Search: true}}}
+			out, _ := meaningSearchResult(t, t.Context(), s, `{"query":"ceramic","kind":"product"}`)
+			if len(out.Hits) != 1 {
+				t.Fatalf("want one meaning hit, got %+v", out)
+			}
+			h := out.Hits[0]
+			if h.Excerpt != "Ceramic" || h.ExcerptCut == nil || *h.ExcerptCut != tc.excerptCut ||
+				h.TextTruncated == nil || *h.TextTruncated != tc.textTruncated {
+				t.Errorf("want Ceramic excerpt with excerpt_cut=%t and text_truncated=%t, got %+v", tc.excerptCut, tc.textTruncated, h)
+			}
+		})
 	}
 }
 
@@ -372,9 +442,12 @@ func TestAgentSearchMeaningFitsEncodedMixedResult(t *testing.T) {
 		texts: func(context.Context, []float64, string, int, []string) (graph.ProductTextSearchResult, error) {
 			top := meaningSearchHit("t4-meaning", strings.Repeat("<", 200))
 			top.Matched[0].Checked = true
+			top.Matched[0].TextTruncated = true
 			bottom := meaningSearchHit("t4-omitted", "Ceramic")
 			bottom.ProductID = wide
-			return graph.ProductTextSearchResult{Hits: []graph.ProductTextHit{top, bottom}}, nil
+			return graph.ProductTextSearchResult{
+				Hits: []graph.ProductTextHit{top, bottom}, Partial: true, CandidatesTruncated: true,
+			}, nil
 		},
 	}
 	for i := range 100 {
@@ -385,11 +458,15 @@ func TestAgentSearchMeaningFitsEncodedMixedResult(t *testing.T) {
 	if len(raw) > toolResultCap || len(out.Hits) < 3 || out.HitsOmitted <= 0 || len(out.Hits)+out.HitsOmitted != 100 {
 		t.Fatalf("got %d encoded bytes, %d hits, %d omitted", len(raw), len(out.Hits), out.HitsOmitted)
 	}
+	if !out.MeaningPartial || !out.MeaningTruncated {
+		t.Errorf("fitted result lost completeness flags: meaning_partial=%t meaning_truncated=%t", out.MeaningPartial, out.MeaningTruncated)
+	}
 	if h := out.Hits[0]; h.ID != "t4-title" || h.Match != "title" || h.ProductID != "t4.test:1" {
 		t.Errorf("title lost essential fields: %+v", h)
 	}
 	if h := out.Hits[1]; h.ID != "t4-meaning" || h.Match != "meaning" || h.ProductID != "t4.test:t4-meaning" ||
-		h.Key != "material" || h.Checked == nil || !*h.Checked || h.Excerpt != strings.Repeat("<", 160) {
+		h.Key != "material" || h.Checked == nil || !*h.Checked || h.Excerpt != strings.Repeat("<", 160) ||
+		h.ExcerptCut == nil || !*h.ExcerptCut || h.TextTruncated == nil || !*h.TextTruncated {
 		t.Errorf("meaning hit lost essential fields: %+v", h)
 	}
 	passage := false
