@@ -18,6 +18,7 @@ type ProductSnapshotInput struct {
 	Store, Release string
 	Seq            int64
 	AllowShrink    bool
+	TextsOnly      bool
 }
 
 // ImportProductSnapshot projects a preflighted, rewound input against an
@@ -117,6 +118,8 @@ RETURN s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
     coalesce(s.wiped_seq, 0) AS wiped_seq, coalesce(s.snapshot_seq, 0) AS snapshot_seq,
     s.snapshot_digest AS digest, s.release_id AS release, s.prop_bytes AS prop_bytes,
     coalesce(s.product_count, 0) AS products, coalesce(s.edge_count, 0) AS edges,
+    s.text_version AS text_version, coalesce(s.text_count, -1) AS text_count,
+    coalesce(s.text_edge_count, -1) AS text_edge_count, coalesce(s.text_bytes, -1) AS text_bytes,
     EXISTS { MATCH (p:Product {store:$store}) WHERE p.prop_bytes IS NULL } AS missing_product_bytes,
     EXISTS { MATCH (:Domain {id:$domain}) } AS domain_exists`, params)
 	if err != nil {
@@ -140,7 +143,7 @@ RETURN s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
 	}
 	report.PreviousProductCount = getInt(store, "products")
 	shrink := int64(len(batch.products))*10 < int64(report.PreviousProductCount)*9
-	if shrink && !input.AllowShrink {
+	if shrink && !input.AllowShrink && !input.TextsOnly {
 		return fmt.Errorf("%w: snapshot would shrink from %d to %d products by more than 10%%; use -allow-shrink to approve",
 			ErrProductData, report.PreviousProductCount, len(batch.products))
 	}
@@ -152,20 +155,37 @@ RETURN s.domain AS domain, coalesce(s.seen_seq, s.snapshot_seq, 0) AS seen_seq,
 	}
 	unchanged := getString(store, "digest") == report.SnapshotDigest && getString(store, "release") == input.Release &&
 		seq > wiped && report.PreviousProductCount == len(batch.products) && getInt(store, "edges") == len(batch.edges)
+	if input.TextsOnly && !unchanged {
+		return fmt.Errorf("%w: -texts-only requires an unchanged snapshot for store %q; the live store does not match this snapshot",
+			ErrProductData, input.Store)
+	}
+	textAction := "unchanged"
 	if !unchanged {
 		if err := txReplaceProducts(ctx, tx, params, batch); err != nil {
 			return err
 		}
-	} else if bytes, _ := store.Get("prop_bytes"); bytes == nil || getBool(store, "missing_product_bytes") {
+		textAction = "written"
+	} else if bytes, _ := store.Get("prop_bytes"); !input.TextsOnly && (bytes == nil || getBool(store, "missing_product_bytes")) {
 		if err := txBackfillProductBytes(ctx, tx, batch.products); err != nil {
 			return err
 		}
 	}
-	params["act"], _ = pointer[0].Get("activation_seq")
-	if err := txRun(ctx, tx, `MATCH (s:ProductStore {store:$store})
+	if unchanged && (getInt(store, "text_version") != productTextVersion || getInt(store, "text_count") != report.TextCount ||
+		getInt(store, "text_edge_count") != report.TextEdgeCount || getInt(store, "text_bytes") != report.TextBytes) {
+		textAction = "materialized"
+	}
+	if textAction != "unchanged" {
+		if err := txWriteSnapshotTexts(ctx, tx, input.Store, batch.texts, unchanged); err != nil {
+			return err
+		}
+	}
+	if !input.TextsOnly {
+		params["act"], _ = pointer[0].Get("activation_seq")
+		if err := txRun(ctx, tx, `MATCH (s:ProductStore {store:$store})
 SET s.materialized_activation_seq=$act, s.prop_bytes=$bytes,
     s.last_event_op=null, s.last_event_product_id=null, s.last_event_seq=null`, params); err != nil {
-		return err
+			return err
+		}
 	}
 	// The transaction retains its write conflict with activation. Restore the
 	// pointer's prior state on commit, including an originally absent property.
@@ -175,6 +195,7 @@ SET s.materialized_activation_seq=$act, s.prop_bytes=$bytes,
 	}
 	report.Status = "imported"
 	report.ShrinkAllowed = shrink
+	report.TextAction = textAction
 	if unchanged {
 		report.Status = "unchanged"
 	}
@@ -264,6 +285,7 @@ MATCH (s:ProductStore {store:$store})
 WHERE s.domain IS NOT NULL
 SET s.wiped_seq=coalesce(s.seen_seq, s.snapshot_seq, 0), s.product_count=0, s.edge_count=0,
     s.snapshot_digest=null, s.release_id=null, s.imported_at=null, s.prop_bytes=0,
+    s.text_version=null, s.text_count=0, s.text_edge_count=0, s.text_bytes=0,
     s.materialized_activation_seq=null, s.last_event_op=null, s.last_event_product_id=null, s.last_event_seq=null
 RETURN s.store`, params)
 		if err != nil {
@@ -272,7 +294,10 @@ RETURN s.store`, params)
 		if len(rows) == 0 {
 			return fmt.Errorf("%w: store %q has no binding", ErrProductData, store)
 		}
-		return txRun(ctx, tx, deleteStoreProducts, params)
+		if err := txRun(ctx, tx, deleteStoreProducts, params); err != nil {
+			return err
+		}
+		return txRun(ctx, tx, `MATCH (n:ProductText {store:$store}) DETACH DELETE n`, params)
 	})
 }
 

@@ -201,6 +201,7 @@ func TestProductsRunbook(t *testing.T) {
 		wideID, wideRev = r.activate(t, frozen, runbookStore)
 		r.importSnapshot(t, wideID, runbookStore, 1, recordsFile, "imported", runbookProductCount, runbookEdgeCount, 1)
 		runbookEqualJSONL(t, r.readProducts(t, wideID, wideRev, runbookStore).projected, full)
+		r.assertProductTexts(t, runbookStore, records)
 		t.Logf("read back %d products and %d observations byte-equal to (a)", runbookProductCount, runbookEdgeCount)
 	}) {
 		return
@@ -220,7 +221,7 @@ func TestProductsRunbook(t *testing.T) {
 			t.Fatalf("domain binding guards: %v", guards)
 		}
 		project := func(labels []any, props map[string]any) bool {
-			for _, label := range []string{"Product", "ProductRef", "ProductStore", "ProductRelease", "FeatureRev", "FeatureRegistry"} {
+			for _, label := range []string{"Product", "ProductRef", "ProductStore", "ProductRelease", "FeatureRev", "FeatureRegistry", "ProductText", "TextVec"} {
 				if slices.Contains(labels, any(label)) {
 					return false
 				}
@@ -271,6 +272,7 @@ func TestProductsRunbook(t *testing.T) {
 		after := graphtest.Snapshot(t)
 		actual := r.readProducts(t, wideID, wideRev, runbookStore)
 		runbookEqualJSONL(t, actual.projected, expected)
+		textFields := r.assertProductTexts(t, runbookStore, shrunkRecords)
 		maps.DeleteFunc(beforeShrink.properties, func(key runbookRowKey, _ map[string]any) bool { return removed[key.id] })
 		for key, props := range beforeShrink.properties {
 			if !reflect.DeepEqual(props, actual.properties[key]) {
@@ -278,11 +280,12 @@ func TestProductsRunbook(t *testing.T) {
 			}
 		}
 
-		// Replacement allocates new Memgraph IDs. The read-back above checks the
-		// labels, properties and relationships of all products by logical key.
-		// Compare the rest of the full snapshot by physical ID, including schema.
+		// Replacement changes physical IDs for products, edges and some text nodes.
+		// The read-backs above check these by logical key. Compare the rest of the
+		// full snapshot by physical ID, including schema.
 		keep := func(labels []any, props map[string]any) bool {
-			return !slices.Contains(labels, any("Product")) || props["store"] != runbookStore
+			return props["store"] != runbookStore ||
+				!(slices.Contains(labels, any("Product")) || slices.Contains(labels, any("ProductText")))
 		}
 		isStore := func(labels []any, props map[string]any) bool {
 			return slices.Contains(labels, any("ProductStore")) && props["store"] == runbookStore
@@ -294,7 +297,7 @@ func TestProductsRunbook(t *testing.T) {
 				propertyBytes += props["prop_bytes"].(int64)
 			}
 		}
-		after = after.WithoutRelationshipType("HAS_FEATURE").ProjectNodes(func(labels []any, props map[string]any) bool {
+		after = after.WithoutRelationshipType("HAS_FEATURE").WithoutRelationshipType("HAS_TEXT").ProjectNodes(func(labels []any, props map[string]any) bool {
 			if isStore(labels, props) {
 				importedAt, _ = props["imported_at"].(string)
 			}
@@ -305,12 +308,13 @@ func TestProductsRunbook(t *testing.T) {
 			t.Fatalf("ProductStore imported_at = %q, want UTC import timestamp between %s and %s", importedAt, started.UTC(), finished.UTC())
 		}
 		digest := productFixtureDigest(string(shrunkRecords))
-		before.WithoutRelationshipType("HAS_FEATURE").ProjectNodes(func(labels []any, props map[string]any) bool {
+		before.WithoutRelationshipType("HAS_FEATURE").WithoutRelationshipType("HAS_TEXT").ProjectNodes(func(labels []any, props map[string]any) bool {
 			if isStore(labels, props) {
 				props["product_count"], props["edge_count"] = int64(products), int64(edges)
 				props["seen_seq"], props["snapshot_seq"] = int64(3), int64(3)
 				props["snapshot_digest"], props["imported_at"] = digest, importedAt
 				props["prop_bytes"] = propertyBytes
+				maps.Copy(props, textFields)
 			}
 			return keep(labels, props)
 		}).AssertEqual(t, after, "shrink snapshot outside rebuilt product records and ProductStore watermark")
@@ -677,14 +681,14 @@ func (r *productsRunbook) readProducts(t *testing.T, release, rev string, stores
 		records = append(records, projection{key, row})
 	}
 	for _, row := range r.query(t, `MATCH (p:Product)
-		RETURN properties(p), labels(p), EXISTS { MATCH (p)-[r]-() WHERE type(r) <> 'HAS_FEATURE' }`, nil) {
+		RETURN properties(p), labels(p), EXISTS { MATCH (p)-[r]-() WHERE NOT type(r) IN ['HAS_FEATURE', 'HAS_TEXT'] }`, nil) {
 		props := row.Values[0].(map[string]any)
 		id, store := props["product_id"].(string), props["store"].(string)
 		if !slices.Contains(stores, store) || !strings.HasPrefix(id, store+":") || props["domain"] != runbookDomain {
 			t.Fatalf("unexpected store/domain for product %s: %s/%v", id, store, props["domain"])
 		}
 		if !reflect.DeepEqual(row.Values[1], []any{"Product"}) || row.Values[2] != false {
-			t.Fatalf("unexpected labels or non-feature relationships for product %s: %v", id, row.Values[1:])
+			t.Fatalf("unexpected labels or relationships other than HAS_FEATURE/HAS_TEXT for product %s: %v", id, row.Values[1:])
 		}
 		record := map[string]any{"type": "product"}
 		for _, key := range strings.Fields("brand category link product_id product_type store subcategory title") {
@@ -737,6 +741,81 @@ func (r *productsRunbook) readProducts(t *testing.T, release, rev string, stores
 	}
 	graph.projected = output.Bytes()
 	return graph
+}
+
+func (r *productsRunbook) assertProductTexts(t *testing.T, store string, records []byte) map[string]any {
+	t.Helper()
+	source, err := productobs.ReadRecords(bytes.NewReader(records))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type textEdge struct {
+		productID string
+		productobs.ProductText
+	}
+	expected := make(map[textEdge]struct{})
+	distinctTexts := make(map[string]struct{})
+	var textBytes int64
+	for _, record := range source {
+		texts, _ := productobs.ProductTexts(record)
+		for _, text := range texts {
+			expected[textEdge{record.ProductID, text}] = struct{}{}
+			distinctTexts[text.Text] = struct{}{}
+			textBytes += int64(len(text.Key))
+		}
+	}
+	for text := range distinctTexts {
+		textBytes += int64(len(text))
+	}
+	textFields := map[string]any{
+		"text_version": int64(1), "text_count": int64(len(distinctTexts)),
+		"text_edge_count": int64(len(expected)), "text_bytes": textBytes,
+	}
+
+	// Read all HAS_TEXT edges so wrong labels, direction or store cannot hide.
+	rows := r.query(t, `MATCH (p)-[e:HAS_TEXT]->(n)
+		RETURN p:Product, p.store, n:ProductText, n.store, p.product_id, e.key, n.text, e.truncated, id(n)`, nil)
+	if len(rows) != len(expected) {
+		t.Fatalf("HAS_TEXT count = %d, want %d", len(rows), len(expected))
+	}
+	linked := make(map[int64]struct{}, len(distinctTexts))
+	for _, row := range rows {
+		v := row.Values
+		productID, productOK := v[4].(string)
+		key, keyOK := v[5].(string)
+		text, textOK := v[6].(string)
+		truncated, truncatedOK := v[7].(bool)
+		if v[0] != true || v[1] != store || v[2] != true || v[3] != store ||
+			!productOK || !keyOK || !textOK || !truncatedOK {
+			t.Fatalf("invalid HAS_TEXT endpoints or properties: %v", v)
+		}
+		edge := textEdge{productID, productobs.ProductText{Key: key, Text: text, Truncated: truncated}}
+		if _, ok := expected[edge]; !ok {
+			t.Fatalf("unexpected or duplicate HAS_TEXT tuple: %+v", edge)
+		}
+		delete(expected, edge)
+		linked[v[8].(int64)] = struct{}{}
+	}
+	params := map[string]any{"store": store}
+	nodes := r.query(t, `MATCH (n:ProductText {store:$store}) RETURN count(n)`, params)[0].Values[0].(int64)
+	if nodes != int64(len(linked)) {
+		t.Fatalf("store %s has %d orphaned ProductText nodes (%d total, %d linked)", store, nodes-int64(len(linked)), nodes, len(linked))
+	}
+	if nodes != int64(len(distinctTexts)) {
+		t.Fatalf("ProductText count = %d, want %d", nodes, len(distinctTexts))
+	}
+	storeRows := r.query(t, `MATCH (s:ProductStore {store:$store}) RETURN properties(s)`, params)
+	if len(storeRows) != 1 {
+		t.Fatalf("ProductStore count = %d for %s, want 1", len(storeRows), store)
+	}
+	props := storeRows[0].Values[0].(map[string]any)
+	for field, want := range textFields {
+		if got := props[field]; got != want {
+			t.Errorf("ProductStore %s = %v, want %v", field, got, want)
+		}
+	}
+	t.Logf("read back %d ProductText nodes and %d HAS_TEXT edges with exact tuples, %d bytes and no orphans", nodes, len(rows), textBytes)
+	return textFields
 }
 
 type runbookMeasurements struct {
