@@ -81,6 +81,9 @@ func seedProductTextConflict(t *testing.T, uri string) map[string]any {
 	t.Helper()
 	prefix := fmt.Sprintf("t1a-%d-", time.Now().UnixNano())
 	t.Cleanup(func() {
+		// Commit the removal before deleting vertices. Later tests create
+		// another vector index on this label in the same database.
+		rawRun(t, uri, fmt.Sprintf(`MATCH (v:TextVec) WHERE v.id STARTS WITH '%s' SET v.embedding = null`, prefix))
 		rawRun(t, uri, fmt.Sprintf(`MATCH (n)
 WHERE (n:Product OR n:ProductText OR n:TextVec) AND n.id STARTS WITH '%s'
 DETACH DELETE n`, prefix))

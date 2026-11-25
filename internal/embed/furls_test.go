@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,61 @@ import (
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 )
+
+func TestFurlsEmbedBatchOnce(t *testing.T) {
+	var requests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprintf(w, `{"results":[{"id":%q,"error_code":"UPSTREAM_ERROR","error":"failed"},{"id":%q,"embedding":[1,2]}]}`,
+			furlsTestEntryID("beta"), furlsTestEntryID("alpha"))
+	}))
+	defer ts.Close()
+	cfg := furlsConfig(ts.URL)
+	cfg.Embedder.BatchSize = 2
+	f := NewFurls(cfg)
+	if _, err := f.EmbedBatchOnce(t.Context(), []string{"a", "b", "c"}); err == nil || requests.Load() != 0 {
+		t.Fatalf("oversize batch: err=%v, requests=%d", err, requests.Load())
+	}
+	results, err := f.EmbedBatchOnce(t.Context(), []string{"alpha", "beta"})
+	if err != nil || len(results) != 2 || requests.Load() != 1 {
+		t.Fatalf("results=%+v, err=%v, requests=%d", results, err, requests.Load())
+	}
+	if v := results[0].Embedding; len(v) != 2 || v[0] != 1 || results[1].ErrorCode != "UPSTREAM_ERROR" || results[1].Embedding != nil {
+		t.Fatalf("unaligned results: %+v", results)
+	}
+	for _, size := range []int{0, 80} {
+		cfg.Embedder.BatchSize = size
+		if _, err := NewFurls(cfg).EmbedBatchOnce(t.Context(), make([]string, 33)); err == nil {
+			t.Errorf("accepted 33 entries at BatchSize=%d", size)
+		}
+	}
+}
+
+func TestFurlsEmbedBatchOnceTypedErrors(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusTooManyRequests, http.StatusTemporaryRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var requests atomic.Int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Location", "/again")
+				w.WriteHeader(status)
+			}))
+			defer ts.Close()
+			_, err := NewFurls(furlsConfig(ts.URL)).EmbedBatchOnce(t.Context(), []string{"t2-text"})
+			var httpErr HTTPError
+			if !errors.As(err, &httpErr) || httpErr.Status != status || requests.Load() != 1 ||
+				errors.Is(err, ErrRateLimited) != (status == http.StatusTooManyRequests) {
+				t.Errorf("status %d: err=%v, requests=%d", status, err, requests.Load())
+			}
+		})
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	ts.Close()
+	_, err := NewFurls(furlsConfig(ts.URL)).EmbedBatchOnce(t.Context(), []string{"t2-text"})
+	if !errors.Is(err, ErrTransport) {
+		t.Errorf("closed endpoint: %v", err)
+	}
+}
 
 // furlsTestEntryID mirrors the provider's content-derived entry id: the
 // embeddings service caches by content hash, so ids are stable per text.

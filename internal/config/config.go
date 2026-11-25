@@ -25,19 +25,20 @@ import (
 
 // Config is the root configuration.
 type Config struct {
-	Memgraph  MemgraphConfig  `yaml:"memgraph"`
-	Server    ServerConfig    `yaml:"server"`
-	Extractor ExtractorConfig `yaml:"extractor"`
-	Embedder  EmbedderConfig  `yaml:"embedder"`
-	Converter ConverterConfig `yaml:"converter"`
-	Judge     JudgeConfig     `yaml:"judge"`
-	GCP       GCPConfig       `yaml:"gcp"`
-	Facts     FactsConfig     `yaml:"facts"`
-	Domain    DomainConfig    `yaml:"domain"`
-	Agent     AgentConfig     `yaml:"agent"`
-	Ingest    IngestConfig    `yaml:"ingest"`
-	Labels    LabelsConfig    `yaml:"labels"`
-	Limits    LimitsConfig    `yaml:"limits"`
+	Memgraph    MemgraphConfig    `yaml:"memgraph"`
+	Server      ServerConfig      `yaml:"server"`
+	Extractor   ExtractorConfig   `yaml:"extractor"`
+	Embedder    EmbedderConfig    `yaml:"embedder"`
+	ProductText ProductTextConfig `yaml:"product_text"`
+	Converter   ConverterConfig   `yaml:"converter"`
+	Judge       JudgeConfig       `yaml:"judge"`
+	GCP         GCPConfig         `yaml:"gcp"`
+	Facts       FactsConfig       `yaml:"facts"`
+	Domain      DomainConfig      `yaml:"domain"`
+	Agent       AgentConfig       `yaml:"agent"`
+	Ingest      IngestConfig      `yaml:"ingest"`
+	Labels      LabelsConfig      `yaml:"labels"`
+	Limits      LimitsConfig      `yaml:"limits"`
 }
 
 // MemgraphConfig points at the Memgraph instance.
@@ -90,6 +91,15 @@ type EmbedderConfig struct {
 	QueryFURL   string `yaml:"query_furl"`   // furls: the embed_query Function URL
 	ProductFURL string `yaml:"product_furl"` // furls: the embed_product Function URL
 	BatchSize   int    `yaml:"batch_size"`   // furls: entries per request (0 = one request)
+}
+
+// ProductTextConfig controls product-value meaning search and its backfill.
+type ProductTextConfig struct {
+	Search         bool          `yaml:"search"`
+	Embed          string        `yaml:"embed"` // run | pause
+	EmbedPause     time.Duration `yaml:"embed_pause"`
+	EmbedMaxIngest int           `yaml:"embed_max_ingest"`
+	MaxVectors     int           `yaml:"max_vectors"`
 }
 
 // ConverterConfig configures the optional high-quality document converter
@@ -217,6 +227,12 @@ func defaults() Config {
 			BaseURL: "https://api.openai.com/v1",
 			Dim:     768,
 		},
+		ProductText: ProductTextConfig{
+			Embed:          "run",
+			EmbedPause:     250 * time.Millisecond,
+			EmbedMaxIngest: 2,
+			MaxVectors:     65_536,
+		},
 		Converter: ConverterConfig{
 			Mode:          "docling",
 			URL:           "http://localhost:5001",
@@ -283,6 +299,9 @@ func Load(path string) (Config, error) {
 		}
 	}
 	if err := applyEnv(&cfg, os.LookupEnv); err != nil {
+		return Config{}, err
+	}
+	if err := cfg.ProductText.validate(); err != nil {
 		return Config{}, err
 	}
 	if err := cfg.validateLLM(); err != nil {
@@ -354,7 +373,14 @@ func Load(path string) (Config, error) {
 // GKG_<SECTION>_<KEY>, mirroring the snake_case yaml keys, e.g.
 // GKG_SERVER_ADDR, GKG_EXTRACTOR_OPENAI_BASE_URL.
 func applyEnv(cfg *Config, lookup func(string) (string, bool)) error {
-	return walkEnv(reflect.ValueOf(cfg).Elem(), "GKG", lookup)
+	return walkEnv(reflect.ValueOf(cfg).Elem(), "GKG", func(key string) (string, bool) {
+		val, ok := lookup(key)
+		// The rollout and rollback settings spell this boolean on and off.
+		if key == "GKG_PRODUCT_TEXT_SEARCH" && (val == "on" || val == "off") {
+			val = strconv.FormatBool(val == "on")
+		}
+		return val, ok
+	})
 }
 
 func walkEnv(v reflect.Value, prefix string, lookup func(string) (string, bool)) error {
@@ -405,6 +431,15 @@ func setEnvField(field reflect.Value, val string) error {
 			return err
 		}
 		field.SetInt(int64(n))
+	case reflect.Int64:
+		if field.Type() != reflect.TypeFor[time.Duration]() {
+			return fmt.Errorf("unsupported field type %s", field.Type())
+		}
+		d, err := time.ParseDuration(val)
+		if err != nil {
+			return err
+		}
+		field.SetInt(int64(d))
 	case reflect.Float64:
 		n, err := strconv.ParseFloat(val, 64)
 		if err != nil {
@@ -436,6 +471,21 @@ func setEnvField(field reflect.Value, val string) error {
 		return fmt.Errorf("unsupported field type %s", field.Type())
 	}
 	return nil
+}
+
+func (c ProductTextConfig) validate() error {
+	switch {
+	case c.Embed != "run" && c.Embed != "pause":
+		return errors.New("config: GKG_PRODUCT_TEXT_EMBED must be run or pause")
+	case c.EmbedPause < 0:
+		return errors.New("config: GKG_PRODUCT_TEXT_EMBED_PAUSE must be non-negative")
+	case c.EmbedMaxIngest < 0:
+		return errors.New("config: GKG_PRODUCT_TEXT_EMBED_MAX_INGEST must be non-negative")
+	case c.MaxVectors <= 0:
+		return errors.New("config: GKG_PRODUCT_TEXT_MAX_VECTORS must be positive")
+	default:
+		return nil
+	}
 }
 
 // upperSnake converts a Go field name to UPPER_SNAKE_CASE
