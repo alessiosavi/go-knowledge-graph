@@ -64,8 +64,14 @@ type Furls struct {
 // positive BatchSize caps the entries per request (0 = one request per
 // call, up to whatever the caller passes).
 func NewFurls(cfg config.Config) *Furls {
+	return NewFurlsWithProductTransport(cfg, nil)
+}
+
+// NewFurlsWithProductTransport uses transport for product requests.
+// A nil transport uses http.DefaultTransport.
+func NewFurlsWithProductTransport(cfg config.Config, transport http.RoundTripper) *Furls {
 	return &Furls{
-		productClient: &http.Client{Timeout: furlsProductTimeout},
+		productClient: &http.Client{Timeout: furlsProductTimeout, Transport: transport},
 		queryClient:   &http.Client{Timeout: furlsQueryTimeout},
 		productURL:    cfg.Embedder.ProductFURL,
 		queryURL:      cfg.Embedder.QueryFURL,
