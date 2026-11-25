@@ -75,14 +75,14 @@ func (p productTextProjection) counts() productTextCounts {
 // per text, which made imports and pushes grow with the whole graph.
 const deleteOrphanedStoreTextsQuery = `
 MATCH (n:ProductText {store:$store})
-WHERE NOT EXISTS { MATCH (n)<-[:HAS_TEXT]-() }
+WHERE NOT EXISTS { MATCH (n)<-[:HAS_TEXT]-(p) WHERE p:Product }
 DELETE n`
 
 const deleteOrphanedPushedTextsQuery = `
 UNWIND $ids AS id
 WITH DISTINCT id
 MATCH (n:ProductText {id:id})
-WHERE NOT EXISTS { MATCH (n)<-[:HAS_TEXT]-() }
+WHERE NOT EXISTS { MATCH (n)<-[:HAS_TEXT]-(p) WHERE p:Product }
 WITH n, n.text AS text
 DELETE n
 RETURN text`

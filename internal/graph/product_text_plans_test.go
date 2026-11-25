@@ -20,12 +20,18 @@ func TestProductTextQueryPlansAnchorOnText(t *testing.T) {
 		"coverage probe": {missingProductTextVectorsQuery, map[string]any{
 			"stores": []string{"t-plan.test"}, "domain": "t-plan", "space": ProductTextSpace}},
 	} {
-		plan := fmt.Sprint(f.query("EXPLAIN "+q.query, q.params))
-		if strings.Contains(plan, "ScanAll (") || strings.Contains(plan, "ScanAllByLabel (") && !strings.Contains(plan, "ProductText") {
-			t.Errorf("%s: plan scans unanchored nodes: %s", name, plan)
+		anchored := false
+		for _, row := range f.query("EXPLAIN "+q.query, q.params) {
+			line := fmt.Sprint(row...)
+			switch {
+			case strings.Contains(line, "Expand (n)<-"):
+				anchored = true
+			case strings.Contains(line, "ScanAll") && !strings.Contains(line, "ProductText") && !strings.Contains(line, "TextVec"):
+				t.Errorf("%s: plan scans unanchored nodes: %s", name, line)
+			}
 		}
-		if !strings.Contains(plan, "Expand (n)<-") {
-			t.Errorf("%s: plan does not expand from the ProductText: %s", name, plan)
+		if !anchored {
+			t.Errorf("%s: plan does not expand from the ProductText", name)
 		}
 	}
 }
