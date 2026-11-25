@@ -28,9 +28,15 @@ var uniqueConstraints = []struct {
 	{"FeatureRegistry", "rev"},
 	{"FeatureRev", "key"},
 	{"ProductRelease", "id"},
+	// ProductStore text projection properties are optional. Only an import
+	// sets text_version=1 to mark a complete projection. text_count counts
+	// distinct ProductText nodes and text_edge_count counts HAS_TEXT edges.
+	// text_bytes sums the bytes of those distinct texts and all edge keys.
 	{"ProductStore", "store"},
 	{"Product", "id"},
 	{"ProductRef", "id"},
+	{"ProductText", "id"},
+	{"TextVec", "id"},
 }
 
 // secondaryIndexes are non-unique label-property indexes bootstrapped for
@@ -84,6 +90,12 @@ var secondaryIndexes = []struct {
 	{"ProductRef", []string{"id"}},
 	{"Product", []string{"store", "product_id"}},
 	{"Product", []string{"domain"}},
+	{"ProductText", []string{"id"}},
+	{"ProductText", []string{"vec_id"}},
+	{"ProductText", []string{"store"}},
+	{"TextVec", []string{"id"}},
+	{"TextVec", []string{"vec_id"}},
+	{"TextVec", []string{"space"}},
 }
 
 // textIndexes are the Tantivy text indexes backing search.Query.

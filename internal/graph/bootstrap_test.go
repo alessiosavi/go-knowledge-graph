@@ -423,6 +423,7 @@ func TestBootstrapProductSchema(t *testing.T) {
 	for _, key := range []struct{ label, prop string }{
 		{"FeatureRegistry", "rev"}, {"FeatureRev", "key"}, {"ProductRelease", "id"},
 		{"ProductStore", "store"}, {"Product", "id"}, {"ProductRef", "id"},
+		{"ProductText", "id"}, {"TextVec", "id"},
 	} {
 		if !rawUniqueConstraintExists(t, uri, key.label, key.prop) {
 			t.Errorf("missing unique constraint %s(%s)", key.label, key.prop)
@@ -439,11 +440,37 @@ func TestBootstrapProductSchema(t *testing.T) {
 		{"Product", []string{"domain"}},
 		{"FeatureRev", []string{"id"}},
 		{"ProductStore", []string{"domain"}},
+		{"ProductText", []string{"vec_id"}},
+		{"ProductText", []string{"store"}},
+		{"TextVec", []string{"vec_id"}},
+		{"TextVec", []string{"space"}},
 	} {
 		if !rawIndexExists(t, uri, index.label, index.props...) {
 			t.Errorf("missing index %s(%v)", index.label, index.props)
 		}
 	}
+	if rawVectorIndexExists(t, uri, "TextVec") {
+		t.Fatal("unexpected TextVec vector index after Bootstrap")
+	}
+	t.Run("detects_TextVec_vector_index", func(t *testing.T) {
+		const index = "bootstrap_text_vec_probe"
+		rawRun(t, uri, "CREATE VECTOR INDEX "+index+` ON :TextVec(embedding)
+WITH CONFIG {"dimension": 768, "capacity": 16, "metric": "cos"}`)
+		t.Cleanup(func() { rawRun(t, uri, "DROP VECTOR INDEX "+index) })
+		if !rawVectorIndexExists(t, uri, "TextVec") {
+			t.Fatal("failed to detect the test-created TextVec vector index")
+		}
+	})
+}
+
+func rawVectorIndexExists(t *testing.T, uri, label string) bool {
+	t.Helper()
+	for _, record := range rawRecords(t, uri, "SHOW VECTOR INDEX INFO") {
+		if got, _ := record.Get("label"); strings.TrimPrefix(fmt.Sprint(got), ":") == label {
+			return true
+		}
+	}
+	return false
 }
 
 func rawNamedTextIndex(t *testing.T, uri, name string) bool {
