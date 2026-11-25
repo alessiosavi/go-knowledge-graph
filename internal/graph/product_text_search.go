@@ -85,8 +85,8 @@ WITH n, n.vec_id AS vecID
 OPTIONAL MATCH (v:TextVec {vec_id:vecID})
 WHERE v.space = $space AND v.embedding IS NOT NULL
 WITH n, v WHERE v IS NULL
-MATCH (n)<-[:HAS_TEXT]-(p:Product)
-WHERE p.store = n.store AND ($domain = '' OR p.domain = $domain)
+MATCH (n)<-[:HAS_TEXT]-(p)
+WHERE p:Product AND p.store = n.store AND ($domain = '' OR p.domain = $domain)
 RETURN 1 AS missing LIMIT 1`
 
 type productTextCoverageKey struct {
