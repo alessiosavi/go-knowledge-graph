@@ -858,7 +858,7 @@ commands:
       emit canonical product observations
   products release create|activate|list
       manage product releases in Memgraph
-  products import -store S -release ID -snapshot-seq N FILE.jsonl -report OUT.json [-allow-shrink]
+  products import -store S -release ID -snapshot-seq N FILE.jsonl -report OUT.json [-allow-shrink] [-texts-only]
   products push FILE.jsonl
   products remove -product P -seq N
   products pages-report [-store S] [-json]  count associated pages for materialized products
