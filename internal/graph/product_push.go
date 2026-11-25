@@ -51,6 +51,7 @@ type preparedProductEvent struct {
 	activation      int64
 	props           map[string]any
 	edges           []map[string]any
+	texts           productTextProjection
 }
 
 // PushProduct validates and projects one A1 record, then applies it at seq.
@@ -148,6 +149,7 @@ RETURN m.value AS release, m.activation_seq AS activation_seq`, nil)
 		prepared.edges = append(prepared.edges, edge)
 	}
 	prepared.props["prop_bytes"] = int64(propBytes)
+	prepared.texts.add(*record, id)
 	return prepared, nil
 }
 
@@ -216,7 +218,8 @@ WHERE s.domain IS NOT NULL AND s.domain=$domain
 WITH s, coalesce(s.seen_seq,s.snapshot_seq,0) AS seen, coalesce(s.wiped_seq,0) AS wiped,
      s.last_event_op AS last_op, s.last_event_product_id AS last_product, s.last_event_seq AS last_seq
 SET s.seen_seq=$seq
-RETURN s.domain AS domain, s.materialized_activation_seq AS materialized, seen, wiped, last_op, last_product, last_seq`, params)
+RETURN s.domain AS domain, s.materialized_activation_seq AS materialized, seen, wiped, last_op, last_product, last_seq,
+    s.text_count AS text_count, s.text_edge_count AS text_edge_count, s.text_bytes AS text_bytes`, params)
 	if err != nil {
 		return ProductMutationResult{}, err
 	}
@@ -233,6 +236,10 @@ RETURN s.domain AS domain, s.materialized_activation_seq AS materialized, seen, 
 		result.Status = status
 		return result, nil
 	}
+	previous, err := txPreviousProductTexts(ctx, tx, id)
+	if err != nil {
+		return ProductMutationResult{}, err
+	}
 	params["domain"] = getString(store, "domain")
 	if event.op == "put" {
 		result.Status, err = txUpsertPushedProduct(ctx, tx, params, event)
@@ -242,7 +249,12 @@ RETURN s.domain AS domain, s.materialized_activation_seq AS materialized, seen, 
 	if err != nil {
 		return ProductMutationResult{}, err
 	}
-	if err := txFinishProductEvent(ctx, tx, params); err != nil {
+	counts := productTextCounts{count: getInt(store, "text_count"), edges: getInt(store, "text_edge_count"), bytes: getInt(store, "text_bytes")}
+	counts, err = txUpdatePushedProductTexts(ctx, tx, event.store, counts, previous, event.texts)
+	if err != nil {
+		return ProductMutationResult{}, err
+	}
+	if err := txFinishProductEvent(ctx, tx, params, counts); err != nil {
 		return ProductMutationResult{}, err
 	}
 	prior, _ := pointer[0].Get("prior")
@@ -291,7 +303,7 @@ RETURN existed`, params)
 	if len(rows) != 1 {
 		return "", errors.New("expected one product after upsert")
 	}
-	if err := txRun(ctx, tx, `MATCH (:Product {id:$id})-[e:HAS_FEATURE]->() DELETE e`, params); err != nil {
+	if err := txRun(ctx, tx, `MATCH (:Product {id:$id})-[e:HAS_FEATURE|HAS_TEXT]->() DELETE e`, params); err != nil {
 		return "", err
 	}
 	if err := txCreateProductEdges(ctx, tx, event.edges); err != nil {
@@ -317,7 +329,7 @@ func txRemovePushedProduct(ctx context.Context, tx neo4j.ManagedTransaction, par
 	return "absent", nil
 }
 
-func txFinishProductEvent(ctx context.Context, tx neo4j.ManagedTransaction, params map[string]any) error {
+func txFinishProductEvent(ctx context.Context, tx neo4j.ManagedTransaction, params map[string]any, texts productTextCounts) error {
 	rows, err := txRows(ctx, tx, `
 MATCH (p:Product {store:$store})
 OPTIONAL MATCH (p)-[e:HAS_FEATURE]->()
@@ -335,16 +347,21 @@ RETURN count(p) AS products, sum(edges) AS edges, sum(p.prop_bytes) AS bytes,
 	if products > productobs.MaxImportProducts || edges > maxProductImportEdges || bytes > maxProductImportPropBytes {
 		return &ProductMutationError{Status: "store_cap"}
 	}
+	if err := texts.checkCap(); err != nil {
+		return &ProductMutationError{Status: "store_cap", cause: err}
+	}
 	if getInt(row, "tracked") != products {
 		return &ProductMutationError{Status: "reimport_required", cause: fmt.Errorf(
 			"missing projected product bytes. Re-import the store at a sequence above its seen_seq with gkg products import -store %q -snapshot-seq N -release ACTIVE_RELEASE -report OUT.json FILE.jsonl",
 			params["store"])}
 	}
 	params["products"], params["edges"], params["bytes"] = int64(products), int64(edges), int64(bytes)
+	texts.setParams(params)
 	params["at"] = time.Now().UTC().Format(timeLayout)
 	return txRun(ctx, tx, `
 MATCH (s:ProductStore {store:$store})
 SET s.snapshot_digest=null, s.release_id=$release, s.product_count=$products, s.edge_count=$edges,
+    s.text_count=$text_count, s.text_edge_count=$text_edge_count, s.text_bytes=$text_bytes,
     s.prop_bytes=$bytes, s.pushed_at=$at, s.last_event_op=$op, s.last_event_product_id=$product,
     s.last_event_seq=$seq`, params)
 }

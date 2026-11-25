@@ -1531,8 +1531,8 @@ gkg products unbind example.test
 the active release. Memgraph's `--query-execution-timeout-sec` must be 0
 (unlimited) or at least 300 seconds. The pinned Memgraph 3.14.0 image defaults
 to 600 seconds. The CLI checks the input before writing and replaces all
-products, feature edges and the snapshot watermark in one transaction. A
-rejected row refuses the whole snapshot. Limits are
+products, feature edges, the text projection and the snapshot watermark in
+one transaction. A rejected row refuses the whole snapshot. Limits are
 10,000 product rows, 60,000 released edges, 64 KiB per row, 512 attributes per
 row and 64 MiB of replacement properties. Each released observation may have
 up to 64 items, with up to 1 KiB in its raw value and in each item. Unmapped
@@ -1540,16 +1540,35 @@ and unreleased attributes count toward the row and attribute limits.
 The `title`, `brand`, `category`, `subcategory`, `product_type` and `link`
 fields allow up to 4 KiB each. The `product_id` allows up to 1 KiB.
 Property bytes include names and stored values, including folded values.
+The text projection has two separate per-store budgets of 200,000 text edges
+and 64 MiB for distinct texts plus the raw source keys on their edges.
 
 Use a positive sequence strictly above the last admitted sequence and any
 wipe sequence. A byte-identical file for the same release prints `unchanged`
 when that materialization is still intact. Every successful import advances
-`seen_seq`, stamps the current activation and clears the last push or
-delete marker.
+`seen_seq`. Standard imports also stamp the current activation and clear the
+last push or delete marker.
 A drop of more than 10% in the product count requires `-allow-shrink`.
+
+Use `-texts-only` to backfill or repair texts for the live snapshot. The import
+transaction checks that the file digest, release, and product and released
+edge counts match and that the live snapshot is newer than the wipe sequence.
+A mismatch rejects the import. A successful run advances `seen_seq` and
+updates the text projection if needed, preserving products, feature edges
+and all other store metadata.
+
 The private JSON report records the requested and previous counts, digest,
 override, rejection details, unmapped keys, conflicts and parse status counts
 by feature. Rejection and unmapped-key details are each capped at 1,000.
+It also records `text_count` (distinct texts), `text_edge_count` (links from
+products to texts), `text_bytes`, `texts_skipped` (empty or bare numeric or
+measurement values), `texts_skipped_key` (keys over 256 bytes) and
+`texts_truncated` (texts cut to the 2,048-byte limit).
+The `text_action` is `written` for a replacement snapshot, `materialized` for
+a text backfill or repair on an unchanged snapshot, or `unchanged` when the
+text version and ledger already match. The stdout summary includes
+`text_action` and `text_count`.
+
 Exit codes are 0 for success, 1 for runtime failure, 2 for incorrect usage
 and 5 for data rejection, including stale or incomplete snapshots.
 Imports serialize on the active release pointer, including imports for different
@@ -1563,9 +1582,11 @@ earlier successful imports stay committed. Use standalone `products import`
 for a JSON report or to approve a shrink.
 
 `products delete-store` is an owner-only operation. Run it with graph write
-credentials only when wiping a store is intended. It removes all products
-and edges and retains the binding, setting `wiped_seq` to `seen_seq` and the
-product and edge counts to zero. It clears `snapshot_digest`, `release_id`
+credentials only when wiping a store is intended. It removes all products,
+their edges and the store's attribute texts (`ProductText` nodes) and retains
+the binding, setting `wiped_seq` to `seen_seq`, the product and edge counts
+and the text ledger (`text_count`, `text_edge_count`, `text_bytes`) to zero
+and clearing `text_version`. It clears `snapshot_digest`, `release_id`
 and `imported_at` while retaining `snapshot_seq` and `seen_seq`. The next
 import must use a sequence higher than `wiped_seq`.
 The wipe also clears the materialization stamp and last event marker.
@@ -1586,8 +1607,11 @@ Use the complete A1 record from the normalizer, including the store and its
 full `product_id`. The ID must start with the store and a colon followed by
 a non-empty suffix. The push envelope allows 128 KiB and the embedded
 record uses the same row and projection limits as a snapshot import.
-A push replaces the product properties and released observations for that ID.
-A remove deletes that product and its edges. Remove any legacy `store:` IDs
+A push replaces the product properties, released observations and attribute
+texts (`HAS_TEXT` edges) for that ID and deletes texts no product uses any
+more. A remove deletes that product, its edges and its now-unused texts. A push
+never marks a store's text projection complete (`text_version`); only an import
+does. Remove any legacy `store:` IDs
 by omitting them from a full import.
 
 Use one increasing positive int64 sequence for all imports, pushes and
@@ -1597,14 +1621,16 @@ After any release activation, re-import **every store** at a higher sequence
 before pushing or removing products. The activation sequence is global. A
 wiped store also needs a new import before pushing or removing products.
 Each push recounts the store's products, edges and bytes inside its
-transaction, bounded by the 10,000-product and 60,000-edge caps.
+transaction, bounded by the 10,000-product and 60,000-edge caps, and updates
+the text ledger by delta, bounded by the 200,000 text-edge and 64 MiB text
+budgets.
 
 | Exit | Status | Meaning |
 | --- | --- | --- |
 | 0 | `created`, `updated`, `deleted`, `absent` | The event applied and advanced the store's sequence, including removal of an already absent product. |
 | 0 | `duplicate` | The sequence, operation and product ID match the latest event. The original write stays in place. |
 | 5 | `stale`, `seq_conflict` | The sequence is at or below the wipe floor, below the watermark, or already belongs to a different event. The error includes `seen_seq`. |
-| 5 | `release_changed`, `release_not_materialized`, `store_not_bound`, `store_cap` | Check the active release and binding, materialize the store, or reduce its size as indicated. |
+| 5 | `release_changed`, `release_not_materialized`, `store_not_bound`, `store_cap` | Check the active release and binding, materialize the store, or reduce its size as indicated. `store_cap` also covers the text budgets (200,000 text edges, 64 MiB of text per store). |
 | 5 | `retry` | A concurrent writer held a fence. Retry the same event after that write finishes. |
 | 5 | `reimport_required` | A product is missing its projected byte count. Re-import the store at a sequence above its `seen_seq`. |
 | 1 | `unknown_outcome` | The write timed out or its commit could not be confirmed. |

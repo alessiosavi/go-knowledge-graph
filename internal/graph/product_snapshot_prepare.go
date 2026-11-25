@@ -28,6 +28,13 @@ type ProductImportReport struct {
 	ProductCount         int                       `json:"product_count"`
 	EdgeCount            int                       `json:"edge_count"`
 	PropertyBytes        int                       `json:"property_bytes"`
+	TextCount            int                       `json:"text_count"`
+	TextEdgeCount        int                       `json:"text_edge_count"`
+	TextBytes            int                       `json:"text_bytes"`
+	TextsSkipped         int                       `json:"texts_skipped"`
+	TextsSkippedKey      int                       `json:"texts_skipped_key"`
+	TextsTruncated       int                       `json:"texts_truncated"`
+	TextAction           string                    `json:"text_action"`
 	PreviousProductCount int                       `json:"previous_product_count"`
 	AllowShrink          bool                      `json:"allow_shrink"`
 	ShrinkAllowed        bool                      `json:"shrink_allowed"`
@@ -62,6 +69,7 @@ func (r *ProductImportReport) RejectionError() error {
 type productReplacement struct {
 	products []map[string]any
 	edges    []map[string]any
+	texts    productTextProjection
 }
 
 func prepareProductReplacement(ctx context.Context, input ProductSnapshotInput, source io.Reader, domain, rev string,
@@ -80,6 +88,7 @@ func prepareProductReplacement(ctx context.Context, input ProductSnapshotInput, 
 			return nil
 		}
 		props := productRecordProperties(record, domain)
+		id := props["id"].(string)
 		propBytes := productPropertyBytes(props)
 		report.PropertyBytes += propBytes
 		for sourceKey := range record.Attributes {
@@ -95,7 +104,7 @@ func prepareProductReplacement(ctx context.Context, input ProductSnapshotInput, 
 				report.Reject(line, errors.New("snapshot exceeds 60,000 released edges"))
 				return report.RejectionError()
 			}
-			edge, edgeBytes := productProjectedEdge(record, obs, registry, input.Release, rev, props["id"].(string))
+			edge, edgeBytes := productProjectedEdge(record, obs, registry, input.Release, rev, id)
 			propBytes += edgeBytes
 			report.PropertyBytes += edgeBytes
 			if report.PropertyBytes > maxProductImportPropBytes {
@@ -122,6 +131,16 @@ func prepareProductReplacement(ctx context.Context, input ProductSnapshotInput, 
 		}
 		props["prop_bytes"] = int64(propBytes)
 		batch.products = append(batch.products, props)
+		stats := batch.texts.add(record, id)
+		report.TextsSkipped += stats.SkippedValues
+		report.TextsSkippedKey += stats.SkippedKeys
+		report.TextsTruncated += stats.Truncated
+		counts := batch.texts.counts()
+		report.TextCount, report.TextEdgeCount, report.TextBytes = counts.count, counts.edges, counts.bytes
+		if err := counts.checkCap(); err != nil {
+			report.Reject(line, err)
+			return report.RejectionError()
+		}
 		return nil
 	})
 	if err != nil {
