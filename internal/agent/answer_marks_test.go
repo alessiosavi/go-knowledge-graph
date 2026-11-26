@@ -62,6 +62,17 @@ func TestResolveMarksTrailingPunctuation(t *testing.T) {
 	}
 }
 
+func TestAnswerReview2_1UnterminatedPunctuationRequiresBoundary(t *testing.T) {
+	seen := newSeenIndex()
+	seen.addProduct("graph1", "shop.example:1")
+	for _, punct := range []string{".", ";", ":", "!", "?", ")"} {
+		t.Run(punct, func(t *testing.T) {
+			checkMarks(t, "[[shop.example:1"+punct+"variant", seen, nil, nil, 0, "shop.example:1"+punct+"variant")
+			checkMarks(t, "Pick [[shop.example:1"+punct+"\u00a0Next.", seen, []string{"shop.example:1"}, nil, 0, "Pick"+punct+"\u00a0Next.")
+		})
+	}
+}
+
 func TestResolveMarksTabIDByGraphID(t *testing.T) {
 	seen := newSeenIndex()
 	seen.addProduct("graph1", "shop.example:1\t2")
@@ -151,6 +162,18 @@ func TestAnswerReview5SummaryPreservesLeadingIndentation(t *testing.T) {
 		{"after CR", "Example:\r\t  [[unknown]].", "Example:\r\t  ."},
 		{"after CRLF", "Example:\r\n    [[unknown]].", "Example:\r\n    ."},
 		{"after text", "    Example [[unknown]] .", "    Example."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checkMarks(t, tc.text, nil, nil, nil, 1, tc.summary)
+		})
+	}
+}
+
+func TestAnswerReview2_2SummaryKeepsOnlyOriginalIndentation(t *testing.T) {
+	for _, tc := range []struct{ name, text, summary string }{
+		{"spaces", "  [[unknown]]  .", "  ."},
+		{"tab", "\t[[unknown]]  .", "\t."},
+		{"mixed after CRLF", "Example:\r\n\t  [[unknown]]  !", "Example:\r\n\t  !"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			checkMarks(t, tc.text, nil, nil, nil, 1, tc.summary)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -131,6 +132,25 @@ func TestAnswerReview2ReadsEntireBoundedJSONBody(t *testing.T) {
 			expectAnswerHTTP(t, rr, tc.status, tc.kind, "")
 		})
 	}
+}
+
+type unreadAnswerBody struct {
+	t *testing.T
+}
+
+func (b unreadAnswerBody) Read([]byte) (int, error) {
+	b.t.Error("body was read despite an oversized Content-Length")
+	return 0, io.EOF
+}
+
+func TestAnswerReview2_4RejectsOversizedContentLengthBeforeReading(t *testing.T) {
+	s, _ := newAnswerHTTPServer(t, &answerHTTPStore{}, 2)
+	r := httptest.NewRequest(http.MethodPost, "/v1/agent/answer", unreadAnswerBody{t: t})
+	r.Header.Set("Content-Type", "application/json")
+	r.ContentLength = responseBodyCap + 1
+	rr := httptest.NewRecorder()
+	s.AnswerHandler().ServeHTTP(rr, r)
+	expectAnswerHTTP(t, rr, http.StatusRequestEntityTooLarge, "body_too_large", "")
 }
 
 func TestAnswerDisabled501(t *testing.T) {
@@ -278,6 +298,20 @@ func TestAnswerReview4HistoryTurnRequiresTextAndRole(t *testing.T) {
 			s, _ := newAnswerHTTPServer(t, &answerHTTPStore{}, 2, contentReply("A lamp"))
 			body := `{"question":"Find lamps","domain":"catalog","context":{"history":[` + tc.turn + `]}}`
 			expectAnswerHTTP(t, postAnswer(t, s, body), tc.status, tc.kind, "")
+		})
+	}
+}
+
+func TestAnswerReview2_3RepeatedHistoryDecodesFreshTurns(t *testing.T) {
+	for _, tc := range []struct{ name, turn, detail string }{
+		{"missing text", `{"role":"assistant"}`, "context history text is required"},
+		{"missing role", `{"text":"A lamp"}`, "context history roles must be user or assistant"},
+		{"null turn", `null`, "context history roles must be user or assistant"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newAnswerHTTPServer(t, &answerHTTPStore{}, 2, contentReply("A lamp"))
+			body := `{"question":"Find lamps","domain":"catalog","context":{"history":[{"role":"user","text":"Find a lamp"}],"history":[` + tc.turn + `]}}`
+			expectAnswerHTTP(t, postAnswer(t, s, body), http.StatusBadRequest, "invalid_context", tc.detail)
 		})
 	}
 }

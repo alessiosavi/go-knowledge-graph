@@ -24,11 +24,24 @@ type answerHTTPRequest struct {
 }
 
 type answerHTTPContext struct {
-	ProductIDs []string `json:"product_ids"`
-	History    []struct {
-		Role string  `json:"role"`
-		Text *string `json:"text"` // An explicitly empty string is a valid turn.
-	} `json:"history"`
+	ProductIDs []string          `json:"product_ids"`
+	History    answerHTTPHistory `json:"history"`
+}
+
+type answerHTTPHistory []struct {
+	Role string  `json:"role"`
+	Text *string `json:"text"` // An explicitly empty string is a valid turn.
+}
+
+func (h *answerHTTPHistory) UnmarshalJSON(data []byte) error {
+	// A repeated history field must decode without reusing earlier turns.
+	type wireHistory answerHTTPHistory
+	var turns wireHistory
+	if err := json.Unmarshal(data, &turns); err != nil {
+		return err
+	}
+	*h = answerHTTPHistory(turns)
+	return nil
 }
 
 // AnswerHandler serves the domain-scoped structured answer route.
@@ -116,6 +129,10 @@ func (s *Server) answerEnabled() bool {
 }
 
 func decodeAnswerRequest(w http.ResponseWriter, r *http.Request, dst *answerHTTPRequest) bool {
+	if r.ContentLength > responseBodyCap {
+		writeAgentRequestDecodeError(w, &http.MaxBytesError{Limit: responseBodyCap})
+		return false
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, responseBodyCap)
 	// Enforce the limit on the entire body before validating its JSON.
 	body, err := io.ReadAll(r.Body)
