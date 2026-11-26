@@ -363,6 +363,7 @@ func ingestFetcher(cfg config.Config) (*ingest.Fetcher, error) {
 	}
 	return &ingest.Fetcher{
 		Proxy:        proxy,
+		FetchRetries: cfg.Ingest.FetchRetries,
 		MaxBytes:     int64(cfg.Ingest.MaxURLMB) << 20,
 		MaxRedirects: cfg.Ingest.MaxRedirects,
 		TimeoutS:     cfg.Ingest.FetchTimeoutS,

@@ -155,7 +155,9 @@ func TestFetchWithoutProxyIgnoresProxyEnvironment(t *testing.T) {
 func TestFetchProxyErrorOmitsCredentials(t *testing.T) {
 	// CONNECT rejection reason phrases are returned as transport errors by
 	// net/http, unlike status messages on a regular GET response.
+	var hits atomic.Int32
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		if r.Method != http.MethodConnect {
 			t.Errorf("proxy method = %s, want CONNECT", r.Method)
 		}
@@ -171,10 +173,11 @@ func TestFetchProxyErrorOmitsCredentials(t *testing.T) {
 		}
 	}))
 	t.Cleanup(proxy.Close)
-	f := &ingest.Fetcher{Guard: stubDialGuard{}, Proxy: mustURL(t, proxy.URL)}
+	f := &ingest.Fetcher{Guard: stubDialGuard{}, Proxy: mustURL(t, proxy.URL), FetchRetries: 3}
 	f.Proxy.User = url.UserPassword("proxy-user", "proxy-password")
 	_, err := f.Fetch(t.Context(), "https://192.0.2.1/")
-	if err == nil || strings.Contains(err.Error(), "proxy-user") || strings.Contains(err.Error(), "proxy-password") {
-		t.Fatalf("Fetch error = %v, want failure without proxy credentials", err)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 407") || strings.Contains(err.Error(), "proxy-user") ||
+		strings.Contains(err.Error(), "proxy-password") || hits.Load() != 1 {
+		t.Fatalf("Fetch error = %v, proxy hits = %d, want HTTP 407 without retry or credentials", err, hits.Load())
 	}
 }

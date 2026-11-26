@@ -207,6 +207,7 @@ type IngestConfig struct {
 	JaccardThreshold float64 `yaml:"jaccard_threshold"`
 	FetchTimeoutS    int     `yaml:"fetch_timeout_s"`
 	FetchProxy       string  `yaml:"fetch_proxy,omitempty" json:"-"`
+	FetchRetries     int     `yaml:"fetch_retries"`
 	MaxRedirects     int     `yaml:"max_redirects"`
 }
 
@@ -335,6 +336,7 @@ func defaults() Config {
 			ChunkDedup:       "near",
 			JaccardThreshold: 0.85,
 			FetchTimeoutS:    30,
+			FetchRetries:     3,
 			MaxRedirects:     5,
 		},
 		Labels: LabelsConfig{PresetsDir: "labels"},
@@ -363,6 +365,9 @@ func Load(path string) (Config, error) {
 	}
 	if _, err := cfg.Ingest.FetchProxyURL(); err != nil {
 		return Config{}, err
+	}
+	if cfg.Ingest.FetchRetries < 0 || cfg.Ingest.FetchRetries > 10 {
+		return Config{}, errors.New("config: GKG_INGEST_FETCH_RETRIES must be between 0 and 10")
 	}
 	if err := cfg.ProductText.validate(); err != nil {
 		return Config{}, err

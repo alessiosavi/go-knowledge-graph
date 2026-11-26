@@ -126,7 +126,19 @@ fetches through one trusted HTTP proxy (`http://` URLs only), for example to fet
 regional content. The URL can carry credentials in its userinfo. Empty or unset
 uses direct fetches. Ingest ignores `HTTP_PROXY` and `HTTPS_PROXY`. The SSRF
 guard checks each destination URL and the proxy's public dial address. The
-proxy controls the connection to the destination.
+proxy controls the connection to the destination. A proxied fetch must land on
+the requested host and escaped path. Host case, one leading `www.`, ports 80
+and 443, one trailing slash, scheme, query, and fragment are ignored. An empty
+path is treated as `/`.
+
+`GKG_INGEST_FETCH_RETRIES` (`ingest.fetch_retries` in YAML) sets the number of
+additional proxied attempts (0–10, default 3). Wrong-page landings, transport and
+body read errors, and HTTP 429, 500, 502, 503, and 504 trigger retries. Each
+attempt opens a fresh proxy connection so a rotating proxy can assign a new exit.
+Attempts have their own `GKG_INGEST_FETCH_TIMEOUT_S` limit and wait 1, 2, 4, then
+up to 8 seconds between retries. Setting retries to 0 still checks the landing
+page. If the final error reports another page, submit that landing URL when
+it is the page you want.
 
 Sidecar inference runs one request at a time per process, using the available
 CPU threads. `GKG_EXTRACTOR_SIDECAR_TIMEOUT_S` defaults to 300 seconds per

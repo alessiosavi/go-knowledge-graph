@@ -156,6 +156,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Ingest.FetchTimeoutS != 30 {
 		t.Errorf("Ingest.FetchTimeoutS = %d, want 30", cfg.Ingest.FetchTimeoutS)
 	}
+	if cfg.Ingest.FetchRetries != 3 {
+		t.Errorf("Ingest.FetchRetries = %d, want 3", cfg.Ingest.FetchRetries)
+	}
 	if cfg.Ingest.FetchProxy != "" {
 		t.Error("Ingest.FetchProxy should default to direct fetching")
 	}
@@ -207,6 +210,34 @@ func TestIngestFetchProxyRejectsInvalidURLWithoutCredentials(t *testing.T) {
 				t.Errorf("Load error exposes proxy credentials: %v", err)
 			}
 		})
+	}
+}
+
+func TestIngestFetchRetriesRejectsOutOfRange(t *testing.T) {
+	const key = "GKG_INGEST_FETCH_RETRIES"
+	for _, value := range []string{"-1", "11"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv(key, value)
+			if _, err := config.Load(""); err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("Load with %s=%s: got %v, want a keyed error", key, value, err)
+			}
+		})
+	}
+}
+
+func TestIngestFetchRetriesYAMLAndEnv(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("ingest:\n  fetch_retries: 0\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil || cfg.Ingest.FetchRetries != 0 {
+		t.Fatalf("Load with YAML retries = %d, %v, want 0", cfg.Ingest.FetchRetries, err)
+	}
+	t.Setenv("GKG_INGEST_FETCH_RETRIES", "10")
+	cfg, err = config.Load(path)
+	if err != nil || cfg.Ingest.FetchRetries != 10 {
+		t.Fatalf("Load with env retries = %d, %v, want 10", cfg.Ingest.FetchRetries, err)
 	}
 }
 
