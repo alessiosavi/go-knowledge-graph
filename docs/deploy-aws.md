@@ -85,7 +85,9 @@ providers as the local installation. Multiline dotenv values are unsupported.
 `GKG_AGENT_SEARCH_PRODUCTS` (`agent.search_products`) caps product hits in
 mixed agent searches (default 3, valid integers 1–20, at most half the requested
 limit). The agent's whole-description search rule requires
-`GKG_PRODUCT_TEXT_SEARCH=on` in the serving process.
+`GKG_PRODUCT_TEXT_SEARCH=on` in the serving process. `make box-env` does not
+copy `GKG_PRODUCT_TEXT_*`: on a box that uses product value search, set them in
+`box.secrets.env` again after each run and before the upload.
 `MEMGRAPH_PASSWORD` and `GKG_API_KEY` are generated only when missing, and remain
 stable on reruns. `make box-env ENV_FILE=<source-file>` selects an alternate
 source file. It prints key names only.

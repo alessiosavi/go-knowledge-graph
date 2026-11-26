@@ -874,7 +874,11 @@ fact visibility, ingest floors and whether the agent is enabled. Eval commands
 run without judge workers, so `overrides.judge.mode` is always `off`.
 The rest of `overrides` records the configured graph URI and server settings.
 Both blocks are excluded from the hash. The server API key and endpoint
-credentials use literal `<set>` or `<unset>` markers.
+credentials use literal `<set>` or `<unset>` markers. The agent block records
+`search_products` and the SHA-256 of the effective system prompt, which includes
+the described-product rule when `GKG_PRODUCT_TEXT_SEARCH=on`. Hashes captured
+with an earlier release therefore differ even at default settings; recapture
+baselines with the release used for the comparison.
 
 Exit codes are 0 for success, 1 for a configuration or output error, and 2
 for incorrect usage. `gkg eval-settings -h` prints usage to stdout and exits 0.
