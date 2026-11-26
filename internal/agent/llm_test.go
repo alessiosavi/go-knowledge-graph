@@ -34,22 +34,28 @@ type stubSSE struct {
 // the script is exhausted). Requests carrying "stream":true are answered
 // from streams instead of script.
 type llmStub struct {
-	srv      *httptest.Server
-	requests []map[string]any
-	headers  []http.Header
-	script   []stubResponse
-	streams  []stubSSE
+	srv           *httptest.Server
+	requests      []map[string]any
+	requestBodies [][]byte
+	headers       []http.Header
+	script        []stubResponse
+	streams       []stubSSE
 }
 
 func newLLMStub(t *testing.T, replies ...stubResponse) *llmStub {
 	t.Helper()
 	s := &llmStub{script: replies}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("stub: read request: %v", err)
+		}
 		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.Unmarshal(raw, &body); err != nil {
 			t.Errorf("stub: decode request: %v", err)
 		}
 		s.requests = append(s.requests, body)
+		s.requestBodies = append(s.requestBodies, raw)
 		s.headers = append(s.headers, r.Header.Clone())
 		if isStream, _ := body["stream"].(bool); isStream {
 			reply := stubSSE{frames: []string{sseContent("ok"), sseDone}}

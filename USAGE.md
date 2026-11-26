@@ -32,6 +32,28 @@ curl -s -H 'Content-Type: application/json' \
      -d '{"text":"...","source":"notes/ada"}' localhost:8080/v1/ingest
 ```
 
+**Choose a domain.** Pass `domain` in REST JSON, a multipart form, or
+the MCP `ingest` arguments. Use an existing ID or a unique exact display
+name, matched case-insensitively. gkg trims the value and checks IDs first.
+Omit it or pass an empty string for automatic detection. Find IDs and names
+with `GET /v1/domains` or find a document's domain ID with MCP
+`list_documents`. Poll REST or MCP status for the assigned domain.
+
+```sh
+curl -s -F 'file=@notes.md' -F 'domain=d-33749d74' localhost:8080/v1/ingest
+curl -s -H 'Content-Type: application/json' \
+     -d '{"text":"Research notes","source":"notes/lab","domain":"Research / Lab"}' localhost:8080/v1/ingest
+```
+
+With extraction schema v4, a new version is assigned to the chosen domain
+at admission. Older versions retain their domains. If the exact content
+already exists in another domain, the submission returns `domain_conflict`
+even with `force`. To place those same bytes in the chosen domain, delete
+the existing version and submit again. A single product-ref pin on a new
+version must match the choice. An unknown domain returns `unknown_domain`,
+and a name shared by several domains returns `ambiguous_domain` with the
+matching IDs.
+
 **Document date.** Use the optional `document_date` field in REST or MCP,
 `-date` in the CLI, or **Document date** in the web UI for text, URLs and
 files. Enter the date the source was written, sent or published as
@@ -220,7 +242,8 @@ leave validity rules off. An invalid `validity:` block fails every preset
 loader, including those used by ingest, eval, and rejudge planning.
 
 **From an agent**: the MCP `ingest` tool takes `url` or `text`, plus an
-optional `source` label and `force` to re-run an unchanged document.
+optional `source` label, `domain` choice and `force` to re-run an unchanged
+document in its domain.
 
 ### Link a document to products
 

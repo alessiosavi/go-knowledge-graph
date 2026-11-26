@@ -178,6 +178,7 @@ type chatReply struct {
 	ToolCalls        []toolCall      `json:"tool_calls"`
 	ReasoningContent string          `json:"reasoning_content"`
 	ExtraContent     json.RawMessage `json:"extra_content"`
+	FinishReason     string          `json:"-"`
 }
 
 func (r *chatReply) redact(replace func(string) string) {
@@ -194,7 +195,8 @@ func (r *chatReply) redact(replace func(string) string) {
 
 type chatWireResponse struct {
 	Choices []struct {
-		Message chatReply `json:"message"`
+		Message      chatReply       `json:"message"`
+		FinishReason json.RawMessage `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -411,6 +413,8 @@ func (c *client) doChat(ctx context.Context, body []byte) (chatReply, error) {
 		return chatReply{}, fmt.Errorf("agent: response without choices")
 	}
 	reply := wire.Choices[0].Message
+	// Finish reasons are optional metadata. Invalid values leave the reason empty.
+	_ = json.Unmarshal(wire.Choices[0].FinishReason, &reply.FinishReason)
 	if c.tokens != nil {
 		reply.redact(redact)
 	}

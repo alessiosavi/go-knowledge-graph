@@ -166,7 +166,7 @@ func TestIngestURLReturnsDocID(t *testing.T) {
 	h := apiHandler(t, config.Config{}, nil, sub)
 
 	rr := doJSON(t, h, http.MethodPost, "/v1/ingest",
-		`{"url":"https://example.com/article","source":"src-1","labels":"news","force":true}`)
+		`{"url":"https://example.com/article","source":"src-1","labels":"news","force":true,"domain":" Research / Medicine "}`)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("code = %d, want 202; body %s", rr.Code, rr.Body.String())
 	}
@@ -180,8 +180,8 @@ func TestIngestURLReturnsDocID(t *testing.T) {
 	if sub.in.Kind != "url" || sub.in.URL != "https://example.com/article" {
 		t.Errorf("submitted %+v, want kind=url url=https://example.com/article", sub.in)
 	}
-	if sub.in.Source != "src-1" || sub.in.Labels != "news" || !sub.in.Force {
-		t.Errorf("submitted %+v, want source/labels/force mapped", sub.in)
+	if sub.in.Source != "src-1" || sub.in.Labels != "news" || !sub.in.Force || sub.in.Domain != " Research / Medicine " {
+		t.Errorf("submitted %+v, want source/labels/force/domain mapped", sub.in)
 	}
 }
 
@@ -212,8 +212,8 @@ func TestIngestMultipartFile(t *testing.T) {
 	if sub.in.Kind != "file" || string(sub.in.Bytes) != content {
 		t.Errorf("submitted kind=%q bytes=%q, want the uploaded file", sub.in.Kind, sub.in.Bytes)
 	}
-	if sub.in.Source != "note.md" {
-		t.Errorf("source = %q, want the filename as the default", sub.in.Source)
+	if sub.in.Source != "note.md" || sub.in.Domain != "" {
+		t.Errorf("submitted %+v, want the default filename and Auto domain", sub.in)
 	}
 
 	// An explicit source field overrides the filename.
@@ -227,6 +227,9 @@ func TestIngestMultipartFile(t *testing.T) {
 	if err := mw2.WriteField("source", "explicit.md"); err != nil {
 		t.Fatal(err)
 	}
+	if err := mw2.WriteField("domain", "d-research"); err != nil {
+		t.Fatal(err)
+	}
 	if err := mw2.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -235,15 +238,15 @@ func TestIngestMultipartFile(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("explicit source: code = %d, body %s", rr.Code, rr.Body.String())
 	}
-	if sub2.in.Source != "explicit.md" {
-		t.Errorf("source = %q, want the explicit form field", sub2.in.Source)
+	if sub2.in.Source != "explicit.md" || sub2.in.Domain != "d-research" {
+		t.Errorf("submitted %+v, want both explicit form fields", sub2.in)
 	}
 }
 
 func TestStatusEndpoint(t *testing.T) {
 	st := graphtest.Store(t)
 	ctx := context.Background()
-	res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: apiSource(t), Hash: "hash-api-status", Title: "Status doc"})
+	res, err := st.UpsertDocument(ctx, graph.DocumentInput{Kind: "file", Source: apiSource(t), Hash: "hash-api-status", Title: "Status doc", Domain: "api-status-domain"})
 	if err != nil {
 		t.Fatalf("UpsertDocument: %v", err)
 	}
@@ -254,7 +257,7 @@ func TestStatusEndpoint(t *testing.T) {
 		t.Fatalf("code = %d, body %s", rr.Code, rr.Body.String())
 	}
 	got := decode[statusResponse](t, rr)
-	if got.ID != res.ID || got.Status != "received" {
+	if got.ID != res.ID || got.Status != "received" || got.Domain != "api-status-domain" {
 		t.Errorf("status = %+v, want id=%s status=received", got, res.ID)
 	}
 
@@ -645,6 +648,35 @@ func TestIngestErrorClassification(t *testing.T) {
 		}
 		if body := decode[errorBody](t, rr); body.Error != tc.kind {
 			t.Errorf("admission failure: error %q, want %q", body.Error, tc.kind)
+		}
+	}
+}
+
+func TestIngestDomainRequestErrors(t *testing.T) {
+	for _, value := range []string{`42`, `null`, `[]`, `{}`} {
+		sub := &fakeSubmitter{res: ingest.Result{DocumentID: "doc"}}
+		rr := doJSON(t, apiHandler(t, config.Config{}, nil, sub), http.MethodPost, "/v1/ingest", `{"text":"hello","domain":`+value+`}`)
+		if rr.Code != http.StatusBadRequest || decode[errorBody](t, rr).Error != "invalid_request" || sub.called {
+			t.Errorf("domain %s: status %d, body %s, submitted %t", value, rr.Code, rr.Body, sub.called)
+		}
+	}
+	for _, tc := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{&graph.IngestDomainError{Code: "unknown_domain"}, 400, "unknown_domain"},
+		{&graph.IngestDomainError{Code: "ambiguous_domain"}, 400, "ambiguous_domain"},
+		{&graph.IngestDomainError{Code: "unknown_domain", Conflict: true}, 409, "unknown_domain"},
+		{&graph.IngestDomainError{Code: "domain_conflict", Conflict: true}, 409, "domain_conflict"},
+		{&graph.IngestDomainError{Code: "document_busy", Conflict: true}, 409, "document_busy"},
+		{fmt.Errorf("%w: %w", ingest.ErrStore, graph.ErrSchemaNotV4), 409, "schema_not_v4"},
+		{fmt.Errorf("%w: could not connect", ingest.ErrDomainLookup), 503, "store_error"},
+	} {
+		sub := &fakeSubmitter{err: tc.err}
+		rr := doJSON(t, apiHandler(t, config.Config{}, nil, sub), http.MethodPost, "/v1/ingest", `{"text":"hello","domain":"science"}`)
+		if rr.Code != tc.status || decode[errorBody](t, rr).Error != tc.code {
+			t.Errorf("domain error %v: status %d, body %s, want %d %s", tc.err, rr.Code, rr.Body, tc.status, tc.code)
 		}
 	}
 }
