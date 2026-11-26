@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
+	"go.yaml.in/yaml/v4"
 )
 
 func TestProductTextConfig(t *testing.T) {
@@ -153,6 +156,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Ingest.FetchTimeoutS != 30 {
 		t.Errorf("Ingest.FetchTimeoutS = %d, want 30", cfg.Ingest.FetchTimeoutS)
 	}
+	if cfg.Ingest.FetchProxy != "" {
+		t.Error("Ingest.FetchProxy should default to direct fetching")
+	}
 	if cfg.Ingest.MaxRedirects != 5 {
 		t.Errorf("Ingest.MaxRedirects = %d, want 5", cfg.Ingest.MaxRedirects)
 	}
@@ -175,6 +181,59 @@ func TestDurabilityConfigValidation(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestIngestFetchProxyRejectsInvalidURLWithoutCredentials(t *testing.T) {
+	const key = "GKG_INGEST_FETCH_PROXY"
+	for _, tc := range []struct {
+		name, value, problem string
+	}{
+		{"scheme", "ftp://proxy-user:proxy-password@proxy.example", "http or https"},
+		{"missing host", "http://proxy-user:proxy-password@", "host"},
+		{"missing hostname", "http://proxy-user:proxy-password@:8080", "host"},
+		{"unparsable", "https://proxy-user:proxy-password@proxy.example:%GG", "URL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(key, tc.value)
+			_, err := config.Load("")
+			if err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), tc.problem) {
+				t.Fatalf("Load error = %v, want a keyed %s error", err, tc.problem)
+			}
+			if strings.Contains(err.Error(), "proxy-user") || strings.Contains(err.Error(), "proxy-password") {
+				t.Errorf("Load error exposes proxy credentials: %v", err)
+			}
+		})
+	}
+}
+
+func TestIngestFetchProxyYAMLAndSafeDumps(t *testing.T) {
+	const proxy = "https://proxy-user:proxy-password@proxy.example:8443"
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("ingest:\n  fetch_proxy: "+proxy+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil || cfg.Ingest.FetchProxy != proxy {
+		t.Fatalf("Load did not retain ingest.fetch_proxy: %v", err)
+	}
+	jsonDump, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yamlDump, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dump := range []string{string(jsonDump), string(yamlDump), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg)} {
+		if strings.Contains(dump, "proxy-user") || strings.Contains(dump, "proxy-password") {
+			t.Error("configuration dump contains proxy credentials")
+		}
+	}
+	t.Setenv("GKG_INGEST_FETCH_PROXY", "")
+	cfg, err = config.Load(path)
+	if err != nil || cfg.Ingest.FetchProxy != "" {
+		t.Fatalf("empty environment override did not select direct fetching: %v", err)
 	}
 }
 
@@ -371,6 +430,7 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_INGEST_CHUNK_DEDUP", "exact", "exact", func(c config.Config) any { return c.Ingest.ChunkDedup }},
 		{"GKG_INGEST_JACCARD_THRESHOLD", "0.9", 0.9, func(c config.Config) any { return c.Ingest.JaccardThreshold }},
 		{"GKG_INGEST_FETCH_TIMEOUT_S", "11", 11, func(c config.Config) any { return c.Ingest.FetchTimeoutS }},
+		{"GKG_INGEST_FETCH_PROXY", "http://proxy.example:8080", "http://proxy.example:8080", func(c config.Config) any { return c.Ingest.FetchProxy }},
 		{"GKG_INGEST_MAX_REDIRECTS", "3", 3, func(c config.Config) any { return c.Ingest.MaxRedirects }},
 		{"GKG_LABELS_PRESETS_DIR", "custom", "custom", func(c config.Config) any { return c.Labels.PresetsDir }},
 		{"GKG_LIMITS_CYPHER_ROWS", "50", 50, func(c config.Config) any { return c.Limits.CypherRows }},

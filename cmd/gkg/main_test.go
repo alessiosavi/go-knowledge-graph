@@ -52,6 +52,18 @@ func TestLoadConfigFromGKGConfig(t *testing.T) {
 	}
 }
 
+func TestIngestFetcherUsesProxyConfig(t *testing.T) {
+	t.Setenv("GKG_INGEST_FETCH_PROXY", "https://user:pass@proxy.example:8443")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher, err := ingestFetcher(cfg)
+	if err != nil || fetcher.Proxy == nil || fetcher.Proxy.String() != cfg.Ingest.FetchProxy {
+		t.Fatalf("ingest fetcher lacks the configured proxy: %v", err)
+	}
+}
+
 func TestLoadConfigAutoDiscoversConfigYaml(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("server:\n  addr: \":17777\"\n"), 0o644); err != nil {
