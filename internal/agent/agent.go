@@ -46,7 +46,7 @@ const (
 
 const meaningCandidateRule = `- A product hit matched by meaning is a candidate: read the product (get_product with_texts and the matched key as text_keys) before saying it has a property, say whether the value is checked, and use find_products with min/max for numeric limits.`
 
-const describedProductRule = `- When the user describes a product by its use, feel, look or properties rather than by its name or code, make your first call search with kind=product, limit 10, and the user's message copied word for word as the query: do not shorten it to keywords or translate it, because meaning search matches whole descriptions. Then continue with your usual keyword searches.`
+const describedProductRule = `- When the user describes a product by its use, feel, look or properties rather than by its name or code, make your first call search with kind=product, limit 10, and the user's message copied word for word as the query: do not shorten it to keywords or translate it, because meaning search matches whole descriptions. This search does not replace your usual steps: continue with keyword searches, and for each product you answer about, read its record and all passages of its product page (get_chunks on the page's chunk_ids) before answering.`
 
 const systemPrompt = `You are gkg's read-only knowledge-graph assistant. Answer the user's question using only the provided tools and the data they return.
 Rules:
