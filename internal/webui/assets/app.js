@@ -69,7 +69,7 @@
   }
 
   // api talks to the gkg REST surface. A 401 selects Basic or bearer sign-in;
-  // errors carry the server's detail when there is one.
+  // errors carry the server's message and code when available.
   async function api(path, options) {
     const opts = options || {};
     const headers = Object.assign(
@@ -97,8 +97,9 @@
       data = null;
     }
     if (!res.ok) {
-      throw new Error(
-        (data && data.detail) || "HTTP " + res.status + " " + res.statusText,
+      throw Object.assign(
+        new Error((data && (data.detail || data.message)) || "HTTP " + res.status + " " + res.statusText),
+        { code: data && data.error },
       );
     }
     return data;
@@ -122,29 +123,56 @@
 
   const domainNames = new Map();
   const domainName = (id) => domainNames.get(id) || id;
-  async function loadDomains() {
-    try {
-      const domains = await api("/v1/domains");
-      domainNames.clear();
-      for (const d of (Array.isArray(domains) ? domains : [])) {
-        domainNames.set(d.id, d.name || d.id);
-      }
-      for (const id of ["search-domain", "ask-domain"]) {
-        const picker = $(id);
-        const selected = picker.value;
-        const all = el("option", "", "All domains");
-        all.value = "";
-        picker.replaceChildren(all);
-        for (const [key, name] of domainNames) {
-          const option = el("option", "", name);
-          option.value = key;
-          picker.append(option);
-        }
-        picker.value = domainNames.has(selected) ? selected : "";
-      }
-    } catch (_) {
-      // Search remains available when the picker cannot load.
+  let domainRequest = 0;
+
+  function fillDomainPicker(id, defaultLabel, names) {
+    const picker = $(id);
+    const selected = picker.value;
+    const first = el("option", "", defaultLabel);
+    first.value = "";
+    picker.replaceChildren(first);
+    for (const [key, name] of names) {
+      const option = el("option", "", name);
+      option.value = key;
+      picker.append(option);
     }
+    picker.value = names.has(selected) ? selected : "";
+    return selected !== "" && picker.value === "";
+  }
+
+  async function loadDomains() {
+    const request = ++domainRequest;
+    const note = $("ingest-domain-note");
+    let domains;
+    try {
+      domains = await api("/v1/domains");
+    } catch (_) {
+      if (request === domainRequest) {
+        fillDomainPicker("ingest-domain", "Auto (detect)", new Map());
+        note.textContent = "domains unavailable";
+      }
+      return;
+    }
+    if (request !== domainRequest) return;
+
+    domainNames.clear();
+    for (const d of (Array.isArray(domains) ? domains : [])) {
+      domainNames.set(d.id, d.name || d.id);
+    }
+    for (const id of ["search-domain", "ask-domain"]) {
+      fillDomainPicker(id, "All domains", domainNames);
+    }
+
+    const nameCounts = new Map();
+    for (const name of domainNames.values()) {
+      nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+    }
+    const ingestNames = new Map();
+    for (const [id, name] of domainNames) {
+      ingestNames.set(id, nameCounts.get(name) > 1 ? `${name} (${id})` : name);
+    }
+    const selectionLost = fillDomainPicker("ingest-domain", "Auto (detect)", ingestNames);
+    note.textContent = selectionLost ? "Selected domain is no longer available. Choose a domain again." : "";
   }
 
   // ---- search -------------------------------------------------------------
@@ -845,10 +873,11 @@
   }
 
   async function pollStatus(id, statusNode, message) {
+    const documentPath = "/v1/documents/" + encodeURIComponent(id);
     for (let i = 0; i < STATUS_POLL_MAX; i++) {
       let s;
       try {
-        s = await api("/v1/documents/" + encodeURIComponent(id) + "/status");
+        s = await api(documentPath + "/status");
       } catch (err) {
         statusNode.textContent =
           "status unavailable: " + String(err.message || err);
@@ -861,6 +890,19 @@
         s.status === "superseded"
       ) {
         if (s.error) statusNode.textContent += " · " + s.error;
+        if (s.status === "done") {
+          let domain = s.domain;
+          try {
+            const doc = await api(documentPath);
+            if (doc && doc.domain) domain = doc.domain;
+          } catch (_) {
+            // The status response may already have the domain.
+          }
+          if (domain) {
+            if (!domainNames.has(domain)) await loadDomains();
+            statusNode.textContent += " · " + domainName(domain);
+          }
+        }
         await loadDocuments();
         return;
       }
@@ -870,8 +912,11 @@
       message + " is still processing; refresh Documents later";
   }
 
+  const ingestDomainErrors = new Set(["unknown_domain", "ambiguous_domain", "domain_conflict", "schema_not_v4"]);
+
   async function ingest() {
     const kind = $("ingest-kind").value;
+    const domain = $("ingest-domain").value;
     const body = $("ingest-body").value.trim();
     const source = $("ingest-source").value.trim();
     const labels = $("ingest-labels").value.trim();
@@ -895,12 +940,14 @@
       if (source) form.append("source", source);
       if (labels) form.append("labels", labels);
       if (date) form.append("document_date", date);
+      if (domain) form.append("domain", domain);
       opts.form = form;
     } else {
       const payload = kind === "url" ? { url: body } : { text: body };
       if (source) payload.source = source;
       if (labels) payload.labels = labels;
       if (date) payload.document_date = date;
+      if (domain) payload.domain = domain;
       opts.json = payload;
     }
     setBusy(submit, true, "Submitting…");
@@ -913,7 +960,8 @@
       if (kind === "file") fileInput.value = "";
       await pollStatus(res.document_id, statusNode, message);
     } catch (err) {
-      statusNode.textContent = String(err.message || err);
+      const message = String(err.message || err);
+      statusNode.textContent = ingestDomainErrors.has(err.code) ? err.code + ": " + message : message;
       statusNode.className = "muted error";
     } finally {
       setBusy(submit, false);
@@ -1040,6 +1088,9 @@
     $("ingest-form").addEventListener("submit", (ev) => {
       ev.preventDefault();
       ingest();
+    });
+    $("ingest-domain").addEventListener("change", () => {
+      $("ingest-domain-note").textContent = "";
     });
     // The file row and the textarea trade places with the kind; required
     // moves with visibility (a hidden required control blocks submit).
