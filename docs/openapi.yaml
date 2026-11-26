@@ -1985,7 +1985,7 @@ components:
       required: [id, status, domain, updated_at]
       properties:
         id: { type: string }
-        domain: { type: string, description: Assigned domain ID, or an empty string before assignment. }
+        domain: { type: string, description: "Assigned domain ID, or an empty string before assignment." }
         status:
           type: string
           enum:
