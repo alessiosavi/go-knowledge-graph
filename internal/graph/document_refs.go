@@ -55,6 +55,11 @@ ORDER BY coalesce(d.version_at, d.created_at) DESC, d.id DESC LIMIT 1`
 // written. UpsertDocument rechecks lifecycle rules against its own snapshot,
 // reusing the admitted binding if the product set still needs validation.
 func (s *Store) PrepareDocumentRefs(ctx context.Context, in *DocumentInput, current *Document) error {
+	if in.DomainChosen && current == nil {
+		// New explicit versions validate their effective refs in the
+		// admission transaction, including refs inherited when omitted.
+		return nil
+	}
 	var stored []string
 	if current != nil {
 		stored = current.ProductRefs
@@ -81,7 +86,7 @@ func (s *Store) PrepareDocumentRefs(ctx context.Context, in *DocumentInput, curr
 			return err
 		}
 	}
-	in.Domain, in.productRefsValidated = pin, true
+	in.productRefPin, in.productRefsValidated = pin, true
 	return nil
 }
 
@@ -128,17 +133,28 @@ func checkProductRefPin(pin, current string, status Status) error {
 	return nil
 }
 
-func txCheckProductRefDomain(ctx context.Context, tx neo4j.ManagedTransaction, pin string) error {
-	// Empty-domain deletion and binding changes write this same Domain
-	// property, preventing a concurrent deletion under snapshot isolation.
-	rows, err := txRows(ctx, tx, `
-MATCH (d:Domain {id:$domain})
-SET d.product_guard = coalesce(d.product_guard, 0) + 1
-RETURN d.id`, map[string]any{"domain": pin})
+func checkChosenProductRefDomain(ctx context.Context, refs []string, chosen string, read domainRead) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	pin, err := productRefDomain(refs, func(query string, params map[string]any) ([]*neo4j.Record, error) {
+		return read(ctx, query, params)
+	})
 	if err != nil {
 		return err
 	}
-	if len(rows) == 0 {
+	if pin != "" && pin != chosen {
+		return &IngestDomainError{Code: "domain_conflict", Conflict: true, Detail: fmt.Sprintf("product refs pin domain %s", pin)}
+	}
+	return nil
+}
+
+func txCheckProductRefDomain(ctx context.Context, tx neo4j.ManagedTransaction, pin string) error {
+	exists, err := txFenceDomain(ctx, tx, pin)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		return &DocumentRefsError{Code: "domain_missing", Detail: fmt.Sprintf("product refs pin domain %q, which does not exist", pin)}
 	}
 	return nil

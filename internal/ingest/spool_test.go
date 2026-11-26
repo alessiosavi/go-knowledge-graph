@@ -59,7 +59,7 @@ func (s *spoolStore) UpsertDocument(_ context.Context, in graph.DocumentInput) (
 	if d, ok := s.docs[id]; ok && d.Status != graph.StatusFailed && d.Status != graph.StatusSuperseded && !in.Force {
 		return graph.UpsertResult{ID: id, Noop: true}, nil
 	}
-	s.docs[id] = graph.Document{ID: id, Hash: in.Hash, SourceKind: in.Kind, Source: in.Source, Title: in.Title, Labels: in.Labels, Status: graph.StatusReceived, SpoolPayloadDigest: in.SpoolPayloadDigest}
+	s.docs[id] = graph.Document{ID: id, Hash: in.Hash, SourceKind: in.Kind, Source: in.Source, Title: in.Title, Labels: in.Labels, Domain: in.Domain, Status: graph.StatusReceived, SpoolPayloadDigest: in.SpoolPayloadDigest}
 	return graph.UpsertResult{ID: id}, nil
 }
 func (s *spoolStore) SetStatus(_ context.Context, id string, status graph.Status, msg string) error {

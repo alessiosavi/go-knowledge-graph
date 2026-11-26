@@ -323,6 +323,12 @@ paths:
         live completed version on new content. Newly supplied refs that
         change the stored set must use bound stores. If those stores share
         one domain, ingestion pins the document to it.
+        Set `domain` to choose an existing domain for a new version. The service
+        checks the exact ID first, then a unique case-insensitive display name.
+        Choosing a domain requires extraction schema v4. Unchanged content
+        already assigned to another domain returns `domain_conflict` even
+        with `force`. A single product-ref pin on a new version must agree
+        with the choice, including when the refs were inherited.
         `labels` selects an installed YAML preset under `labels.presets_dir`;
         omitted/empty uses built-in defaults. Shipped presets are general,
         meeting, documentation, mail, news, code and demo; custom names are
@@ -347,6 +353,8 @@ paths:
                   description: identity override; defaults to the filename
                 document_date:
                   $ref: "#/components/schemas/IngestDocumentDate"
+                domain:
+                  $ref: "#/components/schemas/IngestDomain"
                 labels:
                   type: string
                   description: Installed label preset name; empty uses built-in defaults
@@ -376,7 +384,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/IngestResponse"
         "400":
-          description: Rejected input, including `invalid_request` for a bad document date, `invalid_products`, or `products_unknown_store`.
+          description: |
+            Rejected input. Codes include `invalid_request` for a non-string
+            domain or bad document date, `unknown_domain`, `ambiguous_domain`,
+            `invalid_products`, and `products_unknown_store`.
           content:
             application/json:
               schema:
@@ -385,7 +396,12 @@ paths:
           description: |
             Product refs changed on unchanged content (`refs_changed_use_force`),
             the refs pin conflicts with the assigned domain (`domain_pin_conflict`),
-            or the pinned domain no longer exists (`domain_missing`).
+            or the pinned domain no longer exists (`domain_missing`). An
+            explicit domain can conflict with the exact version's domain or
+            a new version's product-ref pin (`domain_conflict`), disappear
+            before admission (`unknown_domain`), or require extraction schema
+            v4 (`schema_not_v4`). Exact content still processing without an
+            assigned domain returns `document_busy` when a domain is requested.
           content:
             application/json:
               schema:
@@ -419,9 +435,10 @@ paths:
             lock (`error: document_busy`). This includes date changes on
             unchanged content. Unchanged non-force submissions that keep the
             existing date can return a no-op while that version is processing.
+            A failed domain lookup returns `store_error`.
           headers:
             Retry-After:
-              description: seconds to wait before retrying
+              description: seconds to wait before retrying a spool or worker lock failure
               schema:
                 type: integer
                 minimum: 0
@@ -556,7 +573,7 @@ paths:
         - $ref: "#/components/parameters/DocumentID"
       responses:
         "200":
-          description: status and error of the document
+          description: status, domain and error of the document
           content:
             application/json:
               schema:
@@ -1844,7 +1861,7 @@ components:
         evidence_truncated: { type: boolean, description: Matching evidence was omitted due to the per-hit edge limit or response size. }
     IngestRequest:
       type: object
-      description: Exactly one non-empty url (trimmed) or text is required. Source, labels, force, products and document_date are optional.
+      description: Exactly one non-empty url (trimmed) or text is required. Source, labels, force, products, document_date and domain are optional.
       oneOf:
         - required: [url]
           properties:
@@ -1862,6 +1879,8 @@ components:
           description: Identity override; defaults to the submitted URL (url) or the first 8 hex characters of the cleaned content SHA-256 (text)
         document_date:
           $ref: "#/components/schemas/IngestDocumentDate"
+        domain:
+          $ref: "#/components/schemas/IngestDomain"
         labels:
           type: string
           description: Installed label preset name; empty uses built-in defaults. Custom presets are allowed.
@@ -1871,6 +1890,12 @@ components:
           default: false
         products:
           $ref: "#/components/schemas/IngestProducts"
+    IngestDomain:
+      type: string
+      description: >
+        Existing domain ID or unique case-insensitive exact name. The value is
+        trimmed and an exact ID wins over a name match. Empty or omitted selects
+        automatic detection. GET /v1/domains lists available domains.
     IngestDocumentDate:
       type: string
       description: >
@@ -1957,9 +1982,10 @@ components:
             $ref: "#/components/schemas/Document"
     Status:
       type: object
-      required: [id, status, updated_at]
+      required: [id, status, domain, updated_at]
       properties:
         id: { type: string }
+        domain: { type: string, description: Assigned domain ID, or an empty string before assignment. }
         status:
           type: string
           enum:

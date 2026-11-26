@@ -60,6 +60,7 @@ type ingestRequest struct {
 	Labels   string          `json:"labels"`
 	Force    bool            `json:"force"`
 	Products json.RawMessage `json:"products"`
+	Domain   json.RawMessage `json:"domain"`
 
 	DocumentDate string `json:"document_date"`
 }
@@ -95,6 +96,7 @@ type documentsResponse struct {
 
 type statusResponse struct {
 	ID        string    `json:"id"`
+	Domain    string    `json:"domain"`
 	Status    string    `json:"status"`
 	Error     string    `json:"error,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -214,6 +216,22 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.in.Submit(r.Context(), in)
 	if err != nil {
+		var domainErr *graph.IngestDomainError
+		switch {
+		case errors.As(err, &domainErr):
+			status := http.StatusBadRequest
+			if domainErr.Conflict {
+				status = http.StatusConflict
+			}
+			writeError(w, status, domainErr.Code, domainErr.Detail)
+			return
+		case errors.Is(err, graph.ErrSchemaNotV4):
+			writeError(w, http.StatusConflict, "schema_not_v4", err.Error())
+			return
+		case errors.Is(err, ingest.ErrDomainLookup):
+			writeStoreErrorStatus(w, http.StatusServiceUnavailable, err, "ingest")
+			return
+		}
 		var productsErr *graph.DocumentRefsError
 		if errors.As(err, &productsErr) {
 			status := http.StatusConflict
@@ -312,6 +330,7 @@ func (s *Server) decodeIngest(w http.ResponseWriter, r *http.Request, maxBytes i
 			Labels:       r.FormValue("labels"),
 			Force:        formBool(r.FormValue("force")),
 			Products:     products,
+			Domain:       r.PostFormValue("domain"),
 			DocumentDate: date,
 		}, true
 	}
@@ -319,6 +338,15 @@ func (s *Server) decodeIngest(w http.ResponseWriter, r *http.Request, maxBytes i
 	var req ingestRequest
 	if !readJSON(w, r, maxBytes, &req) {
 		return ingest.Input{}, false
+	}
+	var domain string
+	if req.Domain != nil {
+		var value *string
+		if err := json.Unmarshal(req.Domain, &value); err != nil || value == nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "domain must be a string")
+			return ingest.Input{}, false
+		}
+		domain = *value
 	}
 	var products []string
 	if req.Products != nil {
@@ -334,7 +362,7 @@ func (s *Server) decodeIngest(w http.ResponseWriter, r *http.Request, maxBytes i
 	}
 	u := strings.TrimSpace(req.URL)
 	in := ingest.Input{
-		Source: req.Source, Labels: req.Labels, Force: req.Force, Products: products, DocumentDate: date,
+		Source: req.Source, Labels: req.Labels, Force: req.Force, Products: products, Domain: domain, DocumentDate: date,
 	}
 	switch {
 	case u != "" && req.Text != "":
@@ -427,7 +455,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, statusResponse{
-		ID: doc.ID, Status: string(doc.Status), Error: doc.Error, UpdatedAt: doc.UpdatedAt, Products: doc.ProductRefs,
+		ID: doc.ID, Domain: doc.Domain, Status: string(doc.Status), Error: doc.Error, UpdatedAt: doc.UpdatedAt, Products: doc.ProductRefs,
 	})
 }
 

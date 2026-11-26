@@ -892,6 +892,40 @@ func TestIngestToolProductRefsValidation(t *testing.T) {
 	}
 }
 
+func TestIngestToolAcceptsDomain(t *testing.T) {
+	sub := &fakeSubmitter{res: ingest.Result{DocumentID: "doc"}}
+	cs := connectInMemory(t, config.Config{}, nil, sub)
+	for _, value := range []any{"", "Research / Medicine"} {
+		res := callTool(t, cs, "ingest", map[string]any{"text": "page", "domain": value})
+		if res.IsError || structured[ingestOut](t, res).DocumentID != "doc" || sub.in.Domain != value {
+			t.Errorf("domain %q: %s", value, toolErrorText(res))
+		}
+	}
+	sub.in = ingest.Input{}
+	res := callTool(t, cs, "ingest", map[string]any{"text": "page", "domain": 5})
+	if !res.IsError || !strings.Contains(toolErrorText(res), "domain") || sub.in.Text != "" {
+		t.Errorf("numeric domain: result=%+v, submitted=%+v", res, sub.in)
+	}
+	for _, tc := range []struct {
+		err     error
+		message string
+	}{
+		{&graph.IngestDomainError{Code: "unknown_domain"}, "unknown_domain"},
+		{&graph.IngestDomainError{Code: "ambiguous_domain"}, "ambiguous_domain"},
+		{&graph.IngestDomainError{Code: "unknown_domain", Conflict: true}, "unknown_domain"},
+		{&graph.IngestDomainError{Code: "domain_conflict", Conflict: true}, "domain_conflict"},
+		{&graph.IngestDomainError{Code: "document_busy", Conflict: true}, "document_busy"},
+		{graph.ErrSchemaNotV4, "schema_not_v4"},
+		{fmt.Errorf("%w: could not connect", ingest.ErrDomainLookup), "domain lookup failed"},
+	} {
+		sub.err = tc.err
+		res := callTool(t, cs, "ingest", map[string]any{"text": "page", "domain": "d-research"})
+		if !res.IsError || !strings.Contains(toolErrorText(res), tc.message) {
+			t.Errorf("domain error %v: result=%+v, want %q", tc.err, res, tc.message)
+		}
+	}
+}
+
 func TestIngestToolProductRefsPresence(t *testing.T) {
 	sub := &fakeSubmitter{res: ingest.Result{DocumentID: "doc"}}
 	cs := connectInMemory(t, config.Config{}, nil, sub)

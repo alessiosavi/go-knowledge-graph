@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/domain"
@@ -19,6 +21,92 @@ type DecisionRecord struct {
 	Params                                          domain.Params
 	Note                                            string
 	At                                              time.Time
+}
+
+// IngestDomainError is a definite rejection of an explicit domain choice.
+// Conflict distinguishes an admission conflict from a preflight input error.
+type IngestDomainError struct {
+	Code, Detail string
+	Conflict     bool
+}
+
+func (e *IngestDomainError) Error() string { return e.Code + ": " + e.Detail }
+
+func unknownIngestDomain(value string, conflict bool) error {
+	return &IngestDomainError{
+		Code: "unknown_domain", Conflict: conflict,
+		Detail: fmt.Sprintf("domain %q does not exist; GET /v1/domains lists them", value),
+	}
+}
+
+// ResolveIngestDomain resolves a nonempty, trimmed choice to an existing ID.
+func (s *Store) ResolveIngestDomain(ctx context.Context, value string) (string, error) {
+	return resolveIngestDomain(ctx, value, s.runRead)
+}
+
+type domainRead func(context.Context, string, map[string]any) ([]*neo4j.Record, error)
+
+const ingestDomainByIDQuery = `
+MATCH (d:Domain {id:$id})
+RETURN d.id AS id, coalesce(d.name,d.id) AS name`
+
+func resolveIngestDomain(ctx context.Context, value string, read domainRead) (string, error) {
+	rows, err := read(ctx, ingestDomainByIDQuery, map[string]any{"id": value})
+	if err != nil {
+		return "", err
+	}
+	if len(rows) > 0 {
+		return getString(rows[0], "id"), nil
+	}
+	rows, err = read(ctx, `MATCH (d:Domain) WHERE d.name IS NOT NULL RETURN d.id AS id, d.name AS name`, nil)
+	if err != nil {
+		return "", err
+	}
+	var matches []string
+	for _, row := range rows {
+		if strings.EqualFold(getString(row, "name"), value) {
+			matches = append(matches, getString(row, "id"))
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", unknownIngestDomain(value, false)
+	case 1:
+		return matches[0], nil
+	default:
+		slices.Sort(matches)
+		return "", &IngestDomainError{Code: "ambiguous_domain", Detail: fmt.Sprintf("domain name %q matches %s; use a domain id", value, strings.Join(matches, ", "))}
+	}
+}
+
+// CheckIngestDomain checks the domain of an existing version before a no-op
+// or lock attempt. The write path independently checks its own snapshot.
+func (s *Store) CheckIngestDomain(ctx context.Context, doc *Document, chosen string) error {
+	return checkIngestDomain(ctx, doc.ID, doc.Domain, doc.Status, chosen, s.runRead)
+}
+
+func checkIngestDomain(ctx context.Context, docID, current string, status Status, chosen string, read domainRead) error {
+	if current == chosen {
+		return nil
+	}
+	if current == "" {
+		if slices.Contains(terminalStatuses, string(status)) {
+			return &IngestDomainError{Code: "domain_conflict", Conflict: true,
+				Detail: fmt.Sprintf("this exact content already exists without a domain, document %s; delete it and post again to put it in %s", docID, chosen)}
+		}
+		return &IngestDomainError{Code: "document_busy", Conflict: true,
+			Detail: fmt.Sprintf("this exact content, document %s, has no domain yet; retry after the domain is assigned", docID)}
+	}
+	rows, err := read(ctx, ingestDomainByIDQuery, map[string]any{"id": current})
+	if err != nil {
+		return err
+	}
+	name := current
+	if len(rows) > 0 {
+		name = getString(rows[0], "name")
+	}
+	return &IngestDomainError{Code: "domain_conflict", Conflict: true,
+		Detail: fmt.Sprintf("this exact content already exists in domain %s (%s), document %s; delete it and post again to put it in %s", name, current, docID, chosen)}
 }
 
 // Assignment publishes the domain, profile and decision together.
@@ -100,10 +188,6 @@ func (s *Store) assignDomainUnlocked(ctx context.Context, a Assignment, beforeCo
 	if a.DomainName == "" {
 		a.DomainName = a.Domain
 	}
-	top := make([]any, 0, min(3, len(r.Top)))
-	for _, score := range r.Top[:min(3, len(r.Top))] {
-		top = append(top, []any{score.Domain, score.Score})
-	}
 	return s.runWriteTx(ctx, func(tx neo4j.ManagedTransaction) error {
 		status, err := txDocumentStatus(ctx, tx, a.DocID)
 		if err != nil {
@@ -136,18 +220,26 @@ SET d.domain=$domain,d.domain_tok=$tok,d.name_profile=$profile`, map[string]any{
 		if err := txRun(ctx, tx, `MATCH (:Document {id:$doc})-[:HAS_CHUNK]->(c:Chunk) SET c.domain=$domain,c.domain_tok=$tok`, map[string]any{"doc": a.DocID, "domain": a.Domain, "tok": tok}); err != nil {
 			return err
 		}
-		if err := txRun(ctx, tx, `
-CREATE (:DomainDecision {op_id:$op,doc_id:$doc,domain:$domain,previous_domain:$previous,
-action:$action,by:$by,top:$top,params:$params,note:$note,at:$at})`, map[string]any{
-			"op": r.OpID, "doc": r.DocID, "domain": r.Domain, "previous": r.PreviousDomain, "action": r.Action, "by": r.By, "top": top,
-			"params": map[string]any{"tau": r.Params.Tau, "delta": r.Params.Delta, "tau_override": r.Params.TauOverride}, "note": r.Note, "at": r.At.UTC().Format(timeLayout),
-		}); err != nil {
+		if err := txRecordDomainDecision(ctx, tx, r); err != nil {
 			return err
 		}
 		if beforeCommit != nil {
 			return beforeCommit()
 		}
 		return nil
+	})
+}
+
+func txRecordDomainDecision(ctx context.Context, tx neo4j.ManagedTransaction, r DecisionRecord) error {
+	top := make([]any, 0, min(3, len(r.Top)))
+	for _, score := range r.Top[:min(3, len(r.Top))] {
+		top = append(top, []any{score.Domain, score.Score})
+	}
+	return txRun(ctx, tx, `
+CREATE (:DomainDecision {op_id:$op,doc_id:$doc,domain:$domain,previous_domain:$previous,
+action:$action,by:$by,top:$top,params:$params,note:$note,at:$at})`, map[string]any{
+		"op": r.OpID, "doc": r.DocID, "domain": r.Domain, "previous": r.PreviousDomain, "action": r.Action, "by": r.By, "top": top,
+		"params": map[string]any{"tau": r.Params.Tau, "delta": r.Params.Delta, "tau_override": r.Params.TauOverride}, "note": r.Note, "at": r.At.UTC().Format(timeLayout),
 	})
 }
 
@@ -263,6 +355,16 @@ func txGuardDomainMutation(ctx context.Context, tx neo4j.ManagedTransaction, dom
 	}
 	return txRun(ctx, tx, `MATCH (d:Domain) WHERE d.id IN $domains
 SET d.product_guard=coalesce(d.product_guard,0)+1`, params)
+}
+
+// txFenceDomain takes the same write fence as binding changes and empty-domain
+// deletion. MATCH also verifies the domain still exists in this transaction.
+func txFenceDomain(ctx context.Context, tx neo4j.ManagedTransaction, id string) (bool, error) {
+	rows, err := txRows(ctx, tx, `
+MATCH (d:Domain {id:$domain})
+SET d.product_guard = coalesce(d.product_guard, 0) + 1
+RETURN d.id`, map[string]any{"domain": id})
+	return len(rows) > 0, err
 }
 
 // MoveDocument publishes a new partition and ledger in one transaction. Live
