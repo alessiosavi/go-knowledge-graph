@@ -2,14 +2,32 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
+
+func TestStubDelaysAnswerUntilCanceled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const budget = 20 * time.Second
+		ctx, cancel := context.WithTimeout(t.Context(), budget)
+		defer cancel()
+		body := `{"messages":[{"role":"user","content":"edge-check answer timeout"}]}`
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		recorder := httptest.NewRecorder()
+		start := time.Now()
+		completions(recorder, req)
+		if time.Since(start) != budget || recorder.Body.Len() != 0 {
+			t.Fatalf("stub returned after %s with %d response bytes, want cancellation without a completion", time.Since(start), recorder.Body.Len())
+		}
+	})
+}
 
 func TestStubStreamsSeparatedFrames(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(completions))

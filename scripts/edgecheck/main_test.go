@@ -132,6 +132,159 @@ func TestProbeProductMutationsHelper(t *testing.T) {
 	main()
 }
 
+func TestProbeAnswer(t *testing.T) {
+	const incomplete = `{"contract":"gkg-answer/1","complete":false,"summary":"Offline edge check completed."}`
+	const wrongSummary = `{"contract":"gkg-answer/1","complete":true,"summary":"Other answer.","detail":"Offline edge check completed."}`
+	for _, tc := range []struct {
+		name    string
+		call    int32
+		body    string
+		failure string
+	}{
+		{name: "valid"},
+		{name: "auth/incomplete", call: 1, body: incomplete, failure: "answer-auth-ok"},
+		{name: "auth/wrong-summary", call: 1, body: wrongSummary, failure: "answer-auth-ok"},
+		{name: "sixth-turn/incomplete", call: 5, body: incomplete, failure: "answer-history-sixth-turn"},
+		{name: "sixth-turn/wrong-summary", call: 5, body: wrongSummary, failure: "answer-history-sixth-turn"},
+		{name: "immediate-timeout", call: 4, failure: "answer-timeout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testProbeAnswer(t, tc.call, tc.body, tc.failure)
+		})
+	}
+}
+
+func testProbeAnswer(t *testing.T, failCall int32, failBody, wantFailure string) {
+	t.Helper()
+	const fixture = "<script>sample</script>\n#!/bin/bash"
+	const domain = "d-12345678"
+	agentTimeout := time.Second
+	if failCall == 4 {
+		agentTimeout = 20 * time.Second
+	}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/ingest":
+			w.WriteHeader(202)
+			fmt.Fprint(w, `{"document_id":"fixture-document"}`)
+		case "GET /v1/documents/fixture-document/status":
+			fmt.Fprint(w, `{"status":"done"}`)
+		case "GET /v1/documents/fixture-document":
+			fmt.Fprint(w, `{"domain":"`+domain+`"}`)
+		case "DELETE /v1/documents/fixture-document":
+			fmt.Fprint(w, `{"deleted":1}`)
+		case "POST /v1/agent/answer":
+			call := calls.Add(1)
+			var body struct {
+				Domain   string
+				Question string
+				Context  struct{ History []struct{ Role, Text string } }
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Domain != domain {
+				t.Errorf("invalid answer request %d: domain=%q, decode=%v", call, body.Domain, err)
+			}
+			login, pass, auth := r.BasicAuth()
+			if call == 2 && r.Header.Get("Authorization") != "" || call != 2 && (!auth || login != "test" || pass != "pass") {
+				t.Errorf("incorrect Basic authorization on answer request %d", call)
+			}
+			history := body.Context.History
+			switch call {
+			case 1:
+				if body.Question != fixture || len(history) != 1 || history[0].Role != "user" || history[0].Text != fixture {
+					t.Error("first answer request must put the WAF fixture in the question and first history turn")
+				}
+			case 2:
+				w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+				w.WriteHeader(401)
+				return
+			case 3:
+				if r.ContentLength <= 1<<20 {
+					t.Errorf("answer body cap probe has %d bytes, want more than 1 MiB", r.ContentLength)
+				}
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(413)
+				return
+			case 4:
+				if body.Question != "edge-check answer timeout" {
+					t.Error("timeout probe must trigger the offline provider delay")
+				}
+				if failCall != 4 {
+					time.Sleep(agentTimeout)
+				}
+				w.WriteHeader(504)
+				fmt.Fprint(w, `{"error":"agent_timeout"}`)
+				return
+			case 5:
+				if strings.Contains(body.Question, fixture) || len(history) != 6 || history[5].Role != "assistant" || history[5].Text != fixture {
+					t.Error("sixth-turn answer request must use a benign question and put the WAF fixture in the sixth turn")
+				}
+				for _, turn := range history[:min(len(history), 5)] {
+					if turn.Text == "" || strings.Contains(turn.Text, fixture) {
+						t.Error("earlier history turns must contain benign text")
+					}
+				}
+			default:
+				t.Errorf("unexpected answer request %d", call)
+			}
+			if call == failCall {
+				fmt.Fprint(w, failBody)
+				return
+			}
+			fmt.Fprint(w, `{"contract":"gkg-answer/1","complete":true,"summary":"Offline edge check completed."}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	write(filepath.Join(dir, "auth.curl"), []byte("user = \"test:pass\"\n"))
+	p := &probe{dir: dir, base: server.URL}
+	failure := func() (failure any) {
+		defer func() { failure = recover() }()
+		p.answer(fixture, agentTimeout)
+		return nil
+	}()
+	wantCalls := int32(5)
+	if wantFailure == "" {
+		if failure != nil {
+			t.Errorf("answer probes failed: %v", failure)
+		}
+	} else {
+		wantCalls = failCall
+		message, _ := failure.(string)
+		if !strings.HasPrefix(message, wantFailure+" (") {
+			t.Errorf("probe failure = %v, want failure for %s", failure, wantFailure)
+		}
+	}
+	if got := calls.Load(); got != wantCalls {
+		t.Errorf("sent %d answer probes, want %d", got, wantCalls)
+	}
+}
+
+func TestAnswerTimeoutReachedStub(t *testing.T) {
+	const marker = "edge-check answer timeout: delaying completion\n"
+	for _, tc := range []struct {
+		name   string
+		before string
+		after  string
+		want   bool
+	}{
+		{name: "fresh delay", before: marker, after: marker + marker, want: true},
+		{name: "stale delay", before: marker, after: marker + "model request finished\n"},
+		{name: "no delay", after: "model request finished\n"},
+		{name: "marker mentioned", after: "unexpected log: " + marker},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := answerTimeoutReachedStub([]byte(tc.before), []byte(tc.after)); got != tc.want {
+				t.Errorf("fresh timeout delay = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProbeCommandCA(t *testing.T) {
 	for _, tls := range []bool{false, true} {
 		name := "http"
