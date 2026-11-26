@@ -146,8 +146,11 @@ func runEvalAgentRun(ctx context.Context, opt evalAgentOptions, cfg config.Confi
 	if (opt.arm != "DS" || cfg.Agent.Auth != config.AuthStatic) && (opt.arm != "GM" || cfg.Agent.Auth != config.AuthGCP) {
 		return fail(errors.New("arm must match the configured agent auth (DS=static, GM=gcp)"))
 	}
-	if opt.route == evalAskRoute && !cfg.Agent.Enabled {
+	if !cfg.Agent.Enabled {
 		return fail(errors.New("agent is not enabled (agent.enabled=false)"))
+	}
+	if opt.route == evalAnswerRoute && !cfg.Agent.AnswerEnabled {
+		return fail(errors.New("structured answers are not enabled (agent.answer_enabled=false)"))
 	}
 	model, host, err := agent.EvalEndpoint(cfg.Agent)
 	if err != nil {
@@ -241,19 +244,19 @@ func runEvalAgentRun(ctx context.Context, opt evalAgentOptions, cfg config.Confi
 		}
 		metadata := evalAgentMetadata{ID: q.id, Arm: opt.arm, Model: model, Manifest: opt.manifest}
 		var row any
-		var permanent bool
+		var answerErr error
+		var stopAfterAppend bool
 		if opt.route == evalAnswerRoute {
-			answer, stop, err := evalAgentAnswerRow(ctx, server, q, metadata)
+			row, answerErr = evalAgentAnswerRow(ctx, server, q, metadata)
 			transport.TakeCalls(q.id) // The answer row records the HTTP result, and the ledger records the attempts.
-			if err != nil {
-				return fail(err)
-			}
-			row, permanent = answer, stop
 		} else {
-			row, permanent = evalAgentAskRow(ctx, server, transport, q, metadata)
+			row, stopAfterAppend = evalAgentAskRow(ctx, server, transport, q, metadata)
 		}
 		if err := ledger.Check(); err != nil {
 			return report(err, 4)
+		}
+		if answerErr != nil {
+			return fail(answerErr)
 		}
 		if err := ctx.Err(); err != nil {
 			return fail(err)
@@ -264,7 +267,7 @@ func runEvalAgentRun(ctx context.Context, opt evalAgentOptions, cfg config.Confi
 		if err := out.Sync(); err != nil {
 			return fail(fmt.Errorf("sync answer: %w", err))
 		}
-		if permanent {
+		if stopAfterAppend {
 			return fail(errors.New("agent provider stopped on permanent authentication failure"))
 		}
 	}
@@ -306,30 +309,32 @@ func evalAgentAskRow(ctx context.Context, server *agent.Server, transport *llmus
 	return row, permanent
 }
 
-func evalAgentAnswerRow(ctx context.Context, server *agent.Server, q evalAgentQuestion, metadata evalAgentMetadata) (evalAgentStructuredAnswer, bool, error) {
+func evalAgentAnswerRow(ctx context.Context, server *agent.Server, q evalAgentQuestion, metadata evalAgentMetadata) (evalAgentStructuredAnswer, error) {
 	started := time.Now()
 	var observation agent.EvalObservation
 	ctx = agent.WithEvalObservation(llmusage.WithID(ctx, q.id), &observation)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/v1/agent/answer", bytes.NewReader(q.answer))
 	if err != nil {
-		return evalAgentStructuredAnswer{}, false, err
+		return evalAgentStructuredAnswer{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	w := evalAgentAnswerWriter{header: make(http.Header), status: http.StatusOK}
 	server.AnswerHandler().ServeHTTP(&w, req)
 	ms := time.Since(started).Milliseconds()
+	if class, permanent := agent.EvalErrorClass(observation.Err); permanent {
+		return evalAgentStructuredAnswer{}, fmt.Errorf("answer %q stopped on a permanent provider error (class %s)", q.id, class)
+	}
 	if w.Len() == 0 {
-		return evalAgentStructuredAnswer{}, false, errors.New("answer handler returned no JSON response")
+		return evalAgentStructuredAnswer{}, errors.New("answer handler returned no JSON response")
 	}
 	evidence := observation.Evidence
 	if evidence == nil {
 		evidence = []agent.EvalEvidence{}
 	}
-	_, permanent := agent.EvalErrorClass(observation.Err)
 	return evalAgentStructuredAnswer{
 		evalAgentMetadata: metadata, Route: evalAnswerRoute, HTTPStatus: w.status,
 		Response: w.Bytes(), PreCleaningReply: observation.AnswerText, VisibleEvidence: evidence, MS: ms,
-	}, permanent, nil
+	}, nil
 }
 
 // evalAgentAnswerWriter captures the JSON handler's status and complete body in process.

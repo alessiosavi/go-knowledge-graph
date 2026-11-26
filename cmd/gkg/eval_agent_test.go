@@ -331,6 +331,85 @@ func TestEvalAgentAnswerContextForwarded(t *testing.T) {
 	}
 }
 
+func TestEvalAgentAnswerDisabledFailsFast(t *testing.T) {
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
+		http.Error(w, "unexpected provider send", http.StatusBadRequest)
+	})
+	for _, tc := range []struct {
+		name, flag, setting string
+	}{
+		{"agent-disabled", "GKG_AGENT_ENABLED", "agent.enabled=false"},
+		{"answer-disabled", "GKG_AGENT_ANSWER_ENABLED", "agent.answer_enabled=false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := agentEvalQuestion("disabled", false)
+			q["domain"] = evalAnswerTestDomain
+			f := newAgentEvalFixture(t, srv, q)
+			t.Setenv("GKG_AGENT_ANSWER_ENABLED", "true")
+			t.Setenv(tc.flag, "false")
+			before, err := os.ReadFile(f.ledger)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var stderr bytes.Buffer
+			if code := run(f.args("--route", "answer"), io.Discard, &stderr); code == 0 || !strings.Contains(stderr.String(), tc.setting) {
+				t.Errorf("exit = %d, stderr = %q, want a refusal naming %s", code, stderr.String(), tc.setting)
+			}
+			if _, err := os.Stat(f.out); !os.IsNotExist(err) {
+				t.Errorf("want absent output file, stat returned %v", err)
+			}
+			after, err := os.ReadFile(f.ledger)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Errorf("disabled answer changed the ledger: %s (%v)", after, err)
+			}
+		})
+	}
+	if len(script.sent()) != 0 {
+		t.Fatal("disabled answer reached the provider")
+	}
+}
+
+func TestEvalAgentAnswerPermanentAuthNotRecorded(t *testing.T) {
+	const id = "retry-question"
+	const reply = "A lamp is available."
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, i int, _ agentEvalWireRequest) {
+		if i == 0 {
+			http.Error(w, "credential rejected", http.StatusUnauthorized)
+			return
+		}
+		agentEvalReply(w, reply)
+	})
+	q := agentEvalQuestion(id, false)
+	q["domain"] = evalAnswerTestDomain
+	f := newAgentEvalFixture(t, srv, q)
+	seedEvalAnswerDomain(t)
+
+	var stderr bytes.Buffer
+	if code := run(f.args("--route", "answer"), io.Discard, &stderr); code == 0 || !strings.Contains(stderr.String(), "permanent") ||
+		!strings.Contains(stderr.String(), "auth") {
+		t.Errorf("exit = %d, stderr = %q, want a permanent authentication failure", code, stderr.String())
+	}
+	if rows := readJudgeEvalRows(t, f.out); len(rows) != 0 {
+		t.Errorf("permanent failure recorded %d answer rows, want 0", len(rows))
+	}
+	if ledger := readJudgeEvalRows(t, f.ledger); len(ledger) != 4 || ledger[1]["kind"] != "allot" ||
+		ledger[2]["kind"] != "reserve" || ledger[2]["id"] != id || ledger[2]["attempt"] != float64(1) ||
+		ledger[3]["kind"] != "settle" || ledger[3]["id"] != id || ledger[3]["attempt"] != float64(1) {
+		t.Fatalf("want the failed attempt retained in an open run, got %v", ledger)
+	}
+
+	f.dispatch(t, 0, "--route", "answer")
+	row := agentEvalRows(t, f, 1)[0]
+	if n := len(script.sent()); n != 2 || row["id"] != id || row["http_status"] != float64(http.StatusOK) || row["pre_cleaning_reply"] != reply {
+		t.Fatalf("want a successful resumed answer after two provider sends, got %d sends and row %v", n, row)
+	}
+	if ledger := readJudgeEvalRows(t, f.ledger); len(ledger) != 7 || ledger[4]["kind"] != "reserve" || ledger[4]["id"] != id ||
+		ledger[4]["attempt"] != float64(2) || ledger[5]["kind"] != "settle" || ledger[6]["kind"] != "close" {
+		t.Fatalf("want a second attempt and a closed run after resume, got %v", ledger)
+	}
+}
+
 func TestEvalAgentResumeRefusesOtherRoute(t *testing.T) {
 	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
 		http.Error(w, "unexpected request", http.StatusBadRequest)
