@@ -118,7 +118,7 @@ func TestSubmitURLThroughRetryProxy(t *testing.T) {
 }
 
 func TestFetchProxyAcceptsSamePageRedirect(t *testing.T) {
-	const landing = "http://WWW.CATALOG.example:443/guide/?view=new#details"
+	const landing = "http://WWW.CATALOG.example/guide/?view=new#details"
 	f, connections := retryProxy(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/guide" {
 			http.Redirect(w, r, landing, http.StatusFound)
@@ -138,6 +138,9 @@ func TestSameFetchPage(t *testing.T) {
 		match              bool
 	}{
 		{"http://catalog.example", "https://catalog.example/", true},
+		{"http://catalog.example:80/page", "https://catalog.example:443/page", true},
+		{"http://catalog.example/page", "http://catalog.example:443/page", false},
+		{"https://catalog.example/page", "https://catalog.example:80/page", false},
 		{"http://catalog.example:8080/page", "http://catalog.example:8081/page", false},
 		{"http://catalog.example/page", "http://distributor.catalog.example/page", false},
 		{"http://catalog.example/page", "http://www.www.catalog.example/page", false},
@@ -295,5 +298,32 @@ func TestFetchProxyStopsWhenCallerCancelsBackoff(t *testing.T) {
 	}
 	if _, err := f.Fetch(ctx, retryRequested); err == nil || !strings.Contains(err.Error(), "landed on "+retryLanding) || !waited || connections.Load() != 1 {
 		t.Fatalf("Fetch error = %v, entered backoff = %t, connections = %d", err, waited, connections.Load())
+	}
+}
+
+func TestWaitForFetchRetryReturnsWhenCallerCancels(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	start := time.Now()
+	if waitForFetchRetry(ctx, time.Minute) {
+		t.Fatal("waitForFetchRetry reported a completed wait after cancellation")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("waitForFetchRetry returned after %s, want prompt return on cancellation", elapsed)
+	}
+}
+
+func TestProxySafeURLDropsQueryAndFragment(t *testing.T) {
+	proxy := &url.URL{Scheme: "http", Host: "proxy.example:80", User: url.UserPassword("proxy-user", "p@ss word")}
+	f := &Fetcher{Proxy: proxy}
+	u, err := url.Parse("https://user:secret@catalog.example/page?token=p%40ss+word#frag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.proxySafeURL(u); got != "https://catalog.example/page" {
+		t.Fatalf("proxySafeURL = %q, want scheme, host and path only", got)
+	}
+	if err := redactProxyError(errors.New("upstream said token=p%40ss+word"), proxy); !strings.Contains(err.Error(), "credentials omitted") {
+		t.Fatalf("redactProxyError kept a query-encoded password: %v", err)
 	}
 }

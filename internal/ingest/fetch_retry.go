@@ -60,17 +60,20 @@ func sameFetchPage(requested, landing *url.URL) bool {
 
 func fetchPageHost(u *url.URL) string {
 	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
-	switch port := u.Port(); port {
-	case "", "80", "443":
+	port := u.Port()
+	// Only the scheme's own default port is implied: http://host:443 is
+	// another service than http://host.
+	if port == "" || (port == "80" && strings.EqualFold(u.Scheme, "http")) || (port == "443" && strings.EqualFold(u.Scheme, "https")) {
 		return host
-	default:
-		return net.JoinHostPort(host, port)
 	}
+	return net.JoinHostPort(host, port)
 }
 
 func (f *Fetcher) proxySafeURL(u *url.URL) string {
 	safe := *u
-	safe.User = nil
+	// Logs and errors carry scheme, host and path only: a query can hold
+	// anything, including an encoded copy of a credential.
+	safe.User, safe.RawQuery, safe.ForceQuery, safe.Fragment, safe.RawFragment = nil, "", false, "", ""
 	value := safe.String()
 	if containsProxyCredentials(value, f.Proxy) {
 		return "[redacted URL]"

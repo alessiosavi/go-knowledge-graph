@@ -227,6 +227,7 @@ func containsProxyCredentials(msg string, proxy *url.URL) bool {
 		base64.StdEncoding.EncodeToString([]byte(username + ":" + password)),
 		url.User(username).String(), url.UserPassword("", password).String()[1:],
 		username, password,
+		url.QueryEscape(username), url.QueryEscape(password),
 	}
 	for _, secret := range secrets {
 		if secret != "" && strings.Contains(msg, secret) {
