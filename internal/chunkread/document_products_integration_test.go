@@ -25,10 +25,68 @@ func (s cappedProductDisplayStore) LoadProductLinkIndex(ctx context.Context) (*g
 	return index.WithProductDisplaysCappedForTest(), nil
 }
 
-func (s cappedProductDisplayStore) ProductLinkDisplays(ctx context.Context, ids []string) (map[string]graph.Product, error) {
+func (s cappedProductDisplayStore) ProductLinkDisplays(ctx context.Context, ids []string) (map[string]graph.ProductLinkDisplay, error) {
 	rows, err := s.Store.ProductLinkDisplays(ctx, ids)
 	delete(rows, s.missingID)
 	return rows, err
+}
+
+func TestReadProductStoresDropsOtherDomainProduct(t *testing.T) {
+	st, query := mentionDB(t, "chunk-scope-")
+	t.Cleanup(func() { query(`MATCH (s:ChunkScopeFixture) DETACH DELETE s`, nil) })
+	query(`
+CREATE (:GkgMeta {id:'product_release', value:'chunk-scope-release'}),
+       (:ProductStore:ChunkScopeFixture {store:'shop.example', domain:'catalogue'}),
+       (:Product {id:'chunk-scope-ref', store:'shop.example', product_id:'shop.example:1', domain:'other-domain'}),
+       (:Product {id:'chunk-scope-url', store:'shop.example', product_id:'shop.example:2', domain:'other-domain',
+                  link:'https://shop.example/guide'}),
+       (:Product {id:'chunk-scope-page', store:'shop.example', product_id:'shop.example:3', domain:'other-domain',
+                  link:'https://shop.example/catalogue/implant-kit.html'}),
+       (foreign:Product {id:'chunk-scope-code', store:'shop.example', product_id:'shop.example:4', domain:'other-domain'}),
+       (local:Product {id:'chunk-scope-local', store:'shop.example', product_id:'shop.example:5', domain:'catalogue',
+                      link:'https://shop.example/guide'}),
+       (d:Document {id:'chunk-scope-doc', domain:'catalogue', status:'done', source:'catalogue/implant-kit',
+                    final_url:'https://shop.example/guide'}),
+       (d)-[:HAS_CHUNK]->(:Chunk {id:'chunk-scope-c0', doc_id:d.id, domain:d.domain, seq:0, text:'AB12345 CD12345'}),
+       (d)-[:REFS]->(:ProductRef {id:'chunk-scope-ref'}),
+       (d)-[:REFS]->(:ProductRef {id:local.id}),
+       (f:FeatureRev {id:'catalogue_code', key:'chunk-scope-code'}),
+       (foreign)-[:HAS_FEATURE {release_id:'chunk-scope-release', value_fold:'AB12345'}]->(f),
+       (local)-[:HAS_FEATURE {release_id:'chunk-scope-release', value_fold:'CD12345'}]->(f)`, nil)
+
+	for _, tc := range []struct {
+		name  string
+		store chunkread.Store
+	}{
+		{"cached displays", st},
+		{"fallback displays", cappedProductDisplayStore{Store: st}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := chunkread.Request{IDs: []string{"chunk-scope-c0"}, Domain: "catalogue", WithProducts: true}
+			read := func(want ...string) {
+				t.Helper()
+				out, err := chunkread.Read(t.Context(), tc.store, req)
+				if err != nil || len(out.Chunks) != 1 || out.ProductsError != "" || out.LinksPartial != "" {
+					t.Fatalf("Read = %+v, %v", out, err)
+				}
+				item := out.Chunks[0]
+				if item.Products == nil || item.ProductsTotal == nil {
+					t.Fatalf("missing products or total: %+v", item)
+				}
+				var links []string
+				for _, p := range *item.Products {
+					links = append(links, p.ID+"/"+strings.Join(p.Via, "+"))
+				}
+				if !slices.Equal(links, want) || *item.ProductsTotal != len(want) {
+					t.Errorf("links = %v, total = %d, want %v and total %d", links, *item.ProductsTotal, want, len(want))
+				}
+			}
+			read("chunk-scope-ref/ref", "chunk-scope-local/ref+url+code", "chunk-scope-url/url", "chunk-scope-page/page", "chunk-scope-code/code")
+			req.ProductStores = []string{"shop.example"}
+			req.ProductsLimit = new(1)
+			read("chunk-scope-local/ref+url+code")
+		})
+	}
 }
 
 func TestReadDocumentProductsMemgraph(t *testing.T) {

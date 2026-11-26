@@ -46,6 +46,82 @@ func indexedChunks(chunks []graph.Chunk, observations []graph.ProductIdentifierO
 	}}
 }
 
+func productStoresFixture(domain string) documentTestStore {
+	inScope := graph.ProductIdentifierObservation{
+		Product: graph.Product{ID: "in-scope", Store: "shop.example", ProductID: "shop.example:1", Domain: domain, Title: "In scope"},
+		Feature: "catalogue_code", ValueFold: new("AB12345"),
+	}
+	foreignCode := graph.ProductIdentifierObservation{
+		Product: graph.Product{ID: "foreign-code", Store: "other.example", ProductID: "other.example:2", Domain: domain, Title: "Foreign code"},
+		Feature: "catalogue_code", ValueFold: new("CD12345"),
+	}
+	foreignRef := graph.Product{ID: "foreign-ref", Store: "other.example", ProductID: "other.example:1", Domain: domain, Title: "Foreign ref"}
+	return documentTestStore{
+		mentionTestStore: indexedChunks([]graph.Chunk{
+			{ID: "chunk", DocID: "doc", Domain: domain, Text: "AB12345 CD12345"},
+		}, []graph.ProductIdentifierObservation{inScope, foreignCode}),
+		documents: func([]string) (map[string]graph.DocumentProductLinks, error) {
+			return map[string]graph.DocumentProductLinks{"doc": {Status: graph.StatusDone, Refs: []graph.Product{foreignRef}}}, nil
+		},
+	}
+}
+
+func TestReadProductStoresEmptyDropsAll(t *testing.T) {
+	const domain = "catalogue"
+	out, err := Read(t.Context(), productStoresFixture(domain), Request{
+		IDs: []string{"chunk"}, Domain: domain, WithProducts: true, ProductStores: []string{},
+	})
+	if err != nil || len(out.Chunks) != 1 {
+		t.Fatalf("Read = %+v, %v", out, err)
+	}
+	item := out.Chunks[0]
+	if item.Products == nil || *item.Products == nil || len(*item.Products) != 0 || item.ProductsTotal == nil || *item.ProductsTotal != 0 {
+		t.Fatalf("products = %s, want an empty list and total 0", resultJSON(t, out))
+	}
+}
+
+func TestReadProductStoresEmptyDomainDropsAll(t *testing.T) {
+	out, err := Read(t.Context(), productStoresFixture(""), Request{
+		IDs: []string{"chunk"}, WithProducts: true, ProductStores: []string{"shop.example", "other.example"},
+	})
+	if err != nil || len(out.Chunks) != 1 {
+		t.Fatalf("Read = %+v, %v", out, err)
+	}
+	item := out.Chunks[0]
+	if item.Products == nil || *item.Products == nil || len(*item.Products) != 0 || item.ProductsTotal == nil || *item.ProductsTotal != 0 {
+		t.Fatalf("products = %s, want an empty list and total 0", resultJSON(t, out))
+	}
+}
+
+func TestReadProductStoresFilterBeforeCap(t *testing.T) {
+	const domain = "catalogue"
+	out, err := Read(t.Context(), productStoresFixture(domain), Request{
+		IDs: []string{"chunk"}, Domain: domain, WithProducts: true, ProductsLimit: new(1), ProductStores: []string{"shop.example"},
+	})
+	if err != nil || len(out.Chunks) != 1 {
+		t.Fatalf("Read = %+v, %v", out, err)
+	}
+	item := out.Chunks[0]
+	if item.Products == nil || len(*item.Products) != 1 || (*item.Products)[0].ProductID != "shop.example:1" ||
+		!slices.Equal((*item.Products)[0].Via, []string{"code"}) || item.ProductsTotal == nil || *item.ProductsTotal != 1 {
+		t.Fatalf("products = %s, want the in-scope code match and total 1", resultJSON(t, out))
+	}
+}
+
+func TestReadProductStoresNilKeepsBehaviour(t *testing.T) {
+	const domain = "catalogue"
+	out, err := Read(t.Context(), productStoresFixture(domain), Request{
+		IDs: []string{"chunk"}, Domain: domain, WithProducts: true, ProductsLimit: new(1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"chunks":[{"id":"chunk","doc_id":"doc","seq":0,"text":"AB12345 CD12345","products":[{"id":"foreign-ref","store":"other.example","product_id":"other.example:1","title":"Foreign ref","brand":"","via":["ref"],"matched":[]}],"products_total":3}],"meta":{"returned":1,"missing":[],"truncated":[],"omitted_for_budget":[]}}`
+	if got := string(resultJSON(t, out)); got != want {
+		t.Fatalf("Read = %s, want %s", got, want)
+	}
+}
+
 func TestReadProductSpans(t *testing.T) {
 	// The first prefix splits a multibyte rune in a matching span. The
 	// second prefix ends in an apparent whole code inside a longer token.
