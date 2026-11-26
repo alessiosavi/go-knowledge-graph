@@ -138,8 +138,9 @@ attempt opens a fresh proxy connection so a rotating proxy can assign a new exit
 Attempts have their own `GKG_INGEST_FETCH_TIMEOUT_S` limit and wait 1, 2, 4, then
 up to 8 seconds between retries. Setting retries to 0 still checks the landing
 page. If the final error reports another page, submit that landing URL when
-it is the page you want. The URL fetch runs inside `POST /v1/ingest`, so size
-`EDGE_INGEST_TIMEOUT_S` for the worst case: (retries + 1) ×
+it is the page you want. The URL fetch runs inside `POST /v1/ingest`; the edge
+derives `EDGE_INGEST_TIMEOUT_S` from these settings when it is unset. An explicit
+value should cover the worst case: (retries + 1) ×
 `GKG_INGEST_FETCH_TIMEOUT_S` + the backoff waits (1 + 2 + 4 + 8 … s) +
 `GKG_CONVERTER_TIMEOUT_S` for a converted body + a margin. With the defaults the
 fetch alone can take 4 × 30 + 7 = 127 seconds.
