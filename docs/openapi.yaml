@@ -1245,7 +1245,9 @@ paths:
       summary: Probe agent capabilities
       description: |
         Always registered, including when the agent is disabled. Returns 200
-        with enabled=false and stream=false when disabled. stream is true only
+        with enabled=false, answer=false and stream=false when disabled. answer
+        is true when structured answers (POST /v1/agent/answer) are enabled
+        as well as the agent. stream is true only
         when the agent is enabled, provider streaming is configured, and the
         process has not memoized provider streaming as unsupported.
       responses:

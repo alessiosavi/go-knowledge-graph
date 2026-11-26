@@ -55,7 +55,12 @@ func resolveMarks(text string, seen *seenIndex) markResult {
 			pos = start + 2
 
 			if closingPossible {
-				if closeAt := strings.Index(content[pos:], "]]"); closeAt >= 0 {
+				closeAt := strings.Index(content[pos:], "]]")
+				nextOpen := strings.Index(content[pos:], "[[")
+				if closeAt < 0 {
+					closingPossible = false
+				} else if nextOpen < 0 || nextOpen > closeAt {
+					// A group closes at its own "]]"; a later group's close leaves it unterminated.
 					end := pos + closeAt
 					for token := range strings.FieldsFuncSeq(content[pos:end], markSeparator) {
 						if !cite(token) {
@@ -66,7 +71,6 @@ func resolveMarks(text string, seen *seenIndex) markResult {
 					result.Spans = append(result.Spans, [2]int{offset + start, offset + pos})
 					continue
 				}
-				closingPossible = false
 			}
 
 			if candidates == nil {
