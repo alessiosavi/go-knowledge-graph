@@ -8,13 +8,16 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/productobs"
 )
 
 var update = flag.Bool("update", false, "rewrite the ask wire snapshots")
@@ -25,21 +28,27 @@ const (
 	askWireChunkID  = askWireDocID + "-c0"
 	askWireAnswer   = "**Desk lamp** (`shop.example:1`) has two brightness settings.\n\n" +
 		"- Source: `" + askWireChunkID + "`."
-	askProviderGolden = "ask-provider-requests.golden.json"
+	askProviderGolden       = "ask-provider-requests.golden.json"
+	askStreamProviderGolden = "ask-stream-provider-requests.golden.json"
 )
 
 func TestAskWireSnapshot(t *testing.T) {
 	s, stub := newAskWireServer(t, false)
 	rr := postAsk(t, s.AskHandler(), askWireQuestion)
-	stub.srv.Close() // Wait for the stub's writes before reading its capture.
 	if rr.Code != http.StatusOK || rr.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("/ask status=%d content-type=%q, want 200 application/json\n%s", rr.Code, rr.Header().Get("Content-Type"), rr.Body)
 	}
+	checkAskProviderGolden(t, askProviderGolden, stub)
+	checkAskWireGolden(t, "ask.golden.json", rr.Body.Bytes())
+}
+
+func checkAskProviderGolden(t *testing.T, name string, stub *llmStub) {
+	t.Helper()
+	stub.srv.Close() // Wait for the stub's writes before reading its capture.
 	if got := len(stub.requestBodies); got != 2 {
-		t.Fatalf("/ask provider turns = %d, want 2", got)
+		t.Fatalf("%s: provider turns = %d, want 2", name, got)
 	}
 
-	checkAskWireGolden(t, "ask.golden.json", rr.Body.Bytes())
 	requests := make([][]byte, len(stub.requestBodies))
 	for i, raw := range stub.requestBodies {
 		requests[i] = digestAskSystemMessages(t, i+1, raw)
@@ -50,7 +59,7 @@ func TestAskWireSnapshot(t *testing.T) {
 	if err := json.Indent(&pretty, requestJSON, "", "  "); err != nil {
 		t.Fatalf("indent provider requests: %v", err)
 	}
-	checkAskWireGolden(t, askProviderGolden, append(pretty.Bytes(), '\n'))
+	checkAskWireGolden(t, name, append(pretty.Bytes(), '\n'))
 }
 
 func TestAskStreamWireSnapshot(t *testing.T) {
@@ -60,12 +69,39 @@ func TestAskStreamWireSnapshot(t *testing.T) {
 	streamPing = time.Hour
 	t.Cleanup(func() { streamPing = oldPing })
 
-	s, _ := newAskWireServer(t, true)
-	rr := doReq(t, s.StreamHandler(), http.MethodPost, "/v1/agent/ask/stream", askWireQuestion, map[string]string{"Content-Type": "application/json"})
+	s, stub := newAskWireServer(t, true)
+	req := httptest.NewRequest(http.MethodPost, "/v1/agent/ask/stream", strings.NewReader(askWireQuestion))
+	req.Header.Set("Content-Type", "application/json")
+	rr := &askStreamRecorder{ResponseRecorder: httptest.NewRecorder()}
+	s.StreamHandler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK || rr.Header().Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("/ask/stream status=%d content-type=%q, want 200 text/event-stream\n%s", rr.Code, rr.Header().Get("Content-Type"), rr.Body)
 	}
+	frameEnd := []byte("\n\n")
+	offset := 0
+	for rest := rr.Body.Bytes(); len(rest) != 0; {
+		frame, remaining, ok := bytes.Cut(rest, frameEnd)
+		if !ok {
+			t.Fatalf("incomplete SSE frame at byte %d", offset)
+		}
+		offset += len(frame) + len(frameEnd)
+		if !slices.Contains(rr.flushOffsets, offset) {
+			t.Fatalf("SSE frame ending at byte %d was not flushed (flush offsets: %v)", offset, rr.flushOffsets)
+		}
+		rest = remaining
+	}
 	checkAskWireGolden(t, "ask-stream.golden.txt", rr.Body.Bytes())
+	checkAskProviderGolden(t, askStreamProviderGolden, stub)
+}
+
+type askStreamRecorder struct {
+	*httptest.ResponseRecorder
+	flushOffsets []int
+}
+
+func (r *askStreamRecorder) Flush() {
+	r.flushOffsets = append(r.flushOffsets, r.Body.Len())
+	r.ResponseRecorder.Flush()
 }
 
 func newAskWireServer(t *testing.T, stream bool) (*Server, *llmStub) {
@@ -85,10 +121,25 @@ func newAskWireServer(t *testing.T, stream bool) (*Server, *llmStub) {
 		ID: "22222222222222222222222222222222", Store: "shop.example", ProductID: "shop.example:1",
 		Domain: "catalog", Title: "Desk lamp", Category: "Lighting", Link: "https://shop.example/products/1",
 	}
+	const heightDefinition = "Adjustable height of the lamp."
 	detail := graph.ProductDetailWithMentions{
 		ProductDetail: graph.ProductDetail{
-			Product:  product,
-			Features: []graph.ProductEvidence{},
+			Product: product,
+			Features: []graph.ProductEvidence{{
+				Feature: graph.ProductFeatureRev{
+					ProductFeature: graph.ProductFeature{
+						ID: "height", Name: "Height", Kind: "measure", Cardinality: "multi", CanonicalUnit: new("mm"),
+					},
+					Key: "0123456789abcdef/height", Rev: "0123456789abcdef", Definition: heightDefinition,
+					DefinitionDigest: fmt.Sprintf("%x", sha256.Sum256([]byte(heightDefinition))), Replaces: new(""),
+				},
+				SourceKey: "height", Raw: "30–40 cm", Items: []string{"30–40 cm"}, SplitStatus: "split",
+				Typed: &productobs.TypedValue{
+					Status: "ok", Qualifier: new("range"), Inclusive: new(true), UnitIn: new("cm"), CanonicalUnit: new("mm"),
+					Lo: new("30"), Hi: new("40"), LoCanonical: new("300"), HiCanonical: new("400"),
+				},
+				Numeric: true, ReleaseID: "release-1",
+			}},
 			Pages: []graph.ProductPage{{
 				ID: askWireDocID, Title: "Desk lamp guide", Source: "https://shop.example/guides/lamp",
 				UpdatedAt: "2026-01-02T00:00:00Z", Via: []string{"url"}, ChunkIDs: []string{askWireChunkID}, ChunkCount: 1,
@@ -215,7 +266,7 @@ func checkAskWireGolden(t *testing.T, name string, got []byte) {
 	if bytes.Equal(want, got) {
 		return
 	}
-	if name == askProviderGolden {
+	if name == askProviderGolden || name == askStreamProviderGolden {
 		wantDigests, gotDigests := askPromptDigests(t, want), askPromptDigests(t, got)
 		for i := range min(len(wantDigests), len(gotDigests)) {
 			if !slices.Equal(wantDigests[i], gotDigests[i]) {
