@@ -74,8 +74,7 @@ type EvalEvidence struct {
 	Error     bool            `json:"error"`
 }
 
-// EvalObservation is an optional, per-ask observer. Only the ask writes it.
-// Collect it after Ask returns or StreamHandler has finished serving the ask.
+// EvalObservation collects data for one eval request. Read it after the request finishes.
 type EvalObservation struct {
 	Evidence              []EvalEvidence
 	ToolErrors            int
@@ -83,11 +82,12 @@ type EvalObservation struct {
 	DiscardedExtraContent int
 	Steps                 int
 	Err                   error
+	AnswerText            string // Final reply before citation markers are removed, for answer mode only.
 }
 
 type evalObservationKey struct{}
 
-// WithEvalObservation installs the observer for one in-process ask.
+// WithEvalObservation installs the observer for one in-process eval request.
 func WithEvalObservation(ctx context.Context, o *EvalObservation) context.Context {
 	return context.WithValue(ctx, evalObservationKey{}, o)
 }

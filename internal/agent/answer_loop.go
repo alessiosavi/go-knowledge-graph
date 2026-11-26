@@ -86,6 +86,9 @@ func (s *Server) runAnswer(ctx context.Context, req AnswerRequest, stores []stri
 	if err != nil {
 		return answerRun{}, err
 	}
+	if o := evalObservation(ctx); o != nil {
+		o.AnswerText = state.Text
+	}
 	return state.answerRun, nil
 }
 
