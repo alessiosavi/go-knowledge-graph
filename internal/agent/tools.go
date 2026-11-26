@@ -140,7 +140,8 @@ type documentOut struct {
 }
 
 type documentsOut struct {
-	Documents []documentOut `json:"documents"`
+	Documents        []documentOut `json:"documents"`
+	DocumentsOmitted int           `json:"documents_omitted,omitempty"`
 }
 
 type cypherOut struct {
@@ -307,6 +308,9 @@ func toolDefs() []toolDef {
 // execTool runs one tool call; its result marshals into the evidence array
 // and into the tool message the model receives.
 func (s *Server) execTool(ctx context.Context, name string, args json.RawMessage) (_ any, err error) {
+	if answerMode(ctx) != nil && !answerToolAllowed(name) {
+		return nil, errAnswerToolUnavailable
+	}
 	run := s.toolRunner(name)
 	if run != nil && s.metrics != nil {
 		start := time.Now()
@@ -371,6 +375,9 @@ func (s *Server) toolGetChunks(ctx context.Context, raw json.RawMessage) (any, e
 		return nil, err
 	}
 	req := chunkread.Request{IDs: args.IDs, Neighbours: args.Neighbours, Domain: requestDomain(ctx), WithProducts: true}
+	if answer := answerMode(ctx); answer != nil {
+		req.ProductStores = answer.stores
+	}
 	if args.WithProducts != nil {
 		var value *bool
 		if err := json.Unmarshal(args.WithProducts, &value); err != nil || value == nil {
@@ -522,7 +529,7 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 			DocumentDate: h.DocumentDate, DocumentDateSource: h.DocumentDateSource,
 		})
 	}
-	if kind == "auto" || kind == "product" {
+	if kind == "auto" || kind == "product" || answerMode(ctx) != nil {
 		return fitSearchHits(out)
 	}
 	return out, nil
@@ -738,7 +745,13 @@ func (s *Server) toolListDocuments(ctx context.Context, raw json.RawMessage) (an
 	if err != nil {
 		return nil, fmt.Errorf("list documents: %w", err)
 	}
-	return documentsOut{Documents: toDocumentOuts(docs)}, nil
+	out := documentsOut{Documents: toDocumentOuts(docs)}
+	if answerMode(ctx) != nil {
+		return fitProductResult(len(out.Documents), func(n int) documentsOut {
+			return documentsOut{Documents: out.Documents[:n], DocumentsOmitted: len(out.Documents) - n}
+		})
+	}
+	return out, nil
 }
 
 func (s *Server) toolStatus(ctx context.Context, raw json.RawMessage) (any, error) {

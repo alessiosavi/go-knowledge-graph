@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -171,6 +172,32 @@ type askPromptDigest struct {
 	Bytes  int    `json:"bytes"`
 }
 
+func TestAskSystemMessageDigestRejectsMalformedRequest(t *testing.T) {
+	const inputEnv = "GKG_TEST_ASK_DIGEST_INPUT"
+	if input := os.Getenv(inputEnv); input != "" {
+		digestAskSystemMessages(t, 1, []byte(input))
+		return
+	}
+	for _, tc := range []struct {
+		name, input, want string
+	}{
+		{"missing messages", `{}`, "expected provider messages array"},
+		{"null messages", `{"messages":null}`, "expected provider messages array"},
+		{"missing content", `{"messages":[{"role":"system"}]}`, "expected system message content string"},
+		{"null content", `{"messages":[{"role":"system","content":null}]}`, "expected system message content string"},
+		{"numeric content", `{"messages":[{"role":"system","content":42}]}`, "expected system message content string"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestAskSystemMessageDigestRejectsMalformedRequest$")
+			cmd.Env = append(cmd.Environ(), inputEnv+"="+tc.input)
+			out, err := cmd.CombinedOutput()
+			if err == nil || !bytes.Contains(out, []byte(tc.want)) {
+				t.Errorf("redaction must abort with %q, got %v\n%s", tc.want, err, out)
+			}
+		})
+	}
+}
+
 // digestAskSystemMessages hashes the decoded system content to keep real
 // storefront examples out of the fixture. All other fields keep their wire
 // representation apart from indentation. The response snapshots use the
@@ -179,7 +206,7 @@ func digestAskSystemMessages(t *testing.T, turn int, body []byte) []byte {
 	t.Helper()
 	messages, start := askJSONField(t, body, "messages")
 	if messages == nil {
-		return body
+		t.Fatalf("turn %d: expected provider messages array, field is missing", turn)
 	}
 	dec := json.NewDecoder(bytes.NewReader(messages))
 	if token, err := dec.Token(); err != nil || token != json.Delim('[') {
@@ -204,14 +231,11 @@ func digestAskSystemMessages(t *testing.T, turn int, body []byte) []byte {
 			continue
 		}
 		content, offset := askJSONField(t, message, "content")
-		if content == nil {
-			continue
+		var prompt *string
+		if err := json.Unmarshal(content, &prompt); err != nil || prompt == nil {
+			t.Fatalf("turn %d: expected system message content string (%v)", turn, err)
 		}
-		var prompt string
-		if err := json.Unmarshal(content, &prompt); err != nil {
-			t.Fatalf("turn %d: decode /ask system prompt: %v", turn, err)
-		}
-		digest, err := json.Marshal(askPromptDigest{fmt.Sprintf("%x", sha256.Sum256([]byte(prompt))), len(prompt)})
+		digest, err := json.Marshal(askPromptDigest{fmt.Sprintf("%x", sha256.Sum256([]byte(*prompt))), len(*prompt)})
 		if err != nil {
 			t.Fatalf("turn %d: encode system prompt digest: %v", turn, err)
 		}
