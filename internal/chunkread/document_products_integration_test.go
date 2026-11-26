@@ -89,6 +89,62 @@ CREATE (:GkgMeta {id:'product_release', value:'chunk-scope-release'}),
 	}
 }
 
+type productLinkSnapshotStore struct {
+	*graph.Store
+	index *graph.ProductLinkIndex
+}
+
+func (s productLinkSnapshotStore) LoadProductLinkIndex(context.Context) (*graph.ProductLinkIndex, error) {
+	return s.index, nil
+}
+
+func TestReadCappedCodeProductBrandScopeMemgraph(t *testing.T) {
+	st, query := mentionDB(t, "chunk-brand-")
+	t.Cleanup(func() { query(`MATCH (s:ChunkBrandFixture) DETACH DELETE s`, nil) })
+	query(`
+CREATE (:GkgMeta {id:'product_release', value:'chunk-brand-release'}),
+       (:ProductStore:ChunkBrandFixture {store:'shop.example', domain:'chunk-brand-original'}),
+       (p:Product {id:'chunk-brand-product', store:'shop.example', product_id:'shop.example:1',
+                   domain:'chunk-brand-original', brand:''}),
+       (d:Document {id:'chunk-brand-doc', domain:'chunk-brand-original', status:'done'}),
+       (d)-[:HAS_CHUNK]->(:Chunk {id:'chunk-brand-c0', doc_id:d.id, domain:d.domain, seq:0, text:'BX12345'}),
+       (f:FeatureRev {id:'catalogue_code', key:'chunk-brand-code'}),
+       (p)-[:HAS_FEATURE {release_id:'chunk-brand-release', value_fold:'BX12345'}]->(f)`, nil)
+	index, err := st.LoadProductLinkIndex(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the original index while the live display read sees the rebind.
+	store := productLinkSnapshotStore{Store: st, index: index.WithProductDisplaysCappedForTest()}
+	query(`MATCH (p:Product {id:'chunk-brand-product'}) SET p.domain='chunk-brand-rebound', p.brand='Live Brand'`, nil)
+
+	for _, tc := range []struct {
+		name   string
+		stores []string
+		brand  string
+	}{
+		{"scoped", []string{"shop.example"}, ""},
+		{"unscoped", nil, "Live Brand"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := chunkread.Read(t.Context(), store, chunkread.Request{
+				IDs: []string{"chunk-brand-c0"}, Domain: "chunk-brand-original", WithProducts: true, ProductStores: tc.stores,
+			})
+			if err != nil || len(out.Chunks) != 1 || out.ProductsError != "" || out.LinksPartial != "" {
+				t.Fatalf("Read = %+v, %v", out, err)
+			}
+			item := out.Chunks[0]
+			if item.Products == nil || len(*item.Products) != 1 || item.ProductsTotal == nil || *item.ProductsTotal != 1 {
+				t.Fatalf("Read = %+v, want one code link", item)
+			}
+			p := (*item.Products)[0]
+			if p.ID != "chunk-brand-product" || !slices.Equal(p.Via, []string{"code"}) || p.Brand != tc.brand {
+				t.Errorf("product = %+v, want chunk-brand-product via code with brand %q", p, tc.brand)
+			}
+		})
+	}
+}
+
 func TestReadDocumentProductsMemgraph(t *testing.T) {
 	const prefix = "chunk-links-"
 	st, query := mentionDB(t, prefix)

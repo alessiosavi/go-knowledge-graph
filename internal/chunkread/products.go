@@ -162,7 +162,7 @@ func enrichProducts(ctx context.Context, store Store, result *Result, fullTexts 
 		}
 	}
 	if index.ProductDisplaysCapped() {
-		fillCodeProductBrands(loadCtx, store, pages)
+		fillCodeProductBrands(loadCtx, store, pages, scope)
 	}
 	return fitProductEntries(result, pages)
 }
@@ -282,7 +282,7 @@ func inferredDisplayIDs(inferred map[string]graph.InferredDocumentProducts) map[
 	return ids
 }
 
-func fillCodeProductBrands(ctx context.Context, store Store, pages [][]ChunkProduct) {
+func fillCodeProductBrands(ctx context.Context, store Store, pages [][]ChunkProduct, scope productScope) {
 	ids := make(map[string]struct{})
 	for _, products := range pages {
 		for _, product := range products {
@@ -294,7 +294,7 @@ func fillCodeProductBrands(ctx context.Context, store Store, pages [][]ChunkProd
 	displays, _ := loadChunkProductDisplays(ctx, store, ids)
 	for _, products := range pages {
 		for i, product := range products {
-			if display, ok := displays[product.ID]; ok && product.Via[0] == "code" {
+			if display, ok := displays[product.ID]; ok && product.Via[0] == "code" && scope.allows(display.Product) {
 				products[i].Brand = display.Brand
 			}
 		}
