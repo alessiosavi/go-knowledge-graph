@@ -59,6 +59,7 @@ type Input struct {
 	Labels   string
 	Force    bool
 	Products []string // nil means omitted; an empty list clears refs
+	Domain   string   // existing domain ID or name; empty selects Auto
 
 	DocumentDate string // normalized caller date, empty when omitted
 }
@@ -80,6 +81,9 @@ type RebuildResult struct {
 // map it to a 5xx. Wrapped store errors keep their own chain: errors.Is
 // finds both this sentinel and the underlying error.
 var ErrStore = errors.New("ingest: store failure")
+
+// ErrDomainLookup marks a store failure while resolving a domain choice.
+var ErrDomainLookup = fmt.Errorf("%w: domain lookup failed", ErrStore)
 
 // ErrBusy marks a document whose processing lock is held. Admissions that
 // need to replace its payload must retry after the worker releases it.
@@ -124,6 +128,8 @@ type submission struct {
 // graph.Store; tests can exercise durable admission/recovery without a server.
 type pipelineStore interface {
 	duplicateRootStore
+	ResolveIngestDomain(context.Context, string) (string, error)
+	CheckIngestDomain(context.Context, *graph.Document, string) error
 	PrepareDocumentRefs(context.Context, *graph.DocumentInput, *graph.Document) error
 	UpsertDocument(context.Context, graph.DocumentInput) (graph.UpsertResult, error)
 	InFlight(context.Context) ([]graph.Document, error)
@@ -271,6 +277,16 @@ func (p *Pipeline) Submit(ctx context.Context, in Input) (Result, error) {
 	if _, _, err := p.labelsFor(in.Labels); err != nil {
 		return Result{}, err
 	}
+	in.Domain = strings.TrimSpace(in.Domain)
+	if in.Domain != "" {
+		if !p.writeMode.Domains {
+			return Result{}, graph.ErrSchemaNotV4
+		}
+		in.Domain, err = p.store.ResolveIngestDomain(ctx, in.Domain)
+		if err != nil {
+			return Result{}, domainLookupError(err)
+		}
+	}
 	loaded, err := p.loadInput(ctx, in)
 	if err != nil {
 		return Result{}, fmt.Errorf("ingest: load: %w", err)
@@ -378,6 +394,21 @@ func canNoopBeforeUpsert(doc *graph.Document, date string, force bool) bool {
 	return isLiveDuplicate(doc, force) && (date == "" || date == doc.RawDocumentDate)
 }
 
+func domainLookupError(err error) error {
+	var rejection *graph.IngestDomainError
+	if err == nil || errors.As(err, &rejection) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrDomainLookup, err)
+}
+
+func (p *Pipeline) checkAdmissionDomain(ctx context.Context, in graph.DocumentInput, doc *graph.Document) error {
+	if !in.DomainChosen || doc == nil || doc.Domain == in.Domain {
+		return nil
+	}
+	return domainLookupError(p.store.CheckIngestDomain(ctx, doc, in.Domain))
+}
+
 func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submission, force bool) (Result, error) {
 	id := graph.DocumentID(in.Kind, in.Source, in.Hash)
 	// A duplicate that keeps the existing date needs only a read. It can
@@ -385,6 +416,9 @@ func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submis
 	doc, err := p.store.Document(ctx, id)
 	if err != nil && !errors.Is(err, graph.ErrNotFound) {
 		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
+	}
+	if err := p.checkAdmissionDomain(ctx, in, doc); err != nil {
+		return Result{}, err
 	}
 	if err == nil && canNoopBeforeUpsert(doc, in.DocumentDate, force) {
 		if err := graph.CheckProductRefsNoop(in.ProductRefs, doc.ProductRefs); err != nil {
@@ -405,6 +439,9 @@ func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submis
 	doc, err = p.store.Document(ctx, id)
 	if err != nil && !errors.Is(err, graph.ErrNotFound) {
 		return Result{}, fmt.Errorf("%w: %w", ErrStore, err)
+	}
+	if err := p.checkAdmissionDomain(ctx, in, doc); err != nil {
+		return Result{}, err
 	}
 	if err == nil && canNoopBeforeUpsert(doc, in.DocumentDate, force) {
 		if err := graph.CheckProductRefsNoop(in.ProductRefs, doc.ProductRefs); err != nil {
@@ -430,7 +467,8 @@ func (p *Pipeline) admit(ctx context.Context, in graph.DocumentInput, sub submis
 	in.Force, in.SpoolPayloadDigest = force, payload.digest
 	res, err := p.store.UpsertDocument(ctx, in)
 	var refsErr *graph.DocumentRefsError
-	if errors.As(err, &refsErr) || (err == nil && res.Noop) {
+	var domainErr *graph.IngestDomainError
+	if errors.As(err, &refsErr) || errors.As(err, &domainErr) || errors.Is(err, graph.ErrSchemaNotV4) || (err == nil && res.Noop) {
 		if restoreErr := payload.restore(); restoreErr != nil {
 			return Result{}, fmt.Errorf("%w: restore submission: %w", ErrSpool, restoreErr)
 		}

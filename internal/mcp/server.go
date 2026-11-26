@@ -104,6 +104,7 @@ type ingestArgs struct {
 	Labels   string   `json:"labels,omitempty" jsonschema:"label preset name"`
 	Force    bool     `json:"force,omitempty" jsonschema:"re-ingest even when the content is unchanged"`
 	Products []string `json:"products,omitempty" jsonschema:"up to 50 unique store-prefixed product IDs; omit to retain or inherit refs, pass [] to clear"`
+	Domain   string   `json:"domain,omitempty" jsonschema:"existing domain id or exact name; empty = automatic detection; ids appear in list_documents results"`
 
 	DocumentDate string `json:"document_date,omitempty" jsonschema:"source date as YYYY-MM-DD or RFC 3339 with an offset"`
 }
@@ -333,7 +334,7 @@ func registerTools(s *Server) {
 	}, s.handleListFeatures)
 	addTool(s, &mcpgo.Tool{
 		Name:        "ingest",
-		Description: "Ingest a document from a URL or inline text; returns the document id. Poll `status` until done or failed.",
+		Description: "Ingest a document from a URL or inline text, optionally choosing an existing domain by id or exact name. Poll `status` until done or failed to see the assigned domain.",
 	}, s.handleIngest)
 	addReadTool(s, &mcpgo.Tool{
 		Name:        "status",
@@ -425,7 +426,7 @@ func (s *Server) handleIngest(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 	if err != nil {
 		return nil, ingestOut{}, err
 	}
-	in := ingest.Input{Source: args.Source, Labels: args.Labels, Force: args.Force, Products: args.Products, DocumentDate: date}
+	in := ingest.Input{Source: args.Source, Labels: args.Labels, Force: args.Force, Products: args.Products, Domain: args.Domain, DocumentDate: date}
 	if u != "" {
 		in.Kind, in.URL = "url", u
 	} else {
@@ -436,6 +437,13 @@ func (s *Server) handleIngest(ctx context.Context, _ *mcpgo.CallToolRequest, arg
 		var refsErr *graph.DocumentRefsError
 		if errors.As(err, &refsErr) {
 			return nil, ingestOut{}, argerr.Wrap(refsErr)
+		}
+		var domainErr *graph.IngestDomainError
+		if errors.As(err, &domainErr) {
+			return nil, ingestOut{}, argerr.Wrap(domainErr)
+		}
+		if errors.Is(err, graph.ErrSchemaNotV4) {
+			return nil, ingestOut{}, argerr.Wrap(err)
 		}
 		return nil, ingestOut{}, err
 	}
