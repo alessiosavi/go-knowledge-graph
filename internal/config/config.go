@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -205,8 +206,46 @@ type IngestConfig struct {
 	ChunkDedup       string  `yaml:"chunk_dedup"` // off | exact | near
 	JaccardThreshold float64 `yaml:"jaccard_threshold"`
 	FetchTimeoutS    int     `yaml:"fetch_timeout_s"`
+	FetchProxy       string  `yaml:"fetch_proxy,omitempty" json:"-"`
 	MaxRedirects     int     `yaml:"max_redirects"`
 }
+
+// FetchProxyURL parses the optional proxy without exposing its userinfo in errors.
+func (c IngestConfig) FetchProxyURL() (*url.URL, error) {
+	if c.FetchProxy == "" {
+		return nil, nil
+	}
+	proxy, err := url.Parse(c.FetchProxy)
+	if err != nil {
+		return nil, errors.New("config: GKG_INGEST_FETCH_PROXY must be a valid URL")
+	}
+	// http only: net/http sends an HTTP/1.1 CONNECT even when an https
+	// proxy negotiates h2, which a strict proxy rejects.
+	if proxy.Scheme != "http" {
+		return nil, errors.New("config: GKG_INGEST_FETCH_PROXY must use the http scheme")
+	}
+	if proxy.Hostname() == "" {
+		return nil, errors.New("config: GKG_INGEST_FETCH_PROXY URL must have a host")
+	}
+	if port := proxy.Port(); port != "" {
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return nil, errors.New("config: GKG_INGEST_FETCH_PROXY port must be between 1 and 65535")
+		}
+	}
+	return proxy, nil
+}
+
+// Use a method-free copy for config dumps to omit the proxy credential.
+type ingestConfigDump IngestConfig
+
+func (c IngestConfig) dump() ingestConfigDump {
+	c.FetchProxy = ""
+	return ingestConfigDump(c)
+}
+
+func (c IngestConfig) String() string            { return fmt.Sprintf("%+v", c.dump()) }
+func (c IngestConfig) GoString() string          { return fmt.Sprintf("%#v", c.dump()) }
+func (c IngestConfig) MarshalYAML() (any, error) { return c.dump(), nil }
 
 // LabelsConfig locates label presets.
 type LabelsConfig struct {
@@ -320,6 +359,9 @@ func Load(path string) (Config, error) {
 		}
 	}
 	if err := applyEnv(&cfg, os.LookupEnv); err != nil {
+		return Config{}, err
+	}
+	if _, err := cfg.Ingest.FetchProxyURL(); err != nil {
 		return Config{}, err
 	}
 	if err := cfg.ProductText.validate(); err != nil {

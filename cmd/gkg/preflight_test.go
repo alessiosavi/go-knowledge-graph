@@ -106,6 +106,19 @@ func TestPreflightRejectsArguments(t *testing.T) {
 	}
 }
 
+func TestPreflightOmitsInvalidIngestProxyCredentials(t *testing.T) {
+	t.Setenv("GKG_INGEST_FETCH_PROXY", "ftp://proxy-user:proxy-password@proxy.example")
+	var out, stderr bytes.Buffer
+	code := run([]string{"preflight"}, &out, &stderr)
+	text := out.String() + stderr.String()
+	if code != 1 || !strings.Contains(text, "GKG_INGEST_FETCH_PROXY") {
+		t.Fatalf("preflight exit = %d, want a keyed validation error", code)
+	}
+	if strings.Contains(text, "proxy-user") || strings.Contains(text, "proxy-password") {
+		t.Error("preflight printed proxy credentials")
+	}
+}
+
 // Record Bolt requests while forwarding only to the assigned throwaway database.
 // This checks the real command, including store creation, without production hooks.
 func TestPreflightDoesNotReadMentions(t *testing.T) {

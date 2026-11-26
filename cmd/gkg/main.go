@@ -356,12 +356,17 @@ func providerFromConfig(cfg config.Config, name string) (extract.Provider, error
 }
 
 // ingestFetcher builds the SSRF-guarded fetcher from the ingest config.
-func ingestFetcher(cfg config.Config) *ingest.Fetcher {
+func ingestFetcher(cfg config.Config) (*ingest.Fetcher, error) {
+	proxy, err := cfg.Ingest.FetchProxyURL()
+	if err != nil {
+		return nil, err
+	}
 	return &ingest.Fetcher{
+		Proxy:        proxy,
 		MaxBytes:     int64(cfg.Ingest.MaxURLMB) << 20,
 		MaxRedirects: cfg.Ingest.MaxRedirects,
 		TimeoutS:     cfg.Ingest.FetchTimeoutS,
-	}
+	}, nil
 }
 
 // seedDedupIndex loads persisted chunk fingerprints into the in-memory
@@ -480,7 +485,11 @@ func buildPipeline(ctx context.Context, cfg config.Config, st *graph.Store) (*in
 	if err != nil {
 		return nil, nil, err
 	}
-	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(ingestFetcher(cfg), conv))
+	fetcher, err := ingestFetcher(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	pipe := ingest.NewPipeline(cfg, st, prov, ix, ingest.DefaultLoader(fetcher, conv))
 	pipe.SetWriteMode(writeMode)
 	if mode := cfg.Judge.Mode; mode != "" && mode != "off" {
 		if err := pipe.SetJudge(newFactJudge(cfg, st)); err != nil {

@@ -121,6 +121,13 @@ even while processing or when the spool is full or unavailable. A spool write fa
 overlay: one literal entry per line; blank lines and lines beginning with `#`
 are ignored. Entries match normalized names without case or diacritic differences.
 
+Set `GKG_INGEST_FETCH_PROXY` (`ingest.fetch_proxy` in YAML) to route ingest URL
+fetches through one trusted HTTP proxy (`http://` URLs only), for example to fetch a site's
+regional content. The URL can carry credentials in its userinfo. Empty or unset
+uses direct fetches. Ingest ignores `HTTP_PROXY` and `HTTPS_PROXY`. The SSRF
+guard checks each destination URL and the proxy's public dial address. The
+proxy controls the connection to the destination.
+
 Sidecar inference runs one request at a time per process, using the available
 CPU threads. `GKG_EXTRACTOR_SIDECAR_TIMEOUT_S` defaults to 300 seconds per
 batch of up to eight chunks, including time queued behind other workers

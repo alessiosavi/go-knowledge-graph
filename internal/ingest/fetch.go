@@ -2,11 +2,14 @@ package ingest
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest/netguard"
@@ -44,6 +47,11 @@ type Fetcher struct {
 	MaxBytes     int64
 	MaxRedirects int
 	TimeoutS     int
+
+	// Proxy routes fetches through an explicit HTTP proxy. Target URLs
+	// and redirects still pass CheckURL. The guarded dial validates and pins
+	// the proxy address. The trusted proxy controls its connection to the target.
+	Proxy *url.URL
 }
 
 // Fetch GETs the URL through the guard, following at most MaxRedirects
@@ -76,28 +84,37 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (FetchResult, error)
 		timeout = 30 * time.Second
 	}
 
-	var client *http.Client
+	var client http.Client
 	if f.Client != nil {
-		c := *f.Client
-		// The fetcher's config owns the total time cap and the redirect
-		// policy; a caller client only contributes its transport options.
-		c.Timeout = timeout
+		client = *f.Client
+	}
+	client.Timeout = timeout
+	var transport *http.Transport
+	switch t := client.Transport.(type) {
+	case nil:
+		transport = newFetchTransport()
+	case *http.Transport:
+		transport = t.Clone()
+	default:
+		if f.Proxy != nil {
+			return FetchResult{}, errors.New("ingest: fetch proxy requires an HTTP transport")
+		}
+	}
+	if transport != nil {
+		transport.Proxy = nil
+		if f.Proxy != nil {
+			transport.Proxy = http.ProxyURL(f.Proxy)
+		}
 		if dg, ok := guard.(DialChecker); ok {
-			switch t := c.Transport.(type) {
-			case nil:
-				c.Transport = newGuardedTransport(dg, timeout)
-			case *http.Transport:
-				tc := t.Clone()
-				tc.DialContext = guardedDial(dg, tc.DialContext, timeout)
-				c.Transport = tc
+			transport.DialContext = guardedDial(dg, transport.DialContext, timeout)
+			if f.Proxy != nil {
+				// HTTPS proxy connections must use the guarded TCP dial before TLS.
+				transport.DialTLSContext = nil
+				transport.DialTLS = nil
 			}
 		}
-		client = &c
-	} else {
-		client = &http.Client{Timeout: timeout}
-		if dg, ok := guard.(DialChecker); ok {
-			client.Transport = newGuardedTransport(dg, timeout)
-		}
+		client.Transport = transport
+		defer transport.CloseIdleConnections()
 	}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) > maxRedirects {
@@ -116,7 +133,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (FetchResult, error)
 	req.Header.Set("User-Agent", "gkg/0.1 (+https://github.com/alessiosavi/go-knowledge-graph)")
 	resp, err := client.Do(req)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("ingest: fetch %s: %w", rawURL, err)
+		return FetchResult{}, redactProxyError(fmt.Errorf("ingest: fetch %s: %w", rawURL, err), f.Proxy)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -125,7 +142,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (FetchResult, error)
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("ingest: fetch %s: read body: %w", rawURL, err)
+		return FetchResult{}, redactProxyError(fmt.Errorf("ingest: fetch %s: read body: %w", rawURL, err), f.Proxy)
 	}
 	if int64(len(body)) > maxBytes {
 		return FetchResult{}, fmt.Errorf("ingest: fetch %s: body exceeds %d bytes", rawURL, maxBytes)
@@ -141,17 +158,36 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (FetchResult, error)
 	}, nil
 }
 
-// newGuardedTransport is the hardened default transport: no environment
-// proxy, and every dial goes through the guard's resolve-validate-pin path.
-func newGuardedTransport(dg DialChecker, timeout time.Duration) *http.Transport {
+func newFetchTransport() *http.Transport {
 	return &http.Transport{
-		DialContext:           guardedDial(dg, nil, timeout),
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          16,
 		IdleConnTimeout:       30 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
 	}
+}
+
+// Transport errors can echo a proxy's response text, including credentials.
+func redactProxyError(err error, proxy *url.URL) error {
+	if proxy == nil || proxy.User == nil {
+		return err
+	}
+	username := proxy.User.Username()
+	password, _ := proxy.User.Password()
+	secrets := []string{
+		proxy.User.String() + "@",
+		base64.StdEncoding.EncodeToString([]byte(username + ":" + password)),
+		url.User(username).String(), url.UserPassword("", password).String()[1:],
+		username, password,
+	}
+	msg := err.Error()
+	for _, secret := range secrets {
+		if secret != "" && strings.Contains(msg, secret) {
+			return errors.New("ingest: fetch: proxy request failed (credentials omitted)")
+		}
+	}
+	return err
 }
 
 // guardedDial resolves the connection address, rejects blocked targets and
