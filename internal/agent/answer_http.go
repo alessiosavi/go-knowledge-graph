@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -14,6 +16,34 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/productobs"
 )
 
+type answerHTTPRequest struct {
+	Question   string              `json:"question"`
+	Domain     string              `json:"domain"`
+	Context    *answerHTTPContext  `json:"context"`
+	Generation *GenerationSettings `json:"generation"`
+}
+
+type answerHTTPContext struct {
+	ProductIDs []string          `json:"product_ids"`
+	History    answerHTTPHistory `json:"history"`
+}
+
+type answerHTTPHistory []struct {
+	Role string  `json:"role"`
+	Text *string `json:"text"` // An explicitly empty string is a valid turn.
+}
+
+func (h *answerHTTPHistory) UnmarshalJSON(data []byte) error {
+	// A repeated history field must decode without reusing earlier turns.
+	type wireHistory answerHTTPHistory
+	var turns wireHistory
+	if err := json.Unmarshal(data, &turns); err != nil {
+		return err
+	}
+	*h = answerHTTPHistory(turns)
+	return nil
+}
+
 // AnswerHandler serves the domain-scoped structured answer route.
 func (s *Server) AnswerHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -22,8 +52,8 @@ func (s *Server) AnswerHandler() http.Handler {
 			writeError(w, http.StatusNotImplemented, "agent_disabled", "structured answers are not enabled on this server")
 			return
 		}
-		var req AnswerRequest
-		if !decodeAgentRequest(w, r, &req) {
+		var req answerHTTPRequest
+		if !decodeAnswerRequest(w, r, &req) {
 			return
 		}
 		req.Question = strings.TrimSpace(req.Question)
@@ -57,12 +87,15 @@ func (s *Server) AnswerHandler() http.Handler {
 			writeError(w, http.StatusBadRequest, "invalid_request", "unknown_domain")
 			return
 		}
-		if err := validateAnswerContext(req.Context, stores); err != nil {
+		conversation, err := req.Context.validate(stores)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_context", err.Error())
 			return
 		}
 
-		run, err := s.runAnswer(ctx, req, stores)
+		run, err := s.runAnswer(ctx, AnswerRequest{
+			Question: req.Question, Domain: req.Domain, Context: conversation, Generation: req.Generation,
+		}, stores)
 		if writeAnswerTimeout(w, ctx, err) {
 			return
 		}
@@ -95,36 +128,59 @@ func (s *Server) answerEnabled() bool {
 	return s.cfg.Agent.Enabled && s.cfg.Agent.AnswerEnabled
 }
 
-func validateAnswerContext(conversation *AnswerContext, stores []string) error {
-	if conversation == nil {
-		return nil
+func decodeAnswerRequest(w http.ResponseWriter, r *http.Request, dst *answerHTTPRequest) bool {
+	if r.ContentLength > responseBodyCap {
+		writeAgentRequestDecodeError(w, &http.MaxBytesError{Limit: responseBodyCap})
+		return false
 	}
-	if len(conversation.ProductIDs) > 10 {
-		return errors.New("context accepts at most 10 product IDs")
+	r.Body = http.MaxBytesReader(w, r.Body, responseBodyCap)
+	// Enforce the limit on the entire body before validating its JSON.
+	body, err := io.ReadAll(r.Body)
+	if err == nil {
+		err = json.Unmarshal(body, dst)
 	}
-	for _, id := range conversation.ProductIDs {
+	if err != nil {
+		writeAgentRequestDecodeError(w, err)
+		return false
+	}
+	return true
+}
+
+func (c *answerHTTPContext) validate(stores []string) (*AnswerContext, error) {
+	if c == nil {
+		return nil, nil
+	}
+	if len(c.ProductIDs) > 10 {
+		return nil, errors.New("context accepts at most 10 product IDs")
+	}
+	for _, id := range c.ProductIDs {
 		store, err := productobs.ImportIdentityPrefix(id)
 		if err != nil || len(id) > productobs.MaxImportIdentityBytes || !slices.Contains(stores, store) {
-			return errors.New("context product IDs must have a valid store prefix bound to the domain and be at most 1 KiB")
+			return nil, errors.New("context product IDs must have a valid store prefix bound to the domain and be at most 1 KiB")
 		}
 	}
-	if len(conversation.History) > 6 {
-		return errors.New("context history accepts at most 6 turns")
+	if len(c.History) > 6 {
+		return nil, errors.New("context history accepts at most 6 turns")
 	}
+	conversation := &AnswerContext{ProductIDs: c.ProductIDs, History: make([]HistoryTurn, 0, len(c.History))}
 	total := 0
-	for _, turn := range conversation.History {
+	for _, turn := range c.History {
 		if turn.Role != "user" && turn.Role != "assistant" {
-			return errors.New("context history roles must be user or assistant")
+			return nil, errors.New("context history roles must be user or assistant")
 		}
-		if utf8.RuneCountInString(turn.Text) > 1000 {
-			return errors.New("context history text must be at most 1000 characters per turn")
+		if turn.Text == nil {
+			return nil, errors.New("context history text is required")
 		}
-		total += len(turn.Text)
+		if utf8.RuneCountInString(*turn.Text) > 1000 {
+			return nil, errors.New("context history text must be at most 1000 characters per turn")
+		}
+		total += len(*turn.Text)
+		conversation.History = append(conversation.History, HistoryTurn{Role: turn.Role, Text: *turn.Text})
 	}
 	if total > 4<<10 {
-		return errors.New("context history text must be at most 4 KiB in total")
+		return nil, errors.New("context history text must be at most 4 KiB in total")
 	}
-	return nil
+	return conversation, nil
 }
 
 // A graph read can return an unrelated error after its context expires.

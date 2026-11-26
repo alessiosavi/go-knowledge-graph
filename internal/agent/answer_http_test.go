@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -101,6 +102,55 @@ func expectAnswerHTTP(t *testing.T, rr *httptest.ResponseRecorder, status int, k
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil || body.Error != kind || (detail != "" && body.Detail != detail) {
 		t.Fatalf("error response = %s, want %s %s", rr.Body, kind, detail)
 	}
+}
+
+func TestAnswerReview2ReadsEntireBoundedJSONBody(t *testing.T) {
+	padding := strings.Repeat(" ", (1<<20)-len(validAnswerQuestion))
+	for _, tc := range []struct {
+		name, suffix string
+		chunked      bool
+		status       int
+		kind         string
+	}{
+		{"at limit", padding, false, http.StatusOK, ""},
+		{"over limit", padding + " ", false, http.StatusRequestEntityTooLarge, "body_too_large"},
+		{"over limit chunked", padding + " ", true, http.StatusRequestEntityTooLarge, "body_too_large"},
+		{"over limit with invalid suffix", "x" + padding, true, http.StatusRequestEntityTooLarge, "body_too_large"},
+		{"trailing JSON object", "\n{}", false, http.StatusBadRequest, "invalid_json"},
+		{"trailing non-JSON", "\nx", false, http.StatusBadRequest, "invalid_json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newAnswerHTTPServer(t, &answerHTTPStore{}, 2, contentReply("A lamp"))
+			r := httptest.NewRequest(http.MethodPost, "/v1/agent/answer", strings.NewReader(validAnswerQuestion+tc.suffix))
+			r.Header.Set("Content-Type", "application/json")
+			if tc.chunked {
+				r.ContentLength = -1
+				r.TransferEncoding = []string{"chunked"}
+			}
+			rr := httptest.NewRecorder()
+			s.AnswerHandler().ServeHTTP(rr, r)
+			expectAnswerHTTP(t, rr, tc.status, tc.kind, "")
+		})
+	}
+}
+
+type unreadAnswerBody struct {
+	t *testing.T
+}
+
+func (b unreadAnswerBody) Read([]byte) (int, error) {
+	b.t.Error("body was read despite an oversized Content-Length")
+	return 0, io.EOF
+}
+
+func TestAnswerReview2_4RejectsOversizedContentLengthBeforeReading(t *testing.T) {
+	s, _ := newAnswerHTTPServer(t, &answerHTTPStore{}, 2)
+	r := httptest.NewRequest(http.MethodPost, "/v1/agent/answer", unreadAnswerBody{t: t})
+	r.Header.Set("Content-Type", "application/json")
+	r.ContentLength = responseBodyCap + 1
+	rr := httptest.NewRecorder()
+	s.AnswerHandler().ServeHTTP(rr, r)
+	expectAnswerHTTP(t, rr, http.StatusRequestEntityTooLarge, "body_too_large", "")
 }
 
 func TestAnswerDisabled501(t *testing.T) {
@@ -229,6 +279,39 @@ func TestAnswerHistoryBounds(t *testing.T) {
 			if len(stub.requests) != calls {
 				t.Errorf("provider got %d requests, want %d", len(stub.requests), calls)
 			}
+		})
+	}
+}
+
+func TestAnswerReview4HistoryTurnRequiresTextAndRole(t *testing.T) {
+	for _, tc := range []struct {
+		name, turn string
+		status     int
+		kind       string
+	}{
+		{"missing text", `{"role":"user"}`, http.StatusBadRequest, "invalid_context"},
+		{"null text", `{"role":"user","text":null}`, http.StatusBadRequest, "invalid_context"},
+		{"missing role", `{"text":"A lamp"}`, http.StatusBadRequest, "invalid_context"},
+		{"explicit empty text", `{"role":"user","text":""}`, http.StatusOK, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newAnswerHTTPServer(t, &answerHTTPStore{}, 2, contentReply("A lamp"))
+			body := `{"question":"Find lamps","domain":"catalog","context":{"history":[` + tc.turn + `]}}`
+			expectAnswerHTTP(t, postAnswer(t, s, body), tc.status, tc.kind, "")
+		})
+	}
+}
+
+func TestAnswerReview2_3RepeatedHistoryDecodesFreshTurns(t *testing.T) {
+	for _, tc := range []struct{ name, turn, detail string }{
+		{"missing text", `{"role":"assistant"}`, "context history text is required"},
+		{"missing role", `{"text":"A lamp"}`, "context history roles must be user or assistant"},
+		{"null turn", `null`, "context history roles must be user or assistant"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newAnswerHTTPServer(t, &answerHTTPStore{}, 2, contentReply("A lamp"))
+			body := `{"question":"Find lamps","domain":"catalog","context":{"history":[{"role":"user","text":"Find a lamp"}],"history":[` + tc.turn + `]}}`
+			expectAnswerHTTP(t, postAnswer(t, s, body), http.StatusBadRequest, "invalid_context", tc.detail)
 		})
 	}
 }

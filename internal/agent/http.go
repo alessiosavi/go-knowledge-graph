@@ -27,18 +27,22 @@ func writeError(w http.ResponseWriter, code int, kind, detail string) {
 	writeJSON(w, code, errorBody{Error: kind, Detail: detail})
 }
 
-// decodeAgentRequest handles the shared agent body limit and JSON errors.
+// decodeAgentRequest reads the first JSON value for the ask handlers.
 func decodeAgentRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, responseBodyCap)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		if isTooLarge(err) {
-			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body exceeds the agent limit")
-			return false
-		}
-		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		writeAgentRequestDecodeError(w, err)
 		return false
 	}
 	return true
+}
+
+func writeAgentRequestDecodeError(w http.ResponseWriter, err error) {
+	if isTooLarge(err) {
+		writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body exceeds the agent limit")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 }
 
 // decodeAskQuestion decodes and validates the ask request body, writing the
