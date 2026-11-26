@@ -121,9 +121,13 @@
     }
   }
 
+  const AUTO_DOMAIN_LABEL = "Auto (detect)";
+  const INGEST_DOMAIN_RESELECT = "Choose a domain again (or Auto) before submitting";
   const domainNames = new Map();
   const domainName = (id) => domainNames.get(id) || id;
   let domainRequest = 0;
+  let ingestDomainNeedsSelection = false;
+  let ingestDomainsUnavailable = false;
 
   function fillDomainPicker(id, defaultLabel, names) {
     const picker = $(id);
@@ -140,16 +144,50 @@
     return selected !== "" && picker.value === "";
   }
 
+  function updateIngestDomainNote() {
+    const notes = [];
+    if (ingestDomainsUnavailable) notes.push("domains unavailable");
+    if (ingestDomainNeedsSelection) {
+      notes.push("Selected domain is no longer available. Choose a domain again.");
+    }
+    $("ingest-domain-note").textContent = notes.join(". ");
+  }
+
+  function fillIngestDomainPicker(labels, unavailable = false) {
+    const selectionLost = fillDomainPicker("ingest-domain", AUTO_DOMAIN_LABEL, labels);
+    ingestDomainNeedsSelection ||= selectionLost;
+    ingestDomainsUnavailable = unavailable;
+    if (ingestDomainNeedsSelection) {
+      // Leave Auto available as a new choice that will fire a change event.
+      $("ingest-domain").selectedIndex = -1;
+    }
+    updateIngestDomainNote();
+  }
+
+  function appendCollidingDomainIds(labels, reservedLabel) {
+    const counts = new Map();
+    if (reservedLabel) counts.set(reservedLabel, 1);
+    for (const label of labels.values()) {
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+    let changed = false;
+    for (const [id, label] of labels) {
+      if (counts.get(label) > 1) {
+        labels.set(id, `${label} (${id})`);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   async function loadDomains() {
     const request = ++domainRequest;
-    const note = $("ingest-domain-note");
     let domains;
     try {
       domains = await api("/v1/domains");
     } catch (_) {
       if (request === domainRequest) {
-        fillDomainPicker("ingest-domain", "Auto (detect)", new Map());
-        note.textContent = "domains unavailable";
+        fillIngestDomainPicker(new Map(), true);
       }
       return;
     }
@@ -163,16 +201,12 @@
       fillDomainPicker(id, "All domains", domainNames);
     }
 
-    const nameCounts = new Map();
-    for (const name of domainNames.values()) {
-      nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+    const ingestLabels = new Map(domainNames);
+    appendCollidingDomainIds(ingestLabels);
+    while (appendCollidingDomainIds(ingestLabels, AUTO_DOMAIN_LABEL)) {
+      // A suffixed label can collide with another label on the next pass.
     }
-    const ingestNames = new Map();
-    for (const [id, name] of domainNames) {
-      ingestNames.set(id, nameCounts.get(name) > 1 ? `${name} (${id})` : name);
-    }
-    const selectionLost = fillDomainPicker("ingest-domain", "Auto (detect)", ingestNames);
-    note.textContent = selectionLost ? "Selected domain is no longer available. Choose a domain again." : "";
+    fillIngestDomainPicker(ingestLabels);
   }
 
   // ---- search -------------------------------------------------------------
@@ -915,13 +949,18 @@
   const ingestDomainErrors = new Set(["unknown_domain", "ambiguous_domain", "domain_conflict", "schema_not_v4"]);
 
   async function ingest() {
+    const statusNode = $("ingest-status");
+    if (ingestDomainNeedsSelection) {
+      statusNode.textContent = INGEST_DOMAIN_RESELECT;
+      statusNode.className = "muted error";
+      return;
+    }
     const kind = $("ingest-kind").value;
     const domain = $("ingest-domain").value;
     const body = $("ingest-body").value.trim();
     const source = $("ingest-source").value.trim();
     const labels = $("ingest-labels").value.trim();
     const date = $("ingest-date").value.trim();
-    const statusNode = $("ingest-status");
     const submit = $("ingest-submit");
     const fileInput = $("ingest-file");
     const file = kind === "file" && fileInput.files ? fileInput.files[0] : null;
@@ -963,6 +1002,7 @@
       const message = String(err.message || err);
       statusNode.textContent = ingestDomainErrors.has(err.code) ? err.code + ": " + message : message;
       statusNode.className = "muted error";
+      if (err.code === "unknown_domain") await loadDomains();
     } finally {
       setBusy(submit, false);
     }
@@ -1090,7 +1130,13 @@
       ingest();
     });
     $("ingest-domain").addEventListener("change", () => {
-      $("ingest-domain-note").textContent = "";
+      ingestDomainNeedsSelection = false;
+      updateIngestDomainNote();
+      const statusNode = $("ingest-status");
+      if (statusNode.textContent === INGEST_DOMAIN_RESELECT) {
+        statusNode.textContent = "";
+        statusNode.className = "muted";
+      }
     });
     // The file row and the textarea trade places with the kind; required
     // moves with visibility (a hidden required control blocks submit).

@@ -21,6 +21,10 @@ function domainOptions(p, id = "ingest-domain") {
   return picker.children.map((option) => [option.value, option.textContent]);
 }
 
+function ingestRequests(p) {
+  return p.requests.filter(({ path, method }) => path === "/v1/ingest" && method === "POST");
+}
+
 test("ingest lists domains by name and disambiguates duplicate names by ID", async () => {
   const p = await page();
   await refreshDomains(p, domains);
@@ -35,7 +39,29 @@ test("ingest lists domains by name and disambiguates duplicate names by ID", asy
   assert.equal(p.elements.get("ingest-domain-note").textContent, "");
 });
 
-test("a failed domain refresh resets only the ingest picker to Auto and shows a note", async () => {
+test("ingest disambiguates generated labels, literal labels, and the Auto label until unique", async () => {
+  const p = await page();
+  await refreshDomains(p, [
+    ...domains,
+    { id: "d-literal", name: "Manuals (d-manuals-a)" },
+    { id: "d-twice", name: "Manuals (d-manuals-a) (d-manuals-a)" },
+    { id: "d-auto", name: "Auto (detect)" },
+    { id: "d-auto-literal", name: "Auto (detect) (d-auto)" },
+  ]);
+
+  assert.deepEqual(domainOptions(p), [
+    ["", "Auto (detect)"],
+    ["d-catalogue", "Catalogue"],
+    ["d-manuals-a", "Manuals (d-manuals-a) (d-manuals-a) (d-manuals-a)"],
+    ["d-manuals-b", "Manuals (d-manuals-b)"],
+    ["d-literal", "Manuals (d-manuals-a) (d-literal)"],
+    ["d-twice", "Manuals (d-manuals-a) (d-manuals-a) (d-twice)"],
+    ["d-auto", "Auto (detect) (d-auto) (d-auto)"],
+    ["d-auto-literal", "Auto (detect) (d-auto) (d-auto-literal)"],
+  ]);
+});
+
+test("a failed domain refresh leaves only Auto for ingest and preserves search and ask filters", async () => {
   const p = await page();
   await refreshDomains(p, domains);
   const picker = p.elements.get("ingest-domain");
@@ -52,20 +78,35 @@ test("a failed domain refresh resets only the ingest picker to Auto and shows a 
 
   assert.deepEqual(domainOptions(p), [["", "Auto (detect)"]]);
   assert.equal(picker.value, "");
-  assert.match(p.elements.get("ingest-domain-note").textContent, /domains unavailable/i);
+  const note = p.elements.get("ingest-domain-note");
+  assert.match(note.textContent, /domains unavailable/i);
+  assert.match(note.textContent, /choose a domain again/i);
   assert.deepEqual(filterIDs.map((id) => domainOptions(p, id)), filterOptions);
   for (const id of filterIDs) assert.equal(p.elements.get(id).value, "d-catalogue");
 
+  p.elements.get("ingest-kind").value = "text";
+  p.elements.get("ingest-body").value = "catalogue page";
+  await p.fire("ingest-form", "submit");
+  assert.equal(ingestRequests(p).length, 0);
+
+  picker.selectedIndex = 0;
+  await p.fire("ingest-domain", "change");
+  assert.equal(note.textContent, "domains unavailable");
+
   await refreshDomains(p, domains);
   assert.equal(picker.value, "");
-  assert.equal(p.elements.get("ingest-domain-note").textContent, "");
+  assert.equal(note.textContent, "");
 });
 
-test("a successful domain refresh keeps valid choices and warns when the selection vanishes", async () => {
+test("a successful domain refresh keeps valid choices and blocks ingest when the selection vanishes", async () => {
   const p = await page();
   await refreshDomains(p, domains);
   const picker = p.elements.get("ingest-domain");
   assert.ok(picker, "missing ingest domain picker");
+  p.elements.get("ingest-kind").value = "text";
+  p.elements.get("ingest-body").value = "manual page";
+  p.replies.set("/v1/ingest", { document_id: "submitted" });
+  p.replies.set("/v1/documents/submitted/status", { status: "done" });
   picker.value = "d-manuals-b";
   await refreshDomains(p, domains);
   assert.equal(picker.value, "d-manuals-b");
@@ -77,10 +118,45 @@ test("a successful domain refresh keeps valid choices and warns when the selecti
   ]);
   assert.equal(picker.value, "");
   assert.match(p.elements.get("ingest-domain-note").textContent, /choose a domain again/i);
+  await p.fire("ingest-form", "submit");
+  assert.equal(ingestRequests(p).length, 0);
+  assert.equal(p.elements.get("ingest-status").textContent, "Choose a domain again (or Auto) before submitting");
 
   picker.value = "d-manuals-a";
   await p.fire("ingest-domain", "change");
   assert.equal(p.elements.get("ingest-domain-note").textContent, "");
+  assert.equal(p.elements.get("ingest-status").textContent, "");
+  await p.fire("ingest-form", "submit");
+  assert.deepEqual(ingestRequests(p).map(({ body }) => JSON.parse(body)), [
+    { text: "manual page", domain: "d-manuals-a" },
+  ]);
+});
+
+test("a second domain refresh cannot clear the warning before the user chooses Auto", async () => {
+  const p = await page();
+  await refreshDomains(p, domains);
+  const picker = p.elements.get("ingest-domain");
+  const note = p.elements.get("ingest-domain-note");
+  picker.value = "d-catalogue";
+  await refreshDomains(p, domains.slice(1));
+  const warning = note.textContent;
+  assert.match(warning, /choose a domain again/i);
+  await refreshDomains(p, domains);
+  assert.equal(note.textContent, warning);
+  assert.equal(picker.selectedIndex, -1, "Auto must be available as a new selection");
+
+  p.elements.get("ingest-kind").value = "text";
+  p.elements.get("ingest-body").value = "catalogue page";
+  p.replies.set("/v1/ingest", { document_id: "submitted" });
+  p.replies.set("/v1/documents/submitted/status", { status: "done" });
+  await p.fire("ingest-form", "submit");
+  assert.equal(ingestRequests(p).length, 0);
+
+  picker.selectedIndex = 0;
+  await p.fire("ingest-domain", "change");
+  assert.equal(note.textContent, "");
+  await p.fire("ingest-form", "submit");
+  assert.deepEqual(ingestRequests(p).map(({ body }) => JSON.parse(body)), [{ text: "catalogue page" }]);
 });
 
 test("an older failed refresh cannot reset the picker after a newer refresh succeeds", async () => {
@@ -176,6 +252,41 @@ test("a completed ingest uses the status domain if document details are unavaila
   await p.fire("ingest-form", "submit");
 
   assert.equal(p.elements.get("ingest-status").textContent, "document completed · done · Catalogue");
+});
+
+test("unknown_domain refreshes the pickers and keeps the draft while requiring a new choice", async () => {
+  const p = await page();
+  await refreshDomains(p, domains);
+  const get = (id) => p.elements.get(id);
+  const draft = [
+    ["ingest-kind", "text"],
+    ["ingest-body", "A fresh document"],
+    ["ingest-source", "Draft manual"],
+    ["ingest-labels", "documentation"],
+    ["ingest-date", "2026-03-01"],
+  ];
+  for (const [id, value] of draft) get(id).value = value;
+  get("ingest-domain").value = "d-catalogue";
+  p.replies.set("/v1/domains", [
+    domains[1], { id: "d-new", name: "New", documents: 0, products: 0, products_bound: false },
+  ]);
+  p.replies.set("/v1/ingest", () => ({
+    status: 409, ok: false,
+    json: async () => ({ error: "unknown_domain", detail: "domain d-catalogue disappeared" }),
+  }));
+
+  await p.fire("ingest-form", "submit");
+
+  assert.equal(get("ingest-status").textContent, "unknown_domain: domain d-catalogue disappeared");
+  for (const [id, value] of draft) assert.equal(get(id).value, value);
+  assert.deepEqual(domainOptions(p), [["", "Auto (detect)"], ["d-manuals-a", "Manuals"], ["d-new", "New"]]);
+  for (const id of ["search-domain", "ask-domain"]) {
+    assert.deepEqual(domainOptions(p, id), [["", "All domains"], ["d-manuals-a", "Manuals"], ["d-new", "New"]]);
+  }
+  assert.match(get("ingest-domain-note").textContent, /choose a domain again/i);
+  await p.fire("ingest-form", "submit");
+  assert.equal(ingestRequests(p).length, 1);
+  assert.equal(get("ingest-status").textContent, "Choose a domain again (or Auto) before submitting");
 });
 
 for (const [code, field, message, status] of [
