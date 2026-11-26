@@ -199,14 +199,45 @@ func TestAnswerListDocumentsFitted(t *testing.T) {
 	}
 	s, stub := newAnswerTestServer(t, st, 2, toolCallReply("list", "list_documents", `{"limit":100}`), contentReply("Lamp"))
 	run := runTestAnswer(t, s, stub, nil)
-	result := decodeAnswerToolResult[documentsOut](t, answerToolResults(t, stub, 1)["list"])
-	if len(result.Documents) == 0 || len(result.Documents) >= 100 || len(run.Seen.KnownIDs()) != 0 {
+	content := answerToolResults(t, stub, 1)["list"]
+	if len(content) > agentResultBudget {
+		t.Fatalf("fitted result has %d bytes, budget is %d", len(content), agentResultBudget)
+	}
+	result := decodeAnswerToolResult[struct {
+		Documents        []documentOut `json:"documents"`
+		DocumentsOmitted int           `json:"documents_omitted"`
+	}](t, content)
+	if len(result.Documents) == 0 || len(result.Documents) >= len(st.documents) || len(run.Seen.KnownIDs()) != 0 {
 		t.Fatalf("fitted documents = %d, seen ids = %v", len(result.Documents), run.Seen.KnownIDs())
+	}
+	if want := len(st.documents) - len(result.Documents); result.DocumentsOmitted != want {
+		t.Errorf("documents_omitted = %d, want %d", result.DocumentsOmitted, want)
 	}
 	for i, doc := range result.Documents {
 		if doc.Title != title || doc.ID != st.documents[i].ID {
 			t.Fatalf("document %d did not survive intact", i)
 		}
+	}
+}
+
+func TestAskListDocumentsOmitsOmissionCount(t *testing.T) {
+	doc := graph.Document{ID: "doc", Domain: answerTestDomain, Title: strings.Repeat("L", toolResultCap)}
+	st := &answerTestStore{documents: []graph.Document{doc}}
+	s, _ := newAnswerTestServer(t, st, 2, toolCallReply("list", "list_documents", `{}`), contentReply("Lamp"))
+	resp, err := s.Ask(t.Context(), AskRequest{Question: "List documents.", Domain: answerTestDomain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Evidence) != 1 || resp.Evidence[0].Tool != "list_documents" {
+		t.Fatal("expected one list_documents evidence item")
+	}
+	result := unmarshalResult[map[string]json.RawMessage](t, resp.Evidence[0].Result)
+	if _, exists := result["documents_omitted"]; exists {
+		t.Error("ask evidence contains documents_omitted")
+	}
+	docs := unmarshalResult[[]documentOut](t, result["documents"])
+	if len(docs) != 1 || docs[0].ID != doc.ID || docs[0].Title != doc.Title {
+		t.Error("ask evidence did not preserve the full document")
 	}
 }
 

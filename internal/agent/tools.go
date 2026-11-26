@@ -140,7 +140,8 @@ type documentOut struct {
 }
 
 type documentsOut struct {
-	Documents []documentOut `json:"documents"`
+	Documents        []documentOut `json:"documents"`
+	DocumentsOmitted int           `json:"documents_omitted,omitempty"`
 }
 
 type cypherOut struct {
@@ -747,7 +748,7 @@ func (s *Server) toolListDocuments(ctx context.Context, raw json.RawMessage) (an
 	out := documentsOut{Documents: toDocumentOuts(docs)}
 	if answerMode(ctx) != nil {
 		return fitProductResult(len(out.Documents), func(n int) documentsOut {
-			return documentsOut{Documents: out.Documents[:n]}
+			return documentsOut{Documents: out.Documents[:n], DocumentsOmitted: len(out.Documents) - n}
 		})
 	}
 	return out, nil
