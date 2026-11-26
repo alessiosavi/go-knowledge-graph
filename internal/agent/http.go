@@ -27,17 +27,25 @@ func writeError(w http.ResponseWriter, code int, kind, detail string) {
 	writeJSON(w, code, errorBody{Error: kind, Detail: detail})
 }
 
+// decodeAgentRequest handles the shared agent body limit and JSON errors.
+func decodeAgentRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, responseBodyCap)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		if isTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body exceeds the agent limit")
+			return false
+		}
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return false
+	}
+	return true
+}
+
 // decodeAskQuestion decodes and validates the ask request body, writing the
 // JSON error response itself when the request is unusable.
 func (s *Server) decodeAskQuestion(w http.ResponseWriter, r *http.Request) (AskRequest, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, responseBodyCap)
 	var req AskRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		if isTooLarge(err) {
-			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body exceeds the agent limit")
-			return AskRequest{}, false
-		}
-		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+	if !decodeAgentRequest(w, r, &req) {
 		return AskRequest{}, false
 	}
 	req, err := normalizeAskQuestion(req, s.generationCapabilities())
@@ -92,7 +100,7 @@ func (s *Server) AskHandler() http.Handler {
 }
 
 // StatusHandler serves GET /v1/agent/status: the UI's capability probe
-// (enabled, stream, and generation capabilities), behind the same bearer policy.
+// (enabled, answer, stream, and generation capabilities), behind the same bearer policy.
 // "stream" reports whether the ask stream endpoint will run the provider
 // calls streamed: the agent must be enabled, streaming on, and streaming
 // not memoized unsupported for this process.
@@ -101,6 +109,7 @@ func (s *Server) StatusHandler() http.Handler {
 		unsupported, _ := s.llm.streamState()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"enabled":    s.cfg.Agent.Enabled,
+			"answer":     s.answerEnabled(),
 			"generation": s.generationCapabilities(),
 			"stream":     s.cfg.Agent.Enabled && s.cfg.Agent.Stream && !unsupported,
 		})

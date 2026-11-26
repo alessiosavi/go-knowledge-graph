@@ -231,6 +231,7 @@ func TestAgentMountsRemainGuardedWhenDisabled(t *testing.T) {
 		method, path string
 		authorized   int
 	}{
+		{"POST", "/v1/agent/answer", 501},
 		{"POST", "/v1/agent/ask", 501}, {"POST", "/v1/agent/ask/stream", 501}, {"GET", "/v1/agent/status", 200},
 	} {
 		t.Run(tc.path, func(t *testing.T) {

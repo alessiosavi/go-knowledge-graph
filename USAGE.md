@@ -509,7 +509,7 @@ curl -N -s localhost:8080/v1/agent/ask/stream -H 'Content-Type: application/json
 ```
 
 `GET /v1/agent/status` reports the capability as
-`{"enabled":true,"stream":true,"generation":{"top_k":false,"reasoning_efforts":["none","high","max"]}}`
+`{"enabled":true,"answer":false,"stream":true,"generation":{"top_k":false,"reasoning_efforts":["none","high","max"]}}`
 for that deployment. An empty `reasoning_efforts` list disables that control. With `GKG_AGENT_STREAM=false` the stream
 endpoint still answers — SSE framing, tool and done events only, no deltas —
 and the panel uses the JSON endpoint; a provider that does not actually
@@ -545,6 +545,43 @@ While the agent is disabled the endpoint
 answers `501` and the panel stays hidden. Answers are LLM-generated — the
 `evidence` array is the source of truth
 ([known limits](docs/known-limitations.md)).
+
+### Structured answers
+
+Enable `GKG_AGENT_ENABLED=true` and `GKG_AGENT_ANSWER_ENABLED=true` to use
+`POST /v1/agent/answer`. The structured answer flag defaults to false.
+`GET /v1/agent/status` reports `answer: true` when both flags are on.
+The endpoint returns `501` when either flag is off.
+
+```sh
+curl -s http://localhost:8080/v1/agent/answer -H 'Content-Type: application/json' \
+     -d '{"question":"Which lamp is lighter?","domain":"catalog","context":{"product_ids":["shop.example:1031","shop.example:1032"]}}'
+```
+
+Provide a nonblank `question` and an existing `domain` slug. The body limit
+is 1 MiB. Optional `generation` settings follow the same rules as for Ask.
+For follow-ups, send up to 10 store-prefixed IDs in `context.product_ids`
+and up to six `user` or `assistant` turns in `context.history`. Each history
+turn has `role` and `text`. A product ID may use up to 1 KiB and its store
+must be bound to the domain. History text can use up to 1,000 characters
+per turn and 4 KiB total. The caller must provide history from the same
+domain. Each request reads its own evidence.
+
+The response uses contract `gkg-answer/1`. Treat `summary` as unverified
+model text. The factual fields are `products`, which contains cited cards
+with released feature evidence, and `passages`, which contains cited excerpts
+and their associations to returned cards. Each list includes up to 10 entries
+in first-citation order. Comparison rows show features shared by at least
+two returned cards. `comparison` is null when the answer has fewer than two
+cards. `as_of` reports the active feature release and domain store watermarks.
+The [OpenAPI specification](docs/openapi.yaml) describes all response fields.
+
+Check `complete` and `warnings` before presenting the answer. A truncated
+reply or a run that could produce no answer can return `200` with
+`complete: false`. `dropped` counts citations absent from the tool results
+or missing from scoped graph reads. Graph read failures return
+`502 hydration_error`. The agent timeout covers validation reads, model
+turns and graph reads. An expired deadline returns `504 agent_timeout`.
 
 ### Judge and agent provider configuration
 
