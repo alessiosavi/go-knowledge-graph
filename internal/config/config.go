@@ -219,11 +219,18 @@ func (c IngestConfig) FetchProxyURL() (*url.URL, error) {
 	if err != nil {
 		return nil, errors.New("config: GKG_INGEST_FETCH_PROXY must be a valid URL")
 	}
-	if proxy.Scheme != "http" && proxy.Scheme != "https" {
-		return nil, errors.New("config: GKG_INGEST_FETCH_PROXY must use the http or https scheme")
+	// http only: net/http sends an HTTP/1.1 CONNECT even when an https
+	// proxy negotiates h2, which a strict proxy rejects.
+	if proxy.Scheme != "http" {
+		return nil, errors.New("config: GKG_INGEST_FETCH_PROXY must use the http scheme")
 	}
 	if proxy.Hostname() == "" {
 		return nil, errors.New("config: GKG_INGEST_FETCH_PROXY URL must have a host")
+	}
+	if port := proxy.Port(); port != "" {
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return nil, errors.New("config: GKG_INGEST_FETCH_PROXY port must be between 1 and 65535")
+		}
 	}
 	return proxy, nil
 }

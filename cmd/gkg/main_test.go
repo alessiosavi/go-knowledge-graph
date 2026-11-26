@@ -53,7 +53,7 @@ func TestLoadConfigFromGKGConfig(t *testing.T) {
 }
 
 func TestIngestFetcherUsesProxyConfig(t *testing.T) {
-	t.Setenv("GKG_INGEST_FETCH_PROXY", "https://user:pass@proxy.example:8443")
+	t.Setenv("GKG_INGEST_FETCH_PROXY", "http://user:pass@proxy.example:8443")
 	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatal(err)

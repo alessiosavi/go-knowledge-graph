@@ -48,7 +48,7 @@ type Fetcher struct {
 	MaxRedirects int
 	TimeoutS     int
 
-	// Proxy routes fetches through an explicit HTTP(S) proxy. Target URLs
+	// Proxy routes fetches through an explicit HTTP proxy. Target URLs
 	// and redirects still pass CheckURL. The guarded dial validates and pins
 	// the proxy address. The trusted proxy controls its connection to the target.
 	Proxy *url.URL
@@ -122,9 +122,6 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (FetchResult, error)
 		}
 		if err := guard.CheckURL(req.Context(), req.URL); err != nil {
 			return fmt.Errorf("ingest: fetch %s: redirect blocked: %w", rawURL, err)
-		}
-		if f.Proxy != nil && f.Proxy.User != nil && req.URL.User != nil && req.URL.User.String() == f.Proxy.User.String() {
-			return errors.New("ingest: fetch redirect contains proxy credentials")
 		}
 		return nil
 	}

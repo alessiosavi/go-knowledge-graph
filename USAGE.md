@@ -122,7 +122,7 @@ overlay: one literal entry per line; blank lines and lines beginning with `#`
 are ignored. Entries match normalized names without case or diacritic differences.
 
 Set `GKG_INGEST_FETCH_PROXY` (`ingest.fetch_proxy` in YAML) to route ingest URL
-fetches through one trusted HTTP or HTTPS proxy, for example to fetch a site's
+fetches through one trusted HTTP proxy (`http://` URLs only), for example to fetch a site's
 regional content. The URL can carry credentials in its userinfo. Empty or unset
 uses direct fetches. Ingest ignores `HTTP_PROXY` and `HTTPS_PROXY`. The SSRF
 guard checks each destination URL and the proxy's public dial address. The

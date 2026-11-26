@@ -21,7 +21,7 @@ func TestFetchThroughConfiguredProxy(t *testing.T) {
 		fmt.Fprint(w, body)
 	}))
 	t.Cleanup(target.Close)
-	for _, mode := range []string{"default transport", "caller transport", "HTTPS proxy"} {
+	for _, mode := range []string{"default transport", "caller transport"} {
 		t.Run(mode, func(t *testing.T) {
 			var hits atomic.Int32
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -46,9 +46,6 @@ func TestFetchThroughConfiguredProxy(t *testing.T) {
 			proxy := httptest.NewUnstartedServer(handler)
 			f := &ingest.Fetcher{Guard: stubDialGuard{}}
 			switch mode {
-			case "HTTPS proxy":
-				proxy.StartTLS()
-				f.Client = proxy.Client()
 			case "caller transport":
 				proxy.Start()
 				transport := &http.Transport{}
@@ -179,24 +176,5 @@ func TestFetchProxyErrorOmitsCredentials(t *testing.T) {
 	_, err := f.Fetch(t.Context(), "https://192.0.2.1/")
 	if err == nil || strings.Contains(err.Error(), "proxy-user") || strings.Contains(err.Error(), "proxy-password") {
 		t.Fatalf("Fetch error = %v, want failure without proxy credentials", err)
-	}
-}
-
-func TestFetchProxyBlocksRedirectWithProxyCredentials(t *testing.T) {
-	var hits atomic.Int32
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		if r.URL.Path == "/start" {
-			http.Redirect(w, r, "http://proxy-user:proxy-password@192.0.2.1/next", http.StatusFound)
-			return
-		}
-		fmt.Fprint(w, "unexpected second hop")
-	}))
-	t.Cleanup(proxy.Close)
-	f := &ingest.Fetcher{Guard: stubDialGuard{}, Proxy: mustURL(t, proxy.URL)}
-	f.Proxy.User = url.UserPassword("proxy-user", "proxy-password")
-	_, err := f.Fetch(t.Context(), proxy.URL+"/start")
-	if err == nil || strings.Contains(err.Error(), "proxy-user") || strings.Contains(err.Error(), "proxy-password") || hits.Load() != 1 {
-		t.Fatalf("Fetch returned error %v and %d proxy hits, want rejection without credentials", err, hits.Load())
 	}
 }

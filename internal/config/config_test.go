@@ -189,10 +189,13 @@ func TestIngestFetchProxyRejectsInvalidURLWithoutCredentials(t *testing.T) {
 	for _, tc := range []struct {
 		name, value, problem string
 	}{
-		{"scheme", "ftp://proxy-user:proxy-password@proxy.example", "http or https"},
+		{"scheme", "ftp://proxy-user:proxy-password@proxy.example", "http scheme"},
+		{"https scheme", "https://proxy-user:proxy-password@proxy.example", "http scheme"},
+		{"port too high", "http://proxy-user:proxy-password@proxy.example:65536", "port"},
+		{"port zero", "http://proxy-user:proxy-password@proxy.example:0", "port"},
 		{"missing host", "http://proxy-user:proxy-password@", "host"},
 		{"missing hostname", "http://proxy-user:proxy-password@:8080", "host"},
-		{"unparsable", "https://proxy-user:proxy-password@proxy.example:%GG", "URL"},
+		{"unparsable", "http://proxy-user:proxy-password@proxy.example:%GG", "URL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(key, tc.value)
@@ -208,7 +211,7 @@ func TestIngestFetchProxyRejectsInvalidURLWithoutCredentials(t *testing.T) {
 }
 
 func TestIngestFetchProxyYAMLAndSafeDumps(t *testing.T) {
-	const proxy = "https://proxy-user:proxy-password@proxy.example:8443"
+	const proxy = "http://proxy-user:proxy-password@proxy.example:8443"
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("ingest:\n  fetch_proxy: "+proxy+"\n"), 0600); err != nil {
 		t.Fatal(err)
