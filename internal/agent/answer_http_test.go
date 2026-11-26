@@ -103,6 +103,36 @@ func expectAnswerHTTP(t *testing.T, rr *httptest.ResponseRecorder, status int, k
 	}
 }
 
+func TestAnswerReview2ReadsEntireBoundedJSONBody(t *testing.T) {
+	padding := strings.Repeat(" ", (1<<20)-len(validAnswerQuestion))
+	for _, tc := range []struct {
+		name, suffix string
+		chunked      bool
+		status       int
+		kind         string
+	}{
+		{"at limit", padding, false, http.StatusOK, ""},
+		{"over limit", padding + " ", false, http.StatusRequestEntityTooLarge, "body_too_large"},
+		{"over limit chunked", padding + " ", true, http.StatusRequestEntityTooLarge, "body_too_large"},
+		{"over limit with invalid suffix", "x" + padding, true, http.StatusRequestEntityTooLarge, "body_too_large"},
+		{"trailing JSON object", "\n{}", false, http.StatusBadRequest, "invalid_json"},
+		{"trailing non-JSON", "\nx", false, http.StatusBadRequest, "invalid_json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newAnswerHTTPServer(t, &answerHTTPStore{}, 2, contentReply("A lamp"))
+			r := httptest.NewRequest(http.MethodPost, "/v1/agent/answer", strings.NewReader(validAnswerQuestion+tc.suffix))
+			r.Header.Set("Content-Type", "application/json")
+			if tc.chunked {
+				r.ContentLength = -1
+				r.TransferEncoding = []string{"chunked"}
+			}
+			rr := httptest.NewRecorder()
+			s.AnswerHandler().ServeHTTP(rr, r)
+			expectAnswerHTTP(t, rr, tc.status, tc.kind, "")
+		})
+	}
+}
+
 func TestAnswerDisabled501(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		cfg := config.Config{}
@@ -229,6 +259,25 @@ func TestAnswerHistoryBounds(t *testing.T) {
 			if len(stub.requests) != calls {
 				t.Errorf("provider got %d requests, want %d", len(stub.requests), calls)
 			}
+		})
+	}
+}
+
+func TestAnswerReview4HistoryTurnRequiresTextAndRole(t *testing.T) {
+	for _, tc := range []struct {
+		name, turn string
+		status     int
+		kind       string
+	}{
+		{"missing text", `{"role":"user"}`, http.StatusBadRequest, "invalid_context"},
+		{"null text", `{"role":"user","text":null}`, http.StatusBadRequest, "invalid_context"},
+		{"missing role", `{"text":"A lamp"}`, http.StatusBadRequest, "invalid_context"},
+		{"explicit empty text", `{"role":"user","text":""}`, http.StatusOK, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newAnswerHTTPServer(t, &answerHTTPStore{}, 2, contentReply("A lamp"))
+			body := `{"question":"Find lamps","domain":"catalog","context":{"history":[` + tc.turn + `]}}`
+			expectAnswerHTTP(t, postAnswer(t, s, body), tc.status, tc.kind, "")
 		})
 	}
 }
