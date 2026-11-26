@@ -46,19 +46,19 @@ func indexedChunks(chunks []graph.Chunk, observations []graph.ProductIdentifierO
 	}}
 }
 
-func productStoresFixture() documentTestStore {
+func productStoresFixture(domain string) documentTestStore {
 	inScope := graph.ProductIdentifierObservation{
-		Product: graph.Product{ID: "in-scope", Store: "shop.example", ProductID: "shop.example:1", Title: "In scope"},
+		Product: graph.Product{ID: "in-scope", Store: "shop.example", ProductID: "shop.example:1", Domain: domain, Title: "In scope"},
 		Feature: "catalogue_code", ValueFold: new("AB12345"),
 	}
 	foreignCode := graph.ProductIdentifierObservation{
-		Product: graph.Product{ID: "foreign-code", Store: "other.example", ProductID: "other.example:2", Title: "Foreign code"},
+		Product: graph.Product{ID: "foreign-code", Store: "other.example", ProductID: "other.example:2", Domain: domain, Title: "Foreign code"},
 		Feature: "catalogue_code", ValueFold: new("CD12345"),
 	}
-	foreignRef := graph.Product{ID: "foreign-ref", Store: "other.example", ProductID: "other.example:1", Title: "Foreign ref"}
+	foreignRef := graph.Product{ID: "foreign-ref", Store: "other.example", ProductID: "other.example:1", Domain: domain, Title: "Foreign ref"}
 	return documentTestStore{
 		mentionTestStore: indexedChunks([]graph.Chunk{
-			{ID: "chunk", DocID: "doc", Text: "AB12345 CD12345"},
+			{ID: "chunk", DocID: "doc", Domain: domain, Text: "AB12345 CD12345"},
 		}, []graph.ProductIdentifierObservation{inScope, foreignCode}),
 		documents: func([]string) (map[string]graph.DocumentProductLinks, error) {
 			return map[string]graph.DocumentProductLinks{"doc": {Status: graph.StatusDone, Refs: []graph.Product{foreignRef}}}, nil
@@ -67,21 +67,36 @@ func productStoresFixture() documentTestStore {
 }
 
 func TestReadProductStoresEmptyDropsAll(t *testing.T) {
-	out, err := Read(t.Context(), productStoresFixture(), Request{
-		IDs: []string{"chunk"}, WithProducts: true, ProductStores: []string{},
+	const domain = "catalogue"
+	out, err := Read(t.Context(), productStoresFixture(domain), Request{
+		IDs: []string{"chunk"}, Domain: domain, WithProducts: true, ProductStores: []string{},
 	})
 	if err != nil || len(out.Chunks) != 1 {
 		t.Fatalf("Read = %+v, %v", out, err)
 	}
 	item := out.Chunks[0]
-	if item.Products == nil || len(*item.Products) != 0 || item.ProductsTotal == nil || *item.ProductsTotal != 0 {
+	if item.Products == nil || *item.Products == nil || len(*item.Products) != 0 || item.ProductsTotal == nil || *item.ProductsTotal != 0 {
+		t.Fatalf("products = %s, want an empty list and total 0", resultJSON(t, out))
+	}
+}
+
+func TestReadProductStoresEmptyDomainDropsAll(t *testing.T) {
+	out, err := Read(t.Context(), productStoresFixture(""), Request{
+		IDs: []string{"chunk"}, WithProducts: true, ProductStores: []string{"shop.example", "other.example"},
+	})
+	if err != nil || len(out.Chunks) != 1 {
+		t.Fatalf("Read = %+v, %v", out, err)
+	}
+	item := out.Chunks[0]
+	if item.Products == nil || *item.Products == nil || len(*item.Products) != 0 || item.ProductsTotal == nil || *item.ProductsTotal != 0 {
 		t.Fatalf("products = %s, want an empty list and total 0", resultJSON(t, out))
 	}
 }
 
 func TestReadProductStoresFilterBeforeCap(t *testing.T) {
-	out, err := Read(t.Context(), productStoresFixture(), Request{
-		IDs: []string{"chunk"}, WithProducts: true, ProductsLimit: new(1), ProductStores: []string{"shop.example"},
+	const domain = "catalogue"
+	out, err := Read(t.Context(), productStoresFixture(domain), Request{
+		IDs: []string{"chunk"}, Domain: domain, WithProducts: true, ProductsLimit: new(1), ProductStores: []string{"shop.example"},
 	})
 	if err != nil || len(out.Chunks) != 1 {
 		t.Fatalf("Read = %+v, %v", out, err)
@@ -94,8 +109,9 @@ func TestReadProductStoresFilterBeforeCap(t *testing.T) {
 }
 
 func TestReadProductStoresNilKeepsBehaviour(t *testing.T) {
-	out, err := Read(t.Context(), productStoresFixture(), Request{
-		IDs: []string{"chunk"}, WithProducts: true, ProductsLimit: new(1),
+	const domain = "catalogue"
+	out, err := Read(t.Context(), productStoresFixture(domain), Request{
+		IDs: []string{"chunk"}, Domain: domain, WithProducts: true, ProductsLimit: new(1),
 	})
 	if err != nil {
 		t.Fatal(err)

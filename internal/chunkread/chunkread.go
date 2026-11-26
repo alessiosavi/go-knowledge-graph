@@ -29,7 +29,8 @@ type Request struct {
 	Domain        string
 	WithProducts  bool
 	ProductsLimit *int
-	// ProductStores scopes product links. Nil allows all stores.
+	// ProductStores limits links to these stores and products in Domain.
+	// Nil leaves links unscoped. An empty list or Domain yields no scoped links.
 	ProductStores []string
 }
 
@@ -146,7 +147,7 @@ func Read(ctx context.Context, st Store, req Request) (Result, error) {
 	}
 	result.Meta.Returned = len(result.Chunks)
 	if len(fullTexts) > 0 {
-		if err := enrichProducts(ctx, st, &result, fullTexts, productsLimit, req.ProductStores); err != nil {
+		if err := enrichProducts(ctx, st, &result, fullTexts, productsLimit, req.Domain, req.ProductStores); err != nil {
 			return Result{}, err
 		}
 	}

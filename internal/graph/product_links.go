@@ -146,7 +146,7 @@ const allProductLinksQuery = `
 UNWIND $bindings AS binding
 MATCH (p:Product {store:binding.store})
 WHERE p.product_id IS NOT NULL
-RETURN p.id AS id, p.store AS store, p.product_id AS product_id, binding.domain AS domain,
+RETURN p.id AS id, p.store AS store, p.product_id AS product_id, p.domain AS domain, binding.domain AS store_domain,
        p.title AS title, p.brand AS brand, p.link AS link`
 
 func readProductLinkRow(row *neo4j.Record) Product {
@@ -185,10 +185,14 @@ func txLoadProductLinkOwners(ctx context.Context, tx neo4j.ManagedTransaction, s
 	urlBudget, pageBudget, productsBudget := productLinkBudget{maxRows: maxRows}, productLinkBudget{maxRows: maxRows}, productLinkBudget{maxRows: maxRows}
 	searchBudget := productLinkBudget{maxRows: maxRows}
 	for rows.Next(ctx) {
-		p := readProductLinkRow(rows.Record())
+		row := rows.Record()
+		display := readProductLinkRow(row)
+		// Owner buckets, search and the display budget use the store binding.
+		p := display
+		p.Domain = getString(row, "store_domain")
 		if !index.productsOff {
 			if productsBudget.add(p.linkRowBytes()) {
-				index.products[p.ID] = p
+				index.products[p.ID] = display
 			} else {
 				index.products, index.productsOff = nil, true
 			}

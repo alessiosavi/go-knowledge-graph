@@ -69,22 +69,31 @@ type ProductMentionIndexLoader interface {
 
 type productLinkIndexLoader interface {
 	LoadProductLinkIndex(context.Context) (*graph.ProductLinkIndex, error)
-	ProductLinkDisplays(context.Context, []string) (map[string]graph.Product, error)
+	ProductLinkDisplays(context.Context, []string) (map[string]graph.ProductLinkDisplay, error)
 }
 
-func enrichProducts(ctx context.Context, store Store, result *Result, fullTexts []string, limit int, stores []string) error {
-	var allowedStores map[string]bool
+type productScope struct {
+	domain string
+	stores map[string]bool
+}
+
+func (s productScope) allows(p graph.Product) bool {
+	return s.stores == nil || (p.Domain == s.domain && s.stores[p.Store])
+}
+
+func enrichProducts(ctx context.Context, store Store, result *Result, fullTexts []string, limit int, domain string, stores []string) error {
+	scope := productScope{domain: domain}
 	if stores != nil {
-		if len(stores) == 0 {
+		if domain == "" || len(stores) == 0 {
 			for i := range result.Chunks {
 				result.Chunks[i].Products = new([]ChunkProduct{})
 				result.Chunks[i].ProductsTotal = new(0)
 			}
 			return nil
 		}
-		allowedStores = make(map[string]bool, len(stores))
+		scope.stores = make(map[string]bool, len(stores))
 		for _, name := range stores {
-			allowedStores[name] = true
+			scope.stores[name] = true
 		}
 	}
 	chunksByDoc := make(map[string][]int)
@@ -121,7 +130,7 @@ func enrichProducts(ctx context.Context, store Store, result *Result, fullTexts 
 			result.LinksPartial = ownersTruncated
 		}
 	}
-	var displays map[string]graph.Product
+	var displays map[string]graph.ProductLinkDisplay
 	if index.ProductDisplaysCapped() {
 		var err error
 		displays, err = loadChunkProductDisplays(loadCtx, store, inferredDisplayIDs(inferred))
@@ -132,7 +141,7 @@ func enrichProducts(ctx context.Context, store Store, result *Result, fullTexts 
 
 	pages := make([][]ChunkProduct, len(fullTexts))
 	for docID, positions := range chunksByDoc {
-		docProducts, docPositions, missingDisplay := collectDocumentProducts(documents[docID], inferred[docID], index, displays, allowedStores)
+		docProducts, docPositions, missingDisplay := collectDocumentProducts(documents[docID], inferred[docID], index, displays, scope)
 		if missingDisplay {
 			result.LinksPartial = "index_unavailable"
 		}
@@ -143,7 +152,7 @@ func enrichProducts(ctx context.Context, store Store, result *Result, fullTexts 
 			}
 			var codeProducts []ChunkProduct
 			if code != nil {
-				codeProducts = collectChunkProducts(code.Match(fullTexts[i]), len(item.Text), index, allowedStores)
+				codeProducts = collectChunkProducts(code.Match(fullTexts[i]), len(item.Text), index, scope)
 			}
 			products, total := mergeChunkProducts(docProducts, docPositions, codeProducts, limit)
 			empty := products[:0]
@@ -249,7 +258,7 @@ func loadChunkCodeIndex(ctx context.Context, store Store) (*graph.ProductMention
 	return index, nil
 }
 
-func loadChunkProductDisplays(ctx context.Context, store Store, ids map[string]struct{}) (map[string]graph.Product, error) {
+func loadChunkProductDisplays(ctx context.Context, store Store, ids map[string]struct{}) (map[string]graph.ProductLinkDisplay, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -293,7 +302,7 @@ func fillCodeProductBrands(ctx context.Context, store Store, pages [][]ChunkProd
 }
 
 func collectDocumentProducts(doc graph.DocumentProductLinks, owners graph.InferredDocumentProducts,
-	index *graph.ProductLinkIndex, displays map[string]graph.Product, allowedStores map[string]bool,
+	index *graph.ProductLinkIndex, displays map[string]graph.ProductLinkDisplay, scope productScope,
 ) ([]ChunkProduct, map[string]int, bool) {
 	if doc.Status != graph.StatusDone {
 		return nil, nil, false
@@ -302,7 +311,7 @@ func collectDocumentProducts(doc graph.DocumentProductLinks, owners graph.Inferr
 	positions := make(map[string]int)
 	var products []ChunkProduct
 	add := func(product graph.Product, via string) {
-		if allowedStores != nil && !allowedStores[product.Store] {
+		if !scope.allows(product) {
 			return
 		}
 		if pos, exists := positions[product.ID]; exists {
@@ -319,8 +328,8 @@ func collectDocumentProducts(doc graph.DocumentProductLinks, owners graph.Inferr
 	addOwner := func(id, via string) {
 		if product, ok := index.ProductDisplay(id); ok {
 			add(product, via)
-		} else if product, ok := displays[id]; ok && product.Domain == doc.Domain {
-			add(product, via)
+		} else if display, ok := displays[id]; ok && display.StoreDomain == doc.Domain {
+			add(display.Product, via)
 		} else {
 			missingDisplay = true
 		}
@@ -413,11 +422,11 @@ func newChunkProduct(p graph.Product) ChunkProduct {
 	}
 }
 
-func collectChunkProducts(matches []graph.ProductMentionMatch, prefixBytes int, index *graph.ProductLinkIndex, allowedStores map[string]bool) []ChunkProduct {
+func collectChunkProducts(matches []graph.ProductMentionMatch, prefixBytes int, index *graph.ProductLinkIndex, scope productScope) []ChunkProduct {
 	byID := make(map[string]*ChunkProduct)
 	for _, match := range matches {
 		product := match.Product
-		if allowedStores != nil && !allowedStores[product.Store] {
+		if !scope.allows(product) {
 			continue
 		}
 		out := byID[product.ID]
