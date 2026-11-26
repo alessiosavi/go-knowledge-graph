@@ -36,6 +36,13 @@ func TestResolveMarksLongestSeenWins(t *testing.T) {
 	checkMarks(t, "Pick it [[shop.example:1. Next sentence.", seen, []string{"shop.example:1."}, nil, 0, "Pick it Next sentence.")
 }
 
+func TestAnswerReview1RejectsLongestPrefixWithInvalidBoundary(t *testing.T) {
+	seen := newSeenIndex()
+	seen.addProduct("graph1", "shop.example:1")
+	seen.addProduct("graph2", "shop.example:1.foo")
+	checkMarks(t, "Select [[shop.example:1.foobar", seen, nil, nil, 0, "Select shop.example:1.foobar")
+}
+
 func TestResolveMarksSeparatorIDsNotCandidates(t *testing.T) {
 	seen := newSeenIndex()
 	seen.addProduct("graph1", "shop.example:1")
@@ -51,6 +58,17 @@ func TestResolveMarksTrailingPunctuation(t *testing.T) {
 	for _, punct := range []string{".", ";", ":", "!", "?", ")"} {
 		t.Run(punct, func(t *testing.T) {
 			checkMarks(t, "Pick [[shop.example:1"+punct, seen, []string{"shop.example:1"}, nil, 0, "Pick"+punct)
+		})
+	}
+}
+
+func TestAnswerReview2_1UnterminatedPunctuationRequiresBoundary(t *testing.T) {
+	seen := newSeenIndex()
+	seen.addProduct("graph1", "shop.example:1")
+	for _, punct := range []string{".", ";", ":", "!", "?", ")"} {
+		t.Run(punct, func(t *testing.T) {
+			checkMarks(t, "[[shop.example:1"+punct+"variant", seen, nil, nil, 0, "shop.example:1"+punct+"variant")
+			checkMarks(t, "Pick [[shop.example:1"+punct+"\u00a0Next.", seen, []string{"shop.example:1"}, nil, 0, "Pick"+punct+"\u00a0Next.")
 		})
 	}
 }
@@ -73,6 +91,20 @@ func TestResolveMarksSpansMatchCleaning(t *testing.T) {
 	}
 	if got := cleanSummary(text, marks.Spans); got != "A.\nB.\nC" {
 		t.Errorf("summary = %q", got)
+	}
+}
+
+func TestAnswerReview3CitationGroupsStopAtLineBreaks(t *testing.T) {
+	seen := newSeenIndex()
+	seen.addProduct("graph1", "shop.example:1")
+	seen.addProduct("graph2", "shop.example:2")
+	for _, tc := range []struct{ name, newline string }{
+		{"LF", "\n"}, {"CRLF", "\r\n"}, {"CR", "\r"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := "One [[shop.example:1." + tc.newline + "Two [[shop.example:2]]."
+			checkMarks(t, text, seen, []string{"shop.example:1", "shop.example:2"}, nil, 0, "One."+tc.newline+"Two.")
+		})
 	}
 }
 
@@ -119,6 +151,32 @@ func TestCleanSummary(t *testing.T) {
 			if got := cleanSummary(tc.text, marks.Spans); got != tc.want {
 				t.Errorf("summary = %q, want %q", got, tc.want)
 			}
+		})
+	}
+}
+
+func TestAnswerReview5SummaryPreservesLeadingIndentation(t *testing.T) {
+	for _, tc := range []struct{ name, text, summary string }{
+		{"indented block", "Example:\n\n    [[unknown]].", "Example:\n\n    ."},
+		{"first line", "    [[unknown]].", "    ."},
+		{"after CR", "Example:\r\t  [[unknown]].", "Example:\r\t  ."},
+		{"after CRLF", "Example:\r\n    [[unknown]].", "Example:\r\n    ."},
+		{"after text", "    Example [[unknown]] .", "    Example."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checkMarks(t, tc.text, nil, nil, nil, 1, tc.summary)
+		})
+	}
+}
+
+func TestAnswerReview2_2SummaryKeepsOnlyOriginalIndentation(t *testing.T) {
+	for _, tc := range []struct{ name, text, summary string }{
+		{"spaces", "  [[unknown]]  .", "  ."},
+		{"tab", "\t[[unknown]]  .", "\t."},
+		{"mixed after CRLF", "Example:\r\n\t  [[unknown]]  !", "Example:\r\n\t  !"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checkMarks(t, tc.text, nil, nil, nil, 1, tc.summary)
 		})
 	}
 }

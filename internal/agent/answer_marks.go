@@ -38,10 +38,13 @@ func resolveMarks(text string, seen *seenIndex) markResult {
 
 	var candidates []string
 
-	offset := 0
-	for line := range strings.SplitSeq(text, "\n") {
-		// Treat the carriage return in CRLF as part of the line ending.
-		content := strings.TrimSuffix(line, "\r")
+	for offset := 0; offset < len(text); {
+		remaining := text[offset:]
+		lineEnd := strings.IndexAny(remaining, "\r\n")
+		if lineEnd < 0 {
+			lineEnd = len(remaining)
+		}
+		content := remaining[:lineEnd]
 		closingPossible := true
 		for pos := 0; pos < len(content); {
 			open := strings.Index(content[pos:], "[[")
@@ -87,7 +90,7 @@ func resolveMarks(text string, seen *seenIndex) markResult {
 			}
 			result.Spans = append(result.Spans, [2]int{offset + start, offset + pos})
 		}
-		offset += len(line) + 1
+		offset += lineEnd + 1
 	}
 	return result
 }
@@ -101,13 +104,22 @@ func leadingSeenID(text string, candidates []string) string {
 		if !strings.HasPrefix(text, id) {
 			continue
 		}
-		if len(text) == len(id) {
+		suffix := text[len(id):]
+		if suffix == "" {
 			return id
 		}
-		next, _ := utf8.DecodeRuneInString(text[len(id):])
-		if markSeparator(next) || strings.ContainsRune(".;:!?)", next) {
+		next, size := utf8.DecodeRuneInString(suffix)
+		if markSeparator(next) {
 			return id
 		}
+		if strings.ContainsRune(".;:!?)", next) {
+			after, size := utf8.DecodeRuneInString(suffix[size:])
+			if size == 0 || markSeparator(after) {
+				return id
+			}
+		}
+		// Candidates are longest first. A bad boundary ends the match.
+		break
 	}
 	return ""
 }
@@ -154,10 +166,21 @@ func cleanSummary(text string, spans [][2]int) string {
 		for end < len(text) && text[end] == ' ' {
 			end++
 		}
-		if start < end && end < len(text) && strings.ContainsRune(".,;:!?)]", rune(text[end])) {
-			out.WriteString(text[last:start])
-			last = end
+		if start == end || end == len(text) || !strings.ContainsRune(".,;:!?)]", rune(text[end])) {
+			continue
 		}
+		before, _ := utf8.DecodeLastRuneInString(text[:start])
+		if start == 0 || unicode.IsSpace(before) {
+			previous := strings.LastIndexFunc(text[:start], func(r rune) bool {
+				return r == '\r' || r == '\n' || !unicode.IsSpace(r)
+			})
+			if previous >= 0 && text[previous] != '\r' && text[previous] != '\n' {
+				continue
+			}
+			start = gap // Keep the original indentation before the mark.
+		}
+		out.WriteString(text[last:start])
+		last = end
 	}
 	out.WriteString(text[last:])
 	return out.String()
