@@ -1,0 +1,15 @@
+event: tool
+data: {"arguments":{"query":"desk lamp","limit":2},"name":"search"}
+
+event: tool
+data: {"arguments":{"store":"shop.example","product_id":"shop.example:1"},"name":"get_product"}
+
+event: delta
+data: {"text":"**Desk lamp**"}
+
+event: delta
+data: {"text":" (`shop.example:1`) has two brightness settings.\n\n- Source: `11111111111111111111111111111111-c0`."}
+
+event: done
+data: {"answer":"**Desk lamp** (`shop.example:1`) has two brightness settings.\n\n- Source: `11111111111111111111111111111111-c0`.","answer_html":"\u003cp\u003e\u003cstrong\u003eDesk lamp\u003c/strong\u003e (\u003ccode\u003eshop.example:1\u003c/code\u003e) has two brightness settings.\u003c/p\u003e\n\u003cul\u003e\n\u003cli\u003eSource: \u003ccode\u003e11111111111111111111111111111111-c0\u003c/code\u003e.\u003c/li\u003e\n\u003c/ul\u003e\n","evidence":[{"tool":"search","arguments":{"query":"desk lamp","limit":2},"result":{"hits":[{"domain":"catalog","kind":"product","id":"22222222222222222222222222222222","title":"Desk lamp","store":"shop.example","product_id":"shop.example:1"},{"domain":"catalog","kind":"chunk","id":"11111111111111111111111111111111-c0","title":"Desk lamp guide","score":0.016666666666666666,"snippet":"The desk lamp has two brightness settings.","document_id":"11111111111111111111111111111111","document_date":"2026-01-02T00:00:00Z","document_date_source":"caller"}]}},{"tool":"get_product","arguments":{"store":"shop.example","product_id":"shop.example:1"},"result":{"id":"22222222222222222222222222222222","store":"shop.example","product_id":"shop.example:1","domain":"catalog","title":"Desk lamp","brand":"","category":"Lighting","subcategory":"","link":"https://shop.example/products/1","features":[],"pages":[{"id":"11111111111111111111111111111111","title":"Desk lamp guide","source":"https://shop.example/guides/lamp","updated_at":"2026-01-02T00:00:00Z","via":["url"],"chunk_ids":["11111111111111111111111111111111-c0"],"chunk_count":1}],"pages_missing":false,"mentions":[],"mentions_total":0,"mentions_keys":0,"mentions_partial":false}}],"steps":1}
+

@@ -1,0 +1,773 @@
+[
+  {
+    "model": "stub-model",
+    "messages": [
+      {
+        "role": "system",
+        "content": {
+          "sha256": "4fb70b95068bc6293e837f8e86021f5818cdab8c6b93e7409d73fd8baf30ee8f",
+          "bytes": 3570
+        }
+      },
+      {
+        "role": "user",
+        "content": "What does the desk lamp offer?"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "search",
+          "description": "Search entity names, chunk text, product titles and, when enabled, product attribute meaning. Auto can list products first. Open a product hit with get_product using its id. Use kind=product for products only. A products_error such as timeout or index_unavailable means title matches are unknown. Product hits can carry match=title|meaning, with key (matched attribute), checked (whether the store and key belong to the active release) and excerpt (matched text) for meaning hits, and meaning_error=timeout|unavailable means meaning matches are unknown. A true meaning_partial or meaning_truncated means meaning results may be incomplete, so treat a missing product as inconclusive. Since/until filter chunk hits by document date and do not apply to products. Start with limit 10.",
+          "parameters": {
+            "properties": {
+              "kind": {
+                "description": "hit kind filter (default auto)",
+                "enum": [
+                  "entity",
+                  "chunk",
+                  "auto",
+                  "product"
+                ],
+                "type": "string"
+              },
+              "limit": {
+                "description": "maximum hits (default 20, capped at 100)",
+                "type": "integer"
+              },
+              "query": {
+                "description": "keywords for entity names, chunk text or product titles",
+                "type": "string"
+              },
+              "since": {
+                "description": "Inclusive lower bound on the effective document date. Use YYYY-MM-DD (start of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              },
+              "until": {
+                "description": "Inclusive upper bound on the effective document date. Use YYYY-MM-DD (end of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_entity",
+          "description": "One entity with aliases, co-mentions and evidenced facts. Since/until filter fact evidence by document date. A merge redirect includes requested and resolved_via=merged. Name lookup tries exact matches first, then verified folds marked match=fold. Unscoped ambiguous names return one candidate per domain.",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "live or retired entity id or key",
+                "type": "string"
+              },
+              "include_low_confidence": {
+                "description": "include facts below the assert floor. Judge-confirmed facts are always shown",
+                "type": "boolean"
+              },
+              "name": {
+                "description": "entity name, used when id is omitted",
+                "type": "string"
+              },
+              "since": {
+                "description": "Inclusive lower bound on the effective document date. Use YYYY-MM-DD (start of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              },
+              "until": {
+                "description": "Inclusive upper bound on the effective document date. Use YYYY-MM-DD (end of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_chunks",
+          "description": "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids. Chunks with an owning document include its effective document_date and document_date_source (caller or ingest). The 24 KiB response budget can omit chunks. Pass a product page's chunk_ids to read its passages. with_products defaults to true and lists document-linked products first, then exact identifier matches from the full chunk text. products_total counts both after deduplication, before products_limit and response-budget trimming. Each document contributes up to 50 URL owners. via identifies ref, url, page, and code evidence. Only URL and page links require the document and product store to share a domain. products_error reports code matching failures and links_partial reports incomplete document links. Retry a single chunk with a higher products_limit for more results. Use gkg products mentions-scan for the complete offline code scan. A domain-scoped agent cannot open a cross-domain result with get_product.",
+          "parameters": {
+            "properties": {
+              "ids": {
+                "description": "1–20 chunk ids from search hits or a product page's chunk_ids",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "minItems": 1,
+                "type": "array"
+              },
+              "neighbours": {
+                "description": "chunks before and after each requested chunk (default 0, maximum 2)",
+                "maximum": 2,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "products_limit": {
+                "default": 10,
+                "description": "Maximum products per chunk after merging document links and identifier matches (1–50, default 10)",
+                "maximum": 50,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "with_products": {
+                "default": true,
+                "description": "Include products linked to the chunk's document and exact identifier matches on its full text (default true)",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ids"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "traverse",
+          "description": "Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. Since/until filter edges by document date. A merge redirect includes requested and resolved_via=merged. Start with limit 10.",
+          "parameters": {
+            "properties": {
+              "depth": {
+                "description": "hops, 1 or 2 (default 1)",
+                "type": "integer"
+              },
+              "direction": {
+                "description": "edge direction (default out)",
+                "enum": [
+                  "out",
+                  "in",
+                  "both"
+                ],
+                "type": "string"
+              },
+              "entity": {
+                "description": "start entity id or key",
+                "type": "string"
+              },
+              "include_low_confidence": {
+                "description": "include facts below the assert floor. Judge-confirmed facts are always shown",
+                "type": "boolean"
+              },
+              "limit": {
+                "description": "maximum edges (default 50, capped at 200)",
+                "type": "integer"
+              },
+              "relation": {
+                "description": "relation filter (e.g. works_at)",
+                "type": "string"
+              },
+              "since": {
+                "description": "Inclusive lower bound on the effective document date. Use YYYY-MM-DD (start of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              },
+              "until": {
+                "description": "Inclusive upper bound on the effective document date. Use YYYY-MM-DD (end of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "entity"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_documents",
+          "description": "List documents with metadata, optionally filtered by pipeline status and document date (since/until). Start with limit 10.",
+          "parameters": {
+            "properties": {
+              "limit": {
+                "description": "maximum documents (default 100, capped at 1000)",
+                "type": "integer"
+              },
+              "since": {
+                "description": "Inclusive lower bound on the effective document date. Use YYYY-MM-DD (start of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              },
+              "status": {
+                "description": "filter by pipeline status (received|fetched|chunked|extracted|merged|verifying|done|failed|superseded)",
+                "type": "string"
+              },
+              "until": {
+                "description": "Inclusive upper bound on the effective document date. Use YYYY-MM-DD (end of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "status",
+          "description": "Pipeline status and error of one document, or of the most recently updated documents when no id is given.",
+          "parameters": {
+            "properties": {
+              "document_id": {
+                "description": "one document id; omit to list documents",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "cypher",
+          "description": "Run a guarded read-only Cypher query with the configured row cap and timeout; write clauses are rejected.",
+          "parameters": {
+            "properties": {
+              "limit": {
+                "description": "row cap; clamped to the configured cypher_rows",
+                "type": "integer"
+              },
+              "query": {
+                "description": "single read-only Cypher statement",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_product",
+          "description": "Get a product with its active feature observations and up to three associated pages. Provide id, or both store and the full source product_id. The optional domain filters associated pages. Set with_texts to read stored attribute texts and text_keys to filter by exact source key. Checked means the key is in the active release. The agent returns up to eight texts. See texts_omitted for the number omitted. Pages include via (ref, url, page in precedence order), chunk_ids (up to three passage IDs in sequence order), and chunk_count. pages_missing means no associated pages were found. pages_partial means page-key coverage is unknown and pages_missing is false. with_mentions defaults to true and includes passages from done documents with exact matches for the product's catalogue_code or product_reference. Domain also filters passages. Retrieval is approximate: it can miss splits inside stored codes (151L-Z, A-B12345, TC 2SL), fullwidth forms, case-mapping differences (ß, İ) and tokens of 40 bytes or more; mentions_partial means search limits or skipped clauses may have left matches unchecked. mentions_error means mentions could not be computed (index_too_large, index_unavailable or search_unavailable); the product itself is still returned. Use gkg products mentions-scan for the complete offline scan. Within the result budget, the tool retains the first page and mention when present. It drops additional mentions and pages before trimming features. See mentions_omitted_for_budget, pages_omitted_for_budget and features_omitted for the counts.",
+          "parameters": {
+            "properties": {
+              "domain": {
+                "description": "Optional domain slug for associated pages and passages within the request scope. A domain outside the request scope is rejected.",
+                "type": "string"
+              },
+              "id": {
+                "description": "Graph product ID",
+                "type": "string"
+              },
+              "mentions_limit": {
+                "default": 5,
+                "description": "Maximum passages returned when with_mentions is true",
+                "maximum": 20,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "product_id": {
+                "description": "Full source product ID including its store prefix",
+                "type": "string"
+              },
+              "store": {
+                "description": "Store for an exact lookup by product_id",
+                "type": "string"
+              },
+              "text_keys": {
+                "description": "Optional exact source keys to read with with_texts",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "with_mentions": {
+                "default": true,
+                "description": "Include passages with exact identifier matches (default true)",
+                "type": "boolean"
+              },
+              "with_texts": {
+                "default": false,
+                "description": "Include stored attribute texts",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "find_products",
+          "description": "Find products by query over stored attribute texts, or by a feature ID and either an exact folded value or inclusive numeric bounds in the canonical unit. Query mode accepts domain and limit, and excludes nonempty feature, value, min, max and cursor. Meaning hits are candidates; checked means the key is in the active release. Use get_product with_texts to read stored values. Pass the same feature filters with the next cursor. A page may contain fewer hits or less evidence to fit the result budget.",
+          "parameters": {
+            "properties": {
+              "cursor": {
+                "description": "Opaque continuation cursor from the previous page with the same filters and limit",
+                "type": "string"
+              },
+              "domain": {
+                "description": "Restrict matches to this domain ID within the request scope",
+                "type": "string"
+              },
+              "feature": {
+                "description": "Feature ID from list_features, required in feature mode",
+                "type": "string"
+              },
+              "limit": {
+                "description": "Default 10. Query mode requires 1–20; feature mode is capped at 20",
+                "type": "integer"
+              },
+              "max": {
+                "description": "Inclusive upper bound as a decimal string in the canonical unit",
+                "type": "string"
+              },
+              "min": {
+                "description": "Inclusive lower bound as a decimal string in the canonical unit",
+                "type": "string"
+              },
+              "query": {
+                "description": "Search stored attribute texts with 1–500 runes after trimming. Blank or null selects feature mode",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "value": {
+                "description": "Exact folded value or item. Use either value or numeric bounds",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_features",
+          "description": "List features in the active release's registry, with release status, numeric-search support and stores with released keys in scope. If truncated, narrow with query.",
+          "parameters": {
+            "properties": {
+              "query": {
+                "description": "Case-insensitive substring of the feature ID or name",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "temperature": 0,
+    "max_tokens": 2048
+  },
+  {
+    "model": "stub-model",
+    "messages": [
+      {
+        "role": "system",
+        "content": {
+          "sha256": "4fb70b95068bc6293e837f8e86021f5818cdab8c6b93e7409d73fd8baf30ee8f",
+          "bytes": 3570
+        }
+      },
+      {
+        "role": "user",
+        "content": "What does the desk lamp offer?"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "search-1",
+            "type": "function",
+            "function": {
+              "name": "search",
+              "arguments": "{\"query\":\"desk lamp\",\"limit\":2}"
+            }
+          },
+          {
+            "id": "get-1",
+            "type": "function",
+            "function": {
+              "name": "get_product",
+              "arguments": "{\"store\":\"shop.example\",\"product_id\":\"shop.example:1\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "{\"hits\":[{\"domain\":\"catalog\",\"kind\":\"product\",\"id\":\"22222222222222222222222222222222\",\"title\":\"Desk lamp\",\"store\":\"shop.example\",\"product_id\":\"shop.example:1\"},{\"domain\":\"catalog\",\"kind\":\"chunk\",\"id\":\"11111111111111111111111111111111-c0\",\"title\":\"Desk lamp guide\",\"score\":0.016666666666666666,\"snippet\":\"The desk lamp has two brightness settings.\",\"document_id\":\"11111111111111111111111111111111\",\"document_date\":\"2026-01-02T00:00:00Z\",\"document_date_source\":\"caller\"}]}",
+        "tool_call_id": "search-1"
+      },
+      {
+        "role": "tool",
+        "content": "{\"id\":\"22222222222222222222222222222222\",\"store\":\"shop.example\",\"product_id\":\"shop.example:1\",\"domain\":\"catalog\",\"title\":\"Desk lamp\",\"brand\":\"\",\"category\":\"Lighting\",\"subcategory\":\"\",\"link\":\"https://shop.example/products/1\",\"features\":[],\"pages\":[{\"id\":\"11111111111111111111111111111111\",\"title\":\"Desk lamp guide\",\"source\":\"https://shop.example/guides/lamp\",\"updated_at\":\"2026-01-02T00:00:00Z\",\"via\":[\"url\"],\"chunk_ids\":[\"11111111111111111111111111111111-c0\"],\"chunk_count\":1}],\"pages_missing\":false,\"mentions\":[],\"mentions_total\":0,\"mentions_keys\":0,\"mentions_partial\":false}",
+        "tool_call_id": "get-1"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "search",
+          "description": "Search entity names, chunk text, product titles and, when enabled, product attribute meaning. Auto can list products first. Open a product hit with get_product using its id. Use kind=product for products only. A products_error such as timeout or index_unavailable means title matches are unknown. Product hits can carry match=title|meaning, with key (matched attribute), checked (whether the store and key belong to the active release) and excerpt (matched text) for meaning hits, and meaning_error=timeout|unavailable means meaning matches are unknown. A true meaning_partial or meaning_truncated means meaning results may be incomplete, so treat a missing product as inconclusive. Since/until filter chunk hits by document date and do not apply to products. Start with limit 10.",
+          "parameters": {
+            "properties": {
+              "kind": {
+                "description": "hit kind filter (default auto)",
+                "enum": [
+                  "entity",
+                  "chunk",
+                  "auto",
+                  "product"
+                ],
+                "type": "string"
+              },
+              "limit": {
+                "description": "maximum hits (default 20, capped at 100)",
+                "type": "integer"
+              },
+              "query": {
+                "description": "keywords for entity names, chunk text or product titles",
+                "type": "string"
+              },
+              "since": {
+                "description": "Inclusive lower bound on the effective document date. Use YYYY-MM-DD (start of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              },
+              "until": {
+                "description": "Inclusive upper bound on the effective document date. Use YYYY-MM-DD (end of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_entity",
+          "description": "One entity with aliases, co-mentions and evidenced facts. Since/until filter fact evidence by document date. A merge redirect includes requested and resolved_via=merged. Name lookup tries exact matches first, then verified folds marked match=fold. Unscoped ambiguous names return one candidate per domain.",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "live or retired entity id or key",
+                "type": "string"
+              },
+              "include_low_confidence": {
+                "description": "include facts below the assert floor. Judge-confirmed facts are always shown",
+                "type": "boolean"
+              },
+              "name": {
+                "description": "entity name, used when id is omitted",
+                "type": "string"
+              },
+              "since": {
+                "description": "Inclusive lower bound on the effective document date. Use YYYY-MM-DD (start of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              },
+              "until": {
+                "description": "Inclusive upper bound on the effective document date. Use YYYY-MM-DD (end of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_chunks",
+          "description": "Read chunk text, up to 4 KiB per chunk; `truncated` marks a cut, by id (ids from search hits), optionally with up to 2 neighbouring chunks of the same document. Use this instead of cypher to read chunk text. omitted_for_budget may also list neighbour ids. Chunks with an owning document include its effective document_date and document_date_source (caller or ingest). The 24 KiB response budget can omit chunks. Pass a product page's chunk_ids to read its passages. with_products defaults to true and lists document-linked products first, then exact identifier matches from the full chunk text. products_total counts both after deduplication, before products_limit and response-budget trimming. Each document contributes up to 50 URL owners. via identifies ref, url, page, and code evidence. Only URL and page links require the document and product store to share a domain. products_error reports code matching failures and links_partial reports incomplete document links. Retry a single chunk with a higher products_limit for more results. Use gkg products mentions-scan for the complete offline code scan. A domain-scoped agent cannot open a cross-domain result with get_product.",
+          "parameters": {
+            "properties": {
+              "ids": {
+                "description": "1–20 chunk ids from search hits or a product page's chunk_ids",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "minItems": 1,
+                "type": "array"
+              },
+              "neighbours": {
+                "description": "chunks before and after each requested chunk (default 0, maximum 2)",
+                "maximum": 2,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "products_limit": {
+                "default": 10,
+                "description": "Maximum products per chunk after merging document links and identifier matches (1–50, default 10)",
+                "maximum": 50,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "with_products": {
+                "default": true,
+                "description": "Include products linked to the chunk's document and exact identifier matches on its full text (default true)",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ids"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "traverse",
+          "description": "Walk fact edges from a start entity up to two hops, with direction and relation filters and evidence excerpts. Since/until filter edges by document date. A merge redirect includes requested and resolved_via=merged. Start with limit 10.",
+          "parameters": {
+            "properties": {
+              "depth": {
+                "description": "hops, 1 or 2 (default 1)",
+                "type": "integer"
+              },
+              "direction": {
+                "description": "edge direction (default out)",
+                "enum": [
+                  "out",
+                  "in",
+                  "both"
+                ],
+                "type": "string"
+              },
+              "entity": {
+                "description": "start entity id or key",
+                "type": "string"
+              },
+              "include_low_confidence": {
+                "description": "include facts below the assert floor. Judge-confirmed facts are always shown",
+                "type": "boolean"
+              },
+              "limit": {
+                "description": "maximum edges (default 50, capped at 200)",
+                "type": "integer"
+              },
+              "relation": {
+                "description": "relation filter (e.g. works_at)",
+                "type": "string"
+              },
+              "since": {
+                "description": "Inclusive lower bound on the effective document date. Use YYYY-MM-DD (start of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              },
+              "until": {
+                "description": "Inclusive upper bound on the effective document date. Use YYYY-MM-DD (end of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "entity"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_documents",
+          "description": "List documents with metadata, optionally filtered by pipeline status and document date (since/until). Start with limit 10.",
+          "parameters": {
+            "properties": {
+              "limit": {
+                "description": "maximum documents (default 100, capped at 1000)",
+                "type": "integer"
+              },
+              "since": {
+                "description": "Inclusive lower bound on the effective document date. Use YYYY-MM-DD (start of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              },
+              "status": {
+                "description": "filter by pipeline status (received|fetched|chunked|extracted|merged|verifying|done|failed|superseded)",
+                "type": "string"
+              },
+              "until": {
+                "description": "Inclusive upper bound on the effective document date. Use YYYY-MM-DD (end of the UTC day) or RFC 3339 with an offset.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "status",
+          "description": "Pipeline status and error of one document, or of the most recently updated documents when no id is given.",
+          "parameters": {
+            "properties": {
+              "document_id": {
+                "description": "one document id; omit to list documents",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "cypher",
+          "description": "Run a guarded read-only Cypher query with the configured row cap and timeout; write clauses are rejected.",
+          "parameters": {
+            "properties": {
+              "limit": {
+                "description": "row cap; clamped to the configured cypher_rows",
+                "type": "integer"
+              },
+              "query": {
+                "description": "single read-only Cypher statement",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_product",
+          "description": "Get a product with its active feature observations and up to three associated pages. Provide id, or both store and the full source product_id. The optional domain filters associated pages. Set with_texts to read stored attribute texts and text_keys to filter by exact source key. Checked means the key is in the active release. The agent returns up to eight texts. See texts_omitted for the number omitted. Pages include via (ref, url, page in precedence order), chunk_ids (up to three passage IDs in sequence order), and chunk_count. pages_missing means no associated pages were found. pages_partial means page-key coverage is unknown and pages_missing is false. with_mentions defaults to true and includes passages from done documents with exact matches for the product's catalogue_code or product_reference. Domain also filters passages. Retrieval is approximate: it can miss splits inside stored codes (151L-Z, A-B12345, TC 2SL), fullwidth forms, case-mapping differences (ß, İ) and tokens of 40 bytes or more; mentions_partial means search limits or skipped clauses may have left matches unchecked. mentions_error means mentions could not be computed (index_too_large, index_unavailable or search_unavailable); the product itself is still returned. Use gkg products mentions-scan for the complete offline scan. Within the result budget, the tool retains the first page and mention when present. It drops additional mentions and pages before trimming features. See mentions_omitted_for_budget, pages_omitted_for_budget and features_omitted for the counts.",
+          "parameters": {
+            "properties": {
+              "domain": {
+                "description": "Optional domain slug for associated pages and passages within the request scope. A domain outside the request scope is rejected.",
+                "type": "string"
+              },
+              "id": {
+                "description": "Graph product ID",
+                "type": "string"
+              },
+              "mentions_limit": {
+                "default": 5,
+                "description": "Maximum passages returned when with_mentions is true",
+                "maximum": 20,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "product_id": {
+                "description": "Full source product ID including its store prefix",
+                "type": "string"
+              },
+              "store": {
+                "description": "Store for an exact lookup by product_id",
+                "type": "string"
+              },
+              "text_keys": {
+                "description": "Optional exact source keys to read with with_texts",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "with_mentions": {
+                "default": true,
+                "description": "Include passages with exact identifier matches (default true)",
+                "type": "boolean"
+              },
+              "with_texts": {
+                "default": false,
+                "description": "Include stored attribute texts",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "find_products",
+          "description": "Find products by query over stored attribute texts, or by a feature ID and either an exact folded value or inclusive numeric bounds in the canonical unit. Query mode accepts domain and limit, and excludes nonempty feature, value, min, max and cursor. Meaning hits are candidates; checked means the key is in the active release. Use get_product with_texts to read stored values. Pass the same feature filters with the next cursor. A page may contain fewer hits or less evidence to fit the result budget.",
+          "parameters": {
+            "properties": {
+              "cursor": {
+                "description": "Opaque continuation cursor from the previous page with the same filters and limit",
+                "type": "string"
+              },
+              "domain": {
+                "description": "Restrict matches to this domain ID within the request scope",
+                "type": "string"
+              },
+              "feature": {
+                "description": "Feature ID from list_features, required in feature mode",
+                "type": "string"
+              },
+              "limit": {
+                "description": "Default 10. Query mode requires 1–20; feature mode is capped at 20",
+                "type": "integer"
+              },
+              "max": {
+                "description": "Inclusive upper bound as a decimal string in the canonical unit",
+                "type": "string"
+              },
+              "min": {
+                "description": "Inclusive lower bound as a decimal string in the canonical unit",
+                "type": "string"
+              },
+              "query": {
+                "description": "Search stored attribute texts with 1–500 runes after trimming. Blank or null selects feature mode",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "value": {
+                "description": "Exact folded value or item. Use either value or numeric bounds",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_features",
+          "description": "List features in the active release's registry, with release status, numeric-search support and stores with released keys in scope. If truncated, narrow with query.",
+          "parameters": {
+            "properties": {
+              "query": {
+                "description": "Case-insensitive substring of the feature ID or name",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "temperature": 0,
+    "max_tokens": 2048
+  }
+]
