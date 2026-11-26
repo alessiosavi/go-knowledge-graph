@@ -293,7 +293,7 @@ func TestEvalAgentAnswerRouteRow(t *testing.T) {
 		{"error": "invalid_request", "detail": "domain_required"},
 		{"error": "invalid_request", "detail": "unknown_domain"},
 		{"error": "invalid_context", "detail": "context product IDs must have a valid store prefix bound to the domain and be at most 1 KiB"},
-		{"error": "invalid_json", "detail": "json: cannot unmarshal string into Go struct field AnswerRequest.context of type agent.AnswerContext"},
+		{"error": "invalid_json", "detail": "json: cannot unmarshal string into Go struct field answerHTTPRequest.context of type agent.answerHTTPContext"},
 	} {
 		row := rows[i+1]
 		if row["http_status"] != float64(400) || !reflect.DeepEqual(row["response"], want) ||
