@@ -136,11 +136,10 @@ MATCH (d:Document {id:$id}) SET d.document_date = $date`,
 			return UpsertResult{}, err
 		}
 	}
-	if callerAssignment {
-		if pin != "" && pin != domain {
-			return UpsertResult{}, &IngestDomainError{Code: "domain_conflict", Conflict: true, Detail: fmt.Sprintf("product refs pin domain %s", pin)}
-		}
-	} else if pin != "" {
+	if in.DomainChosen && pin != "" && pin != in.Domain {
+		return UpsertResult{}, &IngestDomainError{Code: "domain_conflict", Conflict: true, Detail: fmt.Sprintf("product refs pin domain %s", pin)}
+	}
+	if !callerAssignment && pin != "" {
 		if reuse {
 			if err := checkProductRefPin(pin, current.domain, current.status); err != nil {
 				return UpsertResult{}, err

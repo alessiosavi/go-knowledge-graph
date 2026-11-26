@@ -1,12 +1,16 @@
 package ingest_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/alessiosavi/go-knowledge-graph/internal/api"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/ingest"
@@ -173,6 +177,38 @@ func TestChosenDomainEffectiveProductRefs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestChosenDomainSupersededVersionRejectsConflictingPin(t *testing.T) {
+	env := chosenDomainEnv(t)
+	const source, original, chosen = "partc-refs-chosen-revival", "Original notes.", "refs-da"
+	v1 := mustProcess(t, env, ingest.Input{Source: source, Text: original, Domain: chosen})
+	mustProcess(t, env, ingest.Input{Source: source, Text: "Replacement notes.", Domain: chosen})
+	doc, err := env.st.Document(t.Context(), v1.DocumentID)
+	if err != nil || doc.Status != graph.StatusSuperseded || doc.Domain != chosen {
+		t.Fatalf("original version before resubmission = %+v, %v, want superseded in %s", doc, err, chosen)
+	}
+
+	body := fmt.Sprintf(`{"source":%q,"text":%q,"domain":%q,"products":[%q]}`, source, original, chosen, refB)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/ingest", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	api.NewServer(env.cfg, env.st, env.p).Handler().ServeHTTP(response, req)
+	var rejection struct {
+		Error  string `json:"error"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &rejection); err != nil || response.Code != http.StatusConflict ||
+		rejection.Error != "domain_conflict" || rejection.Detail != "product refs pin domain refs-db" {
+		t.Errorf("POST /v1/ingest = %d %s, want 409 domain_conflict: product refs pin domain refs-db", response.Code, strings.TrimSpace(response.Body.String()))
+	}
+	doc, err = env.st.Document(t.Context(), v1.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Status != graph.StatusSuperseded || doc.Domain != chosen {
+		t.Errorf("original version after resubmission = %s in %s, want superseded in %s", doc.Status, doc.Domain, chosen)
 	}
 }
 
