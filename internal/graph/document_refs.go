@@ -46,6 +46,10 @@ func CheckProductRefsNoop(supplied, stored []string) error {
 	return nil
 }
 
+func needsProductRefValidation(supplied, stored []string) bool {
+	return len(supplied) > 0 && !slices.Equal(supplied, stored)
+}
+
 const newestDoneRefsQuery = `
 MATCH (d:Document {source_kind:$kind, source:$source, status:'done'})
 RETURN d.product_refs_raw AS refs
@@ -55,11 +59,6 @@ ORDER BY coalesce(d.version_at, d.created_at) DESC, d.id DESC LIMIT 1`
 // written. UpsertDocument rechecks lifecycle rules against its own snapshot,
 // reusing the admitted binding if the product set still needs validation.
 func (s *Store) PrepareDocumentRefs(ctx context.Context, in *DocumentInput, current *Document) error {
-	if in.DomainChosen && current == nil {
-		// New explicit versions validate their effective refs in the
-		// admission transaction, including refs inherited when omitted.
-		return nil
-	}
 	var stored []string
 	if current != nil {
 		stored = current.ProductRefs
@@ -72,7 +71,7 @@ func (s *Store) PrepareDocumentRefs(ctx context.Context, in *DocumentInput, curr
 			stored = getStringSlice(rows[0], "refs")
 		}
 	}
-	if slices.Equal(in.ProductRefs, stored) {
+	if !needsProductRefValidation(in.ProductRefs, stored) {
 		return nil
 	}
 	pin, err := productRefDomain(in.ProductRefs, func(query string, params map[string]any) ([]*neo4j.Record, error) {
@@ -129,22 +128,6 @@ RETURN store AS store, s.domain AS domain ORDER BY store`, map[string]any{"store
 func checkProductRefPin(pin, current string, status Status) error {
 	if pin != "" && current != "" && pin != current && status != StatusSuperseded {
 		return &DocumentRefsError{Code: "domain_pin_conflict", Detail: fmt.Sprintf("product refs pin domain %q but this version is assigned to %q; delete it before re-ingesting", pin, current)}
-	}
-	return nil
-}
-
-func checkChosenProductRefDomain(ctx context.Context, refs []string, chosen string, read domainRead) error {
-	if len(refs) == 0 {
-		return nil
-	}
-	pin, err := productRefDomain(refs, func(query string, params map[string]any) ([]*neo4j.Record, error) {
-		return read(ctx, query, params)
-	})
-	if err != nil {
-		return err
-	}
-	if pin != "" && pin != chosen {
-		return &IngestDomainError{Code: "domain_conflict", Conflict: true, Detail: fmt.Sprintf("product refs pin domain %s", pin)}
 	}
 	return nil
 }

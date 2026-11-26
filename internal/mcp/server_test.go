@@ -901,10 +901,12 @@ func TestIngestToolAcceptsDomain(t *testing.T) {
 			t.Errorf("domain %q: %s", value, toolErrorText(res))
 		}
 	}
-	sub.in = ingest.Input{}
-	res := callTool(t, cs, "ingest", map[string]any{"text": "page", "domain": 5})
-	if !res.IsError || !strings.Contains(toolErrorText(res), "domain") || sub.in.Text != "" {
-		t.Errorf("numeric domain: result=%+v, submitted=%+v", res, sub.in)
+	for _, value := range []any{5, nil} {
+		sub.in = ingest.Input{}
+		res := callTool(t, cs, "ingest", map[string]any{"text": "page", "domain": value})
+		if !res.IsError || !strings.Contains(toolErrorText(res), "domain") || sub.in.Text != "" {
+			t.Errorf("invalid domain %v: result=%+v, submitted=%+v", value, res, sub.in)
+		}
 	}
 	for _, tc := range []struct {
 		err     error

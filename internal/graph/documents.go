@@ -118,36 +118,38 @@ MATCH (d:Document {id:$id}) SET d.document_date = $date`,
 	}
 	domain := in.Domain
 	callerAssignment := in.DomainChosen && current == nil
-	if liveMatch || in.productRefsValidated || (in.DomainChosen && !callerAssignment) {
+	if !callerAssignment && (liveMatch || in.productRefsValidated || in.DomainChosen) {
 		// Force preserves the domain unless a changed set supplies a pin.
 		domain = ""
 	}
-	if callerAssignment {
-		domain = in.Domain
-		if err := checkChosenProductRefDomain(ctx, refs, domain, read); err != nil {
+	validateRefs := needsProductRefValidation(in.ProductRefs, stored)
+	var pin string
+	switch {
+	case validateRefs && in.productRefsValidated:
+		pin = in.productRefPin
+	case validateRefs || (callerAssignment && len(refs) > 0):
+		pin, err = productRefDomain(refs, func(query string, params map[string]any) ([]*neo4j.Record, error) {
+			return read(ctx, query, params)
+		})
+		// Inherited and unchanged refs only use a pin when the lookup succeeds.
+		if err != nil && validateRefs {
 			return UpsertResult{}, err
 		}
-	} else if len(in.ProductRefs) > 0 && !slices.Equal(in.ProductRefs, stored) {
-		pin := in.productRefPin
-		if !in.productRefsValidated {
-			pin, err = productRefDomain(in.ProductRefs, func(query string, params map[string]any) ([]*neo4j.Record, error) {
-				return read(ctx, query, params)
-			})
-			if err != nil {
+	}
+	if callerAssignment {
+		if pin != "" && pin != domain {
+			return UpsertResult{}, &IngestDomainError{Code: "domain_conflict", Conflict: true, Detail: fmt.Sprintf("product refs pin domain %s", pin)}
+		}
+	} else if pin != "" {
+		if reuse {
+			if err := checkProductRefPin(pin, current.domain, current.status); err != nil {
 				return UpsertResult{}, err
 			}
 		}
-		if pin != "" {
-			if reuse {
-				if err := checkProductRefPin(pin, current.domain, current.status); err != nil {
-					return UpsertResult{}, err
-				}
-			}
-			if err := txCheckProductRefDomain(ctx, tx, pin); err != nil {
-				return UpsertResult{}, err
-			}
-			domain = pin
+		if err := txCheckProductRefDomain(ctx, tx, pin); err != nil {
+			return UpsertResult{}, err
 		}
+		domain = pin
 	}
 
 	now := time.Now().UTC()

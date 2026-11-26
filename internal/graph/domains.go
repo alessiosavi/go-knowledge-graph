@@ -64,7 +64,7 @@ func resolveIngestDomain(ctx context.Context, value string, read domainRead) (st
 	}
 	var matches []string
 	for _, row := range rows {
-		if strings.EqualFold(getString(row, "name"), value) {
+		if strings.EqualFold(strings.TrimSpace(getString(row, "name")), value) {
 			matches = append(matches, getString(row, "id"))
 		}
 	}

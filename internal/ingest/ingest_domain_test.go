@@ -156,16 +156,21 @@ func TestChosenDomainAutoAndDefiniteRejection(t *testing.T) {
 	d := base.docs[id]
 	d.Domain = "archive"
 	base.docs[id] = d
-	st.upsertErr = &graph.IngestDomainError{Code: "unknown_domain", Conflict: true}
-	_, err = p.Submit(t.Context(), Input{Text: in.Text, Domain: "archive", Title: "Rejected", Force: true})
-	if !errors.Is(err, st.upsertErr) {
-		t.Fatalf("upsert rejection = %v, want %v", err, st.upsertErr)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(after, before) {
-		t.Errorf("restored payload = %s, %v, want %s", after, err, before)
-	}
-	if _, err := os.Stat(path + ".prev"); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("spool backup after definite rejection: %v", err)
+	for _, rejection := range []error{
+		&graph.IngestDomainError{Code: "unknown_domain", Conflict: true},
+		graph.ErrSchemaNotV4,
+	} {
+		st.upsertErr = rejection
+		_, err = p.Submit(t.Context(), Input{Text: in.Text, Domain: "archive", Title: "Rejected", Force: true})
+		if !errors.Is(err, rejection) {
+			t.Fatalf("upsert rejection = %v, want %v", err, rejection)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(after, before) {
+			t.Errorf("restored payload after %v = %s, %v, want %s", rejection, after, err, before)
+		}
+		if _, err := os.Stat(path + ".prev"); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("spool backup after %v: %v", rejection, err)
+		}
 	}
 }

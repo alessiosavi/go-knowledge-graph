@@ -28,7 +28,7 @@ func chosenDomainEnv(t *testing.T) pipelineEnv {
 		write(`MATCH (r:DomainDecision {by:'caller'}) WHERE r.domain IN ['refs-da','refs-db','refs-deleted'] DELETE r`)
 	})
 	write(`MERGE (m:GkgMeta {id:'extraction_schema'}) SET m.value=4`)
-	write(`MATCH (d:Domain {id:'refs-da'}) SET d.name='Archive / Notes'`)
+	write(`MATCH (d:Domain {id:'refs-da'}) SET d.name=' Archive / Notes '`)
 	write(`MATCH (d:Domain {id:'refs-db'}) SET d.name='Clinical Research'`)
 	env.p.SetWriteMode(ingest.WriteModeForSchema(graph.SchemaVersionV4, false))
 	return env
@@ -176,9 +176,45 @@ func TestChosenDomainEffectiveProductRefs(t *testing.T) {
 	}
 }
 
-func TestChosenDomainDeletedAfterResolution(t *testing.T) {
+func TestChosenDomainRefsFromUnboundStore(t *testing.T) {
 	env := chosenDomainEnv(t)
-	rawRecords(t, os.Getenv(graphtest.URIEnv), `CREATE (:Domain {id:'chosen-vanished',name:'Vanishing domain'}) RETURN 1`)
+	const source = "partc-refs-chosen-unbound"
+	mustProcess(t, env, ingest.Input{Source: source, Text: "Original product page.", Domain: "refs-da", Products: []string{refA}})
+	rawRecords(t, os.Getenv(graphtest.URIEnv), `MATCH (s:ProductStore {store:'refs-a.test'}) REMOVE s.domain RETURN 1`)
+
+	for _, choice := range []struct{ name, id string }{{"auto", ""}, {"explicit", "refs-da"}} {
+		t.Run(choice.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name string
+				refs []string
+			}{
+				{name: "inherited"},
+				{name: "unchanged", refs: []string{refA}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					res := mustProcess(t, env, ingest.Input{
+						Source: source, Text: "New version with " + tc.name + " refs in " + choice.name,
+						Domain: choice.id, Products: tc.refs,
+					})
+					doc := expectStoredProductRefs(t, env.st, res.DocumentID, []string{refA})
+					if doc.Domain != "refs-da" {
+						t.Errorf("domain = %q, want refs-da", doc.Domain)
+					}
+				})
+			}
+			_, err := env.p.Submit(t.Context(), ingest.Input{
+				Source: source, Text: "New version with changed refs.", Domain: choice.id, Products: []string{refA2},
+			})
+			requireRefError(t, err, "products_unknown_store")
+		})
+	}
+}
+
+func TestChosenDomainDeletionBeforeAdmissionRestoresSpool(t *testing.T) {
+	env := chosenDomainEnv(t)
+	uri := os.Getenv(graphtest.URIEnv)
+	t.Cleanup(func() { rawRecords(t, uri, `MATCH (d:Domain {id:'chosen-vanished'}) DELETE d RETURN 1`) })
+	rawRecords(t, uri, `CREATE (:Domain {id:'chosen-vanished',name:'Vanishing domain'}) RETURN 1`)
 	ingest.SetBeforeDocumentUpsert(env.p, func() {
 		deleted, err := env.st.DeleteEmptyDomain(t.Context(), "chosen-vanished")
 		if err != nil || !deleted {
@@ -190,7 +226,7 @@ func TestChosenDomainDeletedAfterResolution(t *testing.T) {
 	if _, err := env.st.DomainDocumentIDs(t.Context(), "chosen-vanished"); !errors.Is(err, graph.ErrNotFound) {
 		t.Fatalf("chosen domain was recreated: %v", err)
 	}
-	if rows := rawRecords(t, os.Getenv(graphtest.URIEnv), `MATCH (d:Document {source:'partc-refs-vanished'}) RETURN d.id`); len(rows) != 0 {
+	if rows := rawRecords(t, uri, `MATCH (d:Document {source:'partc-refs-vanished'}) RETURN d.id`); len(rows) != 0 {
 		t.Fatalf("rejected document persisted: %v", rows)
 	}
 	if entries, err := os.ReadDir(env.cfg.Ingest.SpoolDir); err != nil || len(entries) != 0 {
