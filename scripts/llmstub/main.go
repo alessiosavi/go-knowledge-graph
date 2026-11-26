@@ -30,6 +30,7 @@ func completions(w http.ResponseWriter, r *http.Request) {
 		if n := len(request.Messages); n > 0 {
 			last := request.Messages[n-1]
 			if last.Role == "user" && last.Content == "edge-check answer timeout" {
+				fmt.Println("edge-check answer timeout: delaying completion")
 				select {
 				case <-r.Context().Done():
 					return

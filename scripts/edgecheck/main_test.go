@@ -133,8 +133,35 @@ func TestProbeProductMutationsHelper(t *testing.T) {
 }
 
 func TestProbeAnswer(t *testing.T) {
+	const incomplete = `{"contract":"gkg-answer/1","complete":false,"summary":"Offline edge check completed."}`
+	const wrongSummary = `{"contract":"gkg-answer/1","complete":true,"summary":"Other answer.","detail":"Offline edge check completed."}`
+	for _, tc := range []struct {
+		name    string
+		call    int32
+		body    string
+		failure string
+	}{
+		{name: "valid"},
+		{name: "auth/incomplete", call: 1, body: incomplete, failure: "answer-auth-ok"},
+		{name: "auth/wrong-summary", call: 1, body: wrongSummary, failure: "answer-auth-ok"},
+		{name: "sixth-turn/incomplete", call: 5, body: incomplete, failure: "answer-history-sixth-turn"},
+		{name: "sixth-turn/wrong-summary", call: 5, body: wrongSummary, failure: "answer-history-sixth-turn"},
+		{name: "immediate-timeout", call: 4, failure: "answer-timeout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testProbeAnswer(t, tc.call, tc.body, tc.failure)
+		})
+	}
+}
+
+func testProbeAnswer(t *testing.T, failCall int32, failBody, wantFailure string) {
+	t.Helper()
 	const fixture = "<script>sample</script>\n#!/bin/bash"
 	const domain = "d-12345678"
+	agentTimeout := time.Second
+	if failCall == 4 {
+		agentTimeout = 20 * time.Second
+	}
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -183,6 +210,9 @@ func TestProbeAnswer(t *testing.T) {
 				if body.Question != "edge-check answer timeout" {
 					t.Error("timeout probe must trigger the offline provider delay")
 				}
+				if failCall != 4 {
+					time.Sleep(agentTimeout)
+				}
 				w.WriteHeader(504)
 				fmt.Fprint(w, `{"error":"agent_timeout"}`)
 				return
@@ -198,7 +228,11 @@ func TestProbeAnswer(t *testing.T) {
 			default:
 				t.Errorf("unexpected answer request %d", call)
 			}
-			fmt.Fprint(w, `{"contract":"gkg-answer/1"}`)
+			if call == failCall {
+				fmt.Fprint(w, failBody)
+				return
+			}
+			fmt.Fprint(w, `{"contract":"gkg-answer/1","complete":true,"summary":"Offline edge check completed."}`)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -208,9 +242,46 @@ func TestProbeAnswer(t *testing.T) {
 	dir := t.TempDir()
 	write(filepath.Join(dir, "auth.curl"), []byte("user = \"test:pass\"\n"))
 	p := &probe{dir: dir, base: server.URL}
-	p.answer(fixture)
-	if got := calls.Load(); got != 5 {
-		t.Errorf("sent %d answer probes, want 5", got)
+	failure := func() (failure any) {
+		defer func() { failure = recover() }()
+		p.answer(fixture, agentTimeout)
+		return nil
+	}()
+	wantCalls := int32(5)
+	if wantFailure == "" {
+		if failure != nil {
+			t.Errorf("answer probes failed: %v", failure)
+		}
+	} else {
+		wantCalls = failCall
+		message, _ := failure.(string)
+		if !strings.HasPrefix(message, wantFailure+" (") {
+			t.Errorf("probe failure = %v, want failure for %s", failure, wantFailure)
+		}
+	}
+	if got := calls.Load(); got != wantCalls {
+		t.Errorf("sent %d answer probes, want %d", got, wantCalls)
+	}
+}
+
+func TestAnswerTimeoutReachedStub(t *testing.T) {
+	const marker = "edge-check answer timeout: delaying completion\n"
+	for _, tc := range []struct {
+		name   string
+		before string
+		after  string
+		want   bool
+	}{
+		{name: "fresh delay", before: marker, after: marker + marker, want: true},
+		{name: "stale delay", before: marker, after: marker + "model request finished\n"},
+		{name: "no delay", after: "model request finished\n"},
+		{name: "marker mentioned", after: "unexpected log: " + marker},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := answerTimeoutReachedStub([]byte(tc.before), []byte(tc.after)); got != tc.want {
+				t.Errorf("fresh timeout delay = %t, want %t", got, tc.want)
+			}
+		})
 	}
 }
 

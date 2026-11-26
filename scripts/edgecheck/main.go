@@ -20,6 +20,11 @@ import (
 	"time"
 )
 
+const (
+	offlineStubSummary  = "Offline edge check completed."
+	answerTimeoutMargin = 500 * time.Millisecond
+)
+
 func must(err error) {
 	if err != nil {
 		panic(err)
@@ -158,7 +163,7 @@ func (p *probe) docs() {
 	expect(bytes.Equal(r.body, read("docs/openapi.yaml")), "edge serves canonical OpenAPI bytes")
 }
 
-func (p *probe) routing() {
+func (p *probe) routing(agentTimeout time.Duration) {
 	root := p.check("root relative redirect", "GET", "/", nil, 302)
 	expect(root.headers.Get("Location") == "/ui/", "root preserves the external port with a relative Location")
 	redirect := p.check("bare UI redirect", "GET", "/ui", nil, 301)
@@ -169,7 +174,7 @@ func (p *probe) routing() {
 		p.check("UI asset "+asset, "GET", "/ui/"+asset, nil, 200)
 	}
 	wafText := string(read("deploy/edge/testdata/javascript.md")) + string(read("deploy/edge/testdata/bash.md"))
-	p.answer(wafText)
+	p.answer(wafText, agentTimeout)
 	marker := string(read(filepath.Join(p.dir, "marker")))
 	var ids []string
 	files, err := filepath.Glob("deploy/edge/testdata/*.md")
@@ -212,7 +217,7 @@ func (p *probe) routing() {
 	r = p.check("agent enabled", "GET", "/v1/agent/status", nil, 200)
 	expect(object(r.body)["enabled"] == true && object(r.body)["stream"] == true, "offline agent and streaming enabled")
 	r = p.check("SQL-looking ask", "POST", "/v1/agent/ask", encode(map[string]any{"question": wafText}), 200)
-	expect(strings.Contains(string(r.body), "Offline edge check completed."), "deterministic stub answer")
+	expect(strings.Contains(string(r.body), offlineStubSummary), "deterministic stub answer")
 	// Versions share a source but have different hashes.
 	a := p.ingest("version one", encode(map[string]any{"text": "Ada works for EdgeLabs. " + marker, "source": "edge-versions"}))
 	b := p.ingest("version two", encode(map[string]any{"text": "Ada works for EdgeLabs. Revised. " + marker, "source": "edge-versions"}))
@@ -228,7 +233,7 @@ func (p *probe) routing() {
 	}
 }
 
-func (p *probe) answer(wafText string) {
+func (p *probe) answer(wafText string, agentTimeout time.Duration) {
 	const path = "/v1/agent/answer"
 	const question = "What is this document about?"
 	fixture := encode(map[string]string{"text": "Ada works for shop.example.", "source": "edge-answer-domain"})
@@ -249,10 +254,13 @@ func (p *probe) answer(wafText string) {
 		}
 		return encode(request)
 	}
-	checkContract := func(name string, r response) {
-		expect(r.code == http.StatusOK && object(r.body)["contract"] == "gkg-answer/1", fmt.Sprintf("%s (HTTP %d, contract gkg-answer/1)", name, r.code))
+	checkAnswer := func(name string, r response) {
+		var answer map[string]any
+		ok := r.code == http.StatusOK && json.Unmarshal(r.body, &answer) == nil &&
+			answer["contract"] == "gkg-answer/1" && answer["complete"] == true && answer["summary"] == offlineStubSummary
+		expect(ok, fmt.Sprintf("%s (HTTP %d, contract gkg-answer/1, complete=true, stub summary)", name, r.code))
 	}
-	checkContract("answer-auth-ok", p.request(http.MethodPost, path, "auth.curl", body(wafText, turn{"user", wafText})))
+	checkAnswer("answer-auth-ok", p.request(http.MethodPost, path, "auth.curl", body(wafText, turn{"user", wafText})))
 
 	r = p.request(http.MethodPost, path, "", body(question))
 	expect(r.code == http.StatusUnauthorized && strings.HasPrefix(r.headers.Get("WWW-Authenticate"), "Basic "), fmt.Sprintf("answer-unauth (HTTP %d)", r.code))
@@ -261,15 +269,33 @@ func (p *probe) answer(wafText string) {
 	r = p.request(http.MethodPost, path, "auth.curl", body(strings.Repeat("a", 1<<20)))
 	expect(r.code == http.StatusRequestEntityTooLarge && !strings.Contains(r.headers.Get("Content-Type"), "application/json"), fmt.Sprintf("answer-body-cap (HTTP %d)", r.code))
 
+	start := time.Now()
 	r = p.request(http.MethodPost, path, "auth.curl", body("edge-check answer timeout"))
-	expect(r.code == http.StatusGatewayTimeout && object(r.body)["error"] == "agent_timeout", fmt.Sprintf("answer-timeout (HTTP %d, agent_timeout)", r.code))
+	if elapsed := time.Since(start); elapsed < agentTimeout-answerTimeoutMargin {
+		panic(fmt.Sprintf("answer-timeout (HTTP %d after %s, agent deadline %s)", r.code, elapsed.Round(time.Millisecond), agentTimeout))
+	}
+	expect(r.code == http.StatusGatewayTimeout && object(r.body)["error"] == "agent_timeout", fmt.Sprintf("answer-timeout (HTTP %d, agent_timeout, deadline wait observed)", r.code))
 
-	checkContract("answer-history-sixth-turn", p.request(http.MethodPost, path, "auth.curl", body(question,
+	checkAnswer("answer-history-sixth-turn", p.request(http.MethodPost, path, "auth.curl", body(question,
 		turn{"user", "What is in the catalog?"}, turn{"assistant", "There is a document."},
 		turn{"user", "Which document?"}, turn{"assistant", "The catalog document."},
 		turn{"user", "What is an example?"}, turn{"assistant", wafText},
 	)))
 	p.check("answer fixture DELETE", "DELETE", documentPath, nil, http.StatusOK)
+}
+
+func answerTimeoutReachedStub(before, after []byte) bool {
+	const marker = "edge-check answer timeout: delaying completion"
+	count := func(logs []byte) int {
+		hits := 0
+		for line := range bytes.SplitSeq(logs, []byte("\n")) {
+			if string(line) == marker {
+				hits++
+			}
+		}
+		return hits
+	}
+	return count(after) > count(before)
 }
 
 func closedRouteResponse(mode string, r response) bool {
@@ -781,13 +807,19 @@ func main() {
 	case "encoded-upstream":
 		must(encodedPathsUpstreamProof(read(args[1]), read(args[2])))
 		expect(true, "encoded paths absent from upstream logs with fresh positive control")
+	case "answer-timeout-stub":
+		expect(answerTimeoutReachedStub(read(args[1]), read(args[2])), "answer-timeout reached the offline stub delay")
 	default:
 		p := &probe{dir: args[1], base: args[2]}
 		switch args[0] {
 		case "docs":
 			p.docs()
 		case "routing":
-			p.routing()
+			agentTimeout, err := time.ParseDuration(args[3] + "s")
+			if err != nil || agentTimeout <= answerTimeoutMargin {
+				panic("routing needs a valid GKG_AGENT_TIMEOUT_S")
+			}
+			p.routing(agentTimeout)
 		case "rotation":
 			p.rotation()
 		case "restart-routing":

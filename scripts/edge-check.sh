@@ -168,8 +168,14 @@ for mode in DetectionOnly On; do
       # Start immediately after health: the edge must reach the new
       # container within 3 s (resolver TTL 1 s).
       "$tmp/check" restart-routing "$tmp" "$base" | tee "$tmp/routing-restart-$mode.log"
+      agent_timeout_s="$("${compose[@]}" exec -T gkg printenv GKG_AGENT_TIMEOUT_S)" || fail 'read gkg agent timeout'
+      "${compose[@]}" logs --no-color --no-log-prefix llmstub >"$tmp/before-answer-timeout-$mode.log" 2>&1
+      "$tmp/check" routing "$tmp" "$base" "$agent_timeout_s"
+      "${compose[@]}" logs --no-color --no-log-prefix llmstub >"$tmp/after-answer-timeout-$mode.log" 2>&1
+      "$tmp/check" answer-timeout-stub "$tmp/before-answer-timeout-$mode.log" "$tmp/after-answer-timeout-$mode.log"
+    else
+      "$tmp/check" "$section" "$tmp" "$base" long
     fi
-    "$tmp/check" "$section" "$tmp" "$base" long
   done
   sleep 1
   capture "$tmp/after-legit"
