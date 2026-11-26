@@ -93,7 +93,8 @@ func evalSettingsProjection(cfg config.Config) map[string]any {
 			"temperature": cfg.Agent.Temperature, "max_tokens": cfg.Agent.MaxTokens, "reasoning_efforts": cfg.Agent.ReasoningEfforts,
 			"stream": cfg.Agent.Stream, "max_steps": cfg.Agent.MaxSteps, "timeout_s": cfg.Agent.TimeoutS,
 			"context_budget_kb": cfg.Agent.ContextBudgetKB, "top_k_enabled": cfg.Agent.TopKEnabled,
-			"system_prompt_sha256": settingsSHA256([]byte(agent.SystemPrompt())),
+			"search_products":      cfg.Agent.SearchProductSlots(),
+			"system_prompt_sha256": settingsSHA256([]byte(agent.EffectiveSystemPrompt(cfg))),
 		},
 		"gcp": map[string]any{
 			"credentials": cfg.GCP.Credentials,

@@ -421,7 +421,14 @@ product tool returns an error if its required metadata exceeds the budget.
 For product questions, the agent is prompted to read the product record and
 linked passages, cite both, and say whether they agree. Agent search can return
 product hits, and product pages expose `chunk_ids` for reading passages with
-`get_chunks`. In the agent, `get_product` defaults `with_mentions` to `true` to
+`get_chunks`. In mixed search (`kind=auto`), `GKG_AGENT_SEARCH_PRODUCTS`
+(`agent.search_products`) caps product hits (default 3, valid integers 1–20).
+Product hits can fill at most half the requested limit. With
+`GKG_PRODUCT_TEXT_SEARCH=on`, both agent prompt modes ask for an additional
+`kind=product` search with `limit=10` using the shopper's whole description in
+their language.
+
+In the agent, `get_product` defaults `with_mentions` to `true` to
 retrieve exact identifier matches in passages from done documents. `mentions_limit`
 accepts integers from 1 to 20 and defaults to 5. The ask domain filters passage
 evidence. Agent `get_chunks` defaults `with_products` to `true` to show products
@@ -867,7 +874,11 @@ fact visibility, ingest floors and whether the agent is enabled. Eval commands
 run without judge workers, so `overrides.judge.mode` is always `off`.
 The rest of `overrides` records the configured graph URI and server settings.
 Both blocks are excluded from the hash. The server API key and endpoint
-credentials use literal `<set>` or `<unset>` markers.
+credentials use literal `<set>` or `<unset>` markers. The agent block records
+`search_products` and the SHA-256 of the effective system prompt, which includes
+the described-product rule when `GKG_PRODUCT_TEXT_SEARCH=on`. Hashes captured
+with an earlier release therefore differ even at default settings; recapture
+baselines with the release used for the comparison.
 
 Exit codes are 0 for success, 1 for a configuration or output error, and 2
 for incorrect usage. `gkg eval-settings -h` prints usage to stdout and exits 0.

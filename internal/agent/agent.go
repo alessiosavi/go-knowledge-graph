@@ -44,6 +44,10 @@ const (
 	defaultContextBudgetKB = 256
 )
 
+const meaningCandidateRule = `- A product hit matched by meaning is a candidate: read the product (get_product with_texts and the matched key as text_keys) before saying it has a property, say whether the value is checked, and use find_products with min/max for numeric limits.`
+
+const describedProductRule = `- When the user describes a product by its use, feel, look or properties rather than by its name or code, make your first call search with kind=product, limit 10, and the user's message copied word for word as the query: do not shorten it to keywords or translate it, because meaning search matches whole descriptions. Then continue with your usual keyword searches.`
+
 const systemPrompt = `You are gkg's read-only knowledge-graph assistant. Answer the user's question using only the provided tools and the data they return.
 Rules:
 - Write the answer in GitHub-flavoured Markdown, without raw HTML.
@@ -52,7 +56,7 @@ Rules:
 - You cannot modify anything; the tool set is read-only.
 - If the tools cannot answer the question, say so plainly instead of guessing.
 - To resolve a product code, SKU or reference, call find_products with an identifier feature (features of kind code, such as catalogue_code or product_reference; list_features shows them) and the code as value; codes ignore case and spaces. get_product needs the graph product id, or store plus the full product_id (for example dentalica.com:1000), never a bare code.
-- A product hit matched by meaning is a candidate: read the product (get_product with_texts and the matched key as text_keys) before saying it has a property, say whether the value is checked, and use find_products with min/max for numeric limits.
+` + meaningCandidateRule + `
 - For any question about a product: read its product record (get_product) AND what documents say about it (pages, mentions, or get_chunks with_products). Cite the record and at least one passage about that product and say whether they agree; if no passage exists, say so — unless mentions_error, mentions_partial or pages_partial shows the check was incomplete; then say the passages could not be fully checked. Documents may be Italian and product data English: search with Italian and English keywords, as two searches in the same step. For product names and attributes, also search in English (product data is English), e.g. 'adesivo universale' → 'universal adhesive'. Search can return product hits (kind product) with an id for get_product. Pass a product page's chunk_ids to get_chunks to read its passages. If the passages you rely on list products and the question is about a product, call get_product on that product before answering, even when search returned no product hits. Cite the chunk ids of the passages you used.
 - document_date_source 'caller' is the source's own date; 'ingest' is only when gkg received it and does not show how recent the content is. For a current-state question with conflicting comparable evidence, prefer the newest caller-dated source, cite its date, and mention any undated conflicting source.
 - When the question names a period, pass since/until to search, get_entity, traverse or list_documents.
@@ -70,6 +74,18 @@ Strategy: search with keywords, then read chunks with get_chunks; use cypher las
 
 // SystemPrompt returns the base system prompt used for an ask.
 func SystemPrompt() string { return systemPrompt }
+
+// EffectiveSystemPrompt returns the system prompt for the configured agent.
+func EffectiveSystemPrompt(cfg config.Config) string {
+	return productSearchPrompt(SystemPrompt(), cfg.ProductText.Search)
+}
+
+func productSearchPrompt(prompt string, enabled bool) string {
+	if !enabled {
+		return prompt
+	}
+	return strings.Replace(prompt, meaningCandidateRule+"\n", meaningCandidateRule+"\n"+describedProductRule+"\n", 1)
+}
 
 const planSystemPrompt = systemPrompt + `
 
@@ -277,7 +293,7 @@ func (s *Server) runWithEvents(ctx context.Context, ask AskRequest, events askEv
 		defer func() { o.Steps, o.Err = resp.Steps, err }()
 	}
 	msgs := []chatMessage{
-		{Role: "system", Content: scopedPrompt(ctx, systemPrompt)},
+		{Role: "system", Content: scopedPrompt(ctx, EffectiveSystemPrompt(s.cfg))},
 		{Role: "user", Content: ask.Question},
 	}
 	ev := make([]EvidenceItem, 0, s.maxSteps)
@@ -447,7 +463,7 @@ func streamFallbackEligible(err error) bool {
 // path, so it streams when streaming is available.
 func (s *Server) askWithPlan(ctx context.Context, ask AskRequest, events askEvents) (AskResponse, error) {
 	msgs := []chatMessage{
-		{Role: "system", Content: scopedPrompt(ctx, planSystemPrompt)},
+		{Role: "system", Content: scopedPrompt(ctx, productSearchPrompt(planSystemPrompt, s.cfg.ProductText.Search))},
 		{Role: "user", Content: ask.Question},
 	}
 	req := s.chatRequest(ask.Generation, msgs)

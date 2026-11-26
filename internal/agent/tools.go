@@ -440,7 +440,7 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, erro
 		}
 		productLimit = limit
 	} else if kind == "auto" {
-		productLimit = min(3, limit/2)
+		productLimit = min(s.cfg.Agent.SearchProductSlots(), limit/2)
 	}
 
 	emb := s.emb
