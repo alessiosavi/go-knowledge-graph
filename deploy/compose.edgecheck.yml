@@ -14,6 +14,13 @@ services:
         max-size: "10m"
         max-file: "3"
   gkg:
+    environment:
+      GKG_AGENT_ANSWER_ENABLED: "true"
+      # Leave time for the held renewal stream and expire before the stub delay.
+      GKG_AGENT_TIMEOUT_S: &agent_timeout "20"
     depends_on:
       llmstub:
         condition: service_started
+  edge:
+    environment:
+      GKG_AGENT_TIMEOUT_S: *agent_timeout

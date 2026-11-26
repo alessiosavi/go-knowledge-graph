@@ -18,6 +18,7 @@ func completions(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Stream   bool `json:"stream"`
 		Messages []struct {
+			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"messages"`
 	}
@@ -26,6 +27,16 @@ func completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !request.Stream {
+		if n := len(request.Messages); n > 0 {
+			last := request.Messages[n-1]
+			if last.Role == "user" && last.Content == "edge-check answer timeout" {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(30 * time.Second):
+				}
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"id":"edge-check","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Offline edge check completed."},"finish_reason":"stop"}]}`)
 		return

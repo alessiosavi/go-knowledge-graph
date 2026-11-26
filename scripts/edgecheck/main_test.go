@@ -132,6 +132,88 @@ func TestProbeProductMutationsHelper(t *testing.T) {
 	main()
 }
 
+func TestProbeAnswer(t *testing.T) {
+	const fixture = "<script>sample</script>\n#!/bin/bash"
+	const domain = "d-12345678"
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/ingest":
+			w.WriteHeader(202)
+			fmt.Fprint(w, `{"document_id":"fixture-document"}`)
+		case "GET /v1/documents/fixture-document/status":
+			fmt.Fprint(w, `{"status":"done"}`)
+		case "GET /v1/documents/fixture-document":
+			fmt.Fprint(w, `{"domain":"`+domain+`"}`)
+		case "DELETE /v1/documents/fixture-document":
+			fmt.Fprint(w, `{"deleted":1}`)
+		case "POST /v1/agent/answer":
+			call := calls.Add(1)
+			var body struct {
+				Domain   string
+				Question string
+				Context  struct{ History []struct{ Role, Text string } }
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Domain != domain {
+				t.Errorf("invalid answer request %d: domain=%q, decode=%v", call, body.Domain, err)
+			}
+			login, pass, auth := r.BasicAuth()
+			if call == 2 && r.Header.Get("Authorization") != "" || call != 2 && (!auth || login != "test" || pass != "pass") {
+				t.Errorf("incorrect Basic authorization on answer request %d", call)
+			}
+			history := body.Context.History
+			switch call {
+			case 1:
+				if body.Question != fixture || len(history) != 1 || history[0].Role != "user" || history[0].Text != fixture {
+					t.Error("first answer request must put the WAF fixture in the question and first history turn")
+				}
+			case 2:
+				w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+				w.WriteHeader(401)
+				return
+			case 3:
+				if r.ContentLength <= 1<<20 {
+					t.Errorf("answer body cap probe has %d bytes, want more than 1 MiB", r.ContentLength)
+				}
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(413)
+				return
+			case 4:
+				if body.Question != "edge-check answer timeout" {
+					t.Error("timeout probe must trigger the offline provider delay")
+				}
+				w.WriteHeader(504)
+				fmt.Fprint(w, `{"error":"agent_timeout"}`)
+				return
+			case 5:
+				if strings.Contains(body.Question, fixture) || len(history) != 6 || history[5].Role != "assistant" || history[5].Text != fixture {
+					t.Error("sixth-turn answer request must use a benign question and put the WAF fixture in the sixth turn")
+				}
+				for _, turn := range history[:min(len(history), 5)] {
+					if turn.Text == "" || strings.Contains(turn.Text, fixture) {
+						t.Error("earlier history turns must contain benign text")
+					}
+				}
+			default:
+				t.Errorf("unexpected answer request %d", call)
+			}
+			fmt.Fprint(w, `{"contract":"gkg-answer/1"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	write(filepath.Join(dir, "auth.curl"), []byte("user = \"test:pass\"\n"))
+	p := &probe{dir: dir, base: server.URL}
+	p.answer(fixture)
+	if got := calls.Load(); got != 5 {
+		t.Errorf("sent %d answer probes, want 5", got)
+	}
+}
+
 func TestProbeCommandCA(t *testing.T) {
 	for _, tls := range []bool{false, true} {
 		name := "http"

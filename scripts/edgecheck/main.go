@@ -168,6 +168,8 @@ func (p *probe) routing() {
 	for _, asset := range []string{"app.js", "app.css"} {
 		p.check("UI asset "+asset, "GET", "/ui/"+asset, nil, 200)
 	}
+	wafText := string(read("deploy/edge/testdata/javascript.md")) + string(read("deploy/edge/testdata/bash.md"))
+	p.answer(wafText)
 	marker := string(read(filepath.Join(p.dir, "marker")))
 	var ids []string
 	files, err := filepath.Glob("deploy/edge/testdata/*.md")
@@ -209,7 +211,7 @@ func (p *probe) routing() {
 	p.check("traverse", "POST", "/v1/traverse", encode(map[string]any{"entity": id, "depth": 1}), 200)
 	r = p.check("agent enabled", "GET", "/v1/agent/status", nil, 200)
 	expect(object(r.body)["enabled"] == true && object(r.body)["stream"] == true, "offline agent and streaming enabled")
-	r = p.check("SQL-looking ask", "POST", "/v1/agent/ask", encode(map[string]any{"question": string(read("deploy/edge/testdata/javascript.md")) + string(read("deploy/edge/testdata/bash.md"))}), 200)
+	r = p.check("SQL-looking ask", "POST", "/v1/agent/ask", encode(map[string]any{"question": wafText}), 200)
 	expect(strings.Contains(string(r.body), "Offline edge check completed."), "deterministic stub answer")
 	// Versions share a source but have different hashes.
 	a := p.ingest("version one", encode(map[string]any{"text": "Ada works for EdgeLabs. " + marker, "source": "edge-versions"}))
@@ -224,6 +226,50 @@ func (p *probe) routing() {
 	for _, id := range ids {
 		p.check("corpus DELETE", "DELETE", "/v1/documents/"+id, nil, 200)
 	}
+}
+
+func (p *probe) answer(wafText string) {
+	const path = "/v1/agent/answer"
+	const question = "What is this document about?"
+	fixture := encode(map[string]string{"text": "Ada works for shop.example.", "source": "edge-answer-domain"})
+	id := p.ingest("answer domain fixture", fixture)
+	documentPath := "/v1/documents/" + id
+	r := p.check("answer fixture metadata", "GET", documentPath, nil, http.StatusOK)
+	domain, _ := object(r.body)["domain"].(string)
+	expect(domain != "", "answer fixture has an assigned domain")
+
+	type turn struct {
+		Role string `json:"role"`
+		Text string `json:"text"`
+	}
+	body := func(question string, history ...turn) []byte {
+		request := map[string]any{"domain": domain, "question": question}
+		if len(history) > 0 {
+			request["context"] = map[string]any{"history": history}
+		}
+		return encode(request)
+	}
+	checkContract := func(name string, r response) {
+		expect(r.code == http.StatusOK && object(r.body)["contract"] == "gkg-answer/1", fmt.Sprintf("%s (HTTP %d, contract gkg-answer/1)", name, r.code))
+	}
+	checkContract("answer-auth-ok", p.request(http.MethodPost, path, "auth.curl", body(wafText, turn{"user", wafText})))
+
+	r = p.request(http.MethodPost, path, "", body(question))
+	expect(r.code == http.StatusUnauthorized && strings.HasPrefix(r.headers.Get("WWW-Authenticate"), "Basic "), fmt.Sprintf("answer-unauth (HTTP %d)", r.code))
+
+	// The encoded request exceeds nginx's 1 MiB cap. Prove the rejection came from the edge.
+	r = p.request(http.MethodPost, path, "auth.curl", body(strings.Repeat("a", 1<<20)))
+	expect(r.code == http.StatusRequestEntityTooLarge && !strings.Contains(r.headers.Get("Content-Type"), "application/json"), fmt.Sprintf("answer-body-cap (HTTP %d)", r.code))
+
+	r = p.request(http.MethodPost, path, "auth.curl", body("edge-check answer timeout"))
+	expect(r.code == http.StatusGatewayTimeout && object(r.body)["error"] == "agent_timeout", fmt.Sprintf("answer-timeout (HTTP %d, agent_timeout)", r.code))
+
+	checkContract("answer-history-sixth-turn", p.request(http.MethodPost, path, "auth.curl", body(question,
+		turn{"user", "What is in the catalog?"}, turn{"assistant", "There is a document."},
+		turn{"user", "Which document?"}, turn{"assistant", "The catalog document."},
+		turn{"user", "What is an example?"}, turn{"assistant", wafText},
+	)))
+	p.check("answer fixture DELETE", "DELETE", documentPath, nil, http.StatusOK)
 }
 
 func closedRouteResponse(mode string, r response) bool {
