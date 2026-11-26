@@ -357,7 +357,7 @@ func TestEdgeMaintenanceMode(t *testing.T) {
 				rendered = strings.ReplaceAll(rendered, "${"+key+"}", values[i])
 			}
 			if flag != "1" {
-				const baseline = "1f0407b26b152073b86bff6a15c67bef9700f16e2d5ab54919067bf27937c327"
+				const baseline = "bc6583b63d8a18de25afaf8d997eb4186d0fe374e934791929769630fcd8545f"
 				if got := fmt.Sprintf("%x", sha256.Sum256([]byte(rendered))); got != baseline {
 					t.Errorf("default edge config SHA-256 = %s, want %s", got, baseline)
 				}
@@ -628,21 +628,26 @@ func TestEdgeAskTimeouts(t *testing.T) {
 
 func TestEdgeIngestTimeouts(t *testing.T) {
 	script := filepath.Join(repoRoot(t), "deploy/edge/15-validate-env.sh")
-	for _, tc := range []struct{ name, converter, ingest, want, rejected string }{
-		{name: "defaults", want: "390"},
-		{name: "long conversions", converter: "1800", want: "1890"},
+	for _, tc := range []struct{ name, converter, ingest, fetch, retries, want, rejected string }{
+		{name: "defaults", want: "487"},
+		{name: "long conversions", converter: "1800", want: "1987"},
+		{name: "no retries", retries: "0", want: "390"},
+		{name: "longer fetch attempts", fetch: "60", want: "607"},
+		{name: "ten retries cap the wait at 8 s", retries: "10", want: "753"},
+		{name: "too many retries", retries: "11", rejected: "GKG_INGEST_FETCH_RETRIES"},
+		{name: "bad fetch timeout", fetch: "30s", rejected: "GKG_INGEST_FETCH_TIMEOUT_S"},
 		{name: "explicit margin", converter: "1800", ingest: "1830", want: "1830"},
 		{name: "explicit higher", converter: "300", ingest: "900", want: "900"},
 		{name: "undercuts converter", converter: "1800", ingest: "390", rejected: "EDGE_INGEST_TIMEOUT_S"},
 		{name: "below margin", converter: "300", ingest: "329", rejected: "EDGE_INGEST_TIMEOUT_S"},
-		{name: "zero converter uses default", converter: "0", want: "390"},
-		{name: "decimal leading zero", converter: "0600", want: "690"},
+		{name: "zero converter uses default", converter: "0", want: "487"},
+		{name: "decimal leading zero", converter: "0600", want: "787"},
 		{name: "bad converter", converter: "30m", rejected: "GKG_CONVERTER_TIMEOUT_S"},
 		{name: "ingest injection", ingest: "390;bad", rejected: "EDGE_INGEST_TIMEOUT_S"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command("sh", "-c", `. "$1"; sh -c 'printf "%s" "$EDGE_INGEST_TIMEOUT_S"'`, "sh", script)
-			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GKG_API_KEY=synthetic-test-key", "SERVER_NAME=localhost", "GKG_CONVERTER_TIMEOUT_S=" + tc.converter, "EDGE_INGEST_TIMEOUT_S=" + tc.ingest}
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GKG_API_KEY=synthetic-test-key", "SERVER_NAME=localhost", "GKG_CONVERTER_TIMEOUT_S=" + tc.converter, "EDGE_INGEST_TIMEOUT_S=" + tc.ingest, "GKG_INGEST_FETCH_TIMEOUT_S=" + tc.fetch, "GKG_INGEST_FETCH_RETRIES=" + tc.retries}
 			out, err := cmd.CombinedOutput()
 			if tc.rejected != "" {
 				if err == nil || !strings.Contains(string(out), tc.rejected) {
@@ -665,6 +670,8 @@ func TestEdgeDerivedTimeoutReachesEnvsubst(t *testing.T) {
 		`GKG_AGENT_TIMEOUT_S: ${GKG_AGENT_TIMEOUT_S:-60}`,
 		`EDGE_ASK_TIMEOUT_S: "${EDGE_ASK_TIMEOUT_S:-}"`,
 		`GKG_CONVERTER_TIMEOUT_S: ${GKG_CONVERTER_TIMEOUT_S:-300}`,
+		`GKG_INGEST_FETCH_TIMEOUT_S: ${GKG_INGEST_FETCH_TIMEOUT_S:-30}`,
+		`GKG_INGEST_FETCH_RETRIES: ${GKG_INGEST_FETCH_RETRIES:-3}`,
 		`EDGE_INGEST_TIMEOUT_S: "${EDGE_INGEST_TIMEOUT_S:-}"`,
 		`./edge/15-validate-env.sh:/docker-entrypoint.d/15-validate-env.envsh:ro`,
 	} {
@@ -703,7 +710,7 @@ done`, "sh", validator, renderer)
 	if strings.Count(string(out), "proxy_read_timeout 130s;") != 2 || strings.Contains(string(out), "${EDGE_ASK_TIMEOUT_S}") {
 		t.Fatalf("derived timeout missing from ask/stream locations:\n%s", out)
 	}
-	if strings.Count(string(out), "proxy_read_timeout 1890s;") != 1 || strings.Contains(string(out), "${EDGE_INGEST_TIMEOUT_S}") {
+	if strings.Count(string(out), "proxy_read_timeout 1987s;") != 1 || strings.Contains(string(out), "${EDGE_INGEST_TIMEOUT_S}") {
 		t.Fatalf("derived ingest timeout missing from the ingest location:\n%s", out)
 	}
 }

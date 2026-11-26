@@ -23,13 +23,31 @@ number() {
  [ "${#2}" -le 9 ] || fail "$1"
 }
 number EDGE_HSTS_MAX_AGE "${EDGE_HSTS_MAX_AGE:-0}"
-# Ingest converts inside the request: fetch 30 s + converter budget + 60 s margin.
+# Ingest fetches and converts inside the request: the whole fetch budget
+# (every proxied attempt and the waits between them) + converter budget +
+# 60 s margin.
 converter_timeout=${GKG_CONVERTER_TIMEOUT_S:-300}
 number GKG_CONVERTER_TIMEOUT_S "$converter_timeout"
 converter_timeout=$(printf '%s\n' "$converter_timeout" | awk '{printf "%d", $0}')
 [ "$converter_timeout" -gt 0 ] || converter_timeout=300
+fetch_timeout=${GKG_INGEST_FETCH_TIMEOUT_S:-30}
+number GKG_INGEST_FETCH_TIMEOUT_S "$fetch_timeout"
+fetch_timeout=$(printf '%s\n' "$fetch_timeout" | awk '{printf "%d", $0}')
+[ "$fetch_timeout" -gt 0 ] || fetch_timeout=30
+fetch_retries=${GKG_INGEST_FETCH_RETRIES:-3}
+number GKG_INGEST_FETCH_RETRIES "$fetch_retries"
+fetch_retries=$(printf '%s\n' "$fetch_retries" | awk '{printf "%d", $0}')
+[ "$fetch_retries" -le 10 ] || fail 'GKG_INGEST_FETCH_RETRIES (must be between 0 and 10)'
+# Waits before retries are 1, 2, 4, then 8 s each (gkg's backoff).
+fetch_budget=$(( (fetch_retries + 1) * fetch_timeout ))
+fetch_wait=1 fetch_try=0
+while [ "$fetch_try" -lt "$fetch_retries" ]; do
+ fetch_budget=$((fetch_budget + fetch_wait))
+ [ "$fetch_wait" -ge 8 ] || fetch_wait=$((fetch_wait * 2))
+ fetch_try=$((fetch_try + 1))
+done
 if [ -z "${EDGE_INGEST_TIMEOUT_S:-}" ]; then
- EDGE_INGEST_TIMEOUT_S=$((converter_timeout + 90))
+ EDGE_INGEST_TIMEOUT_S=$((converter_timeout + fetch_budget + 60))
 fi
 number EDGE_INGEST_TIMEOUT_S "$EDGE_INGEST_TIMEOUT_S"
 EDGE_INGEST_TIMEOUT_S=$(printf '%s\n' "$EDGE_INGEST_TIMEOUT_S" | awk '{printf "%d", $0}')

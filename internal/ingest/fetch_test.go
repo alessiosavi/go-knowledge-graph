@@ -245,7 +245,9 @@ func TestFetchTooManyRedirects(t *testing.T) {
 }
 
 func TestFetchFollowsAllowedRedirectAndReportsFinalURL(t *testing.T) {
+	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		if r.URL.Path == "/start" {
 			http.Redirect(w, r, "/final", http.StatusFound)
 			return
@@ -254,7 +256,7 @@ func TestFetchFollowsAllowedRedirectAndReportsFinalURL(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	f := &ingest.Fetcher{Guard: stubGuard{}}
+	f := &ingest.Fetcher{Guard: stubGuard{}, FetchRetries: 3}
 	res, err := f.Fetch(context.Background(), srv.URL+"/start")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
@@ -264,6 +266,9 @@ func TestFetchFollowsAllowedRedirectAndReportsFinalURL(t *testing.T) {
 	}
 	if string(res.Body) != "landed" {
 		t.Errorf("body = %q", res.Body)
+	}
+	if hits.Load() != 2 {
+		t.Errorf("direct redirects made %d requests, want two requests in one attempt", hits.Load())
 	}
 }
 

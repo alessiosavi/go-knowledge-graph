@@ -54,6 +54,7 @@ func TestLoadConfigFromGKGConfig(t *testing.T) {
 
 func TestIngestFetcherUsesProxyConfig(t *testing.T) {
 	t.Setenv("GKG_INGEST_FETCH_PROXY", "http://user:pass@proxy.example:8443")
+	t.Setenv("GKG_INGEST_FETCH_RETRIES", "2")
 	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatal(err)
@@ -61,6 +62,9 @@ func TestIngestFetcherUsesProxyConfig(t *testing.T) {
 	fetcher, err := ingestFetcher(cfg)
 	if err != nil || fetcher.Proxy == nil || fetcher.Proxy.String() != cfg.Ingest.FetchProxy {
 		t.Fatalf("ingest fetcher lacks the configured proxy: %v", err)
+	}
+	if fetcher.FetchRetries != 2 {
+		t.Errorf("ingest fetcher retries = %d, want 2", fetcher.FetchRetries)
 	}
 }
 

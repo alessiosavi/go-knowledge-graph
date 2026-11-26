@@ -40,7 +40,7 @@ type FetchResult struct {
 }
 
 // Fetcher performs SSRF-guarded URL fetches with size, redirect and time
-// caps. Zero values fall back to the defaults (10 MiB, 5 redirects, 30s).
+// caps. Zero byte, redirect and time caps use 10 MiB, 5 redirects and 30s.
 type Fetcher struct {
 	Client       *http.Client
 	Guard        Guard
@@ -51,7 +51,14 @@ type Fetcher struct {
 	// Proxy routes fetches through an explicit HTTP proxy. Target URLs
 	// and redirects still pass CheckURL. The guarded dial validates and pins
 	// the proxy address. The trusted proxy controls its connection to the target.
+	// Each attempt uses and closes a fresh transport so a rotating proxy can
+	// assign a new exit on a new connection.
 	Proxy *url.URL
+
+	// FetchRetries is the number of additional attempts for proxied fetches.
+	// Zero still checks that the proxy lands on the requested page.
+	FetchRetries int
+	waitRetry    func(context.Context, time.Duration) bool
 }
 
 // Fetch GETs the URL through the guard, following at most MaxRedirects
@@ -67,8 +74,29 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (FetchResult, error)
 	if err != nil {
 		return FetchResult{}, fmt.Errorf("ingest: fetch: parse %q: %w", rawURL, err)
 	}
-	if err := guard.CheckURL(ctx, u); err != nil {
+	if f.Proxy != nil {
+		return f.fetchThroughProxy(ctx, rawURL, u, guard)
+	}
+	result, err := f.fetchOnce(ctx, rawURL, u, guard)
+	if err != nil {
 		return FetchResult{}, fmt.Errorf("ingest: fetch %s: %w", rawURL, err)
+	}
+	return result, nil
+}
+
+func (f *Fetcher) fetchOnce(ctx context.Context, rawURL string, u *url.URL, guard Guard) (FetchResult, error) {
+	timeout := time.Duration(f.TimeoutS) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if f.Proxy != nil {
+		// Cap the entire attempt, including the initial URL guard and body.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	if err := guard.CheckURL(ctx, u); err != nil {
+		return FetchResult{}, err
 	}
 
 	maxBytes := f.MaxBytes
@@ -79,11 +107,6 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (FetchResult, error)
 	if maxRedirects <= 0 {
 		maxRedirects = 5
 	}
-	timeout := time.Duration(f.TimeoutS) * time.Second
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-
 	var client http.Client
 	if f.Client != nil {
 		client = *f.Client
@@ -97,7 +120,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (FetchResult, error)
 		transport = t.Clone()
 	default:
 		if f.Proxy != nil {
-			return FetchResult{}, errors.New("ingest: fetch proxy requires an HTTP transport")
+			return FetchResult{}, errors.New("fetch proxy requires an HTTP transport")
 		}
 	}
 	if transport != nil {
@@ -115,37 +138,54 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (FetchResult, error)
 		}
 		client.Transport = transport
 		defer transport.CloseIdleConnections()
+		if f.Proxy != nil {
+			client.Timeout = 0 // The attempt context supplies the deadline.
+			client.Transport = newProxiedFetchTransport(transport)
+		}
 	}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		var err error
 		if len(via) > maxRedirects {
-			return fmt.Errorf("ingest: fetch %s: too many redirects (>%d)", rawURL, maxRedirects)
+			err = fmt.Errorf("too many redirects (>%d)", maxRedirects)
+		} else if blocked := guard.CheckURL(req.Context(), req.URL); blocked != nil {
+			err = fmt.Errorf("redirect blocked: %w", blocked)
 		}
-		if err := guard.CheckURL(req.Context(), req.URL); err != nil {
-			return fmt.Errorf("ingest: fetch %s: redirect blocked: %w", rawURL, err)
+		if err != nil && f.Proxy == nil {
+			return fmt.Errorf("ingest: fetch %s: %w", rawURL, err)
 		}
-		return nil
+		return err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return FetchResult{}, fmt.Errorf("ingest: fetch %s: %w", rawURL, err)
+		return FetchResult{}, err
 	}
 	req.Header.Set("User-Agent", "gkg/0.1 (+https://github.com/alessiosavi/go-knowledge-graph)")
 	resp, err := client.Do(req)
 	if err != nil {
-		return FetchResult{}, redactProxyError(fmt.Errorf("ingest: fetch %s: %w", rawURL, err), f.Proxy)
+		if reqErr, ok := err.(*url.Error); ok && f.Proxy != nil {
+			err = reqErr.Err // Report the cause without echoing the request URL twice.
+		}
+		return FetchResult{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return FetchResult{}, fmt.Errorf("ingest: fetch %s: HTTP %d", rawURL, resp.StatusCode)
+		return FetchResult{}, fetchHTTPError(resp.StatusCode)
+	}
+
+	if f.Proxy != nil && resp.Request != nil && resp.Request.URL != nil {
+		landing := resp.Request.URL
+		if !sameFetchPage(u, landing) {
+			return FetchResult{}, fetchAttemptError{error: wrongFetchPage(f.proxySafeURL(landing)), retryable: true}
+		}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
-		return FetchResult{}, redactProxyError(fmt.Errorf("ingest: fetch %s: read body: %w", rawURL, err), f.Proxy)
+		return FetchResult{}, fetchAttemptError{error: fmt.Errorf("read body: %w", err), retryable: true}
 	}
 	if int64(len(body)) > maxBytes {
-		return FetchResult{}, fmt.Errorf("ingest: fetch %s: body exceeds %d bytes", rawURL, maxBytes)
+		return FetchResult{}, fmt.Errorf("body exceeds %d bytes", maxBytes)
 	}
 	final := rawURL
 	if resp.Request != nil && resp.Request.URL != nil {
@@ -170,8 +210,15 @@ func newFetchTransport() *http.Transport {
 
 // Transport errors can echo a proxy's response text, including credentials.
 func redactProxyError(err error, proxy *url.URL) error {
+	if containsProxyCredentials(err.Error(), proxy) {
+		return errors.New("proxy request failed (credentials omitted)")
+	}
+	return err
+}
+
+func containsProxyCredentials(msg string, proxy *url.URL) bool {
 	if proxy == nil || proxy.User == nil {
-		return err
+		return false
 	}
 	username := proxy.User.Username()
 	password, _ := proxy.User.Password()
@@ -180,14 +227,14 @@ func redactProxyError(err error, proxy *url.URL) error {
 		base64.StdEncoding.EncodeToString([]byte(username + ":" + password)),
 		url.User(username).String(), url.UserPassword("", password).String()[1:],
 		username, password,
+		url.QueryEscape(username), url.QueryEscape(password),
 	}
-	msg := err.Error()
 	for _, secret := range secrets {
 		if secret != "" && strings.Contains(msg, secret) {
-			return errors.New("ingest: fetch: proxy request failed (credentials omitted)")
+			return true
 		}
 	}
-	return err
+	return false
 }
 
 // guardedDial resolves the connection address, rejects blocked targets and
@@ -205,7 +252,7 @@ func guardedDial(dg DialChecker, base func(context.Context, string, string) (net
 		var candidates []net.IP
 		if ip := net.ParseIP(host); ip != nil {
 			if err := dg.CheckDial(network, addr); err != nil {
-				return nil, err
+				return nil, fetchAttemptError{error: err}
 			}
 			candidates = []net.IP{ip}
 		} else {
@@ -219,7 +266,7 @@ func guardedDial(dg DialChecker, base func(context.Context, string, string) (net
 				}
 			}
 			if len(candidates) == 0 {
-				return nil, fmt.Errorf("netguard: no allowed address for %q", host)
+				return nil, fetchAttemptError{error: fmt.Errorf("netguard: no allowed address for %q", host)}
 			}
 		}
 
