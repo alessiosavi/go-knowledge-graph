@@ -547,6 +547,11 @@ the `text_vec` index and backfills missing vectors as ingest load allows.
 In the ask agent's `search` with `kind=auto`, the meaning search budget
 defaults to 300 ms (`GKG_PRODUCT_TEXT_AUTO_TIMEOUT`), starts after the regular
 and title searches, and includes any remaining embedding wait.
+Set `agent.search_products` or `GKG_AGENT_SEARCH_PRODUCTS` to cap product hits
+in mixed results (default 3, valid integers 1–20). Product hits can fill at
+most half the requested result limit. With `GKG_PRODUCT_TEXT_SEARCH=on`, both
+agent prompt modes also ask for a `kind=product` search with `limit=10` and the
+shopper's whole description in their language, alongside keyword searches.
 
 For an existing store, take a backup and materialize texts from the unchanged
 authoritative snapshot. Run the import in the serving environment with a

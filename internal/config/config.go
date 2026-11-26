@@ -157,7 +157,8 @@ const (
 	// DefaultAgentBaseURL is the base URL used when no agent endpoint is specified.
 	DefaultAgentBaseURL = "https://api.openai.com/v1"
 	// DefaultAgentModel is the model used when no agent model is specified.
-	DefaultAgentModel = "deepseek-v4.1-flash"
+	DefaultAgentModel          = "deepseek-v4.1-flash"
+	defaultAgentSearchProducts = 3
 )
 
 // AgentConfig configures the optional "Ask the graph" LLM agent served at
@@ -177,6 +178,15 @@ type AgentConfig struct {
 	MaxSteps         int      `yaml:"max_steps"`         // tool-turn budget per ask (clamped 1..30; each turn executes up to 8 calls)
 	TimeoutS         int      `yaml:"timeout_s"`         // whole-ask budget in seconds
 	ContextBudgetKB  int      `yaml:"context_budget_kb"` // cumulative tool-result transcript budget (default 256 KiB)
+	SearchProducts   int      `yaml:"search_products"`   // product slots in mixed search before applying the result limit
+}
+
+// SearchProductSlots also supplies the default for callers using a literal Config.
+func (c AgentConfig) SearchProductSlots() int {
+	if c.SearchProducts == 0 {
+		return defaultAgentSearchProducts
+	}
+	return c.SearchProducts
 }
 
 // IngestConfig tunes the ingestion pipeline.
@@ -271,6 +281,7 @@ func defaults() Config {
 			MaxSteps:        6,
 			TimeoutS:        60,
 			ContextBudgetKB: 256,
+			SearchProducts:  defaultAgentSearchProducts,
 		},
 		Ingest: IngestConfig{
 			SpoolMaxCount:    1024,
@@ -316,6 +327,9 @@ func Load(path string) (Config, error) {
 	}
 	if err := cfg.validateLLM(); err != nil {
 		return Config{}, err
+	}
+	if cfg.Agent.SearchProducts < 1 || cfg.Agent.SearchProducts > 20 {
+		return Config{}, errors.New("config: GKG_AGENT_SEARCH_PRODUCTS must be between 1 and 20")
 	}
 	if cfg.Ingest.SpoolDir == "" {
 		home, err := os.UserHomeDir()

@@ -628,6 +628,9 @@ func TestAgentDefaults(t *testing.T) {
 	if cfg.Agent.TimeoutS != 60 {
 		t.Errorf("Agent.TimeoutS = %d, want 60", cfg.Agent.TimeoutS)
 	}
+	if cfg.Agent.SearchProducts != 3 {
+		t.Errorf("Agent.SearchProducts = %d, want 3", cfg.Agent.SearchProducts)
+	}
 }
 
 func TestAgentContextBudgetYAML(t *testing.T) {
@@ -638,6 +641,38 @@ func TestAgentContextBudgetYAML(t *testing.T) {
 	cfg, err := config.Load(p)
 	if err != nil || cfg.Agent.ContextBudgetKB != 64 {
 		t.Fatalf("budget=%d err=%v", cfg.Agent.ContextBudgetKB, err)
+	}
+}
+
+func TestAgentSearchProductsValidation(t *testing.T) {
+	for _, tc := range []struct{ value, want string }{
+		{"0", "config: GKG_AGENT_SEARCH_PRODUCTS must be between 1 and 20"},
+		{"21", "config: GKG_AGENT_SEARCH_PRODUCTS must be between 1 and 20"},
+		{"x", `config: env GKG_AGENT_SEARCH_PRODUCTS="x":`},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("GKG_AGENT_SEARCH_PRODUCTS", tc.value)
+			_, err := config.Load("")
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+				t.Fatalf("Load error = %v, want prefix %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentSearchProductsYAMLAndEnv(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("agent:\n  search_products: 20\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil || cfg.Agent.SearchProducts != 20 {
+		t.Fatalf("YAML search_products=%d err=%v, want 20", cfg.Agent.SearchProducts, err)
+	}
+	t.Setenv("GKG_AGENT_SEARCH_PRODUCTS", "5")
+	cfg, err = config.Load(p)
+	if err != nil || cfg.Agent.SearchProducts != 5 {
+		t.Fatalf("env search_products=%d err=%v, want 5", cfg.Agent.SearchProducts, err)
 	}
 }
 

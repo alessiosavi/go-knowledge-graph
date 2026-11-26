@@ -46,6 +46,12 @@ that sends a progress token receives one tool-name update per step. Progress
 notifications are written inline, so a stalled client slows the ask. The call
 uses `GKG_AGENT_TIMEOUT_S` (default 60 seconds).
 
+Inside `ask`, `GKG_AGENT_SEARCH_PRODUCTS` (`agent.search_products`) caps product
+hits in mixed searches (default 3, valid integers 1–20, at most half the
+requested result limit). With `GKG_PRODUCT_TEXT_SEARCH=on`, the agent is also
+prompted to search products using the shopper's full description in their
+language, alongside keyword searches.
+
 By default, `get_entity` and `traverse` return typed facts that meet the assert
 floor or that the judge confirmed. Set `include_low_confidence` to return all
 typed facts. Entity and traversal results include `hidden` counts when any are

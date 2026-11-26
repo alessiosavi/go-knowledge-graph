@@ -24,7 +24,7 @@ func TestEvalSettingsOutputKeysAndCanonicalHash(t *testing.T) {
 	assertSettingsKeys(t, proj, "judge", "agent", "gcp", "embedder", "limits")
 	assertSettingsKeys(t, proj["judge"].(map[string]any), "auth", "base_url", "model", "temperature", "max_tokens", "reasoning_effort", "prompt_version", "prompt_sha256")
 	assertSettingsKeys(t, proj["agent"].(map[string]any), "auth", "base_url", "model", "temperature", "max_tokens", "reasoning_efforts", "stream", "max_steps",
-		"timeout_s", "context_budget_kb", "top_k_enabled", "system_prompt_sha256")
+		"timeout_s", "context_budget_kb", "top_k_enabled", "search_products", "system_prompt_sha256")
 	assertSettingsKeys(t, proj["gcp"].(map[string]any), "credentials", "route")
 	assertSettingsKeys(t, proj["gcp"].(map[string]any)["route"].(map[string]any), "host", "project", "location")
 	assertSettingsKeys(t, proj["embedder"].(map[string]any), "enabled", "provider", "base_url", "model", "dim", "query_furl", "product_furl", "batch_size")
@@ -156,6 +156,7 @@ func TestEvalSettingsHashChangesWithProjectedFields(t *testing.T) {
 		{"agent.timeout_s", "GKG_AGENT_TIMEOUT_S", "73"},
 		{"agent.context_budget_kb", "GKG_AGENT_CONTEXT_BUDGET_KB", "777"},
 		{"agent.top_k_enabled", "GKG_AGENT_TOP_K_ENABLED", "true"},
+		{"agent.search_products", "GKG_AGENT_SEARCH_PRODUCTS", "5"},
 		{"gcp.route.host", "GKG_GCP_ROUTE_HOST", "changed.invalid"},
 		{"gcp.route.project", "GKG_GCP_ROUTE_PROJECT", "changed"},
 		{"gcp.route.location", "GKG_GCP_ROUTE_LOCATION", "changed"},
@@ -225,6 +226,23 @@ func TestEvalSettingsHashChangesWithPromptsAndCredentialMode(t *testing.T) {
 				t.Errorf("changing %s gave hash %q, err=%v", tc.field, digest, err)
 			}
 		})
+	}
+}
+
+func TestEvalSettingsDescribedProductPromptSHA256(t *testing.T) {
+	settingsFixture(t)
+	const baseline = "c20a36f048cbff6636178513b71139241f9cae364b2fee65e3666abbbb412f07" // c38db32 system prompt
+	t.Setenv("GKG_PRODUCT_TEXT_SEARCH", "off")
+	off, _ := readEvalSettings(t)
+	offAgent := off["projection"].(map[string]any)["agent"].(map[string]any)
+	if got := offAgent["system_prompt_sha256"]; got != baseline {
+		t.Errorf("flag-off system_prompt_sha256 = %v, want %s", got, baseline)
+	}
+	t.Setenv("GKG_PRODUCT_TEXT_SEARCH", "on")
+	on, _ := readEvalSettings(t)
+	onAgent := on["projection"].(map[string]any)["agent"].(map[string]any)
+	if onAgent["system_prompt_sha256"] == offAgent["system_prompt_sha256"] || on["hash"] == off["hash"] {
+		t.Error("enabling product text search did not change both the system prompt hash and the projection hash")
 	}
 }
 

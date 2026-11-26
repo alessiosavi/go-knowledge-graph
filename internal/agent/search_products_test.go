@@ -150,6 +150,67 @@ func TestAgentSearchProductPlacement(t *testing.T) {
 	}
 }
 
+func TestAgentSearchAutoProductSlots(t *testing.T) {
+	t.Setenv("GKG_AGENT_SEARCH_PRODUCTS", "5")
+	t.Setenv("GKG_PRODUCT_TEXT_SEARCH", "off")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		kind         string
+		limit        int
+		wantProducts int
+	}{
+		{"auto", 20, 5},
+		{"auto", 6, 3},
+		{"product", 6, 6},
+	} {
+		t.Run(fmt.Sprintf("%s/limit_%d", tc.kind, tc.limit), func(t *testing.T) {
+			st := &productSearchToolStore{
+				chunks: []graph.ChunkSearchRow{{ID: "passage", Text: "The implant kit includes a drill."}},
+				products: func(_ context.Context, _, _ string, limit int) ([]graph.Product, error) {
+					products := make([]graph.Product, min(limit, 6))
+					for i := range products {
+						id := fmt.Sprintf("example.com:%d", i)
+						products[i] = graph.Product{ID: id, Store: "example.com", ProductID: id, Title: "Implant Kit"}
+					}
+					return products, nil
+				},
+			}
+			s := NewServer(cfg, nil, nil)
+			s.store = st
+			for i := range tc.limit {
+				st.entities = append(st.entities, graph.EntitySearchRow{ID: fmt.Sprintf("entity-%02d", i), Name: "Implant"})
+			}
+			args := fmt.Sprintf(`{"query":"implant kit","kind":%q,"limit":%d}`, tc.kind, tc.limit)
+			result, err := s.execTool(t.Context(), "search", json.RawMessage(args))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := unmarshalResult[searchOut](t, result)
+			if out.ProductsError != "" || len(out.Hits) != tc.limit {
+				t.Fatalf("got %d hits, products_error=%q, want %d hits", len(out.Hits), out.ProductsError, tc.limit)
+			}
+			products, passages := 0, 0
+			for _, hit := range out.Hits {
+				switch hit.Kind {
+				case "product":
+					products++
+				case "chunk":
+					passages++
+				}
+			}
+			if products != tc.wantProducts {
+				t.Errorf("got %d products, want %d", products, tc.wantProducts)
+			}
+			if tc.kind == "auto" && passages != 1 {
+				t.Errorf("got %d passages, want 1", passages)
+			}
+		})
+	}
+}
+
 func TestAgentProductSearchFailureKeepsRegularHits(t *testing.T) {
 	for _, tc := range []struct {
 		name, wantStatus string

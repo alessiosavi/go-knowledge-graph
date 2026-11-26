@@ -421,7 +421,14 @@ product tool returns an error if its required metadata exceeds the budget.
 For product questions, the agent is prompted to read the product record and
 linked passages, cite both, and say whether they agree. Agent search can return
 product hits, and product pages expose `chunk_ids` for reading passages with
-`get_chunks`. In the agent, `get_product` defaults `with_mentions` to `true` to
+`get_chunks`. In mixed search (`kind=auto`), `GKG_AGENT_SEARCH_PRODUCTS`
+(`agent.search_products`) caps product hits (default 3, valid integers 1–20).
+Product hits can fill at most half the requested limit. With
+`GKG_PRODUCT_TEXT_SEARCH=on`, both agent prompt modes ask for an additional
+`kind=product` search with `limit=10` using the shopper's whole description in
+their language.
+
+In the agent, `get_product` defaults `with_mentions` to `true` to
 retrieve exact identifier matches in passages from done documents. `mentions_limit`
 accepts integers from 1 to 20 and defaults to 5. The ask domain filters passage
 evidence. Agent `get_chunks` defaults `with_products` to `true` to show products

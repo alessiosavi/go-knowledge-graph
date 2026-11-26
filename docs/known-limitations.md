@@ -223,6 +223,10 @@ reported total counts the available associations when either status is set.
   The agent's `search` tool also fits `auto` and `product` results before
   recording evidence and reports the number of hits dropped for the budget in
   `hits_omitted`.
+- Mixed searches (`kind=auto`) cap product hits at `GKG_AGENT_SEARCH_PRODUCTS`
+  (`agent.search_products`, default 3, valid integers 1–20) and at half the
+  requested limit. The prompt rule to search with the shopper's whole
+  description is active only with `GKG_PRODUCT_TEXT_SEARCH=on`.
 - Answer HTML uses the reader’s sanitized Markdown pipeline, with all images
   omitted. Raw HTML is omitted and unsafe link destinations become `#`.
   Progressive deltas remain plain text until the done event replaces them.
