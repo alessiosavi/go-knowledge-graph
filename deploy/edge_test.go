@@ -42,6 +42,7 @@ func TestEdgeAllowlist(t *testing.T) {
 		"^POST:/v1/ingest$":                                 "@edge_ingest",
 		"^POST:/v1/agent/ask$":                              "@edge_ask",
 		"^POST:/v1/agent/ask/stream$":                       "@edge_stream",
+		"^POST:/v1/agent/answer$":                           "@edge_ask",
 		"^(GET|POST|DELETE):/mcp$":                          "@edge_mcp",
 		"^(GET|HEAD):/$":                                    "@edge_root",
 	}
@@ -357,7 +358,7 @@ func TestEdgeMaintenanceMode(t *testing.T) {
 				rendered = strings.ReplaceAll(rendered, "${"+key+"}", values[i])
 			}
 			if flag != "1" {
-				const baseline = "bc6583b63d8a18de25afaf8d997eb4186d0fe374e934791929769630fcd8545f"
+				const baseline = "add0cb89aa2c677d6efdd31d0937c7b64071272450d5125744066336c000859a"
 				if got := fmt.Sprintf("%x", sha256.Sum256([]byte(rendered))); got != baseline {
 					t.Errorf("default edge config SHA-256 = %s, want %s", got, baseline)
 				}
@@ -432,6 +433,16 @@ func TestEdgeExclusionScopeGuard(t *testing.T) {
 	}
 }
 
+var answerFreeTextFields = []string{
+	"json.question",
+	"json.context.history.array_0.text",
+	"json.context.history.array_1.text",
+	"json.context.history.array_2.text",
+	"json.context.history.array_3.text",
+	"json.context.history.array_4.text",
+	"json.context.history.array_5.text",
+}
+
 func scopedExclusions(text string) bool {
 	text = strings.ReplaceAll(text, "\\\n", "")
 	text = regexp.MustCompile(`(?m)^\s*#[^\n]*`).ReplaceAllString(text, "")
@@ -444,7 +455,11 @@ func scopedExclusions(text string) bool {
 	allowed := map[string]map[string]bool{
 		"/v1/ingest": {"json.text": true}, "/v1/search": {"json.query": true},
 		"/v1/agent/ask": {"json.question": true}, "/v1/agent/ask/stream": {"json.question": true},
-		"/mcp": {"json.params.arguments.text": true, "json.params.arguments.query": true},
+		"/mcp":             {"json.params.arguments.text": true, "json.params.arguments.query": true},
+		"/v1/agent/answer": {},
+	}
+	for _, field := range answerFreeTextFields {
+		allowed["/v1/agent/answer"][field] = true
 	}
 	for _, match := range block.FindAllStringSubmatch(text, -1) {
 		for _, removal := range strings.Split(match[2], ",") {
@@ -466,6 +481,35 @@ func scopedExclusions(text string) bool {
 		}
 	}
 	return strings.TrimSpace(block.ReplaceAllString(text, "")) == ""
+}
+
+func TestEdgeAnswerExclusionTargets(t *testing.T) {
+	before := edgeFile(t, "deploy/edge/modsec/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf")
+	actions := func(route string) []string {
+		prefix := `SecRule REQUEST_FILENAME "@streq ` + route + `" "`
+		for _, line := range strings.Split(before, "\n") {
+			if s, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok {
+				return strings.Split(strings.TrimSuffix(s, `"`), ",")
+			}
+		}
+		t.Fatalf("missing exclusion for %s", route)
+		return nil
+	}
+	want := map[string]bool{}
+	for _, action := range actions("/v1/agent/ask") {
+		for _, field := range answerFreeTextFields {
+			want[strings.ReplaceAll(action, "ARGS:json.question", "ARGS:"+field)] = true
+		}
+	}
+	for _, action := range actions("/v1/agent/answer") {
+		if !want[action] {
+			t.Errorf("unexpected or duplicate answer exclusion %q", action)
+		}
+		delete(want, action)
+	}
+	for action := range want {
+		t.Errorf("missing answer exclusion %q", action)
+	}
 }
 
 func TestEdgeTagCoverage(t *testing.T) {

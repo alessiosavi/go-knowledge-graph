@@ -13,6 +13,7 @@
 #   2. MCP smoke over stdio: tools/list = 8 tools, search answers
 #   3. `gkg eval` on the golden sample with the mock provider
 #   4. unchanged re-ingest is a no-op; changed content supersedes cleanly
+#   4b. REST ingest by domain ID and name, with status and conflict checks
 #   5. products write path over REST, including document refs and cleanup
 #      (skipped when a non-acceptance product release is active: use a scratch graph)
 #   6. local model offline (EN+IT) — manual SKIP
@@ -140,7 +141,7 @@ step "start the service"
 if [[ "$MODE" == "compose" ]]; then
 	"${COMPOSE[@]}" up -d --build --wait gkg
 	BASE_URL="http://127.0.0.1:${GKG_PORT}"
-	MCP_CMD=("${COMPOSE[@]}" exec -T gkg gkg mcp)
+	GKG_CMD=("${COMPOSE[@]}" exec -T gkg gkg)
 	PDF_INPUT_URL="${ACCEPTANCE_PDF_URL:-https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf}"
 	# Host-side commands (eval, MCP over the container) use the same creds.
 	export GKG_MEMGRAPH_URI="bolt://localhost:${MEMGRAPH_PORT}"
@@ -157,7 +158,7 @@ else
 	BASE_URL="http://127.0.0.1:${ACCEPTANCE_PORT}"
 	"$TMP/gkg" serve >"$TMP/serve.log" 2>&1 &
 	SERVER_PID=$!
-	MCP_CMD=("$TMP/gkg" mcp)
+	GKG_CMD=("$TMP/gkg")
 	PDF_INPUT_URL=""
 fi
 wait_http "$BASE_URL/healthz" || fail "service did not become healthy (see $TMP/serve.log)"
@@ -206,7 +207,7 @@ ok "domains list responds"
 
 # ---------------------------------------------------------------------------
 step "2. MCP smoke over stdio"
-"$TMP/mcpsmoke" -query "$TOKEN" -- "${MCP_CMD[@]}"
+"$TMP/mcpsmoke" -query "$TOKEN" -- "${GKG_CMD[@]}" mcp
 ok "mcp tools/list + search"
 
 # ---------------------------------------------------------------------------
@@ -229,6 +230,52 @@ wait_status "$NEW_DOC" "done"
 OLD_STATUS="$(req -fsS "$BASE_URL/v1/documents/$MD_DOC/status" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
 [[ "$OLD_STATUS" == "superseded" ]] || fail "old version status = $OLD_STATUS, want superseded"
 ok "changed content superseded the old version"
+
+# ---------------------------------------------------------------------------
+step "4b. choose an existing domain at ingest"
+expect_http 200 GET "/v1/documents/$NEW_DOC"
+ORIGINAL_DOMAIN="$(sed -n 's/.*"domain":"\([^"]*\)".*/\1/p' <<< "$HTTP_BODY")"
+[[ -n "$ORIGINAL_DOMAIN" ]] || fail "Auto did not assign an original domain"
+CHOSEN_ID="chosen-$TOKEN"
+CHOSEN_NAME="Acceptance / $TOKEN"
+expect_http 202 POST /v1/ingest -H 'Content-Type: application/json' \
+	--data-binary "{\"source\":\"$TOKEN-seed\",\"text\":\"Zymurgy $TOKEN fixture for domain assignment.\"}"
+SEED_DOC="$(sed -n 's/.*"document_id":"\([^"]*\)".*/\1/p' <<< "$HTTP_BODY")"
+[[ -n "$SEED_DOC" ]] || fail "domain fixture ingest did not return a document id"
+wait_status "$SEED_DOC" "done"
+"${GKG_CMD[@]}" domain move "$SEED_DOC" "$CHOSEN_ID" || fail "create acceptance domain"
+wait_status "$SEED_DOC" "done"
+"${GKG_CMD[@]}" domain rename "$CHOSEN_ID" "$CHOSEN_NAME" || fail "name acceptance domain"
+
+check_chosen_document() {
+	local id
+	id="$(sed -n 's/.*"document_id":"\([^"]*\)".*/\1/p' <<< "$HTTP_BODY")"
+	[[ -n "$id" ]] || fail "chosen-domain ingest did not return a document id"
+	wait_status "$id" "done"
+	[[ "$HTTP_BODY" == *"\"domain\":\"$CHOSEN_ID\""* ]] || fail "status is outside the chosen domain: $HTTP_BODY"
+	expect_http 200 GET "/v1/documents/$id"
+	[[ "$HTTP_BODY" == *"\"domain\":\"$CHOSEN_ID\""* ]] || fail "document is outside the chosen domain: $HTTP_BODY"
+}
+
+for selector in id name; do
+	DOMAIN_VALUE="$CHOSEN_ID"
+	if [[ "$selector" == "name" ]]; then DOMAIN_VALUE="$CHOSEN_NAME"; fi
+	expect_http 202 POST /v1/ingest -H 'Content-Type: application/json' \
+		--data-binary "{\"source\":\"$TOKEN-json-$selector\",\"text\":\"Chosen domain from JSON.\",\"domain\":\"$DOMAIN_VALUE\"}"
+	check_chosen_document
+	expect_http 202 POST /v1/ingest -F "file=@$TMP/acceptance.md" \
+		-F "source=$TOKEN-file-$selector" -F "domain=$DOMAIN_VALUE"
+	check_chosen_document
+	ok "JSON and multipart selected domain by $selector"
+done
+
+expect_http 400 POST /v1/ingest -H 'Content-Type: application/json' \
+	--data-binary "{\"text\":\"Unknown domain.\",\"domain\":\"missing-$TOKEN\"}"
+[[ "$HTTP_BODY" == *'"error":"unknown_domain"'* ]] || fail "expected unknown_domain: $HTTP_BODY"
+expect_http 409 POST /v1/ingest -H 'Content-Type: application/json' \
+	--data-binary "{\"source\":\"$TOKEN-json-id\",\"text\":\"Chosen domain from JSON.\",\"domain\":\"$ORIGINAL_DOMAIN\"}"
+[[ "$HTTP_BODY" == *'"error":"domain_conflict"'* ]] || fail "expected domain_conflict: $HTTP_BODY"
+ok "unknown domain and conflicting identical content rejected"
 
 # ---------------------------------------------------------------------------
 step "5. products write path over REST"

@@ -89,19 +89,22 @@ type Chunk struct {
 // DocumentInput is the identity and content handle of a submitted document.
 type DocumentInput struct {
 	// Domain applies on version creation or when product refs pin an unassigned version.
-	Domain      string
-	Kind        string
-	Source      string
-	FinalURL    string
-	Title       string
-	TitleSource string
-	Hash        string
-	Labels      string
-	Force       bool // reset an existing live version without changing its version order
+	// DomainChosen identifies a caller's explicit choice.
+	Domain       string
+	DomainChosen bool
+	Kind         string
+	Source       string
+	FinalURL     string
+	Title        string
+	TitleSource  string
+	Hash         string
+	Labels       string
+	Force        bool // reset an existing live version without changing its version order
 
 	DocumentDate         string   // normalized caller date, empty when omitted
 	ProductRefs          []string // nil means omitted; an empty list clears refs
 	SpoolPayloadDigest   string
+	productRefPin        string
 	productRefsValidated bool
 
 	TextCleanVersion int // Zero when the input has no cleaning metadata.

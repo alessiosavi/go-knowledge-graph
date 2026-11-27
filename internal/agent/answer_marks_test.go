@@ -73,6 +73,15 @@ func TestAnswerReview2_1UnterminatedPunctuationRequiresBoundary(t *testing.T) {
 	}
 }
 
+func TestAnswerReviewBotUnterminatedBeforeNextGroup(t *testing.T) {
+	seen := newSeenIndex()
+	seen.addProduct("graph1", "shop.example:1")
+	seen.addProduct("graph2", "shop.example:2")
+	// A malformed group closes only at its own "]]", never at a later group's.
+	checkMarks(t, "A [[shop.example:1] is lighter than B [[shop.example:2]].", seen,
+		[]string{"shop.example:1", "shop.example:2"}, nil, 0, "A is lighter than B.")
+}
+
 func TestResolveMarksTabIDByGraphID(t *testing.T) {
 	seen := newSeenIndex()
 	seen.addProduct("graph1", "shop.example:1\t2")

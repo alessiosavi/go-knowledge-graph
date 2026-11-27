@@ -46,6 +46,10 @@ func CheckProductRefsNoop(supplied, stored []string) error {
 	return nil
 }
 
+func needsProductRefValidation(supplied, stored []string) bool {
+	return len(supplied) > 0 && !slices.Equal(supplied, stored)
+}
+
 const newestDoneRefsQuery = `
 MATCH (d:Document {source_kind:$kind, source:$source, status:'done'})
 RETURN d.product_refs_raw AS refs
@@ -67,7 +71,7 @@ func (s *Store) PrepareDocumentRefs(ctx context.Context, in *DocumentInput, curr
 			stored = getStringSlice(rows[0], "refs")
 		}
 	}
-	if slices.Equal(in.ProductRefs, stored) {
+	if !needsProductRefValidation(in.ProductRefs, stored) {
 		return nil
 	}
 	pin, err := productRefDomain(in.ProductRefs, func(query string, params map[string]any) ([]*neo4j.Record, error) {
@@ -81,7 +85,7 @@ func (s *Store) PrepareDocumentRefs(ctx context.Context, in *DocumentInput, curr
 			return err
 		}
 	}
-	in.Domain, in.productRefsValidated = pin, true
+	in.productRefPin, in.productRefsValidated = pin, true
 	return nil
 }
 
@@ -129,16 +133,11 @@ func checkProductRefPin(pin, current string, status Status) error {
 }
 
 func txCheckProductRefDomain(ctx context.Context, tx neo4j.ManagedTransaction, pin string) error {
-	// Empty-domain deletion and binding changes write this same Domain
-	// property, preventing a concurrent deletion under snapshot isolation.
-	rows, err := txRows(ctx, tx, `
-MATCH (d:Domain {id:$domain})
-SET d.product_guard = coalesce(d.product_guard, 0) + 1
-RETURN d.id`, map[string]any{"domain": pin})
+	exists, err := txFenceDomain(ctx, tx, pin)
 	if err != nil {
 		return err
 	}
-	if len(rows) == 0 {
+	if !exists {
 		return &DocumentRefsError{Code: "domain_missing", Detail: fmt.Sprintf("product refs pin domain %q, which does not exist", pin)}
 	}
 	return nil

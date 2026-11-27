@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -36,8 +37,11 @@ func DocumentID(kind, source, hash string) string {
 //   - upserts are serialized per Store so concurrent submits cannot race
 //     the identity pre-read.
 func (s *Store) UpsertDocument(ctx context.Context, in DocumentInput) (UpsertResult, error) {
-	if in.Domain != "" && !ValidDomain(in.Domain) {
+	if (in.DomainChosen || in.Domain != "") && !ValidDomain(in.Domain) {
 		return UpsertResult{}, fmt.Errorf("graph: invalid domain slug %q", in.Domain)
+	}
+	if in.productRefPin != "" && !ValidDomain(in.productRefPin) {
+		return UpsertResult{}, fmt.Errorf("graph: invalid domain slug %q", in.productRefPin)
 	}
 	if in.ProductRefs != nil && !in.productRefsValidated {
 		refs, err := ValidateProductRefs(in.ProductRefs)
@@ -60,9 +64,30 @@ func (s *Store) UpsertDocument(ctx context.Context, in DocumentInput) (UpsertRes
 }
 
 func txUpsertDocument(ctx context.Context, tx neo4j.ManagedTransaction, id string, in DocumentInput) (UpsertResult, error) {
-	current, previous, newestDone, err := txDocumentVersions(ctx, tx, id, in.Kind, in.Source)
+	if in.DomainChosen {
+		if err := txRequireDomains(ctx, tx); err != nil {
+			return UpsertResult{}, err
+		}
+		exists, err := txFenceDomain(ctx, tx, in.Domain)
+		if err != nil {
+			return UpsertResult{}, err
+		}
+		if !exists {
+			return UpsertResult{}, unknownIngestDomain(in.Domain, true)
+		}
+	}
+	versions, err := txDocumentVersions(ctx, tx, id, in.Kind, in.Source)
 	if err != nil {
 		return UpsertResult{}, err
+	}
+	current := versions.current
+	read := func(ctx context.Context, query string, params map[string]any) ([]*neo4j.Record, error) {
+		return txRows(ctx, tx, query, params)
+	}
+	if in.DomainChosen && current != nil {
+		if err := checkIngestDomain(ctx, id, current.domain, current.status, in.Domain, read); err != nil {
+			return UpsertResult{}, err
+		}
 	}
 	reuse := current != nil && current.status != StatusSuperseded
 	liveMatch := reuse && current.status != StatusFailed
@@ -80,51 +105,59 @@ MATCH (d:Document {id:$id}) SET d.document_date = $date`,
 		return UpsertResult{ID: id, Noop: true}, nil
 	}
 
-	stored := newestDone.refs
+	stored := versions.newestDone.refs
 	if current != nil {
 		stored = current.refs
 	}
 	refs := in.ProductRefs
 	if refs == nil {
-		refs = newestDone.refs
+		refs = versions.newestDone.refs
 		if reuse {
 			refs = current.refs
 		}
 	}
 	domain := in.Domain
-	if liveMatch || in.productRefsValidated {
+	callerAssignment := in.DomainChosen && current == nil
+	if !callerAssignment && (liveMatch || in.productRefsValidated || in.DomainChosen) {
 		// Force preserves the domain unless a changed set supplies a pin.
 		domain = ""
 	}
-	if len(in.ProductRefs) > 0 && !slices.Equal(in.ProductRefs, stored) {
-		pin := in.Domain
-		if !in.productRefsValidated {
-			pin, err = productRefDomain(in.ProductRefs, func(query string, params map[string]any) ([]*neo4j.Record, error) {
-				return txRows(ctx, tx, query, params)
-			})
-			if err != nil {
-				return UpsertResult{}, err
-			}
-		}
-		if pin != "" {
-			if reuse {
-				if err := checkProductRefPin(pin, current.domain, current.status); err != nil {
-					return UpsertResult{}, err
-				}
-			}
-			if err := txCheckProductRefDomain(ctx, tx, pin); err != nil {
-				return UpsertResult{}, err
-			}
-			domain = pin
+	validateRefs := needsProductRefValidation(in.ProductRefs, stored)
+	var pin string
+	switch {
+	case validateRefs && in.productRefsValidated:
+		pin = in.productRefPin
+	case validateRefs || (callerAssignment && len(refs) > 0):
+		pin, err = productRefDomain(refs, func(query string, params map[string]any) ([]*neo4j.Record, error) {
+			return read(ctx, query, params)
+		})
+		// Inherited and unchanged refs only use a pin when the lookup succeeds.
+		if err != nil && validateRefs {
+			return UpsertResult{}, err
 		}
 	}
+	if in.DomainChosen && pin != "" && pin != in.Domain {
+		return UpsertResult{}, &IngestDomainError{Code: "domain_conflict", Conflict: true, Detail: fmt.Sprintf("product refs pin domain %s", pin)}
+	}
+	if !callerAssignment && pin != "" {
+		if reuse {
+			if err := checkProductRefPin(pin, current.domain, current.status); err != nil {
+				return UpsertResult{}, err
+			}
+		}
+		if err := txCheckProductRefDomain(ctx, tx, pin); err != nil {
+			return UpsertResult{}, err
+		}
+		domain = pin
+	}
 
+	now := time.Now().UTC()
 	params := map[string]any{
 		"id": id, "kind": in.Kind, "source": in.Source, "final": in.FinalURL,
 		"title": in.Title, "title_source": in.TitleSource, "hash": in.Hash, "labels": in.Labels,
 		"status": string(StatusReceived), "preserve_version": liveMatch,
 		"domain": domain, "domain_tok": domainTokenOrNil(domain),
-		"now": time.Now().UTC().Format(timeLayout), "text_clean": textCleanProperties(in),
+		"now": now.Format(timeLayout), "text_clean": textCleanProperties(in),
 		"spool_digest":  in.SpoolPayloadDigest,
 		"document_date": in.DocumentDate,
 	}
@@ -146,10 +179,19 @@ SET d += $text_clean`, params); err != nil {
 	if err := txReplaceProductRefs(ctx, tx, id, refs); err != nil {
 		return UpsertResult{}, err
 	}
-	if liveMatch {
-		previous = ""
+	if callerAssignment {
+		if err := txRecordDomainDecision(ctx, tx, DecisionRecord{
+			OpID: rand.Text(), DocID: id, Domain: domain, PreviousDomain: versions.previousDomain,
+			Action: "caller", By: "caller", At: now,
+		}); err != nil {
+			return UpsertResult{}, err
+		}
 	}
-	return UpsertResult{ID: id, PreviousID: previous}, nil
+	previousID := versions.previousID
+	if liveMatch {
+		previousID = ""
+	}
+	return UpsertResult{ID: id, PreviousID: previousID}, nil
 }
 
 func textCleanProperties(in DocumentInput) map[string]any {
@@ -175,10 +217,17 @@ type documentVersion struct {
 	documentDate string
 }
 
+type documentVersions struct {
+	current        *documentVersion
+	previousID     string
+	previousDomain string
+	newestDone     documentVersion
+}
+
 // txDocumentVersions reads the exact version (including superseded history),
-// the previous live ID in creation order, and the latest live done version
-// in submission order. A reused ID can have a new version_at.
-func txDocumentVersions(ctx context.Context, tx neo4j.ManagedTransaction, id, kind, source string) (current *documentVersion, previous string, done documentVersion, err error) {
+// the previous live ID in creation order, and the latest older live domain
+// and done version in submission order. A reused ID can have a new version_at.
+func txDocumentVersions(ctx context.Context, tx neo4j.ManagedTransaction, id, kind, source string) (documentVersions, error) {
 	rows, err := txRows(ctx, tx, `
 MATCH (d:Document {source_kind:$kind, source:$source})
 WHERE d.status <> 'superseded' OR d.id = $id
@@ -186,9 +235,10 @@ RETURN d.id AS id, d.status AS status, d.domain AS domain, d.product_refs_raw AS
        d.document_date AS document_date, coalesce(d.version_at, d.created_at) AS version_at
 ORDER BY d.created_at DESC, d.id DESC`, map[string]any{"id": id, "kind": kind, "source": source})
 	if err != nil {
-		return nil, "", done, err
+		return documentVersions{}, err
 	}
-	var newestAt, newestID string
+	var versions documentVersions
+	var newestDoneAt, newestDoneID, newestLiveAt, newestLiveID string
 	for _, row := range rows {
 		rowID := getString(row, "id")
 		v := documentVersion{
@@ -196,19 +246,22 @@ ORDER BY d.created_at DESC, d.id DESC`, map[string]any{"id": id, "kind": kind, "
 			refs:         getStringSlice(row, "refs"),
 			documentDate: getString(row, "document_date"),
 		}
+		at := getString(row, "version_at")
 		if rowID == id {
-			current = &v
-		} else if previous == "" {
-			previous = rowID
-		}
-		if v.status == StatusDone {
-			at := getString(row, "version_at")
-			if at > newestAt || (at == newestAt && rowID > newestID) {
-				done, newestAt, newestID = v, at, rowID
+			versions.current = &v
+		} else {
+			if versions.previousID == "" {
+				versions.previousID = rowID
+			}
+			if at > newestLiveAt || (at == newestLiveAt && rowID > newestLiveID) {
+				versions.previousDomain, newestLiveAt, newestLiveID = v.domain, at, rowID
 			}
 		}
+		if v.status == StatusDone && (at > newestDoneAt || (at == newestDoneAt && rowID > newestDoneID)) {
+			versions.newestDone, newestDoneAt, newestDoneID = v, at, rowID
+		}
 	}
-	return current, previous, done, nil
+	return versions, nil
 }
 
 // requireDocument returns ErrNotFound when the document does not exist.
