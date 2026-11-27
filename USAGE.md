@@ -1540,6 +1540,23 @@ failures. Exit `2` means a refusal or permanent auth failure, including a
 provider 401 or 403 on the static arm. Exit `4` means
 the ledger stopped the run before an answer row could be recorded for that ask.
 
+`--route ask` is the default and behaves as above. `--route answer` runs each
+question through the structured answer endpoint (`POST /v1/agent/answer`) in
+process instead, and needs both `GKG_AGENT_ENABLED` and
+`GKG_AGENT_ANSWER_ENABLED`; otherwise it exits before opening the output or
+the ledger. Answer-route questions need a `domain`, may carry a `context`
+object (`product_ids`, `history`) passed to the endpoint as is, and ignore
+`sse`. Each answer-route row holds the resume fields (`id`, `arm`, `model`,
+`manifest`) plus `route`, `http_status`, the complete JSON `response`,
+`pre_cleaning_reply` (the agent's reply before its citation markers are
+removed), `visible_evidence` (the tool results as the model saw them) and
+`ms`. It has no per-call usage, `error_class` or SSE counts; the ledger still
+meters every provider call. Invalid requests are recorded with their 4xx
+status. A permanent provider auth failure stops the run without recording that
+question, so a resume retries it. Use a separate `--out` and `--run-id` for
+each route: resume refuses a file whose rows carry another route (rows without
+`route` are ask rows).
+
 ## Product feature observations
 
 ```sh

@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
 	"github.com/alessiosavi/go-knowledge-graph/internal/llmauth"
+	"github.com/alessiosavi/go-knowledge-graph/internal/productobs"
 )
 
 const agentEvalTestModel = "DeepSeek-V4.1-Flash-1017"
@@ -184,6 +186,287 @@ func agentEvalCalls(t *testing.T, row map[string]any, n int) []map[string]any {
 		}
 	}
 	return calls
+}
+
+const evalAnswerTestDomain = "eval-agent-answer"
+
+func seedEvalAnswerDomain(t *testing.T) {
+	t.Helper()
+	t.Setenv("GKG_AGENT_ANSWER_ENABLED", "true")
+	params := map[string]any{"domain": evalAnswerTestDomain}
+	prior := migrationQuery(t, `MATCH (s:ProductStore {store:'shop.example'}) RETURN s.domain AS domain`, nil)
+	migrationQuery(t, `CREATE (:Domain:EvalAnswerFixture {id:$domain})
+		MERGE (s:ProductStore {store:'shop.example'}) ON CREATE SET s:EvalAnswerFixture
+		SET s.domain=$domain`, params)
+	t.Cleanup(func() { migrationQuery(t, `MATCH (n:EvalAnswerFixture) DETACH DELETE n`, nil) })
+	if len(prior) != 0 {
+		domain, _ := prior[0].Get("domain")
+		t.Cleanup(func() {
+			migrationQuery(t, `MATCH (s:ProductStore {store:'shop.example'}) SET s.domain=$domain`, map[string]any{"domain": domain})
+		})
+	}
+}
+
+func TestEvalAgentAnswerRouteRow(t *testing.T) {
+	const (
+		product = "shop.example:eval-answer-lamp"
+		reply   = "Pick the lamp [[" + product + "]] [[eval-answer-c0]]."
+	)
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, i int, _ agentEvalWireRequest) {
+		if i == 0 {
+			agentEvalReply(w, "", agentEvalTool("product", "get_product", `{"id":"`+productobs.ProductID("shop.example", product)+`"}`),
+				agentEvalTool("passage", "get_chunks", `{"ids":["eval-answer-c0"],"with_products":false}`))
+			return
+		}
+		agentEvalReply(w, reply)
+	})
+	q := agentEvalQuestion("answer", false)
+	q["domain"], q["reasoning_effort"] = evalAnswerTestDomain, "low"
+	delete(q, "sse")
+	unknown := agentEvalQuestion("unknown", false)
+	unknown["domain"] = "eval-unknown-domain"
+	foreign := agentEvalQuestion("foreign", false)
+	foreign["domain"] = evalAnswerTestDomain
+	foreign["context"] = map[string]any{"product_ids": []string{"other.example:lamp"}}
+	malformed := agentEvalQuestion("malformed", false)
+	malformed["domain"], malformed["context"] = evalAnswerTestDomain, "invalid context type"
+	f := newAgentEvalFixture(t, srv, q, agentEvalQuestion("missing", false), unknown, foreign, malformed)
+	seedEvalAnswerDomain(t)
+	migrationQuery(t, `CREATE (:Product:EvalAnswerFixture {id:$id, domain:$domain, store:'shop.example', product_id:$product, title:'Fixture Lamp'}),
+		(d:Document:EvalAnswerFixture {id:'eval-answer-doc', domain:$domain, title:'Fixture Manual', source:'manual'}),
+		(d)-[:HAS_CHUNK]->(:Chunk:EvalAnswerFixture {id:'eval-answer-c0', doc_id:d.id, domain:$domain, seq:0, text:$text})`,
+		map[string]any{"id": productobs.ProductID("shop.example", product), "domain": evalAnswerTestDomain,
+			"product": product, "text": strings.Repeat("x", 5<<10)})
+
+	f.dispatch(t, 0, "--route", "answer")
+	rows := agentEvalRows(t, f, 5)
+	row := rows[0]
+	if row["id"] != "answer" || row["route"] != "answer" || row["arm"] != "DS" || row["model"] != agentEvalTestModel ||
+		row["manifest"] != f.manifest || row["http_status"] != float64(200) || row["pre_cleaning_reply"] != reply {
+		t.Fatalf("incorrect answer capture metadata: id=%v route=%v arm=%v model=%v manifest=%v status=%v reply=%q",
+			row["id"], row["route"], row["arm"], row["model"], row["manifest"], row["http_status"], row["pre_cleaning_reply"])
+	}
+	if ms, ok := row["ms"].(float64); !ok || ms < 0 {
+		t.Fatalf("invalid elapsed milliseconds: %v", row["ms"])
+	}
+	response := row["response"].(map[string]any)
+	if response["summary"] != "Pick the lamp." || response["contract"] != "gkg-answer/1" ||
+		response["domain"] != evalAnswerTestDomain || response["complete"] != true || len(response) != 11 {
+		t.Fatal("capture does not contain the full cleaned answer response")
+	}
+	products, passages := response["products"].([]any), response["passages"].([]any)
+	if len(products) != 1 || products[0].(map[string]any)["product_id"] != product || products[0].(map[string]any)["title"] != "Fixture Lamp" ||
+		len(passages) != 1 || passages[0].(map[string]any)["document_title"] != "Fixture Manual" {
+		t.Fatalf("hydration failed: %d cards, %d passages", len(products), len(passages))
+	}
+	requests := script.sent()
+	if len(requests) != 2 || requests[0].ReasoningEffort != "low" || requests[1].ReasoningEffort != "low" || requests[0].Stream {
+		t.Fatalf("expected two non-streaming metered requests with reasoning effort low, got %d requests", len(requests))
+	}
+	ledger := readJudgeEvalRows(t, f.ledger)
+	if len(ledger) != 7 || ledger[2]["id"] != "answer" || ledger[4]["id"] != "answer" || ledger[6]["kind"] != "close" {
+		t.Fatalf("answer calls did not use the evaluation ledger: %v", ledger)
+	}
+	evidence := row["visible_evidence"].([]any)
+	if len(evidence) != 2 {
+		t.Fatalf("visible evidence entries = %d, want 2", len(evidence))
+	}
+	var transcript []string
+	for _, msg := range requests[1].Messages {
+		if msg.Role == "tool" {
+			transcript = append(transcript, msg.Content)
+		}
+	}
+	if len(transcript) != len(evidence) {
+		t.Fatalf("transcript contains %d tool messages, want %d", len(transcript), len(evidence))
+	}
+	for i, tool := range []string{"get_product", "get_chunks"} {
+		item := evidence[i].(map[string]any)
+		if item["tool"] != tool || item["error"] != false || item["visible"] != transcript[i] {
+			t.Errorf("evidence for %s differs from the model-visible tool message", tool)
+		}
+	}
+	if !strings.Contains(transcript[1], `"truncated":true`) || !strings.Contains(transcript[1], strings.Repeat("x", 4<<10)+`"`) {
+		t.Error("chunk transcript did not retain the capped text")
+	}
+	for i, want := range []map[string]any{
+		{"error": "invalid_request", "detail": "domain_required"},
+		{"error": "invalid_request", "detail": "unknown_domain"},
+		{"error": "invalid_context", "detail": "context product IDs must have a valid store prefix bound to the domain and be at most 1 KiB"},
+		{"error": "invalid_json", "detail": "json: cannot unmarshal string into Go struct field answerHTTPRequest.context of type agent.answerHTTPContext"},
+	} {
+		row := rows[i+1]
+		if row["http_status"] != float64(400) || !reflect.DeepEqual(row["response"], want) ||
+			row["pre_cleaning_reply"] != "" || !reflect.DeepEqual(row["visible_evidence"], []any{}) {
+			t.Errorf("invalid question row = %v, want HTTP 400 with %v and no model output", row, want)
+		}
+	}
+	f.dispatch(t, 0, "--route", "answer")
+	if len(script.sent()) != 2 || !reflect.DeepEqual(agentEvalRows(t, f, 5), rows) || !reflect.DeepEqual(readJudgeEvalRows(t, f.ledger), ledger) {
+		t.Fatal("same-route resume rewrote rows, changed the closed ledger or reached the provider")
+	}
+}
+
+func TestEvalAgentAnswerContextForwarded(t *testing.T) {
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
+		agentEvalReply(w, "I can compare them.")
+	})
+	q := agentEvalQuestion("context", true)
+	q["domain"] = evalAnswerTestDomain
+	q["context"] = agent.AnswerContext{
+		ProductIDs: []string{"shop.example:lamp", "shop.example:shade"},
+		History:    []agent.HistoryTurn{{Role: "user", Text: "Find a lamp and shade."}, {Role: "assistant", Text: "I found both."}},
+	}
+	f := newAgentEvalFixture(t, srv, q)
+	seedEvalAnswerDomain(t)
+	f.dispatch(t, 0, "--route", "answer")
+	requests := script.sent()
+	if len(requests) != 1 || requests[0].Stream || len(requests[0].Messages) != 3 {
+		t.Fatalf("expected a single non-streaming answer request with context, got %v", requests)
+	}
+	msg := requests[0].Messages[1]
+	const want = "Conversation context (same shop):\nProduct IDs:\nshop.example:lamp\nshop.example:shade\nHistory:\nuser: Find a lamp and shade.\nassistant: I found both."
+	if msg.Role != "user" || msg.Content != want {
+		t.Fatalf("context message = %q %q, want user %q", msg.Role, msg.Content, want)
+	}
+}
+
+func TestEvalAgentAnswerDisabledFailsFast(t *testing.T) {
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
+		http.Error(w, "unexpected provider send", http.StatusBadRequest)
+	})
+	for _, tc := range []struct {
+		name, flag, setting string
+	}{
+		{"agent-disabled", "GKG_AGENT_ENABLED", "agent.enabled=false"},
+		{"answer-disabled", "GKG_AGENT_ANSWER_ENABLED", "agent.answer_enabled=false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := agentEvalQuestion("disabled", false)
+			q["domain"] = evalAnswerTestDomain
+			f := newAgentEvalFixture(t, srv, q)
+			t.Setenv("GKG_AGENT_ANSWER_ENABLED", "true")
+			t.Setenv(tc.flag, "false")
+			before, err := os.ReadFile(f.ledger)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var stderr bytes.Buffer
+			if code := run(f.args("--route", "answer"), io.Discard, &stderr); code == 0 || !strings.Contains(stderr.String(), tc.setting) {
+				t.Errorf("exit = %d, stderr = %q, want a refusal naming %s", code, stderr.String(), tc.setting)
+			}
+			if _, err := os.Stat(f.out); !os.IsNotExist(err) {
+				t.Errorf("want absent output file, stat returned %v", err)
+			}
+			after, err := os.ReadFile(f.ledger)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Errorf("disabled answer changed the ledger: %s (%v)", after, err)
+			}
+		})
+	}
+	if len(script.sent()) != 0 {
+		t.Fatal("disabled answer reached the provider")
+	}
+}
+
+func TestEvalAgentAnswerPermanentAuthNotRecorded(t *testing.T) {
+	const id = "retry-question"
+	const reply = "A lamp is available."
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, i int, _ agentEvalWireRequest) {
+		if i == 0 {
+			http.Error(w, "credential rejected", http.StatusUnauthorized)
+			return
+		}
+		agentEvalReply(w, reply)
+	})
+	q := agentEvalQuestion(id, false)
+	q["domain"] = evalAnswerTestDomain
+	f := newAgentEvalFixture(t, srv, q)
+	seedEvalAnswerDomain(t)
+
+	var stderr bytes.Buffer
+	if code := run(f.args("--route", "answer"), io.Discard, &stderr); code == 0 || !strings.Contains(stderr.String(), "permanent") ||
+		!strings.Contains(stderr.String(), "auth") {
+		t.Errorf("exit = %d, stderr = %q, want a permanent authentication failure", code, stderr.String())
+	}
+	if rows := readJudgeEvalRows(t, f.out); len(rows) != 0 {
+		t.Errorf("permanent failure recorded %d answer rows, want 0", len(rows))
+	}
+	if ledger := readJudgeEvalRows(t, f.ledger); len(ledger) != 4 || ledger[1]["kind"] != "allot" ||
+		ledger[2]["kind"] != "reserve" || ledger[2]["id"] != id || ledger[2]["attempt"] != float64(1) ||
+		ledger[3]["kind"] != "settle" || ledger[3]["id"] != id || ledger[3]["attempt"] != float64(1) {
+		t.Fatalf("want the failed attempt retained in an open run, got %v", ledger)
+	}
+
+	f.dispatch(t, 0, "--route", "answer")
+	row := agentEvalRows(t, f, 1)[0]
+	if n := len(script.sent()); n != 2 || row["id"] != id || row["http_status"] != float64(http.StatusOK) || row["pre_cleaning_reply"] != reply {
+		t.Fatalf("want a successful resumed answer after two provider sends, got %d sends and row %v", n, row)
+	}
+	if ledger := readJudgeEvalRows(t, f.ledger); len(ledger) != 7 || ledger[4]["kind"] != "reserve" || ledger[4]["id"] != id ||
+		ledger[4]["attempt"] != float64(2) || ledger[5]["kind"] != "settle" || ledger[6]["kind"] != "close" {
+		t.Fatalf("want a second attempt and a closed run after resume, got %v", ledger)
+	}
+}
+
+func TestEvalAgentResumeRefusesOtherRoute(t *testing.T) {
+	srv, script := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
+		http.Error(w, "unexpected request", http.StatusBadRequest)
+	})
+	for _, tc := range []struct{ existing, requested string }{{"", "answer"}, {"ask", "answer"}, {"answer", "ask"}} {
+		t.Run(fmt.Sprintf("%q-to-%s", tc.existing, tc.requested), func(t *testing.T) {
+			q := agentEvalQuestion("resume", false)
+			q["domain"] = evalAnswerTestDomain
+			f := newAgentEvalFixture(t, srv, q)
+			t.Setenv("GKG_AGENT_ANSWER_ENABLED", "true")
+			row := map[string]any{"id": "resume", "arm": "DS", "model": agentEvalTestModel, "manifest": f.manifest}
+			if tc.existing != "" {
+				row["route"] = tc.existing
+			}
+			writeJudgeEvalInput(t, f.out, row)
+			if stderr := f.dispatch(t, 2, "--route", tc.requested); !strings.Contains(stderr, "resume answers: line 1: answer route mismatch") {
+				t.Fatalf("wrong route refusal: %s", stderr)
+			}
+			if !reflect.DeepEqual(agentEvalRows(t, f, 1)[0], row) || len(readJudgeEvalRows(t, f.ledger)) != 1 {
+				t.Fatal("refusal changed the answer file or opened a ledger run")
+			}
+		})
+	}
+	if len(script.sent()) != 0 {
+		t.Fatal("refused invocation reached the provider")
+	}
+}
+
+func TestEvalAgentAskRouteUnchanged(t *testing.T) {
+	srv, _ := startAgentEvalProvider(t, func(w http.ResponseWriter, _ int, _ agentEvalWireRequest) {
+		agentEvalReply(w, "Legacy answer.")
+	})
+	q := agentEvalQuestion("legacy", false)
+	q["context"] = "ignored by ask"
+	timing := regexp.MustCompile(`"latency_ms":[0-9]+`)
+	baseline := `{"id":"legacy","arm":"DS","model":%q,"manifest":%q,"answer":"Legacy answer.","steps":0,"latency_ms":0,"error_class":null,"evidence":[],"tool_errors":0,"unknown_tools":0,"calls":[{"ask_id":"legacy","host":%q,"status":200,"latency_ms":0,"stream":false,"tools":true,"response_format":"","tool_calls":0,"signature_in":false,"signature_echoed":null,"usage":{"prompt":10,"completion":2,"reasoning":3,"total":15}}],"sse":null,"discarded_extra_content":0}` + "\n"
+	for _, route := range []string{"default", "ask"} {
+		t.Run(route, func(t *testing.T) {
+			f := newAgentEvalFixture(t, srv, q)
+			if route == "default" {
+				f.dispatch(t, 0)
+			} else {
+				f.dispatch(t, 0, "--route", route)
+			}
+			data, err := os.ReadFile(f.out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if matches := timing.FindAll(data, -1); len(matches) != 2 {
+				t.Fatalf("want row and call timings, got %q", matches)
+			}
+			got := timing.ReplaceAllString(string(data), `"latency_ms":0`)
+			if want := fmt.Sprintf(baseline, agentEvalTestModel, f.manifest, strings.TrimPrefix(srv.URL, "http://")); got != want {
+				t.Fatalf("ask JSONL changed\n got: %s\nwant: %s", got, want)
+			}
+		})
+	}
 }
 
 func TestEvalAgentToolEvidenceAndUsage(t *testing.T) {
