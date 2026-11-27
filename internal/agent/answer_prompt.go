@@ -6,6 +6,7 @@ import (
 )
 
 const answerProductExample = "shop.example:123"
+const answerAlternativeExample = "shop.example:456"
 const answerMarkerRule = "Mark each product by its role in your answer. " +
 	"Use [[product_id]] for a product that answers the request. " +
 	"Use [[!alt: product_id]] for a product you suggest instead because it does not fully meet the request. " +
@@ -18,6 +19,9 @@ const answerMarkerRule = "Mark each product by its role in your answer. " +
 	"if a product_id contains brackets, commas, spaces or a line break, use its id instead. " +
 	"Mark each passage you rely on as [[chunk id]], one marker per id. Write no other ids, hashes or links."
 
+const answerMarkerExample = "Example with placeholder ids (not real products): \"Example Lamp [[" + answerProductExample + "]] is dimmable.\" " +
+	"When nothing fully meets the request: \"None of these lamps is cordless; the closest option is Example Clip Light [[!alt: " + answerAlternativeExample + "]].\""
+
 const answerRetrievalRules = "- When the shopper names or points to specific products, find and open each of them " +
 	"(search by name or code, or get_product by a known id) before answering.\n" +
 	"- For how-to-use or specification questions about a product, call get_product with with_texts true, " +
@@ -29,12 +33,12 @@ const answerEvidenceRules = `- Do not say a product lacks a feature unless what 
 - Answer in the language of the question.
 `
 
-const answerFinalPrompt = finalPromptOpening + answerMarkerRule + "\n" +
+const answerFinalPrompt = finalPromptOpening + answerMarkerRule + "\n" + "- " + answerMarkerExample + "\n" +
 	answerEvidenceRules + "- If a point asked was not in the evidence you read, say it could not be verified."
 
 func answerSystemPrompt(ctx context.Context) string {
-	return promptOpening + promptBeforeProductExample + answerProductExample + promptAfterProductExample +
-		"- " + answerMarkerRule + "\n" +
+	return promptOpening + "- " + answerMarkerRule + "\n" + "- " + answerMarkerExample + "\n" +
+		promptBeforeProductExample + answerProductExample + promptAfterProductExample +
 		answerRetrievalRules + answerEvidenceRules +
 		"- When the question names a period, pass since/until to search and list_documents." +
 		domainPromptSuffix(ctx)
