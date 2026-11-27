@@ -109,6 +109,9 @@ func TestAnswerPromptMarkerRuleIsFirst(t *testing.T) {
 			}
 		})
 	}
+	if !strings.HasPrefix(answerFinalPrompt, finalPromptOpening+answerMarkerRule+"\n- "+answerMarkerExample+"\n"+answerEvidenceRules) {
+		t.Error("budget-final prompt must place the marker rule and bulleted example before the evidence rules, immediately after the opening")
+	}
 }
 
 func TestAnswerPromptCitationExample(t *testing.T) {
@@ -120,6 +123,7 @@ func TestAnswerPromptCitationExample(t *testing.T) {
 			for _, want := range []string{
 				`"Example Lamp [[shop.example:123]] is dimmable."`,
 				"Example Clip Light [[!alt: shop.example:456]]",
+				"None of these lamps is cordless; the closest option is Example Clip Light [[!alt: shop.example:456]].",
 			} {
 				if !strings.Contains(tc.prompt, want) {
 					t.Errorf("prompt missing %q", want)
