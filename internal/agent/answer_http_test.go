@@ -301,6 +301,95 @@ func TestAnswerHTTPAlternatives(t *testing.T) {
 	}
 }
 
+type answerProductDetailsHTTPStore struct {
+	*answerHTTPStore
+	details map[string]graph.ProductDetail
+}
+
+func (s *answerProductDetailsHTTPStore) GetProductWithMentions(_ context.Context, lookup graph.ProductLookup) (graph.ProductDetailWithMentions, graph.ProductMentionRead, error) {
+	detail, ok := s.details[lookup.ID]
+	if !ok || lookup.Domain != detail.Domain || lookup.SeedDomain != detail.Domain {
+		return graph.ProductDetailWithMentions{}, graph.ProductMentionRead{}, graph.ErrNotFound
+	}
+	if !lookup.WithTexts {
+		detail.ProductTextFields = nil
+	}
+	return graph.ProductDetailWithMentions{ProductDetail: detail}, graph.ProductMentionRead{}, nil
+}
+
+func TestAnswerHTTPAlternativesCarryCardTexts(t *testing.T) {
+	match, alternative := answerCard(lampA, "a"), answerCard(lampB, "b")
+	store := &answerProductDetailsHTTPStore{
+		answerHTTPStore: answerJourneyStore(),
+		details: map[string]graph.ProductDetail{
+			match.ID: {Product: match.Product, ProductTextFields: &graph.ProductTextFields{
+				Texts: []graph.ProductText{{Key: "brightness", Text: "120 lumens", Checked: true}},
+			}},
+			alternative.ID: {Product: alternative.Product, ProductTextFields: &graph.ProductTextFields{
+				Texts: []graph.ProductText{
+					{Key: "brightness", Text: "Up to 90 lumens", TextTruncated: true},
+					{Key: "finish", Text: "Matte black", Checked: true},
+				},
+				TextsOmitted: 2,
+			}},
+		},
+	}
+	s, stub := newAnswerTestServer(t, store, 2, toolCallsReply(
+		scriptedCall{"match", "get_product", `{"id":"a","with_texts":true}`},
+		scriptedCall{"alternative", "get_product", `{"id":"b","with_texts":true}`},
+	), contentReply("Choose Lamp A [["+lampA+"]]. Another option is Lamp B [[!alt: "+lampB+"]]."))
+	s.cfg.Agent.AnswerEnabled = true
+	rr := postAnswer(t, s, validAnswerQuestion)
+	stub.srv.Close() // Wait for the stub to record the model-visible tool results.
+	expectAnswerHTTP(t, rr, http.StatusOK, "", "")
+
+	type cardTexts struct {
+		ProductID    string           `json:"product_id"`
+		Texts        []map[string]any `json:"texts"`
+		TextsOmitted *int             `json:"texts_omitted"`
+	}
+	var response struct {
+		Products     []cardTexts `json:"products"`
+		Alternatives []cardTexts `json:"alternatives"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	results := answerToolResults(t, stub, 1)
+	for _, tc := range []struct {
+		call  string
+		id    string
+		cards []cardTexts
+	}{
+		{"match", match.ID, response.Products},
+		{"alternative", alternative.ID, response.Alternatives},
+	} {
+		fixture := store.details[tc.id]
+		detail := decodeAnswerToolResult[productDetailOut](t, results[tc.call])
+		if detail.ProductID != fixture.ProductID || detail.ProductTextFields == nil ||
+			!slices.Equal(detail.Texts, fixture.Texts) || detail.TextsOmitted != fixture.TextsOmitted {
+			t.Fatalf("%s get_product result = %s, want fixture texts for %s", tc.call, results[tc.call], fixture.ProductID)
+		}
+		if len(tc.cards) != 1 || tc.cards[0].ProductID != fixture.ProductID {
+			t.Fatalf("%s cards = %+v, want one card for %s", tc.call, tc.cards, fixture.ProductID)
+		}
+		card := tc.cards[0]
+		var want []map[string]any
+		for _, entry := range detail.Texts {
+			want = append(want, map[string]any{
+				"tool": "get_product", "key": entry.Key, "text": entry.Text,
+				"text_truncated": entry.TextTruncated, "checked": entry.Checked,
+			})
+		}
+		if !slices.EqualFunc(card.Texts, want, maps.Equal[map[string]any]) {
+			t.Errorf("%s card texts = %v, want %v", tc.call, card.Texts, want)
+		}
+		if card.TextsOmitted == nil || *card.TextsOmitted != 0 {
+			t.Errorf("%s card must have texts_omitted: 0, got %s", tc.call, rr.Body)
+		}
+	}
+}
+
 func TestAnswerHTTPAlternativesOnly(t *testing.T) {
 	store := answerJourneyStore()
 	s, _ := newAnswerHTTPServer(t, store, 3,
