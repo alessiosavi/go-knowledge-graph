@@ -2507,6 +2507,7 @@ components:
             not_found: { type: integer, minimum: 0, description: Selected product cards or passages missing from the scoped graph reads. }
         as_of:
           type: object
+          description: Active feature release and domain store watermarks at product card hydration.
           required: [release_id, activation_seq, stores]
           properties:
             release_id: { type: string, nullable: true }
@@ -2531,7 +2532,7 @@ components:
             ms: { type: integer, minimum: 0, description: Elapsed server time in milliseconds. }
     AgentProductCard:
       type: object
-      required: [product_id, id, store, domain, title, brand, category, subcategory, product_type, link, features, features_omitted, passage_ids, commerce]
+      required: [product_id, id, store, domain, title, brand, category, subcategory, product_type, link, features, features_omitted, texts, texts_omitted, passage_ids, commerce]
       properties:
         product_id: { type: string, description: Store-prefixed source product ID. }
         id: { type: string, description: Graph product ID. }
@@ -2549,8 +2550,33 @@ components:
           items:
             $ref: "#/components/schemas/ProductEvidence"
         features_omitted: { type: integer, minimum: 0 }
+        texts:
+          type: array
+          maxItems: 24
+          description: |
+            Record attribute texts copied from the fitted tool results visible to the model.
+            Entries are distinct by tool, key, and text, in first-seen order. Duplicates keep the first entry's flags.
+            Audited feature evidence appears in the features field.
+          items:
+            $ref: "#/components/schemas/AgentProductCardText"
+        texts_omitted:
+          type: integer
+          minimum: 0
+          description: Number of distinct model-visible entries for this product excluded by the 24-entry card limit.
         passage_ids: { type: array, items: { type: string }, description: Cited chunk IDs linked to this card. }
         commerce: { type: object, nullable: true, enum: [null], description: Reserved for commerce data. }
+    AgentProductCardText:
+      type: object
+      required: [tool, key, text, text_truncated, checked]
+      properties:
+        tool: { type: string, enum: [get_product, search, find_products], description: Tool that returned the attribute text. }
+        key: { type: string, description: Exact source attribute key. }
+        text: { type: string, description: Exact attribute text or excerpt returned to the model. }
+        text_truncated: { type: boolean, description: The original text exceeded the storage limit. }
+        excerpt_cut: { type: boolean, enum: [true], description: The excerpt is shorter than the stored text. Omitted when false. }
+        checked:
+          type: boolean
+          description: Whether the store and source key were in the release active when the originating tool returned the text.
     AgentPassage:
       type: object
       required: [chunk_id, document_id, document_title, source, document_date, document_date_source, excerpts, links]

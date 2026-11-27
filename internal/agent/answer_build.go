@@ -11,6 +11,7 @@ import (
 
 const (
 	maxAnswerFeatures = 40
+	maxAnswerTexts    = 24
 	maxComparisonRows = 12
 )
 
@@ -35,6 +36,8 @@ type answerCardData struct {
 	ProductType     *string                 `json:"product_type"`
 	Features        []graph.ProductEvidence `json:"features"`
 	FeaturesOmitted int                     `json:"features_omitted"`
+	Texts           []answerCardText        `json:"texts"`
+	TextsOmitted    int                     `json:"texts_omitted"`
 	PassageIDs      []string                `json:"passage_ids"`
 	Commerce        *struct{}               `json:"commerce"`
 }
@@ -128,14 +131,7 @@ func buildMarkedAnswer(run answerRun, marks markResult, cards graph.ProductCards
 				out.Dropped.NotFound++
 				continue
 			}
-			n := min(len(card.Features), maxAnswerFeatures)
-			hydrated = append(hydrated, answerCardData{
-				Product:         card.Product,
-				ProductType:     card.ProductType,
-				Features:        append([]graph.ProductEvidence{}, card.Features[:n]...),
-				FeaturesOmitted: card.FeaturesOmitted + len(card.Features) - n,
-				PassageIDs:      []string{},
-			})
+			hydrated = append(hydrated, buildAnswerCard(card, run.Seen))
 			returned[id] = &hydrated[len(hydrated)-1]
 		}
 		return hydrated
@@ -188,6 +184,21 @@ func buildMarkedAnswer(run answerRun, marks markResult, cards graph.ProductCards
 		out.Warnings = append(out.Warnings, "budget_final")
 	}
 	return out
+}
+
+func buildAnswerCard(card graph.ProductCard, seen *seenIndex) answerCardData {
+	featureCount := min(len(card.Features), maxAnswerFeatures)
+	texts := seen.Texts(card.ProductID)
+	textCount := min(len(texts), maxAnswerTexts)
+	return answerCardData{
+		Product:         card.Product,
+		ProductType:     card.ProductType,
+		Features:        append([]graph.ProductEvidence{}, card.Features[:featureCount]...),
+		FeaturesOmitted: card.FeaturesOmitted + len(card.Features) - featureCount,
+		Texts:           append([]answerCardText{}, texts[:textCount]...),
+		TextsOmitted:    len(texts) - textCount,
+		PassageIDs:      []string{},
+	}
 }
 
 func buildAnswerComparison(cards []answerCardData) *answerComparison {

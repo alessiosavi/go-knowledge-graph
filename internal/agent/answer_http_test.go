@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -16,6 +17,8 @@ import (
 	"github.com/alessiosavi/go-knowledge-graph/docs"
 	"github.com/alessiosavi/go-knowledge-graph/internal/config"
 	"github.com/alessiosavi/go-knowledge-graph/internal/graph"
+	"github.com/alessiosavi/go-knowledge-graph/internal/graph/graphtest"
+	"github.com/alessiosavi/go-knowledge-graph/internal/search"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -104,6 +107,157 @@ func expectAnswerHTTP(t *testing.T, rr *httptest.ResponseRecorder, status int, k
 	}
 }
 
+type answerTextHTTPStore struct{ *answerHTTPStore }
+
+func (*answerTextHTTPStore) CheckProductTextIndex(context.Context) error { return nil }
+
+func TestAnswerHTTPCardTextsFromModelVisibleTools(t *testing.T) {
+	cardA, cardB, cardC := answerCard(lampA, "a"), answerCard(lampB, "b"), answerCard(lampC, "c")
+	cutCard := answerCard("shop.example:1034", "d")
+	fullCard := answerCard("shop.example:1035", "e")
+	excerpt := " " + strings.Repeat("é", 159)
+	attribute := graph.ProductText{Key: "intensity", Text: excerpt, TextTruncated: true, Checked: true}
+	detailTexts := []graph.ProductText{attribute}
+	for i := 1; i <= 8; i++ {
+		detailTexts = append(detailTexts, graph.ProductText{Key: "spec", Text: fmt.Sprintf(" value %d ", i)})
+	}
+	longAttribute := attribute
+	longAttribute.Text += " fitted away"
+	cutAttribute := graph.ProductText{Key: "finish", Text: excerpt, Checked: true}
+	longUntruncated := cutAttribute
+	longUntruncated.Text += " fits in storage"
+	fullAttribute := graph.ProductText{Key: "material", Text: "ceramic"}
+	queryHits := []graph.ProductTextHit{
+		{ID: cardA.ID, ProductID: lampA, Matched: []graph.MatchedProductText{
+			{ProductText: longAttribute},
+			{ProductText: graph.ProductText{Key: "fitted_out", Text: "second match"}},
+		}},
+		{ID: cardB.ID, ProductID: lampB, Matched: []graph.MatchedProductText{
+			{ProductText: graph.ProductText{Key: "unreturned", Text: "uncited product text"}},
+		}},
+		{ID: cutCard.ID, ProductID: cutCard.ProductID, Matched: []graph.MatchedProductText{{ProductText: longUntruncated}}},
+		{ID: fullCard.ID, ProductID: fullCard.ProductID, Matched: []graph.MatchedProductText{{ProductText: fullAttribute}}},
+	}
+	store := &answerTextHTTPStore{&answerHTTPStore{
+		cards: graph.ProductCards{Cards: map[string]graph.ProductCard{
+			lampA: cardA, lampB: cardB, lampC: cardC, cutCard.ProductID: cutCard, fullCard.ProductID: fullCard,
+		}},
+		answerTestStore: &answerTestStore{
+			detail: graph.ProductDetailWithMentions{ProductDetail: graph.ProductDetail{
+				Product: cardA.Product,
+				ProductTextFields: &graph.ProductTextFields{
+					Texts: detailTexts, TextsOmitted: 2,
+				},
+			}},
+			productSearchToolStore: &productSearchToolStore{
+				products: func(context.Context, string, string, int) ([]graph.Product, error) {
+					return []graph.Product{cardC.Product}, nil
+				},
+				texts: func(_ context.Context, _ []float64, domain string, limit int, _ []string) (graph.ProductTextSearchResult, error) {
+					if domain != answerTestDomain {
+						return graph.ProductTextSearchResult{}, fmt.Errorf("unexpected meaning search domain %q", domain)
+					}
+					return graph.ProductTextSearchResult{Hits: queryHits[:min(limit, len(queryHits))]}, nil
+				},
+			},
+		},
+	}}
+	s, stub := newAnswerTestServer(t, store, 2, toolCallsReply(
+		scriptedCall{"detail", "get_product", `{"id":"a","with_texts":true}`},
+		scriptedCall{"search", "search", `{"query":"lamp intensity","kind":"product","limit":3}`},
+		scriptedCall{"find", "find_products", `{"query":"lamp intensity"}`},
+		scriptedCall{"repeat", "get_product", `{"id":"a","with_texts":true}`},
+	), contentReply("Lamps [[a]], [[c]], [[d]], and [[e]]."))
+	s.cfg.Agent.AnswerEnabled = true
+	s.cfg.ProductText.Search = true
+	s.emb = graphtest.ProductTextEmbedder{}
+	rr := postAnswer(t, s, validAnswerQuestion)
+	stub.srv.Close()
+	expectAnswerHTTP(t, rr, http.StatusOK, "", "")
+
+	results := answerToolResults(t, stub, 1)
+	detail := decodeAnswerToolResult[productDetailOut](t, results["detail"])
+	if detail.ProductTextFields == nil || detail.TextsOmitted != 3 || !slices.Equal(detail.Texts, detailTexts[:8]) {
+		t.Fatalf("fixture must fit detail texts: %+v", detail.ProductTextFields)
+	}
+	searchResult := decodeAnswerToolResult[searchOut](t, results["search"])
+	if len(searchResult.Hits) != 3 || searchResult.Hits[0].ProductID != lampC || searchResult.Hits[0].Excerpt != nil || searchResult.Hits[2].ProductID != lampB {
+		t.Fatalf("fixture must return title-only and uncited hits: %+v", searchResult.Hits)
+	}
+	hit := searchResult.Hits[1]
+	if hit.ProductID != lampA || hit.Excerpt == nil || *hit.Excerpt != excerpt || hit.ExcerptCut == nil || !*hit.ExcerptCut ||
+		hit.TextTruncated == nil || !*hit.TextTruncated {
+		t.Fatalf("fixture must return both search truncation flags: %+v", hit)
+	}
+	query := decodeAnswerToolResult[search.ProductQueryResult](t, results["find"])
+	if len(query.Hits) != 4 || query.Hits[0].ProductID != lampA || len(query.Hits[0].Matched) != 1 ||
+		query.Hits[0].Matched[0].ProductText != attribute || !query.Hits[0].Matched[0].ExcerptCut {
+		t.Fatalf("fixture must fit query matched texts: %+v", query.Hits)
+	}
+	if cut := query.Hits[2]; cut.ProductID != cutCard.ProductID ||
+		!slices.Equal(cut.Matched, []graph.MatchedProductText{{ProductText: cutAttribute, ExcerptCut: true}}) {
+		t.Fatalf("fixture must cut the excerpt of untruncated text: %+v", cut)
+	}
+	if full := query.Hits[3]; full.ProductID != fullCard.ProductID ||
+		!slices.Equal(full.Matched, []graph.MatchedProductText{{ProductText: fullAttribute}}) {
+		t.Fatalf("fixture must return the full excerpt: %+v", full)
+	}
+
+	var response struct {
+		Products []struct {
+			ProductID    string           `json:"product_id"`
+			Texts        []map[string]any `json:"texts"`
+			TextsOmitted *int             `json:"texts_omitted"`
+		} `json:"products"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Products) != 4 || response.Products[0].ProductID != lampA || response.Products[1].ProductID != lampC ||
+		response.Products[2].ProductID != cutCard.ProductID || response.Products[3].ProductID != fullCard.ProductID {
+		t.Fatalf("unexpected cards: %s", rr.Body)
+	}
+	for _, card := range response.Products {
+		if card.TextsOmitted == nil || *card.TextsOmitted != 0 {
+			t.Errorf("%s must have texts_omitted: 0", card.ProductID)
+		}
+	}
+	if empty := response.Products[1].Texts; empty == nil || len(empty) != 0 {
+		t.Errorf("title-only card texts = %v, want []", empty)
+	}
+	var want []map[string]any
+	for _, entry := range detail.Texts {
+		want = append(want, map[string]any{
+			"tool": "get_product", "key": entry.Key, "text": entry.Text,
+			"text_truncated": entry.TextTruncated, "checked": entry.Checked,
+		})
+	}
+	for _, tool := range []string{"search", "find_products"} {
+		want = append(want, map[string]any{
+			"tool": tool, "key": attribute.Key, "text": excerpt,
+			"text_truncated": true, "excerpt_cut": true, "checked": true,
+		})
+	}
+	if got := response.Products[0].Texts; !slices.EqualFunc(got, want, maps.Equal[map[string]any]) {
+		t.Errorf("card texts = %v, want %v", got, want)
+	}
+	for i, want := range []map[string]any{
+		{
+			"tool": "find_products", "key": cutAttribute.Key, "text": cutAttribute.Text,
+			"text_truncated": false, "excerpt_cut": true, "checked": true,
+		},
+		{
+			"tool": "find_products", "key": fullAttribute.Key, "text": fullAttribute.Text,
+			"text_truncated": false, "checked": false,
+		},
+	} {
+		card := response.Products[i+2]
+		if len(card.Texts) != 1 || !maps.Equal(card.Texts[0], want) {
+			t.Errorf("%s card texts = %v, want [%v]", card.ProductID, card.Texts, want)
+		}
+	}
+}
+
 func TestAnswerHTTPAlternatives(t *testing.T) {
 	store := answerJourneyStore()
 	foreign := answerCard("foreign.example:1", "foreign")
@@ -144,6 +298,95 @@ func TestAnswerHTTPAlternatives(t *testing.T) {
 		got.Comparison == nil || !slices.Equal(got.Comparison.ProductIDs, []string{lampB, lampC}) ||
 		len(got.Comparison.Rows) != 0 {
 		t.Errorf("products = %+v, comparison = %+v", got.Products, got.Comparison)
+	}
+}
+
+type answerProductDetailsHTTPStore struct {
+	*answerHTTPStore
+	details map[string]graph.ProductDetail
+}
+
+func (s *answerProductDetailsHTTPStore) GetProductWithMentions(_ context.Context, lookup graph.ProductLookup) (graph.ProductDetailWithMentions, graph.ProductMentionRead, error) {
+	detail, ok := s.details[lookup.ID]
+	if !ok || lookup.Domain != detail.Domain || lookup.SeedDomain != detail.Domain {
+		return graph.ProductDetailWithMentions{}, graph.ProductMentionRead{}, graph.ErrNotFound
+	}
+	if !lookup.WithTexts {
+		detail.ProductTextFields = nil
+	}
+	return graph.ProductDetailWithMentions{ProductDetail: detail}, graph.ProductMentionRead{}, nil
+}
+
+func TestAnswerHTTPAlternativesCarryCardTexts(t *testing.T) {
+	match, alternative := answerCard(lampA, "a"), answerCard(lampB, "b")
+	store := &answerProductDetailsHTTPStore{
+		answerHTTPStore: answerJourneyStore(),
+		details: map[string]graph.ProductDetail{
+			match.ID: {Product: match.Product, ProductTextFields: &graph.ProductTextFields{
+				Texts: []graph.ProductText{{Key: "brightness", Text: "120 lumens", Checked: true}},
+			}},
+			alternative.ID: {Product: alternative.Product, ProductTextFields: &graph.ProductTextFields{
+				Texts: []graph.ProductText{
+					{Key: "brightness", Text: "Up to 90 lumens", TextTruncated: true},
+					{Key: "finish", Text: "Matte black", Checked: true},
+				},
+				TextsOmitted: 2,
+			}},
+		},
+	}
+	s, stub := newAnswerTestServer(t, store, 2, toolCallsReply(
+		scriptedCall{"match", "get_product", `{"id":"a","with_texts":true}`},
+		scriptedCall{"alternative", "get_product", `{"id":"b","with_texts":true}`},
+	), contentReply("Choose Lamp A [["+lampA+"]]. Another option is Lamp B [[!alt: "+lampB+"]]."))
+	s.cfg.Agent.AnswerEnabled = true
+	rr := postAnswer(t, s, validAnswerQuestion)
+	stub.srv.Close() // Wait for the stub to record the model-visible tool results.
+	expectAnswerHTTP(t, rr, http.StatusOK, "", "")
+
+	type cardTexts struct {
+		ProductID    string           `json:"product_id"`
+		Texts        []map[string]any `json:"texts"`
+		TextsOmitted *int             `json:"texts_omitted"`
+	}
+	var response struct {
+		Products     []cardTexts `json:"products"`
+		Alternatives []cardTexts `json:"alternatives"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	results := answerToolResults(t, stub, 1)
+	for _, tc := range []struct {
+		call  string
+		id    string
+		cards []cardTexts
+	}{
+		{"match", match.ID, response.Products},
+		{"alternative", alternative.ID, response.Alternatives},
+	} {
+		fixture := store.details[tc.id]
+		detail := decodeAnswerToolResult[productDetailOut](t, results[tc.call])
+		if detail.ProductID != fixture.ProductID || detail.ProductTextFields == nil ||
+			!slices.Equal(detail.Texts, fixture.Texts) || detail.TextsOmitted != fixture.TextsOmitted {
+			t.Fatalf("%s get_product result = %s, want fixture texts for %s", tc.call, results[tc.call], fixture.ProductID)
+		}
+		if len(tc.cards) != 1 || tc.cards[0].ProductID != fixture.ProductID {
+			t.Fatalf("%s cards = %+v, want one card for %s", tc.call, tc.cards, fixture.ProductID)
+		}
+		card := tc.cards[0]
+		var want []map[string]any
+		for _, entry := range detail.Texts {
+			want = append(want, map[string]any{
+				"tool": "get_product", "key": entry.Key, "text": entry.Text,
+				"text_truncated": entry.TextTruncated, "checked": entry.Checked,
+			})
+		}
+		if !slices.EqualFunc(card.Texts, want, maps.Equal[map[string]any]) {
+			t.Errorf("%s card texts = %v, want %v", tc.call, card.Texts, want)
+		}
+		if card.TextsOmitted == nil || *card.TextsOmitted != 0 {
+			t.Errorf("%s card must have texts_omitted: 0, got %s", tc.call, rr.Body)
+		}
 	}
 }
 

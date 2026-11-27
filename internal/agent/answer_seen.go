@@ -16,6 +16,12 @@ type Excerpt struct {
 	Truncated bool
 }
 
+type answerCardText struct {
+	Tool string `json:"tool"`
+	graph.ProductText
+	ExcerptCut bool `json:"excerpt_cut,omitempty"`
+}
+
 // Link is the association between a returned product and a passage.
 type Link struct {
 	ProductID           string
@@ -26,6 +32,7 @@ type Link struct {
 
 type seenIndex struct {
 	products map[string]string
+	texts    map[string][]answerCardText
 	excerpts map[string][]Excerpt
 	links    map[string][]Link
 }
@@ -33,6 +40,7 @@ type seenIndex struct {
 func newSeenIndex() *seenIndex {
 	return &seenIndex{
 		products: make(map[string]string),
+		texts:    make(map[string][]answerCardText),
 		excerpts: make(map[string][]Excerpt),
 		links:    make(map[string][]Link),
 	}
@@ -42,6 +50,8 @@ func (s *seenIndex) Product(token string) (productID string, ok bool) {
 	productID, ok = s.products[token]
 	return
 }
+
+func (s *seenIndex) Texts(productID string) []answerCardText { return s.texts[productID] }
 
 func (s *seenIndex) Chunk(token string) bool { return len(s.excerpts[token]) != 0 }
 
@@ -65,6 +75,18 @@ func (s *seenIndex) addProduct(id, productID string) {
 	if id != "" {
 		s.products[id] = productID
 	}
+}
+
+func (s *seenIndex) addProductText(productID string, entry answerCardText) {
+	if productID == "" {
+		return
+	}
+	for _, prior := range s.texts[productID] {
+		if prior.Tool == entry.Tool && prior.Key == entry.Key && prior.Text == entry.Text {
+			return
+		}
+	}
+	s.texts[productID] = append(s.texts[productID], entry)
 }
 
 func (s *seenIndex) addExcerpt(id string, excerpt Excerpt) {
@@ -100,6 +122,18 @@ func (s *seenIndex) record(tool string, result any) {
 			switch hit.Kind {
 			case "product":
 				s.addProduct(hit.ID, hit.ProductID)
+				if hit.Key != nil && hit.Excerpt != nil {
+					s.addProductText(hit.ProductID, answerCardText{
+						Tool: tool,
+						ProductText: graph.ProductText{
+							Key:           *hit.Key,
+							Text:          *hit.Excerpt,
+							TextTruncated: hit.TextTruncated != nil && *hit.TextTruncated,
+							Checked:       hit.Checked != nil && *hit.Checked,
+						},
+						ExcerptCut: hit.ExcerptCut != nil && *hit.ExcerptCut,
+					})
+				}
 			case "chunk":
 				if hit.Snippet != nil {
 					s.addExcerpt(hit.ID, Excerpt{Tool: tool, Text: *hit.Snippet})
@@ -113,9 +147,19 @@ func (s *seenIndex) record(tool string, result any) {
 	case search.ProductQueryResult:
 		for _, hit := range out.Hits {
 			s.addProduct(hit.ID, hit.ProductID)
+			for _, match := range hit.Matched {
+				s.addProductText(hit.ProductID, answerCardText{
+					Tool: tool, ProductText: match.ProductText, ExcerptCut: match.ExcerptCut,
+				})
+			}
 		}
 	case productDetailOut:
 		s.addProduct(out.ID, out.ProductID)
+		if out.ProductTextFields != nil {
+			for _, entry := range out.Texts {
+				s.addProductText(out.ProductID, answerCardText{Tool: tool, ProductText: entry})
+			}
+		}
 		for _, page := range out.Pages {
 			for _, id := range page.ChunkIDs {
 				s.addLink(id, Link{ProductID: out.ProductID, Kind: "page"})
