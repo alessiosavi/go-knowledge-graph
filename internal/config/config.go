@@ -172,6 +172,7 @@ type AgentConfig struct {
 	ReasoningEfforts []string `yaml:"reasoning_efforts"`
 	TopKEnabled      bool     `yaml:"top_k_enabled"`
 	Enabled          bool     `yaml:"enabled"`
+	AnswerEnabled    bool     `yaml:"answer_enabled"`
 	Stream           bool     `yaml:"stream"` // stream the provider response (GKG_AGENT_STREAM; default true)
 	BaseURL          string   `yaml:"base_url"`
 	APIKey           string   `yaml:"api_key"`

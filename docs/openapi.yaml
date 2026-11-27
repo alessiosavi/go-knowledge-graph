@@ -1116,6 +1116,54 @@ paths:
               example:
                 error: agent_timeout
                 detail: the agent timed out before answering
+  /v1/agent/answer:
+    post:
+      tags: [agent]
+      operationId: answerAgent
+      summary: Get a structured answer for a domain
+      description: |
+        Runs the read-only agent for one existing domain. The summary is
+        unverified model text. Cards and passages contain graph facts and
+        tool excerpts selected by the model's citations. The deadline
+        covers the domain lookup, model turns and graph reads.
+        Requires GKG_AGENT_ENABLED and GKG_AGENT_ANSWER_ENABLED.
+      requestBody:
+        $ref: "#/components/requestBodies/AnswerQuestion"
+      responses:
+        "200":
+          description: Structured answer, possibly incomplete
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentStructuredAnswer"
+        "400":
+          description: |
+            Malformed JSON or an unrecognized generation field returns invalid_json.
+            An invalid question, domain, or generation setting returns invalid_request.
+            Invalid conversation context returns invalid_context. Domain error
+            details are domain_required, invalid_domain, and unknown_domain.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "501":
+          $ref: "#/components/responses/AgentDisabled"
+        "502":
+          description: Provider or agent failure (agent_error), credential failure (auth_permanent or auth_transient), or graph read failure (hydration_error).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "504":
+          description: Agent deadline exceeded or request cancelled (agent_timeout).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/agent/ask/stream:
     post:
       tags: [agent]
@@ -1214,7 +1262,9 @@ paths:
       summary: Probe agent capabilities
       description: |
         Always registered, including when the agent is disabled. Returns 200
-        with enabled=false and stream=false when disabled. stream is true only
+        with enabled=false, answer=false and stream=false when disabled. answer
+        is true when structured answers (POST /v1/agent/answer) are enabled
+        as well as the agent. stream is true only
         when the agent is enabled, provider streaming is configured, and the
         process has not memoized provider streaming as unsupported.
       responses:
@@ -1296,6 +1346,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/AgentQuestion"
+    AnswerQuestion:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AnswerQuestion"
   parameters:
     DocumentDateSince:
       name: since
@@ -2343,11 +2399,186 @@ components:
           description: Raw JSON tool arguments, of any JSON type; invalid JSON is represented as a string. May be null or omitted.
         result:
           description: Raw JSON tool result or tool error, of any JSON type; may be null or omitted.
+    AnswerQuestion:
+      type: object
+      required: [question, domain]
+      properties:
+        question:
+          type: string
+          minLength: 1
+          description: Trimmed before use. Whitespace-only questions are rejected.
+          example: Which lamp is lighter?
+        domain:
+          type: string
+          pattern: "^[a-z0-9-]{1,40}$"
+          description: Slug of an existing domain.
+          example: catalog
+        context:
+          type: object
+          description: Conversation history supplied by the caller must come from the same domain.
+          properties:
+            product_ids:
+              type: array
+              maxItems: 10
+              description: IDs become citable when a tool returns them during this request.
+              items:
+                type: string
+                pattern: "^[a-z0-9][a-z0-9.-]{0,62}:"
+                description: Snapshot import identity with a prefix bound to the requested domain. Up to 1 KiB per ID, with an empty suffix allowed.
+                example: "shop.example:1031"
+            history:
+              type: array
+              maxItems: 6
+              description: At most 4 KiB of turn text in total.
+              items:
+                type: object
+                required: [role, text]
+                properties:
+                  role: { type: string, enum: [user, assistant] }
+                  text: { type: string, maxLength: 1000 }
+        generation:
+          $ref: "#/components/schemas/AgentGeneration"
+    AgentStructuredAnswer:
+      type: object
+      required: [contract, domain, summary, products, comparison, passages, complete, warnings, dropped, as_of, trace]
+      properties:
+        contract: { type: string, enum: [gkg-answer/1] }
+        domain: { type: string }
+        summary: { type: string, description: Unverified model text with citation marks removed. }
+        products:
+          type: array
+          maxItems: 10
+          description: Cited products in first-citation order.
+          items:
+            $ref: "#/components/schemas/AgentProductCard"
+        comparison:
+          type: object
+          nullable: true
+          description: Null with fewer than two cards.
+          required: [product_ids, rows]
+          properties:
+            product_ids: { type: array, items: { type: string } }
+            rows:
+              type: array
+              maxItems: 12
+              description: Features present on at least two returned cards, in feature ID order.
+              items:
+                type: object
+                required: [feature_id, cells]
+                properties:
+                  feature_id: { type: string }
+                  cells:
+                    type: object
+                    description: Evidence for each product ID. The cell is null when the feature is absent on that card.
+                    additionalProperties:
+                      type: array
+                      nullable: true
+                      items:
+                        $ref: "#/components/schemas/ProductEvidence"
+        passages:
+          type: array
+          maxItems: 10
+          description: Cited chunks in first-citation order.
+          items:
+            $ref: "#/components/schemas/AgentPassage"
+        complete:
+          type: boolean
+          description: False when no answer could be produced, the final turn failed, or the reply was truncated.
+        warnings:
+          type: array
+          items: { type: string, enum: [no_answer, final_turn_failed, truncated, budget_final] }
+        dropped:
+          type: object
+          required: [not_returned, not_found]
+          properties:
+            not_returned: { type: integer, minimum: 0, description: Citation tokens absent from the tool results. }
+            not_found: { type: integer, minimum: 0, description: Cited products or chunks missing from the scoped graph reads. }
+        as_of:
+          type: object
+          required: [release_id, activation_seq, stores]
+          properties:
+            release_id: { type: string, nullable: true }
+            activation_seq: { type: integer, nullable: true }
+            stores:
+              type: array
+              items:
+                type: object
+                required: [store, materialized_activation_seq]
+                properties:
+                  store: { type: string }
+                  materialized_activation_seq: { type: integer, nullable: true }
+        trace:
+          type: object
+          required: [steps, tools, ms]
+          properties:
+            steps: { type: integer, minimum: 0, description: Model turns requesting tools. }
+            tools:
+              type: array
+              description: Tool names in call order.
+              items: { type: string }
+            ms: { type: integer, minimum: 0, description: Elapsed server time in milliseconds. }
+    AgentProductCard:
+      type: object
+      required: [product_id, id, store, domain, title, brand, category, subcategory, product_type, link, features, features_omitted, passage_ids, commerce]
+      properties:
+        product_id: { type: string, description: Store-prefixed source product ID. }
+        id: { type: string, description: Graph product ID. }
+        store: { type: string }
+        domain: { type: string }
+        title: { type: string }
+        brand: { type: string }
+        category: { type: string }
+        subcategory: { type: string }
+        product_type: { type: string, nullable: true }
+        link: { type: string }
+        features:
+          type: array
+          maxItems: 40
+          items:
+            $ref: "#/components/schemas/ProductEvidence"
+        features_omitted: { type: integer, minimum: 0 }
+        passage_ids: { type: array, items: { type: string }, description: Cited chunk IDs linked to this card. }
+        commerce: { type: object, nullable: true, enum: [null], description: Reserved for commerce data. }
+    AgentPassage:
+      type: object
+      required: [chunk_id, document_id, document_title, source, document_date, document_date_source, excerpts, links]
+      properties:
+        chunk_id: { type: string }
+        document_id: { type: string }
+        document_title: { type: string }
+        source: { type: string }
+        document_date: { type: string, format: date-time, nullable: true }
+        document_date_source:
+          type: string
+          nullable: true
+          description: Source of the effective document date. Null when the date is absent.
+        excerpts:
+          type: array
+          description: Distinct texts as returned by the tools, attributed to the first tool that returned each text.
+          items:
+            type: object
+            required: [tool, text]
+            properties:
+              tool: { type: string }
+              text: { type: string }
+              truncated: { type: boolean, enum: [true], description: Present when get_chunks reported truncation. }
+        links:
+          type: array
+          description: Associations from the tools to products returned in this answer.
+          items:
+            type: object
+            required: [product_id]
+            properties:
+              product_id: { type: string }
+              via: { type: array, items: { type: string }, description: Association sources reported by get_chunks. }
+              kind: { type: string, enum: [page, mention], description: Association type reported by get_product. }
+              outside_returned_text: { type: boolean, enum: [true], description: Present when get_chunks reported this field. }
     AgentStatus:
       type: object
-      required: [enabled, stream, generation]
+      required: [enabled, answer, stream, generation]
       properties:
         enabled: { type: boolean }
+        answer: { type: boolean, description: Both the agent and structured answers are enabled. }
         stream: { type: boolean }
         generation:
           type: object

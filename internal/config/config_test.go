@@ -471,6 +471,7 @@ func TestEnvNamesMirrorYAMLKeys(t *testing.T) {
 		{"GKG_LIMITS_CYPHER_TIMEOUT_MS", "2500", 2500, func(c config.Config) any { return c.Limits.CypherTimeoutMS }},
 		{"GKG_LIMITS_READ_TIMEOUT_MS", "4500", 4500, func(c config.Config) any { return c.Limits.ReadTimeoutMS }},
 		{"GKG_AGENT_ENABLED", "true", true, func(c config.Config) any { return c.Agent.Enabled }},
+		{"GKG_AGENT_ANSWER_ENABLED", "true", true, func(c config.Config) any { return c.Agent.AnswerEnabled }},
 		{"GKG_AGENT_BASE_URL", "https://example/v1", "https://example/v1", func(c config.Config) any { return c.Agent.BaseURL }},
 		{"GKG_AGENT_API_KEY", "ak", "ak", func(c config.Config) any { return c.Agent.APIKey }},
 		{"GKG_AGENT_MODEL", "am", "am", func(c config.Config) any { return c.Agent.Model }},
