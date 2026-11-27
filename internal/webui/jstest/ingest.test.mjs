@@ -186,8 +186,7 @@ for (const kind of ["text", "url", "file"]) {
     get("ingest-body").value = kind === "url" ? "https://example.test/page" : "catalogue page";
     get("ingest-file").files = [new Blob(["catalogue page"], { type: "text/plain" })];
     p.replies.set("/v1/ingest", { document_id: "submitted" });
-    p.replies.set("/v1/documents/submitted/status", { status: "done" });
-    p.replies.set("/v1/documents/submitted", { id: "submitted", status: "done", domain: "d-manuals-b" });
+    p.replies.set("/v1/documents/submitted/status", { status: "done", domain: "d-manuals-b" });
     p.replies.set("/v1/documents", { documents: [
       { id: "submitted", status: "done", domain: "d-manuals-b" },
     ] });
@@ -227,18 +226,17 @@ test("an Auto ingest shows the detected domain name even when it was created dur
     ]);
     return { status: 202, ok: true, json: async () => ({ document_id: "detected" }) };
   });
-  p.replies.set("/v1/documents/detected/status", { id: "detected", status: "done" });
-  p.replies.set("/v1/documents/detected", { id: "detected", status: "done", domain: "d-detected" });
+  p.replies.set("/v1/documents/detected/status", { id: "detected", status: "done", domain: "d-detected" });
   p.elements.get("ingest-kind").value = "text";
   p.elements.get("ingest-body").value = "catalogue page";
 
   await p.fire("ingest-form", "submit");
 
   assert.equal(p.elements.get("ingest-status").textContent, "document detected · done · Detected domain");
-  assert.ok(p.requests.some((r) => r.path === "/v1/documents/detected" && r.method === "GET"));
+  assert.ok(!p.requests.some((r) => r.path === "/v1/documents/detected"), "completion must not fetch document details");
 });
 
-test("a completed ingest uses the status domain if document details are unavailable", async () => {
+test("a completed ingest shows the status domain without fetching document details", async () => {
   const p = await page();
   await refreshDomains(p, domains);
   p.replies.set("/v1/ingest", { document_id: "completed" });
@@ -252,6 +250,7 @@ test("a completed ingest uses the status domain if document details are unavaila
   await p.fire("ingest-form", "submit");
 
   assert.equal(p.elements.get("ingest-status").textContent, "document completed · done · Catalogue");
+  assert.ok(!p.requests.some((r) => r.path === "/v1/documents/completed"), "completion must not fetch document details");
 });
 
 test("unknown_domain refreshes the pickers and keeps the draft while requiring a new choice", async () => {
@@ -360,7 +359,7 @@ test("ingest displays an invalid document date from REST", async () => {
   assert.ok(dateInput, "missing document date input");
   dateInput.value = "bad-date";
   await p.fire("ingest-form", "submit");
-  assert.equal(p.elements.get("ingest-status").textContent, "invalid document_date");
+  assert.equal(p.elements.get("ingest-status").textContent, "invalid_request: invalid document_date");
 });
 
 test("the document reader shows the same date and origin as the list", async () => {

@@ -924,18 +924,10 @@
         s.status === "superseded"
       ) {
         if (s.error) statusNode.textContent += " · " + s.error;
-        if (s.status === "done") {
-          let domain = s.domain;
-          try {
-            const doc = await api(documentPath);
-            if (doc && doc.domain) domain = doc.domain;
-          } catch (_) {
-            // The status response may already have the domain.
-          }
-          if (domain) {
-            if (!domainNames.has(domain)) await loadDomains();
-            statusNode.textContent += " · " + domainName(domain);
-          }
+        if (s.status === "done" && s.domain) {
+          // A domain created by detection during this ingest is not listed yet.
+          if (!domainNames.has(s.domain)) await loadDomains();
+          statusNode.textContent += " · " + domainName(s.domain);
         }
         await loadDocuments();
         return;
@@ -945,8 +937,6 @@
     statusNode.textContent =
       message + " is still processing; refresh Documents later";
   }
-
-  const ingestDomainErrors = new Set(["unknown_domain", "ambiguous_domain", "domain_conflict", "schema_not_v4"]);
 
   async function ingest() {
     const statusNode = $("ingest-status");
@@ -1000,7 +990,7 @@
       await pollStatus(res.document_id, statusNode, message);
     } catch (err) {
       const message = String(err.message || err);
-      statusNode.textContent = ingestDomainErrors.has(err.code) ? err.code + ": " + message : message;
+      statusNode.textContent = err.code ? err.code + ": " + message : message;
       statusNode.className = "muted error";
       if (err.code === "unknown_domain") await loadDomains();
     } finally {
