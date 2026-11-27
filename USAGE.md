@@ -596,16 +596,19 @@ evidence. The `passages` list contains cited excerpts and their associations
 to returned cards. Each list includes up to 10 entries
 in first-citation order. Comparison rows show features shared by at least
 two returned cards. `comparison` is null when the answer has fewer than two
-cards. `as_of` reports the active feature release and domain store watermarks.
+cards. `as_of` reports the active feature release and domain store watermarks
+at product card hydration.
 
 Each card's `texts` array contains record attribute texts copied from the
 fitted tool results the model received from `get_product`, product `search`
 hits, and query-mode `find_products`. The `features` field carries audited
 feature evidence. The text entries are distinct by `tool`, `key`, and `text`,
-in first-seen order. `text_truncated` describes the stored text and
+in first-seen order. Duplicates keep the first entry's flags.
+`text_truncated` describes the stored text and
 `excerpt_cut` describes the returned excerpt. `excerpt_cut` is omitted when
-false. `checked` reports whether the store and source key are in the active
-release. `texts_omitted` counts the distinct model-visible entries for this
+false. `checked` reports whether the store and source key were in the release
+active when the originating tool returned the text.
+`texts_omitted` counts the distinct model-visible entries for this
 product beyond the 24-entry card limit.
 
 The [OpenAPI specification](docs/openapi.yaml) describes all response fields.

@@ -2495,6 +2495,7 @@ components:
             not_found: { type: integer, minimum: 0, description: Cited products or chunks missing from the scoped graph reads. }
         as_of:
           type: object
+          description: Active feature release and domain store watermarks at product card hydration.
           required: [release_id, activation_seq, stores]
           properties:
             release_id: { type: string, nullable: true }
@@ -2542,7 +2543,7 @@ components:
           maxItems: 24
           description: |
             Record attribute texts copied from the fitted tool results visible to the model.
-            Entries are distinct by tool, key, and text, in first-seen order.
+            Entries are distinct by tool, key, and text, in first-seen order. Duplicates keep the first entry's flags.
             Audited feature evidence appears in the features field.
           items:
             $ref: "#/components/schemas/AgentProductCardText"
@@ -2561,7 +2562,9 @@ components:
         text: { type: string, description: Exact attribute text or excerpt returned to the model. }
         text_truncated: { type: boolean, description: The original text exceeded the storage limit. }
         excerpt_cut: { type: boolean, enum: [true], description: The excerpt is shorter than the stored text. Omitted when false. }
-        checked: { type: boolean, description: The store and source key are in the active release. }
+        checked:
+          type: boolean
+          description: Whether the store and source key were in the release active when the originating tool returned the text.
     AgentPassage:
       type: object
       required: [chunk_id, document_id, document_title, source, document_date, document_date_source, excerpts, links]
