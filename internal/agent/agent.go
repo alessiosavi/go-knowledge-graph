@@ -139,6 +139,9 @@ type graphStore interface {
 	FindProductsBudget(context.Context, graph.ProductSearchRequest, int) (graph.ProductSearchResult, error)
 	ListProductFeatures(context.Context) (graph.ProductFeatures, error)
 	ListProductStores(context.Context) (graph.ProductStores, error)
+	ProductCards(context.Context, string, []string, int) (graph.ProductCards, error)
+	ChunkDocuments(context.Context, string, []string) (map[string]graph.ChunkDocument, error)
+	DomainStores(context.Context, string) (bool, []string, error)
 }
 
 // Server owns the ask loop and its HTTP surface.

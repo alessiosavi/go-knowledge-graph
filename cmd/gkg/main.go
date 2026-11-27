@@ -652,6 +652,7 @@ func newAPIServer(cfg config.Config, st *graph.Store, pipe api.Submitter, emb se
 	rest.SetReady(func(ctx context.Context) error { return st.Ping(ctx) })
 	rest.Mount("/mcp", mcpSrv.HTTPHandler())
 	rest.Mount("POST /v1/agent/ask", agentSrv.AskHandler())
+	rest.Mount("POST /v1/agent/answer", agentSrv.AnswerHandler())
 	rest.Mount("POST /v1/agent/ask/stream", agentSrv.StreamHandler())
 	rest.Mount("GET /v1/agent/status", agentSrv.StatusHandler())
 	return rest

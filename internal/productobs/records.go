@@ -58,6 +58,15 @@ func ParseImportRecord(raw []byte) (Record, error) {
 	return parseRecordWithCaps(raw, true)
 }
 
+// ImportIdentityPrefix validates the snapshot import identity's store prefix.
+func ImportIdentityPrefix(productID string) (string, error) {
+	store, _, found := strings.Cut(productID, ":")
+	if !found || !storePattern.MatchString(store) {
+		return "", errors.New("product_id must have a valid store prefix")
+	}
+	return store, nil
+}
+
 // ProductStoreFromID validates the shared write identity and returns its store.
 func ProductStoreFromID(id string) (string, error) {
 	store, suffix, found := strings.Cut(id, ":")
@@ -95,8 +104,8 @@ func parseRecordWithCaps(raw []byte, capped bool) (Record, error) {
 		}
 		*field.dest = value
 	}
-	prefix, _, found := strings.Cut(record.ProductID, ":")
-	if !found || prefix != record.Store || !storePattern.MatchString(record.Store) {
+	prefix, err := ImportIdentityPrefix(record.ProductID)
+	if err != nil || prefix != record.Store {
 		return record, errors.New("store must match the valid store prefix of product_id")
 	}
 	if obj["product_type"].Kind() != jsontext.KindNull {

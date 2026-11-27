@@ -23,6 +23,7 @@ map "$request_method:$uri" $edge_route {
     "~^POST:/v1/ingest$" @edge_ingest;
     "~^POST:/v1/agent/ask$" @edge_ask;
     "~^POST:/v1/agent/ask/stream$" @edge_stream;
+    "~^POST:/v1/agent/answer$" @edge_ask;
     # Remove this entry to close access for external AI clients.
     "~^(GET|POST|DELETE):/mcp$" @edge_mcp;
     "~^(GET|HEAD):/$" @edge_root;
