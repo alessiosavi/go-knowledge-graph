@@ -251,8 +251,11 @@ func TestEvalAgentAnswerRouteRow(t *testing.T) {
 	}
 	response := row["response"].(map[string]any)
 	if response["summary"] != "Pick the lamp." || response["contract"] != "gkg-answer/1" ||
-		response["domain"] != evalAnswerTestDomain || response["complete"] != true || len(response) != 11 {
+		response["domain"] != evalAnswerTestDomain || response["complete"] != true || len(response) != 12 {
 		t.Fatal("capture does not contain the full cleaned answer response")
+	}
+	if alternatives, ok := response["alternatives"].([]any); !ok || len(alternatives) != 0 {
+		t.Fatalf("alternatives = %v, want []", response["alternatives"])
 	}
 	products, passages := response["products"].([]any), response["passages"].([]any)
 	if len(products) != 1 || products[0].(map[string]any)["product_id"] != product || products[0].(map[string]any)["title"] != "Fixture Lamp" ||
