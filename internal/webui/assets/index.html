@@ -89,6 +89,11 @@
                 type="text"
                 placeholder="YYYY-MM-DD or RFC 3339"
               />
+              <label for="ingest-domain">Domain</label>
+              <select id="ingest-domain" aria-describedby="ingest-domain-note">
+                <option value="">Auto (detect)</option>
+              </select>
+              <span id="ingest-domain-note" class="muted" aria-live="polite"></span>
             </div>
             <div class="row" id="ingest-file-row" hidden>
               <label for="ingest-file">File</label>

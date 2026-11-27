@@ -69,7 +69,7 @@
   }
 
   // api talks to the gkg REST surface. A 401 selects Basic or bearer sign-in;
-  // errors carry the server's detail when there is one.
+  // errors carry the server's message and code when available.
   async function api(path, options) {
     const opts = options || {};
     const headers = Object.assign(
@@ -97,8 +97,9 @@
       data = null;
     }
     if (!res.ok) {
-      throw new Error(
-        (data && data.detail) || "HTTP " + res.status + " " + res.statusText,
+      throw Object.assign(
+        new Error((data && (data.detail || data.message)) || "HTTP " + res.status + " " + res.statusText),
+        { code: data && data.error },
       );
     }
     return data;
@@ -120,31 +121,92 @@
     }
   }
 
+  const AUTO_DOMAIN_LABEL = "Auto (detect)";
+  const INGEST_DOMAIN_RESELECT = "Choose a domain again (or Auto) before submitting";
   const domainNames = new Map();
   const domainName = (id) => domainNames.get(id) || id;
-  async function loadDomains() {
-    try {
-      const domains = await api("/v1/domains");
-      domainNames.clear();
-      for (const d of (Array.isArray(domains) ? domains : [])) {
-        domainNames.set(d.id, d.name || d.id);
-      }
-      for (const id of ["search-domain", "ask-domain"]) {
-        const picker = $(id);
-        const selected = picker.value;
-        const all = el("option", "", "All domains");
-        all.value = "";
-        picker.replaceChildren(all);
-        for (const [key, name] of domainNames) {
-          const option = el("option", "", name);
-          option.value = key;
-          picker.append(option);
-        }
-        picker.value = domainNames.has(selected) ? selected : "";
-      }
-    } catch (_) {
-      // Search remains available when the picker cannot load.
+  let domainRequest = 0;
+  let ingestDomainNeedsSelection = false;
+  let ingestDomainsUnavailable = false;
+
+  function fillDomainPicker(id, defaultLabel, names) {
+    const picker = $(id);
+    const selected = picker.value;
+    const first = el("option", "", defaultLabel);
+    first.value = "";
+    picker.replaceChildren(first);
+    for (const [key, name] of names) {
+      const option = el("option", "", name);
+      option.value = key;
+      picker.append(option);
     }
+    picker.value = names.has(selected) ? selected : "";
+    return selected !== "" && picker.value === "";
+  }
+
+  function updateIngestDomainNote() {
+    const notes = [];
+    if (ingestDomainsUnavailable) notes.push("domains unavailable");
+    if (ingestDomainNeedsSelection) {
+      notes.push("Selected domain is no longer available. Choose a domain again.");
+    }
+    $("ingest-domain-note").textContent = notes.join(". ");
+  }
+
+  function fillIngestDomainPicker(labels, unavailable = false) {
+    const selectionLost = fillDomainPicker("ingest-domain", AUTO_DOMAIN_LABEL, labels);
+    ingestDomainNeedsSelection ||= selectionLost;
+    ingestDomainsUnavailable = unavailable;
+    if (ingestDomainNeedsSelection) {
+      // Leave Auto available as a new choice that will fire a change event.
+      $("ingest-domain").selectedIndex = -1;
+    }
+    updateIngestDomainNote();
+  }
+
+  function appendCollidingDomainIds(labels, reservedLabel) {
+    const counts = new Map();
+    if (reservedLabel) counts.set(reservedLabel, 1);
+    for (const label of labels.values()) {
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+    let changed = false;
+    for (const [id, label] of labels) {
+      if (counts.get(label) > 1) {
+        labels.set(id, `${label} (${id})`);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  async function loadDomains() {
+    const request = ++domainRequest;
+    let domains;
+    try {
+      domains = await api("/v1/domains");
+    } catch (_) {
+      if (request === domainRequest) {
+        fillIngestDomainPicker(new Map(), true);
+      }
+      return;
+    }
+    if (request !== domainRequest) return;
+
+    domainNames.clear();
+    for (const d of (Array.isArray(domains) ? domains : [])) {
+      domainNames.set(d.id, d.name || d.id);
+    }
+    for (const id of ["search-domain", "ask-domain"]) {
+      fillDomainPicker(id, "All domains", domainNames);
+    }
+
+    const ingestLabels = new Map(domainNames);
+    appendCollidingDomainIds(ingestLabels);
+    while (appendCollidingDomainIds(ingestLabels, AUTO_DOMAIN_LABEL)) {
+      // A suffixed label can collide with another label on the next pass.
+    }
+    fillIngestDomainPicker(ingestLabels);
   }
 
   // ---- search -------------------------------------------------------------
@@ -845,10 +907,11 @@
   }
 
   async function pollStatus(id, statusNode, message) {
+    const documentPath = "/v1/documents/" + encodeURIComponent(id);
     for (let i = 0; i < STATUS_POLL_MAX; i++) {
       let s;
       try {
-        s = await api("/v1/documents/" + encodeURIComponent(id) + "/status");
+        s = await api(documentPath + "/status");
       } catch (err) {
         statusNode.textContent =
           "status unavailable: " + String(err.message || err);
@@ -861,6 +924,11 @@
         s.status === "superseded"
       ) {
         if (s.error) statusNode.textContent += " · " + s.error;
+        if (s.status === "done" && s.domain) {
+          // A domain created by detection during this ingest is not listed yet.
+          if (!domainNames.has(s.domain)) await loadDomains();
+          statusNode.textContent += " · " + domainName(s.domain);
+        }
         await loadDocuments();
         return;
       }
@@ -871,12 +939,18 @@
   }
 
   async function ingest() {
+    const statusNode = $("ingest-status");
+    if (ingestDomainNeedsSelection) {
+      statusNode.textContent = INGEST_DOMAIN_RESELECT;
+      statusNode.className = "muted error";
+      return;
+    }
     const kind = $("ingest-kind").value;
+    const domain = $("ingest-domain").value;
     const body = $("ingest-body").value.trim();
     const source = $("ingest-source").value.trim();
     const labels = $("ingest-labels").value.trim();
     const date = $("ingest-date").value.trim();
-    const statusNode = $("ingest-status");
     const submit = $("ingest-submit");
     const fileInput = $("ingest-file");
     const file = kind === "file" && fileInput.files ? fileInput.files[0] : null;
@@ -895,12 +969,14 @@
       if (source) form.append("source", source);
       if (labels) form.append("labels", labels);
       if (date) form.append("document_date", date);
+      if (domain) form.append("domain", domain);
       opts.form = form;
     } else {
       const payload = kind === "url" ? { url: body } : { text: body };
       if (source) payload.source = source;
       if (labels) payload.labels = labels;
       if (date) payload.document_date = date;
+      if (domain) payload.domain = domain;
       opts.json = payload;
     }
     setBusy(submit, true, "Submitting…");
@@ -913,8 +989,10 @@
       if (kind === "file") fileInput.value = "";
       await pollStatus(res.document_id, statusNode, message);
     } catch (err) {
-      statusNode.textContent = String(err.message || err);
+      const message = String(err.message || err);
+      statusNode.textContent = err.code ? err.code + ": " + message : message;
       statusNode.className = "muted error";
+      if (err.code === "unknown_domain") await loadDomains();
     } finally {
       setBusy(submit, false);
     }
@@ -1040,6 +1118,15 @@
     $("ingest-form").addEventListener("submit", (ev) => {
       ev.preventDefault();
       ingest();
+    });
+    $("ingest-domain").addEventListener("change", () => {
+      ingestDomainNeedsSelection = false;
+      updateIngestDomainNote();
+      const statusNode = $("ingest-status");
+      if (statusNode.textContent === INGEST_DOMAIN_RESELECT) {
+        statusNode.textContent = "";
+        statusNode.className = "muted";
+      }
     });
     // The file row and the textarea trade places with the kind; required
     // moves with visibility (a hidden required control blocks submit).
