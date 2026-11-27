@@ -107,7 +107,7 @@ func (s *Server) AnswerHandler() http.Handler {
 		}
 
 		marks := resolveMarks(run.Text, run.Seen)
-		cards, err := s.store.ProductCards(ctx, req.Domain, marks.Products, maxAnswerFeatures)
+		cards, err := s.store.ProductCards(ctx, req.Domain, slices.Concat(marks.Products, marks.Alternatives), maxAnswerFeatures)
 		if writeAnswerReadError(w, ctx, err) {
 			return
 		}

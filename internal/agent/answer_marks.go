@@ -9,12 +9,15 @@ import (
 	"unicode/utf8"
 )
 
-const maxAnswerCitations = 10
+const (
+	maxAnswerCitations = 10
+	alternativePrefix  = "!alt:"
+)
 
 type markResult struct {
-	Products, Chunks []string
-	NotReturned      int
-	Spans            [][2]int
+	Products, Alternatives, Chunks []string
+	NotReturned                    int
+	Spans                          [][2]int
 }
 
 // resolveMarks resolves only exact IDs from tool results. An unterminated group
@@ -24,12 +27,24 @@ func resolveMarks(text string, seen *seenIndex) markResult {
 	if seen == nil {
 		seen = newSeenIndex()
 	}
-	cite := func(id string) bool {
+	productIsMatch := make(map[string]bool)
+	cite := func(id string, alternative bool) bool {
 		switch product, ok := seen.Product(id); {
 		case ok:
-			result.Products = appendCitation(result.Products, product)
+			isMatch, cited := productIsMatch[product]
+			if cited && (alternative || isMatch) {
+				return true
+			}
+			productIsMatch[product] = !alternative
+			if alternative {
+				result.Alternatives = append(result.Alternatives, product)
+			} else {
+				result.Products = append(result.Products, product)
+			}
 		case seen.Chunk(id):
-			result.Chunks = appendCitation(result.Chunks, id)
+			if len(result.Chunks) < maxAnswerCitations && !slices.Contains(result.Chunks, id) {
+				result.Chunks = append(result.Chunks, id)
+			}
 		default:
 			return false
 		}
@@ -54,6 +69,12 @@ func resolveMarks(text string, seen *seenIndex) markResult {
 			start := pos + open
 			pos = start + 2
 
+			trimmed := strings.TrimLeftFunc(content[pos:], unicode.IsSpace)
+			alternative := len(trimmed) >= len(alternativePrefix) && strings.EqualFold(trimmed[:len(alternativePrefix)], alternativePrefix)
+			if alternative {
+				pos = len(content) - len(trimmed) + len(alternativePrefix)
+			}
+
 			if closingPossible {
 				closeAt := strings.Index(content[pos:], "]]")
 				nextOpen := strings.Index(content[pos:], "[[")
@@ -63,7 +84,7 @@ func resolveMarks(text string, seen *seenIndex) markResult {
 					// A group closes at its own "]]"; a later group's close leaves it unterminated.
 					end := pos + closeAt
 					for token := range strings.FieldsFuncSeq(content[pos:end], markSeparator) {
-						if !cite(token) {
+						if !cite(token, alternative) {
 							result.NotReturned++
 						}
 					}
@@ -89,13 +110,19 @@ func resolveMarks(text string, seen *seenIndex) markResult {
 				if id == "" {
 					break
 				}
-				cite(id)
+				cite(id, alternative)
 				pos += len(id)
 			}
 			result.Spans = append(result.Spans, [2]int{offset + start, offset + pos})
 		}
 		offset += lineEnd + 1
 	}
+	// A match anywhere takes precedence before either card list is capped.
+	result.Alternatives = slices.DeleteFunc(result.Alternatives, func(id string) bool {
+		return productIsMatch[id]
+	})
+	result.Products = result.Products[:min(len(result.Products), maxAnswerCitations)]
+	result.Alternatives = result.Alternatives[:min(len(result.Alternatives), maxAnswerCitations-len(result.Products))]
 	return result
 }
 
@@ -126,13 +153,6 @@ func leadingSeenID(text string, candidates []string) string {
 		break
 	}
 	return ""
-}
-
-func appendCitation(ids []string, id string) []string {
-	if len(ids) < maxAnswerCitations && !slices.Contains(ids, id) {
-		return append(ids, id)
-	}
-	return ids
 }
 
 var standaloneAnswerID = regexp.MustCompile(`[[:xdigit:]]{32}(?:-c[0-9]+)?`)

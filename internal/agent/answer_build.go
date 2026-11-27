@@ -16,17 +16,18 @@ const (
 
 // AnswerResponse is the domain-scoped gkg-answer/1 response.
 type AnswerResponse struct {
-	Contract   string            `json:"contract"`
-	Domain     string            `json:"domain"`
-	Summary    string            `json:"summary"`
-	Products   []answerCardData  `json:"products"`
-	Comparison *answerComparison `json:"comparison"`
-	Passages   []answerPassage   `json:"passages"`
-	Complete   bool              `json:"complete"`
-	Warnings   []string          `json:"warnings"`
-	Dropped    answerDropped     `json:"dropped"`
-	AsOf       answerAsOf        `json:"as_of"`
-	Trace      answerTrace       `json:"trace"`
+	Contract     string            `json:"contract"`
+	Domain       string            `json:"domain"`
+	Summary      string            `json:"summary"`
+	Products     []answerCardData  `json:"products"`
+	Alternatives []answerCardData  `json:"alternatives"`
+	Comparison   *answerComparison `json:"comparison"`
+	Passages     []answerPassage   `json:"passages"`
+	Complete     bool              `json:"complete"`
+	Warnings     []string          `json:"warnings"`
+	Dropped      answerDropped     `json:"dropped"`
+	AsOf         answerAsOf        `json:"as_of"`
+	Trace        answerTrace       `json:"trace"`
 }
 
 type answerCardData struct {
@@ -103,7 +104,6 @@ func buildMarkedAnswer(run answerRun, marks markResult, cards graph.ProductCards
 		Contract: "gkg-answer/1",
 		Domain:   domain,
 		Summary:  cleanSummary(run.Text, marks.Spans),
-		Products: make([]answerCardData, 0, len(marks.Products)),
 		Passages: make([]answerPassage, 0, len(marks.Chunks)),
 		Warnings: []string{},
 		Dropped:  answerDropped{NotReturned: marks.NotReturned},
@@ -118,23 +118,30 @@ func buildMarkedAnswer(run answerRun, marks markResult, cards graph.ProductCards
 		out.AsOf.Stores = append(out.AsOf.Stores, answerStoreWatermark(store))
 	}
 
-	returned := make(map[string]int, len(marks.Products))
-	for _, id := range marks.Products {
-		card, ok := cards.Cards[id]
-		if !ok {
-			out.Dropped.NotFound++
-			continue
+	returned := make(map[string]*answerCardData, len(marks.Products)+len(marks.Alternatives))
+	buildCards := func(ids []string) []answerCardData {
+		// Reserve capacity so pointers to cards stay valid during appends.
+		hydrated := make([]answerCardData, 0, len(ids))
+		for _, id := range ids {
+			card, ok := cards.Cards[id]
+			if !ok {
+				out.Dropped.NotFound++
+				continue
+			}
+			n := min(len(card.Features), maxAnswerFeatures)
+			hydrated = append(hydrated, answerCardData{
+				Product:         card.Product,
+				ProductType:     card.ProductType,
+				Features:        append([]graph.ProductEvidence{}, card.Features[:n]...),
+				FeaturesOmitted: card.FeaturesOmitted + len(card.Features) - n,
+				PassageIDs:      []string{},
+			})
+			returned[id] = &hydrated[len(hydrated)-1]
 		}
-		n := min(len(card.Features), maxAnswerFeatures)
-		returned[id] = len(out.Products)
-		out.Products = append(out.Products, answerCardData{
-			Product:         card.Product,
-			ProductType:     card.ProductType,
-			Features:        append([]graph.ProductEvidence{}, card.Features[:n]...),
-			FeaturesOmitted: card.FeaturesOmitted + len(card.Features) - n,
-			PassageIDs:      []string{},
-		})
+		return hydrated
 	}
+	out.Products = buildCards(marks.Products)
+	out.Alternatives = buildCards(marks.Alternatives)
 	for _, id := range marks.Chunks {
 		doc, ok := docs[id]
 		if !ok {
@@ -151,12 +158,11 @@ func buildMarkedAnswer(run answerRun, marks markResult, cards graph.ProductCards
 			passage.Excerpts = append(passage.Excerpts, answerExcerpt(excerpt))
 		}
 		for _, link := range run.Seen.Links(id) {
-			i, ok := returned[link.ProductID]
+			card, ok := returned[link.ProductID]
 			if !ok {
 				continue
 			}
 			passage.Links = append(passage.Links, answerLink(link))
-			card := &out.Products[i]
 			if len(card.PassageIDs) == 0 || card.PassageIDs[len(card.PassageIDs)-1] != id {
 				card.PassageIDs = append(card.PassageIDs, id)
 			}
@@ -165,11 +171,12 @@ func buildMarkedAnswer(run answerRun, marks markResult, cards graph.ProductCards
 	}
 
 	out.Comparison = buildAnswerComparison(out.Products)
+	empty := strings.TrimSpace(out.Summary) == "" && len(returned) == 0 && len(out.Passages) == 0
 	switch {
 	case run.Outcome == outcomeFinalTurnFailed:
 		out.Summary = "No answer could be produced."
 		out.Warnings = append(out.Warnings, "final_turn_failed")
-	case run.Outcome == outcomeNoAnswer || (strings.TrimSpace(out.Summary) == "" && len(out.Products) == 0 && len(out.Passages) == 0):
+	case run.Outcome == outcomeNoAnswer || empty:
 		out.Summary = "No answer could be produced."
 		out.Warnings = append(out.Warnings, "no_answer")
 	case run.Outcome == outcomeTruncated:
