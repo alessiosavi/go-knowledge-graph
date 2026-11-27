@@ -609,7 +609,8 @@ Check `complete` and `warnings` before presenting the answer. A truncated
 reply or a run that could produce no answer can return `200` with
 `complete: false`. A reply with only hydrated alternatives can be complete.
 `dropped` counts citations absent from the tool results or missing from
-scoped graph reads. Citations beyond the caps are omitted from both counts.
+scoped graph reads. Resolved cards and passages omitted by the caps contribute
+to neither count. Unknown citation tokens still count in `dropped.not_returned`.
 Graph read failures return `502 hydration_error`. The agent timeout covers validation reads, model
 turns and graph reads. An expired deadline returns `504 agent_timeout`.
 

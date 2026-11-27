@@ -2498,7 +2498,9 @@ components:
           items: { type: string, enum: [no_answer, final_turn_failed, truncated, budget_final] }
         dropped:
           type: object
-          description: Citations beyond the caps are omitted from both counts.
+          description: |
+            Resolved cards and passages omitted by the caps contribute to
+            neither count. Unknown citation tokens still count in not_returned.
           required: [not_returned, not_found]
           properties:
             not_returned: { type: integer, minimum: 0, description: Citation tokens absent from the tool results. }

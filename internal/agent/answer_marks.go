@@ -21,7 +21,7 @@ type markResult struct {
 }
 
 // resolveMarks resolves only exact IDs from tool results. An unterminated group
-// stops at the first token that cannot be resolved, preserving ensuing prose.
+// stops at the next group opener or the first token that cannot be resolved.
 func resolveMarks(text string, seen *seenIndex) markResult {
 	var result markResult
 	if seen == nil {
@@ -100,7 +100,7 @@ func resolveMarks(text string, seen *seenIndex) markResult {
 				})
 				slices.SortFunc(candidates, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
 			}
-			for pos < len(content) {
+			for pos < len(content) && !strings.HasPrefix(content[pos:], "[[") {
 				next, size := utf8.DecodeRuneInString(content[pos:])
 				if markSeparator(next) {
 					pos += size

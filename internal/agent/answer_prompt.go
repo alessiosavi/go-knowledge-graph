@@ -6,11 +6,13 @@ import (
 )
 
 const answerProductExample = "shop.example:123"
-const answerMarkerRule = "Mark each product by its role in your answer: a product that answers the request, " +
-	"or that the shopper asked about (each product in a comparison), as [[product_id]]; " +
-	"a product you suggest instead because it does not fully meet the request, as [[!alt: product_id]]; " +
-	"a product you rule out, or that the shopper excludes, by name only without a marker. " +
-	"If nothing meets the request, say so and use no plain product marker. " +
+const answerMarkerRule = "Mark each product by its role in your answer. " +
+	"Use [[product_id]] for a product that answers the request. " +
+	"Use [[!alt: product_id]] for a product you suggest instead because it does not fully meet the request. " +
+	"Refer to recommendation candidates you rule out and products the shopper excludes by name only, without a marker. " +
+	"When making recommendations, if no candidate meets the request, say so and use no plain product marker for recommendation candidates. " +
+	"Keep plain [[product_id]] markers for products the shopper explicitly asked to compare or asked about, " +
+	"even if they do not meet the request, unless the shopper excludes them. " +
 	"Place each product marker right after its name, using the full store-prefixed product_id " +
 	"(for example Example Lamp [[" + answerProductExample + "]]); " +
 	"if a product_id contains brackets, commas, spaces or a line break, use its id instead. " +

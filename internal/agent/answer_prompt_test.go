@@ -37,16 +37,36 @@ func TestAnswerPromptProductRoles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, want := range []string{
-				"Mark each product by its role in your answer: a product that answers the request, or that the shopper asked about (each product in a comparison), as [[product_id]]",
-				"a product you suggest instead because it does not fully meet the request, as [[!alt: product_id]]",
-				"a product you rule out, or that the shopper excludes, by name only without a marker",
-				"If nothing meets the request, say so and use no plain product marker.",
+				"Use [[product_id]] for a product that answers the request.",
+				"Use [[!alt: product_id]] for a product you suggest instead because it does not fully meet the request.",
+				"Refer to recommendation candidates you rule out and products the shopper excludes by name only, without a marker.",
 				"Do not say a product lacks a feature unless what you read says so.",
 				"Answer in the language of the question.",
 			} {
 				if !strings.Contains(tc.prompt, want) {
 					t.Errorf("prompt missing %q", want)
 				}
+			}
+		})
+	}
+}
+
+func TestAnswerPromptLimitsNoMatchRuleToRecommendations(t *testing.T) {
+	for _, tc := range []struct{ name, prompt string }{
+		{"tool-enabled", answerSystemPrompt(t.Context())},
+		{"budget-final", answerFinalPrompt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, want := range []string{
+				"When making recommendations, if no candidate meets the request, say so and use no plain product marker for recommendation candidates.",
+				"Keep plain [[product_id]] markers for products the shopper explicitly asked to compare or asked about, even if they do not meet the request, unless the shopper excludes them.",
+			} {
+				if !strings.Contains(tc.prompt, want) {
+					t.Errorf("prompt missing %q", want)
+				}
+			}
+			if strings.Contains(tc.prompt, "If nothing meets the request, say so and use no plain product marker.") {
+				t.Error("prompt still applies the no-match rule to all products")
 			}
 		})
 	}

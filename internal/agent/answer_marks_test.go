@@ -82,6 +82,37 @@ func TestAnswerReviewBotUnterminatedBeforeNextGroup(t *testing.T) {
 		[]string{"shop.example:1", "shop.example:2"}, nil, 0, "A is lighter than B.")
 }
 
+func TestResolveMarksUnterminatedBeforeNextRole(t *testing.T) {
+	seen := newSeenIndex()
+	seen.addProduct("graph1", "shop.example:1")
+	seen.addProduct("graph2", "shop.example:2")
+	const prefix = "Compare "
+	for _, tc := range []struct {
+		name, firstMark, secondMark string
+		products, alternatives      []string
+	}{
+		{"alternative then match", "[[!alt: graph1 ", "[[graph2]]", []string{"shop.example:2"}, []string{"shop.example:1"}},
+		{"match then alternative", "[[graph1 ", "[[!alt: graph2]]", []string{"shop.example:1"}, []string{"shop.example:2"}},
+		{"same product promoted to match", "[[!alt: graph1, ", "[[shop.example:1]]", []string{"shop.example:1"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := prefix + tc.firstMark + tc.secondMark + "."
+			marks := resolveMarks(text, seen)
+			if !slices.Equal(marks.Products, tc.products) || !slices.Equal(marks.Alternatives, tc.alternatives) || marks.NotReturned != 0 {
+				t.Errorf("marks = %+v, want products %v and alternatives %v with no dropped tokens", marks, tc.products, tc.alternatives)
+			}
+			boundary := len(prefix) + len(tc.firstMark)
+			wantSpans := [][2]int{{len(prefix), boundary}, {boundary, len(text) - 1}}
+			if !slices.Equal(marks.Spans, wantSpans) {
+				t.Errorf("spans = %v, want %v", marks.Spans, wantSpans)
+			}
+			if got := cleanSummary(text, marks.Spans); got != "Compare." {
+				t.Errorf("summary = %q, want %q", got, "Compare.")
+			}
+		})
+	}
+}
+
 func TestResolveMarksTabIDByGraphID(t *testing.T) {
 	seen := newSeenIndex()
 	seen.addProduct("graph1", "shop.example:1\t2")
