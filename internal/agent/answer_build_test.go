@@ -109,7 +109,7 @@ func TestAnswerFieldRulesAlwaysPresent(t *testing.T) {
 			if err := json.Unmarshal([]byte(raw), &body); err != nil {
 				t.Fatal(err)
 			}
-			fields := []string{"contract", "domain", "summary", "products", "comparison", "passages", "complete", "warnings", "dropped", "as_of", "trace"}
+			fields := []string{"contract", "domain", "summary", "products", "alternatives", "comparison", "passages", "complete", "warnings", "dropped", "as_of", "trace"}
 			if len(body) != len(fields) {
 				t.Errorf("expected %d fields, got %s", len(fields), raw)
 			}
@@ -118,7 +118,7 @@ func TestAnswerFieldRulesAlwaysPresent(t *testing.T) {
 					t.Errorf("missing %s", field)
 				}
 			}
-			for _, value := range []string{`"contract":"gkg-answer/1"`, `"comparison":null`, `"passages":[]`, `"warnings":[]`, `"stores":[]`, `"tools":[]`} {
+			for _, value := range []string{`"contract":"gkg-answer/1"`, `"alternatives":[]`, `"comparison":null`, `"passages":[]`, `"warnings":[]`, `"stores":[]`, `"tools":[]`} {
 				if !strings.Contains(raw, value) {
 					t.Errorf("missing %s in %s", value, raw)
 				}
@@ -264,6 +264,38 @@ func TestAnswerCapsKeepFirstCitations(t *testing.T) {
 			t.Fatalf("passage %d = %s", i, passage.ChunkID)
 		}
 	}
+}
+
+func TestAnswerSharedCardCitationCap(t *testing.T) {
+	seen := newSeenIndex()
+	cards := graph.ProductCards{Cards: make(map[string]graph.ProductCard)}
+	for _, id := range []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "a1", "a2", "a3", "a4", "a5"} {
+		productID := "shop.example:" + id
+		seen.addProduct(id, productID)
+		// Leave the over-cap alternatives unhydrated to check dropped.not_found.
+		if id != "a3" && id != "a4" && id != "a5" {
+			cards.Cards[productID] = answerCard(productID, id)
+		}
+	}
+	text := "[[!alt: a1, a1, p2, a2, a3]] [[p1, p2, p2, p3, p4, p5, p6, p7, p8]] [[!alt: a4, a5, p8, a2]]"
+	got := buildAnswer(answerRun{Text: text, Seen: seen}, cards, nil, answerTestDomain)
+	if want := []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"}; !slices.Equal(answerCardGraphIDs(got.Products), want) {
+		t.Errorf("products = %v, want %v", answerCardGraphIDs(got.Products), want)
+	}
+	if want := []string{"a1", "a2"}; !slices.Equal(answerCardGraphIDs(got.Alternatives), want) {
+		t.Errorf("alternatives = %v, want %v", answerCardGraphIDs(got.Alternatives), want)
+	}
+	if got.Dropped != (answerDropped{}) {
+		t.Errorf("dropped = %+v", got.Dropped)
+	}
+}
+
+func answerCardGraphIDs(cards []answerCardData) []string {
+	ids := make([]string, 0, len(cards))
+	for _, card := range cards {
+		ids = append(ids, card.ID)
+	}
+	return ids
 }
 
 func TestAnswerNoActiveRelease(t *testing.T) {

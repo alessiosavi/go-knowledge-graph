@@ -591,15 +591,21 @@ per turn and 4 KiB total. The caller must provide history from the same
 domain. Each request reads its own evidence.
 
 The response uses contract `gkg-answer/1`. Treat `summary` as unverified
-model text. The `products` list contains cited cards with released feature
-evidence. The `passages` list contains cited excerpts and their associations
-to returned cards. Each list includes up to 10 entries
-in first-citation order. Comparison rows show features shared by at least
-two returned cards. `comparison` is null when the answer has fewer than two
+model text. `products` contains cards for cited matches and products the
+shopper asked about. `alternatives` contains cards for cited suggestions
+that do not fully meet the request. Both lists use the same card shape with
+released feature evidence. Each list keeps its first-citation order and the
+lists share a limit of 10 cards, with `products` taking priority. A product
+cited in both roles appears in `products` only.
+
+`passages` contains up to 10 cited excerpts in first-citation order and can
+link to cards in either list. Linked cards expose the corresponding
+`passage_ids`. Comparison rows show features shared by at least two cards
+in `products`. `comparison` is null when `products` has fewer than two
 cards. `as_of` reports the active feature release and domain store watermarks
 at product card hydration.
 
-Each card's `texts` array contains record attribute texts copied from the
+Each card's `texts` array (in either list) contains record attribute texts copied from the
 fitted tool results the model received from `get_product`, product `search`
 hits, and query-mode `find_products`. The `features` field carries audited
 feature evidence. The text entries are distinct by `tool`, `key`, and `text`,
@@ -615,9 +621,11 @@ The [OpenAPI specification](docs/openapi.yaml) describes all response fields.
 
 Check `complete` and `warnings` before presenting the answer. A truncated
 reply or a run that could produce no answer can return `200` with
-`complete: false`. `dropped` counts citations absent from the tool results
-or missing from scoped graph reads. Graph read failures return
-`502 hydration_error`. The agent timeout covers validation reads, model
+`complete: false`. A reply with only hydrated alternatives can be complete.
+`dropped` counts citations absent from the tool results or missing from
+scoped graph reads. Resolved cards and passages omitted by the caps contribute
+to neither count. Unknown citation tokens still count in `dropped.not_returned`.
+Graph read failures return `502 hydration_error`. The agent timeout covers validation reads, model
 turns and graph reads. An expired deadline returns `504 agent_timeout`.
 
 ### Judge and agent provider configuration

@@ -2440,7 +2440,7 @@ components:
           $ref: "#/components/schemas/AgentGeneration"
     AgentStructuredAnswer:
       type: object
-      required: [contract, domain, summary, products, comparison, passages, complete, warnings, dropped, as_of, trace]
+      required: [contract, domain, summary, products, alternatives, comparison, passages, complete, warnings, dropped, as_of, trace]
       properties:
         contract: { type: string, enum: [gkg-answer/1] }
         domain: { type: string }
@@ -2448,20 +2448,29 @@ components:
         products:
           type: array
           maxItems: 10
-          description: Cited products in first-citation order.
+          description: Cited matches and products the shopper asked about, in first match-citation order.
+          items:
+            $ref: "#/components/schemas/AgentProductCard"
+        alternatives:
+          type: array
+          maxItems: 10
+          description: |
+            Cited alternatives in first alternative-citation order. The two
+            lists share a limit of ten cards, with products taking priority.
+            A product cited in both roles appears in products only.
           items:
             $ref: "#/components/schemas/AgentProductCard"
         comparison:
           type: object
           nullable: true
-          description: Null with fewer than two cards.
+          description: Null when products contains fewer than two cards.
           required: [product_ids, rows]
           properties:
             product_ids: { type: array, items: { type: string } }
             rows:
               type: array
               maxItems: 12
-              description: Features present on at least two returned cards, in feature ID order.
+              description: Features present on at least two cards in products, in feature ID order.
               items:
                 type: object
                 required: [feature_id, cells]
@@ -2489,10 +2498,13 @@ components:
           items: { type: string, enum: [no_answer, final_turn_failed, truncated, budget_final] }
         dropped:
           type: object
+          description: |
+            Resolved cards and passages omitted by the caps contribute to
+            neither count. Unknown citation tokens still count in not_returned.
           required: [not_returned, not_found]
           properties:
             not_returned: { type: integer, minimum: 0, description: Citation tokens absent from the tool results. }
-            not_found: { type: integer, minimum: 0, description: Cited products or chunks missing from the scoped graph reads. }
+            not_found: { type: integer, minimum: 0, description: Selected product cards or passages missing from the scoped graph reads. }
         as_of:
           type: object
           description: Active feature release and domain store watermarks at product card hydration.
@@ -2590,7 +2602,7 @@ components:
               truncated: { type: boolean, enum: [true], description: Present when get_chunks reported truncation. }
         links:
           type: array
-          description: Associations from the tools to products returned in this answer.
+          description: Associations from the tools to cards in either products or alternatives.
           items:
             type: object
             required: [product_id]

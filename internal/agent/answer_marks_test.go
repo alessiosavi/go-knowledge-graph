@@ -82,6 +82,37 @@ func TestAnswerReviewBotUnterminatedBeforeNextGroup(t *testing.T) {
 		[]string{"shop.example:1", "shop.example:2"}, nil, 0, "A is lighter than B.")
 }
 
+func TestResolveMarksUnterminatedBeforeNextRole(t *testing.T) {
+	seen := newSeenIndex()
+	seen.addProduct("graph1", "shop.example:1")
+	seen.addProduct("graph2", "shop.example:2")
+	const prefix = "Compare "
+	for _, tc := range []struct {
+		name, firstMark, secondMark string
+		products, alternatives      []string
+	}{
+		{"alternative then match", "[[!alt: graph1 ", "[[graph2]]", []string{"shop.example:2"}, []string{"shop.example:1"}},
+		{"match then alternative", "[[graph1 ", "[[!alt: graph2]]", []string{"shop.example:1"}, []string{"shop.example:2"}},
+		{"same product promoted to match", "[[!alt: graph1, ", "[[shop.example:1]]", []string{"shop.example:1"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := prefix + tc.firstMark + tc.secondMark + "."
+			marks := resolveMarks(text, seen)
+			if !slices.Equal(marks.Products, tc.products) || !slices.Equal(marks.Alternatives, tc.alternatives) || marks.NotReturned != 0 {
+				t.Errorf("marks = %+v, want products %v and alternatives %v with no dropped tokens", marks, tc.products, tc.alternatives)
+			}
+			boundary := len(prefix) + len(tc.firstMark)
+			wantSpans := [][2]int{{len(prefix), boundary}, {boundary, len(text) - 1}}
+			if !slices.Equal(marks.Spans, wantSpans) {
+				t.Errorf("spans = %v, want %v", marks.Spans, wantSpans)
+			}
+			if got := cleanSummary(text, marks.Spans); got != "Compare." {
+				t.Errorf("summary = %q, want %q", got, "Compare.")
+			}
+		})
+	}
+}
+
 func TestResolveMarksTabIDByGraphID(t *testing.T) {
 	seen := newSeenIndex()
 	seen.addProduct("graph1", "shop.example:1\t2")
@@ -195,4 +226,57 @@ func TestParseMarksRuledOutProductGetsNoCard(t *testing.T) {
 	seen.addProduct("a", "shop.example:a")
 	seen.addProduct("b", "shop.example:b")
 	checkMarks(t, "Pick A [[a]], skip B.", seen, []string{"shop.example:a"}, nil, 0, "Pick A, skip B.")
+}
+
+func TestResolveAlternativeMarks(t *testing.T) {
+	seen := newSeenIndex()
+	seen.addProduct("graph1", "shop.example:1")
+	seen.addProduct("graph2", "alt:shop.example:1")
+	seen.addExcerpt("chunk", Excerpt{Tool: "search", Text: "Passage"})
+	for _, tc := range []struct {
+		name, text, summary            string
+		products, alternatives, chunks []string
+		dropped                        int
+	}{
+		{"closed", "Try [[!alt: shop.example:1]].", "Try.", nil, []string{"shop.example:1"}, nil, 0},
+		{"unterminated", "Try [[!alt: shop.example:1. More prose.", "Try. More prose.", nil, []string{"shop.example:1"}, nil, 0},
+		{"unterminated unknown stays in prose", "[[!alt: unknown", "unknown", nil, nil, nil, 0},
+		{"glued", "Try [[!alt:shop.example:1]].", "Try.", nil, []string{"shop.example:1"}, nil, 0},
+		{"uppercase and leading whitespace", "Try [[\t !ALT: graph1]].", "Try.", nil, []string{"shop.example:1"}, nil, 0},
+		{"mixed with unknown tokens", "Try [[!alt: shop.example:1, chunk, unknown, absent]].", "Try.", nil, []string{"shop.example:1"}, []string{"chunk"}, 2},
+		{"prefix only", "[[!alt:]]", "", nil, nil, nil, 0},
+		{"plain alt store", "Pick [[alt:shop.example:1]].", "Pick.", []string{"alt:shop.example:1"}, nil, nil, 0},
+		{"literal prose", "The literal !alt: stays.", "The literal !alt: stays.", nil, nil, nil, 0},
+		{"prefix must lead", "Pick [[, !alt: shop.example:1]].", "Pick.", []string{"shop.example:1"}, nil, nil, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			marks := resolveMarks(tc.text, seen)
+			if !slices.Equal(marks.Products, tc.products) || !slices.Equal(marks.Alternatives, tc.alternatives) ||
+				!slices.Equal(marks.Chunks, tc.chunks) || marks.NotReturned != tc.dropped {
+				t.Errorf("marks = %+v, want products %v, alternatives %v, chunks %v, not returned %d",
+					marks, tc.products, tc.alternatives, tc.chunks, tc.dropped)
+			}
+			if got := cleanSummary(tc.text, marks.Spans); got != tc.summary {
+				t.Errorf("summary = %q, want %q", got, tc.summary)
+			}
+		})
+	}
+}
+
+func TestResolveMatchTakesPrecedence(t *testing.T) {
+	seen := newSeenIndex()
+	seen.addProduct("graph1", "shop.example:1")
+	seen.addProduct("graph2", "shop.example:2")
+	for _, text := range []string{
+		"[[!alt: graph1, graph2]] [[shop.example:1]]",
+		"[[shop.example:1]] [[!alt: graph1, graph2]]",
+	} {
+		t.Run(text, func(t *testing.T) {
+			marks := resolveMarks(text, seen)
+			if !slices.Equal(marks.Products, []string{"shop.example:1"}) ||
+				!slices.Equal(marks.Alternatives, []string{"shop.example:2"}) || marks.NotReturned != 0 {
+				t.Fatalf("marks = %+v", marks)
+			}
+		})
+	}
 }

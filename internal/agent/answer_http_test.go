@@ -258,6 +258,63 @@ func TestAnswerHTTPCardTextsFromModelVisibleTools(t *testing.T) {
 	}
 }
 
+func TestAnswerHTTPAlternatives(t *testing.T) {
+	store := answerJourneyStore()
+	foreign := answerCard("foreign.example:1", "foreign")
+	foreign.Store = "foreign.example"
+	moved := foreign
+	moved.Domain = "other-catalog"
+	store.cards.Cards[foreign.ProductID] = moved
+	searchProducts := store.productSearchToolStore.products
+	store.productSearchToolStore.products = func(ctx context.Context, query, domain string, limit int) ([]graph.Product, error) {
+		products, err := searchProducts(ctx, query, domain, limit)
+		return append(products, foreign.Product), err
+	}
+	s, _ := newAnswerHTTPServer(t, store, 3,
+		toolCallsReply(
+			scriptedCall{"find", "search", lampSearch},
+			scriptedCall{"detail", "get_product", `{"id":"a"}`},
+		),
+		contentReply("Compare Lamp B [["+lampB+"]] and Lamp C [["+lampC+"]]. Lamp D is excluded. "+
+			"Try Lamp A [[!alt:"+lampA+"]] [[chunk-a]]. Another option is a lamp [[!ALT: "+foreign.ProductID+"]]."),
+	)
+	got := performAnswerJourney(t, s, `{"question":"Compare Lamp B and Lamp C, excluding Lamp D. What else is close?","domain":"catalog"}`)
+	assertAnswerHydration(t, store, []string{lampB, lampC, lampA, foreign.ProductID}, []string{"chunk-a"})
+	if got.Summary != "Compare Lamp B  and Lamp C. Lamp D is excluded. Try Lamp A. Another option is a lamp." {
+		t.Errorf("summary = %q", got.Summary)
+	}
+	if got.Dropped != (answerDropped{NotFound: 1}) {
+		t.Errorf("dropped = %+v", got.Dropped)
+	}
+	if len(got.Alternatives) != 1 || got.Alternatives[0].ProductID != lampA ||
+		!slices.Equal(got.Alternatives[0].PassageIDs, []string{"chunk-a"}) {
+		t.Errorf("alternatives = %+v", got.Alternatives)
+	}
+	if len(got.Passages) != 1 || len(got.Passages[0].Links) != 1 ||
+		got.Passages[0].Links[0].ProductID != lampA || got.Passages[0].Links[0].Kind != "mention" {
+		t.Errorf("passages = %+v", got.Passages)
+	}
+	if !slices.Equal(answerCardGraphIDs(got.Products), []string{"b", "c"}) ||
+		got.Comparison == nil || !slices.Equal(got.Comparison.ProductIDs, []string{lampB, lampC}) ||
+		len(got.Comparison.Rows) != 0 {
+		t.Errorf("products = %+v, comparison = %+v", got.Products, got.Comparison)
+	}
+}
+
+func TestAnswerHTTPAlternativesOnly(t *testing.T) {
+	store := answerJourneyStore()
+	s, _ := newAnswerHTTPServer(t, store, 3,
+		toolCallReply("find", "search", lampSearch),
+		contentReply("[[!alt:"+lampA+"]]"),
+	)
+	got := performAnswerJourney(t, s, validAnswerQuestion)
+	assertAnswerHydration(t, store, []string{lampA}, nil)
+	if got.Products == nil || len(got.Products) != 0 || !slices.Equal(answerCardGraphIDs(got.Alternatives), []string{"a"}) ||
+		got.Summary != "" || got.Comparison != nil || len(got.Warnings) != 0 || got.Dropped != (answerDropped{}) {
+		t.Fatalf("alternatives-only response = %+v", got)
+	}
+}
+
 func TestAnswerReview2ReadsEntireBoundedJSONBody(t *testing.T) {
 	padding := strings.Repeat(" ", (1<<20)-len(validAnswerQuestion))
 	for _, tc := range []struct {
