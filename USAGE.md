@@ -591,12 +591,23 @@ per turn and 4 KiB total. The caller must provide history from the same
 domain. Each request reads its own evidence.
 
 The response uses contract `gkg-answer/1`. Treat `summary` as unverified
-model text. The factual fields are `products`, which contains cited cards
-with released feature evidence, and `passages`, which contains cited excerpts
-and their associations to returned cards. Each list includes up to 10 entries
+model text. The `products` list contains cited cards with released feature
+evidence. The `passages` list contains cited excerpts and their associations
+to returned cards. Each list includes up to 10 entries
 in first-citation order. Comparison rows show features shared by at least
 two returned cards. `comparison` is null when the answer has fewer than two
 cards. `as_of` reports the active feature release and domain store watermarks.
+
+Each card's `texts` array contains record attribute texts copied from the
+fitted tool results the model received from `get_product`, product `search`
+hits, and query-mode `find_products`. The `features` field carries audited
+feature evidence. The text entries are distinct by `tool`, `key`, and `text`,
+in first-seen order. `text_truncated` describes the stored text and
+`excerpt_cut` describes the returned excerpt. `excerpt_cut` is omitted when
+false. `checked` reports whether the store and source key are in the active
+release. `texts_omitted` counts the distinct model-visible entries for this
+product beyond the 24-entry card limit.
+
 The [OpenAPI specification](docs/openapi.yaml) describes all response fields.
 
 Check `complete` and `warnings` before presenting the answer. A truncated

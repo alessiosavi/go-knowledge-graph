@@ -39,6 +39,61 @@ func answerJSON(t *testing.T, value any) string {
 	return string(b)
 }
 
+func TestAnswerCardTextsCapAndFirstSeenOrder(t *testing.T) {
+	card := answerCard(lampA, "a")
+	seen := newSeenIndex()
+	var want []graph.ProductText
+	for call := range 3 {
+		out := searchOut{}
+		for row := range 10 {
+			i := call*10 + row
+			entry := graph.ProductText{Key: "intensity", Text: fmt.Sprintf("value %d", i), Checked: true}
+			if i == 1 {
+				entry.Key = "other"
+				entry.Text = want[0].Text
+			}
+			want = append(want, entry)
+			out.Hits = append(out.Hits, searchHitOut{
+				Kind: "product", ID: card.ID, ProductID: card.ProductID, Key: &entry.Key, Excerpt: &entry.Text,
+				TextTruncated: &entry.TextTruncated, Checked: &entry.Checked,
+			})
+		}
+		// Repeat an entry with different flags, including one beyond the card cap.
+		duplicate := out.Hits[8]
+		duplicate.Checked = new(false)
+		duplicate.ExcerptCut = new(true)
+		out.Hits = append(out.Hits, duplicate)
+		seen.record("search", out)
+	}
+	cards := graph.ProductCards{Cards: map[string]graph.ProductCard{card.ProductID: card}}
+	raw := answerJSON(t, buildAnswer(answerRun{Text: "[[a]]", Seen: seen}, cards, nil, answerTestDomain))
+	var response struct {
+		Products []struct {
+			Texts []struct {
+				Tool string `json:"tool"`
+				graph.ProductText
+				ExcerptCut bool `json:"excerpt_cut"`
+			} `json:"texts"`
+			TextsOmitted int `json:"texts_omitted"`
+		} `json:"products"`
+	}
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Products) != 1 {
+		t.Fatalf("got %d cards, want 1", len(response.Products))
+	}
+	got := response.Products[0]
+	if len(got.Texts) != 24 || got.TextsOmitted != 6 {
+		t.Fatalf("got %d texts and %d omitted, want 24 and 6", len(got.Texts), got.TextsOmitted)
+	}
+	for i, entry := range got.Texts {
+		if entry.Tool != "search" || entry.ProductText != want[i] || entry.ExcerptCut {
+			t.Errorf("text %d = %+v, want original search entry %+v", i, entry, want[i])
+		}
+	}
+}
+
 func TestAnswerFieldRulesAlwaysPresent(t *testing.T) {
 	for _, count := range []int{0, 1} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
